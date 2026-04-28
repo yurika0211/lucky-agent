@@ -504,32 +504,26 @@ func handleWebSearch(cfg *WebSearchConfig, args map[string]any) (string, error) 
 		return handleDeepSearch(cfg, query, count, provider)
 	}
 
-	for _, source := range quickSearchOrder(provider, cfg) {
-		switch source {
-		case "searxng":
-			if result, err := searchWithSearXNG(cfg, query, count); err == nil && result != "" {
-				return annotateSource(result, "SearXNG"), nil
-			}
-		case "exa":
-			if result, err := searchWithExa(cfg, query, count); err == nil && result != "" {
-				return annotateSource(result, "Exa"), nil
-			}
-		case "brave":
-			if result, err := searchWithBrave(cfg, query, count); err == nil && result != "" {
-				return annotateSource(result, "Brave"), nil
-			}
-		case "ddgs":
-			if result, err := searchWithDDGS(query, count); err == nil && result != "" {
-				return annotateSource(result, "DDG (ddgs)"), nil
-			}
-		case "ddg-lite":
-			if result, err := searchWithDDGLite(query, count); err == nil && result != "" {
-				return annotateSource(result, "DDG Lite"), nil
-			}
-		}
+	manager := searchpkg.NewManager(buildSearchManagerConfig(cfg, provider))
+	searchCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	results, err := manager.QuickSearch(searchCtx, query, count)
+	if err != nil || len(results) == 0 {
+		return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
 	}
 
-	return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
+	out := formatEntries(query, toSearchEntries(results), count)
+	label := ""
+	if len(results) > 0 {
+		label = sourceDisplayName(results[0].Source)
+	}
+	if label == "" {
+		label = sourceDisplayName(provider)
+	}
+	if label != "" {
+		out = annotateSource(out, label)
+	}
+	return out, nil
 }
 
 func quickSearchOrder(provider string, cfg *WebSearchConfig) []string {
@@ -553,21 +547,65 @@ func quickSearchOrder(provider string, cfg *WebSearchConfig) []string {
 // handleDeepSearch 深度搜索模式：多源交叉验证，合并去重
 // 照 SKILL.md「深度调研」策略：多源搜索 → 合并去重 → 标注来源
 func handleDeepSearch(cfg *WebSearchConfig, query string, count int, provider string) (string, error) {
-	var engines []searchpkg.SearchEngine
-	for _, source := range deepSearchOrder(provider, cfg) {
-		if eng := buildSearchEngineForSource(source, cfg); eng != nil {
-			engines = append(engines, eng)
-		}
-	}
-	if len(engines) == 0 {
-		return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
-	}
-
-	dr := searchpkg.DeepSearch(context.Background(), engines, query, count)
-	if len(dr.Results) == 0 {
+	manager := searchpkg.NewManager(buildSearchManagerConfig(cfg, provider))
+	searchCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	dr, err := manager.DeepSearch(searchCtx, query, count)
+	if err != nil || dr == nil || len(dr.Results) == 0 {
 		return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
 	}
 	return searchpkg.FormatDeepResults(query, dr), nil
+}
+
+func buildSearchManagerConfig(cfg *WebSearchConfig, provider string) *searchpkg.SearchConfig {
+	if cfg == nil {
+		cfg = defaultWebSearchConfig()
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		provider = strings.ToLower(strings.TrimSpace(cfg.Provider))
+	}
+	if provider == "" {
+		provider = "brave"
+	}
+
+	baseURL := strings.TrimSpace(cfg.BaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(os.Getenv("SEARXNG_BASE_URL"))
+	}
+
+	sc := &searchpkg.SearchConfig{
+		DefaultProvider: provider,
+		BraveAPIKey:     resolveBraveAPIKey(cfg),
+		SearXNGBaseURL:  baseURL,
+		ExaAPIKey:       resolveExaAPIKey(cfg),
+		JinaAPIKey:      os.Getenv("JINA_API_KEY"),
+		MaxResults:      cfg.MaxResults,
+		Proxy:           cfg.Proxy,
+		CacheTTL:        10 * time.Minute,
+		CacheSize:       100,
+	}
+	if sc.MaxResults <= 0 {
+		sc.MaxResults = 5
+	}
+	return sc
+}
+
+func sourceDisplayName(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "searxng":
+		return "SearXNG"
+	case "exa":
+		return "Exa"
+	case "ddgs":
+		return "DDG (ddgs)"
+	case "ddg-lite":
+		return "DDG Lite"
+	case "brave":
+		return "Brave"
+	default:
+		return ""
+	}
 }
 
 func deepSearchOrder(provider string, cfg *WebSearchConfig) []string {
