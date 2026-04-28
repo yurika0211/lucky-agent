@@ -16,13 +16,16 @@ func ParseToolCalls(resp *provider.Response) []provider.ToolCall {
 		return resp.ToolCalls
 	}
 
-	// 尝试从文本中解析工具调用
-	// 格式: ```tool\n{"name": "xxx", "arguments": {...}}\n```
+	// 文本回退解析只接受“纯工具调用载荷”，避免把用户可见正文误当成工具协议。
 	return parseTextToolCalls(resp.Content)
 }
 
 // parseTextToolCalls 从文本中解析工具调用
 func parseTextToolCalls(content string) []provider.ToolCall {
+	if !isPureToolCallPayload(content) {
+		return nil
+	}
+
 	var calls []provider.ToolCall
 
 	// 查找 ```tool ... ``` 块
@@ -46,11 +49,39 @@ func parseTextToolCalls(content string) []provider.ToolCall {
 		})
 	}
 
-	// 也支持 <tool_call> XML 格式
+	// 仅在整段内容就是工具调用协议时才接受 XML 回退。
 	xmlCalls := parseXMLToolCalls(content)
 	calls = append(calls, xmlCalls...)
 
 	return calls
+}
+
+func isPureToolCallPayload(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "<tool_call>") && strings.HasSuffix(trimmed, "</tool_call>") {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "```tool") {
+		remainder := strings.TrimSpace(extractLeadingToolBlocks(trimmed))
+		return remainder == ""
+	}
+	return false
+}
+
+func extractLeadingToolBlocks(content string) string {
+	rest := strings.TrimSpace(content)
+	for strings.HasPrefix(rest, "```tool") {
+		after := rest[len("```tool"):]
+		end := strings.Index(after, "```")
+		if end == -1 {
+			return rest
+		}
+		rest = strings.TrimSpace(after[end+3:])
+	}
+	return rest
 }
 
 // parseXMLToolCalls 解析 XML 格式的工具调用

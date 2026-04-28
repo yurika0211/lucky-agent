@@ -1930,6 +1930,44 @@ func TestCronAddAgentModeExecutesLoop(t *testing.T) {
 	}
 }
 
+func TestCronAddAcceptsLegacyAliasesAndAutoID(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	resp, err := a.Tools().Call("cron_add", map[string]any{
+		"schedule": "每两个小时",
+		"mode":     "agent",
+		"task":     "提醒我喝水",
+	})
+	if err != nil {
+		t.Fatalf("cron_add(task alias) error = %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(resp), &out); err != nil {
+		t.Fatalf("unmarshal cron_add response: %v", err)
+	}
+	id, _ := out["id"].(string)
+	if strings.TrimSpace(id) == "" {
+		t.Fatal("expected generated id")
+	}
+	job, ok := a.CronEngine().GetJob(id)
+	if !ok {
+		t.Fatalf("expected job %q to exist", id)
+	}
+	if got := job.Metadata["command"]; got != "提醒我喝水" {
+		t.Fatalf("expected command to come from task alias, got %q", got)
+	}
+}
+
 func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)

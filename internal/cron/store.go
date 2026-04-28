@@ -78,14 +78,10 @@ func (s *Store) Save(engine *Engine) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
 		return fmt.Errorf("create cron store dir: %w", err)
 	}
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal cron store: %w", err)
+	if isMarkdownStorePath(s.path) {
+		return s.writeMarkdown(state)
 	}
-	if err := os.WriteFile(s.path, data, 0600); err != nil {
-		return fmt.Errorf("write cron store: %w", err)
-	}
-	return nil
+	return s.writeJSON(state)
 }
 
 func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() error, map[string]string, error)) (int, error) {
@@ -100,9 +96,19 @@ func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() 
 		return 0, fmt.Errorf("read cron store: %w", err)
 	}
 
-	var state PersistedState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return 0, fmt.Errorf("parse cron store: %w", err)
+	var (
+		state PersistedState
+		err2  error
+	)
+	if isMarkdownStorePath(s.path) {
+		state, err2 = parseMarkdownState(string(data))
+		if err2 != nil {
+			return 0, fmt.Errorf("parse mission store: %w", err2)
+		}
+	} else {
+		if err2 = json.Unmarshal(data, &state); err2 != nil {
+			return 0, fmt.Errorf("parse cron store: %w", err2)
+		}
 	}
 
 	restored := 0
@@ -162,4 +168,117 @@ func ParsePersistedSchedule(input string) (Schedule, error) {
 		return schedule, nil
 	}
 	return ParseCronExpr(trimmed)
+}
+
+func isMarkdownStorePath(path string) bool {
+	return strings.EqualFold(filepath.Ext(strings.TrimSpace(path)), ".md")
+}
+
+func (s *Store) writeJSON(state PersistedState) error {
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal cron store: %w", err)
+	}
+	if err := os.WriteFile(s.path, data, 0600); err != nil {
+		return fmt.Errorf("write cron store: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) writeMarkdown(state PersistedState) error {
+	var b strings.Builder
+	b.WriteString("# LuckyHarness Mission Store\n\n")
+	b.WriteString(fmt.Sprintf("engine_running: %t\n\n", state.EngineRunning))
+
+	for _, job := range state.Jobs {
+		b.WriteString(fmt.Sprintf("## job:%s\n", job.ID))
+		b.WriteString(fmt.Sprintf("schedule: %s\n", job.ScheduleText))
+		b.WriteString(fmt.Sprintf("mode: %s\n", job.Mode))
+		b.WriteString(fmt.Sprintf("paused: %t\n", job.Paused))
+		b.WriteString("command: |\n")
+		for _, line := range strings.Split(job.Command, "\n") {
+			b.WriteString("  " + line + "\n")
+		}
+		metaJSON, _ := json.Marshal(job.Metadata)
+		b.WriteString(fmt.Sprintf("metadata: %s\n\n", string(metaJSON)))
+	}
+
+	if err := os.WriteFile(s.path, []byte(b.String()), 0600); err != nil {
+		return fmt.Errorf("write mission store: %w", err)
+	}
+	return nil
+}
+
+func parseMarkdownState(content string) (PersistedState, error) {
+	state := PersistedState{
+		Version: 1,
+	}
+	lines := strings.Split(strings.ReplaceAll(content, "\r\n", "\n"), "\n")
+	i := 0
+	for i < len(lines) {
+		line := strings.TrimSpace(lines[i])
+		i++
+		if line == "" || strings.HasPrefix(line, "# ") {
+			continue
+		}
+		if strings.HasPrefix(line, "engine_running:") {
+			v := strings.TrimSpace(strings.TrimPrefix(line, "engine_running:"))
+			state.EngineRunning = strings.EqualFold(v, "true")
+			continue
+		}
+		if strings.HasPrefix(line, "## job:") {
+			id := strings.TrimSpace(strings.TrimPrefix(line, "## job:"))
+			if id == "" {
+				continue
+			}
+			pj := PersistedJob{
+				ID:       id,
+				Mode:     "shell",
+				Metadata: map[string]string{},
+			}
+			for i < len(lines) {
+				raw := lines[i]
+				trimmed := strings.TrimSpace(raw)
+				if strings.HasPrefix(trimmed, "## job:") {
+					break
+				}
+				i++
+				if trimmed == "" {
+					continue
+				}
+				switch {
+				case strings.HasPrefix(trimmed, "schedule:"):
+					pj.ScheduleText = strings.TrimSpace(strings.TrimPrefix(trimmed, "schedule:"))
+				case strings.HasPrefix(trimmed, "mode:"):
+					pj.Mode = strings.TrimSpace(strings.TrimPrefix(trimmed, "mode:"))
+				case strings.HasPrefix(trimmed, "paused:"):
+					pj.Paused = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(trimmed, "paused:")), "true")
+				case strings.HasPrefix(trimmed, "metadata:"):
+					metaRaw := strings.TrimSpace(strings.TrimPrefix(trimmed, "metadata:"))
+					if metaRaw != "" && metaRaw != "null" {
+						_ = json.Unmarshal([]byte(metaRaw), &pj.Metadata)
+					}
+				case trimmed == "command: |":
+					var cmdLines []string
+					for i < len(lines) {
+						if strings.HasPrefix(lines[i], "  ") {
+							cmdLines = append(cmdLines, strings.TrimPrefix(lines[i], "  "))
+							i++
+							continue
+						}
+						break
+					}
+					pj.Command = strings.Join(cmdLines, "\n")
+				}
+			}
+			if strings.TrimSpace(pj.ScheduleText) == "" || strings.TrimSpace(pj.Command) == "" {
+				continue
+			}
+			if pj.Metadata == nil {
+				pj.Metadata = map[string]string{}
+			}
+			state.Jobs = append(state.Jobs, pj)
+		}
+	}
+	return state, nil
 }

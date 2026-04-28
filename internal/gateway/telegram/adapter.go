@@ -20,6 +20,7 @@ import (
 )
 
 const defaultAttachmentDownloadLimit = 8 << 20
+const internalOutputFilteredFallback = "已完成处理。内部工具调用日志已自动隐藏。"
 
 // Adapter implements gateway.Gateway for Telegram.
 type Adapter struct {
@@ -209,6 +210,7 @@ func (a *Adapter) Send(ctx context.Context, chatID string, message string) error
 		return fmt.Errorf("telegram: adapter not running")
 	}
 
+	message = sanitizeOutgoingText(message)
 	chunks := a.splitMessage(message)
 	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
@@ -232,6 +234,7 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 		return fmt.Errorf("telegram: adapter not running")
 	}
 
+	message = sanitizeOutgoingText(message)
 	chunks := a.splitMessage(message)
 	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
@@ -534,7 +537,7 @@ func (s *telegramStreamSender) SetResult(content string) error {
 		return nil
 	}
 
-	s.content = content
+	s.content = sanitizeOutgoingText(content)
 	s.thinking = ""
 	return s.throttledEdit()
 }
@@ -603,7 +606,7 @@ func (s *telegramStreamSender) renderContent() string {
 		return "🧠 Thinking..."
 	}
 
-	return sb.String()
+	return sanitizeOutgoingText(sb.String())
 }
 
 // editMessage 调用 Telegram API 编辑消息

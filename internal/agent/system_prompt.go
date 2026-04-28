@@ -28,7 +28,8 @@ If you discover a reusable workflow, prefer updating or creating a skill rather 
 const toolExecutionGuidance = `Tool-use discipline:
 - Use tools whenever they improve correctness, grounding, or completeness.
 - Do not stop at a plan when you can actually execute the next step.
-- If a claim depends on the local machine, files, or current state, verify it with tools instead of guessing.`
+- If a claim depends on the local machine, files, or current state, verify it with tools instead of guessing.
+- Never print tool-call protocol, JSON tool payloads, XML tool tags, or scratch tool plans to the user. Execute tools directly and only show user-facing conclusions.`
 
 const openAIExecutionGuidance = `OpenAI-model execution rules:
 - Never do arithmetic, file inspection, git inspection, or current-state checks from memory when tools can verify them.

@@ -145,9 +145,6 @@ func (a *Agent) registerCronTools() {
 
 func (a *Agent) handleCronAdd(args map[string]any) (string, error) {
 	id, _ := args["id"].(string)
-	if strings.TrimSpace(id) == "" {
-		return "", fmt.Errorf("id is required")
-	}
 	scheduleText, _ := args["schedule"].(string)
 	schedule, err := parseCronSchedule(scheduleText)
 	if err != nil {
@@ -159,9 +156,23 @@ func (a *Agent) handleCronAdd(args map[string]any) (string, error) {
 		modeText = strings.ToLower(strings.TrimSpace(mode))
 	}
 	command, _ := args["command"].(string)
+	if strings.TrimSpace(command) == "" {
+		if legacy, ok := args["task"].(string); ok && strings.TrimSpace(legacy) != "" {
+			command = legacy
+		}
+	}
+	if strings.TrimSpace(command) == "" {
+		if legacy, ok := args["prompt"].(string); ok && strings.TrimSpace(legacy) != "" {
+			command = legacy
+		}
+	}
 	command = strings.TrimSpace(command)
 	if command == "" {
-		return "", fmt.Errorf("command is required")
+		return "", fmt.Errorf("command is required (task/prompt are accepted as legacy aliases)")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		id = buildCronJobID(modeText, command)
 	}
 
 	mode := cronTaskMode(modeText)
@@ -205,6 +216,39 @@ func (a *Agent) handleCronAdd(args map[string]any) (string, error) {
 		"message":  fmt.Sprintf("Scheduled job %s added", id),
 	})
 	return string(result), nil
+}
+
+func buildCronJobID(mode, command string) string {
+	base := strings.ToLower(strings.TrimSpace(mode + "-" + command))
+	base = strings.ReplaceAll(base, "_", "-")
+	base = strings.ReplaceAll(base, " ", "-")
+
+	var b strings.Builder
+	lastDash := false
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+			lastDash = false
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		default:
+			if !lastDash && b.Len() > 0 {
+				b.WriteByte('-')
+				lastDash = true
+			}
+		}
+	}
+
+	id := strings.Trim(b.String(), "-")
+	if id == "" {
+		id = "cron-job"
+	}
+	if len(id) > 48 {
+		id = strings.Trim(id[:48], "-")
+	}
+	return fmt.Sprintf("%s-%d", id, time.Now().Unix())
 }
 
 func (a *Agent) handleCronList(args map[string]any) (string, error) {

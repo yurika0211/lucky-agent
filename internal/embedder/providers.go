@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -117,6 +119,11 @@ type embeddingResponse struct {
 	Object string          `json:"object"`
 	Usage  embeddingUsage  `json:"usage"`
 }
+
+const (
+	defaultEmbeddingTimeout = 15 * time.Second
+	defaultEmbeddingRetries = 3
+)
 
 // NewOpenAIEmbedder creates an OpenAI embedder.
 func NewOpenAIEmbedder(cfg OpenAIEmbedderConfig) *OpenAIEmbedder {
@@ -235,13 +242,13 @@ func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	client := o.client
 	if client == nil {
 		client = &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: embeddingTimeoutFromEnv(),
 		}
 	}
 
-	resp, err := client.Do(req)
+	resp, err := doEmbeddingRequestWithRetry(ctx, client, req, data)
 	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -263,6 +270,114 @@ func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	}
 
 	return result, nil
+}
+
+func embeddingTimeoutFromEnv() time.Duration {
+	timeout := defaultEmbeddingTimeout
+	raw := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_TIMEOUT_SECONDS"))
+	if raw == "" {
+		return timeout
+	}
+	secs, err := strconv.Atoi(raw)
+	if err != nil || secs <= 0 {
+		return timeout
+	}
+	return time.Duration(secs) * time.Second
+}
+
+func embeddingRetryAttemptsFromEnv() int {
+	attempts := defaultEmbeddingRetries
+	raw := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_MAX_RETRIES"))
+	if raw == "" {
+		return attempts
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return attempts
+	}
+	return n
+}
+
+func doEmbeddingRequestWithRetry(ctx context.Context, client *http.Client, req *http.Request, body []byte) (*http.Response, error) {
+	maxAttempts := embeddingRetryAttemptsFromEnv()
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
+
+	url := req.URL.String()
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		attemptReq, err := http.NewRequestWithContext(ctx, req.Method, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		attemptReq.Header = req.Header.Clone()
+
+		resp, err := client.Do(attemptReq)
+		if err == nil {
+			if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= http.StatusInternalServerError {
+				if attempt == maxAttempts {
+					return resp, nil
+				}
+				drainAndClose(resp)
+				if sleepErr := sleepEmbeddingBackoff(ctx, attempt, resp.StatusCode); sleepErr != nil {
+					return nil, fmt.Errorf("send request: %w", sleepErr)
+				}
+				continue
+			}
+			return resp, nil
+		}
+
+		if attempt == maxAttempts || !isRetryableEmbeddingError(err) {
+			return nil, fmt.Errorf("send request: %w", err)
+		}
+		if sleepErr := sleepEmbeddingBackoff(ctx, attempt, 0); sleepErr != nil {
+			return nil, fmt.Errorf("send request: %w", sleepErr)
+		}
+	}
+
+	return nil, fmt.Errorf("send request: exhausted retries")
+}
+
+func sleepEmbeddingBackoff(ctx context.Context, attempt int, statusCode int) error {
+	delay := time.Duration(attempt) * time.Second
+	if statusCode == http.StatusTooManyRequests {
+		delay = time.Duration(attempt*2) * time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isRetryableEmbeddingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "deadline exceeded") ||
+		strings.Contains(msg, "eof") ||
+		strings.Contains(msg, "tls: bad record mac") ||
+		strings.Contains(msg, "local error: tls") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "http2: client connection lost") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "unexpected eof") ||
+		strings.Contains(msg, "temporarily unavailable")
+}
+
+func drainAndClose(resp *http.Response) {
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_ = resp.Body.Close()
 }
 
 // OllamaEmbedder calls Ollama's embedding API.

@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -82,5 +84,150 @@ func TestOpenAIEmbedder_EmbedBatch(t *testing.T) {
 	}
 	if !reflect.DeepEqual(vecs[1], []float64{0.4, 0.5, 0.6}) {
 		t.Fatalf("unexpected vecs[1]: %#v", vecs[1])
+	}
+}
+
+func TestOpenAIEmbedder_EmbedBatch_RetriesOn429(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return &http.Response{
+					StatusCode: http.StatusTooManyRequests,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"error":"rate limited"}`)),
+				}, nil
+			}
+
+			body, err := json.Marshal(embeddingResponse{
+				Data: []embeddingData{
+					{Index: 0, Embedding: []float64{0.7, 0.8}, Object: "embedding"},
+				},
+				Model:  "text-embedding-ada-002",
+				Object: "list",
+			})
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(body)),
+			}, nil
+		}),
+	}
+
+	t.Setenv("EMBEDDING_MODEL_NAME", "text-embedding-ada-002")
+	t.Setenv("EMBEDDING_MODEL_KEY", "test-key")
+	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
+	t.Setenv("EMBEDDING_MODEL_MAX_RETRIES", "2")
+
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb.client = client
+	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello"})
+	if err != nil {
+		t.Fatalf("EmbedBatch returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if len(vecs) != 1 || !reflect.DeepEqual(vecs[0], []float64{0.7, 0.8}) {
+		t.Fatalf("unexpected vectors: %#v", vecs)
+	}
+}
+
+func TestOpenAIEmbedder_EmbedBatch_RetriesOnTransportTimeout(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, fmt.Errorf("context deadline exceeded")
+			}
+
+			body, err := json.Marshal(embeddingResponse{
+				Data: []embeddingData{
+					{Index: 0, Embedding: []float64{0.9}, Object: "embedding"},
+				},
+				Model:  "text-embedding-ada-002",
+				Object: "list",
+			})
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(body)),
+			}, nil
+		}),
+	}
+
+	t.Setenv("EMBEDDING_MODEL_NAME", "text-embedding-ada-002")
+	t.Setenv("EMBEDDING_MODEL_KEY", "test-key")
+	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
+	t.Setenv("EMBEDDING_MODEL_MAX_RETRIES", "2")
+
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb.client = client
+	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello"})
+	if err != nil {
+		t.Fatalf("EmbedBatch returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if len(vecs) != 1 || !reflect.DeepEqual(vecs[0], []float64{0.9}) {
+		t.Fatalf("unexpected vectors: %#v", vecs)
+	}
+}
+
+func TestOpenAIEmbedder_EmbedBatch_RetriesOnEOF(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, fmt.Errorf("EOF")
+			}
+
+			body, err := json.Marshal(embeddingResponse{
+				Data: []embeddingData{
+					{Index: 0, Embedding: []float64{1.1, 1.2}, Object: "embedding"},
+				},
+				Model:  "text-embedding-ada-002",
+				Object: "list",
+			})
+			if err != nil {
+				t.Fatalf("marshal response: %v", err)
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader(body)),
+			}, nil
+		}),
+	}
+
+	t.Setenv("EMBEDDING_MODEL_NAME", "text-embedding-ada-002")
+	t.Setenv("EMBEDDING_MODEL_KEY", "test-key")
+	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
+	t.Setenv("EMBEDDING_MODEL_MAX_RETRIES", "2")
+
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb.client = client
+	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello"})
+	if err != nil {
+		t.Fatalf("EmbedBatch returned error: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("expected 2 attempts, got %d", attempts)
+	}
+	if len(vecs) != 1 || !reflect.DeepEqual(vecs[0], []float64{1.1, 1.2}) {
+		t.Fatalf("unexpected vectors: %#v", vecs)
 	}
 }

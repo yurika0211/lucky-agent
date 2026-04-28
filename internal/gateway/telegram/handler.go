@@ -848,6 +848,18 @@ func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gatewa
 	return summary
 }
 
+func (h *Handler) flushRoundProgress(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, lastProgress *string) {
+	if !h.effectiveProgressSummaryWithLLM() {
+		return
+	}
+	progress := h.generateRoundProgressFeedback(ctx, msg, userInput, round, observations, strings.TrimSpace(*lastProgress))
+	if progress == "" {
+		return
+	}
+	h.sendProgressMessage(msg, progress)
+	*lastProgress = progress
+}
+
 func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Message, response string) error {
 	if h.adapter == nil || msg == nil {
 		return fmt.Errorf("telegram: adapter or message is nil")
@@ -1128,6 +1140,9 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 						roundObservations = nil
 						currentRound = nextRound
 					}
+					if line := strings.TrimSpace(evt.Content); line != "" {
+						roundObservations = append(roundObservations, "Thinking: "+line)
+					}
 				} else {
 					progress := humanizeThinkingProgress(evt.Content)
 					if strings.TrimSpace(progress) != "" && progress != lastProgress {
@@ -1172,6 +1187,10 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				finalContent.WriteString(evt.Content)
 
 			case agent.ChatEventDone:
+				if summaryMode {
+					h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
+					roundObservations = nil
+				}
 				if finalContent.Len() == 0 {
 					finalContent.WriteString(evt.Content)
 				}
@@ -1204,6 +1223,9 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		finalOutput := strings.TrimSpace(finalContent.String())
 		switch {
 		case finalOutput != "":
+			if summaryMode {
+				h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
+			}
 			if h.effectiveShowToolDetailsInResult() {
 				finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 			}
@@ -1280,6 +1302,9 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						roundObservations = nil
 						currentRound = nextRound
 					}
+					if line := strings.TrimSpace(evt.Content); line != "" {
+						roundObservations = append(roundObservations, "Thinking: "+line)
+					}
 				} else if h.effectiveProgressAsMessages() {
 					progress := "🧠 " + clipOneLine(evt.Content, 180)
 					if narrativeMode {
@@ -1345,6 +1370,10 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				}
 
 			case agent.ChatEventDone:
+				if summaryMode {
+					h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
+					roundObservations = nil
+				}
 				if finalContent.Len() == 0 {
 					finalContent.WriteString(evt.Content)
 				}
@@ -1403,6 +1432,9 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 
 	if !sentResult {
 		finalOutput := finalContent.String()
+		if summaryMode && finalOutput != "" {
+			h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
+		}
 		if h.effectiveShowToolDetailsInResult() && finalOutput != "" {
 			finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 		}

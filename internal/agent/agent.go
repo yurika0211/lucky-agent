@@ -20,8 +20,8 @@ import (
 	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/middleware"
 	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/middleware"
 	"github.com/yurika0211/luckyharness/internal/multimodal"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/rag"
@@ -282,7 +282,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		tokenStore = nil // 非关键错误
 	}
 
-		// 解析 Provider（支持降级链）
+	// 解析 Provider（支持降级链）
 	var p provider.Provider
 	if len(c.Fallbacks) > 0 {
 		// 使用降级链模式
@@ -308,14 +308,14 @@ func New(cfg *config.Manager) (*Agent, error) {
 			return nil, fmt.Errorf("create fallback chain: %w", err)
 		}
 		p = chain
-		} else {
-			// 单 provider 模式
-			pCfg := toProviderConfig(c, "", "")
-			p, err = registry.Resolve(pCfg)
-			if err != nil {
-				return nil, fmt.Errorf("resolve provider: %w", err)
-			}
+	} else {
+		// 单 provider 模式
+		pCfg := toProviderConfig(c, "", "")
+		p, err = registry.Resolve(pCfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve provider: %w", err)
 		}
+	}
 	p = wrapProviderWithMiddleware(p, c)
 
 	// 创建记忆存储
@@ -601,7 +601,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		collabMgr:      collabMgr,
 		metrics:        m,
 		cronEngine:     cronEngine,
-		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "cron_jobs.json")),
+		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "mission.md")),
 		autonomy:       autonomyKit,
 		contextCache:   newContextMessageCache(64),
 		mediaProcessor: mediaProcessor,

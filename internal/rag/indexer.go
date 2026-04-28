@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+const defaultEmbeddingBatchSize = 16
 
 // Chunk represents a segment of a document.
 type Chunk struct {
@@ -113,36 +116,49 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 		},
 	}
 
-	// Embed and store each chunk
-	for i, chunkText := range rawChunks {
-		chunkID := fmt.Sprintf("%s#%d", docID, i)
+	batchSize := embeddingBatchSizeFromEnv()
+	for start := 0; start < len(rawChunks); start += batchSize {
+		end := start + batchSize
+		if end > len(rawChunks) {
+			end = len(rawChunks)
+		}
 
-		vec, err := idx.embedder.Embed(context.Background(), chunkText)
+		batch := rawChunks[start:end]
+		vecs, err := idx.embedder.EmbedBatch(context.Background(), batch)
 		if err != nil {
+			chunkID := fmt.Sprintf("%s#%d", docID, start)
 			return nil, fmt.Errorf("embed chunk %s: %w", chunkID, err)
 		}
-
-		metadata := map[string]string{
-			"source":  source,
-			"title":   title,
-			"chunk_i": fmt.Sprintf("%d", i),
-			"doc_id":  docID,
+		if len(vecs) != len(batch) {
+			chunkID := fmt.Sprintf("%s#%d", docID, start)
+			return nil, fmt.Errorf("embed chunk %s: returned %d vectors for %d texts", chunkID, len(vecs), len(batch))
 		}
 
-		if err := idx.store.Upsert(chunkID, vec, metadata); err != nil {
-			return nil, fmt.Errorf("store chunk %s: %w", chunkID, err)
-		}
+		for offset, chunkText := range batch {
+			i := start + offset
+			chunkID := fmt.Sprintf("%s#%d", docID, i)
+			metadata := map[string]string{
+				"source":  source,
+				"title":   title,
+				"chunk_i": fmt.Sprintf("%d", i),
+				"doc_id":  docID,
+			}
 
-		chunk := &Chunk{
-			ID:       chunkID,
-			Content:  chunkText,
-			Metadata: metadata,
-		}
+			if err := idx.store.Upsert(chunkID, vecs[offset], metadata); err != nil {
+				return nil, fmt.Errorf("store chunk %s: %w", chunkID, err)
+			}
 
-		idx.mu.Lock()
-		idx.chunks[chunkID] = chunk
-		doc.Chunks = append(doc.Chunks, chunkID)
-		idx.mu.Unlock()
+			chunk := &Chunk{
+				ID:       chunkID,
+				Content:  chunkText,
+				Metadata: metadata,
+			}
+
+			idx.mu.Lock()
+			idx.chunks[chunkID] = chunk
+			doc.Chunks = append(doc.Chunks, chunkID)
+			idx.mu.Unlock()
+		}
 	}
 
 	idx.mu.Lock()
@@ -162,6 +178,18 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 	}
 
 	return doc, nil
+}
+
+func embeddingBatchSizeFromEnv() int {
+	raw := strings.TrimSpace(os.Getenv("EMBEDDING_BATCH_SIZE"))
+	if raw == "" {
+		return defaultEmbeddingBatchSize
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultEmbeddingBatchSize
+	}
+	return n
 }
 
 // IndexDirectory indexes all .md and .txt files in a directory (non-recursive).

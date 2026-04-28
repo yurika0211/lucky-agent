@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/yurika0211/luckyharness/internal/embedder"
@@ -35,6 +36,38 @@ func (e *contextCheckingEmbedder) EmbedBatch(ctx context.Context, texts []string
 func (e *contextCheckingEmbedder) Dimension() int { return e.dim }
 func (e *contextCheckingEmbedder) Name() string   { return "context-check" }
 func (e *contextCheckingEmbedder) Model() string  { return "context-check" }
+
+type batchCountingEmbedder struct {
+	dim             int
+	embedCalls      int
+	embedBatchCalls int
+	lastBatchSize   int
+}
+
+func (e *batchCountingEmbedder) Embed(ctx context.Context, text string) ([]float64, error) {
+	e.embedCalls++
+	if ctx == nil {
+		return nil, fmt.Errorf("nil context")
+	}
+	return make([]float64, e.dim), nil
+}
+
+func (e *batchCountingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float64, error) {
+	e.embedBatchCalls++
+	e.lastBatchSize = len(texts)
+	if ctx == nil {
+		return nil, fmt.Errorf("nil context")
+	}
+	out := make([][]float64, len(texts))
+	for i := range texts {
+		out[i] = make([]float64, e.dim)
+	}
+	return out, nil
+}
+
+func (e *batchCountingEmbedder) Dimension() int { return e.dim }
+func (e *batchCountingEmbedder) Name() string   { return "batch-count" }
+func (e *batchCountingEmbedder) Model() string  { return "batch-count" }
 
 func TestMockEmbedder(t *testing.T) {
 	e := NewMockEmbedder(128)
@@ -123,6 +156,27 @@ func TestOpenAIEmbedderDefaults(t *testing.T) {
 	e := NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{})
 	if e.Dimension() != 1536 {
 		t.Errorf("expected default dimension 1536, got %d", e.Dimension())
+	}
+}
+
+func TestIndexerUsesEmbedBatch(t *testing.T) {
+	store := NewVectorStore(8)
+	emb := &batchCountingEmbedder{dim: 8}
+	idx := NewIndexer(store, emb)
+
+	content := strings.Repeat("段落内容。\n\n", 80)
+	if _, err := idx.IndexText("test-source", "test-title", content); err != nil {
+		t.Fatalf("IndexText error = %v", err)
+	}
+
+	if emb.embedCalls != 0 {
+		t.Fatalf("expected Embed not to be used, got %d calls", emb.embedCalls)
+	}
+	if emb.embedBatchCalls == 0 {
+		t.Fatal("expected EmbedBatch to be used at least once")
+	}
+	if emb.lastBatchSize <= 0 {
+		t.Fatalf("expected positive batch size, got %d", emb.lastBatchSize)
 	}
 }
 
