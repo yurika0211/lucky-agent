@@ -3,7 +3,6 @@ package rag
 import (
 	"fmt"
 	"math"
-	"sort"
 	"sync"
 )
 
@@ -93,39 +92,10 @@ func (v *VectorStore) Search(query []float64, topK int) []SearchResult {
 	if topK <= 0 {
 		return nil
 	}
-	normalized := normalizeVector(query)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-
-	type scored struct {
-		entry *VectorEntry
-		score float64
-	}
-
-	var results []scored
-	for _, e := range v.entries {
-		sim := cosineSimilarity(normalized, e.Vector)
-		results = append(results, scored{entry: e, score: sim})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-
-	if topK > len(results) {
-		topK = len(results)
-	}
-
-	out := make([]SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		out[i] = SearchResult{
-			ID:       results[i].entry.ID,
-			Score:    results[i].score,
-			Metadata: copyMap(results[i].entry.Metadata),
-		}
-	}
-	return out
+	return rankEntries(v.entries, query, topK, "", "")
 }
 
 // SearchWithFilter returns top-K results filtered by metadata key=value.
@@ -133,45 +103,10 @@ func (v *VectorStore) SearchWithFilter(query []float64, topK int, filterKey, fil
 	if topK <= 0 {
 		return nil
 	}
-	normalized := normalizeVector(query)
 
 	v.mu.RLock()
 	defer v.mu.RUnlock()
-
-	type scored struct {
-		entry *VectorEntry
-		score float64
-	}
-
-	var results []scored
-	for _, e := range v.entries {
-		if filterKey != "" {
-			val, ok := e.Metadata[filterKey]
-			if !ok || val != filterValue {
-				continue
-			}
-		}
-		sim := cosineSimilarity(normalized, e.Vector)
-		results = append(results, scored{entry: e, score: sim})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-
-	if topK > len(results) {
-		topK = len(results)
-	}
-
-	out := make([]SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		out[i] = SearchResult{
-			ID:       results[i].entry.ID,
-			Score:    results[i].score,
-			Metadata: copyMap(results[i].entry.Metadata),
-		}
-	}
-	return out
+	return rankEntries(v.entries, query, topK, filterKey, filterValue)
 }
 
 // AllIDs returns all stored vector IDs.

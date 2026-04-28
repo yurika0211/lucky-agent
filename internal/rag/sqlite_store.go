@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -286,39 +285,9 @@ func (s *SQLiteStore) Search(query []float64, topK int) []SearchResult {
 		return nil
 	}
 
-	normalized := normalizeVector(query)
-
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	type scoredEntry struct {
-		entry *VectorEntry
-		score float64
-	}
-
-	results := make([]scoredEntry, 0, len(s.cache))
-	for _, e := range s.cache {
-		sim := cosineSimilarity(normalized, e.Vector)
-		results = append(results, scoredEntry{entry: e, score: sim})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-
-	if topK > len(results) {
-		topK = len(results)
-	}
-
-	out := make([]SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		out[i] = SearchResult{
-			ID:       results[i].entry.ID,
-			Score:    results[i].score,
-			Metadata: copyMap(results[i].entry.Metadata),
-		}
-	}
-	return out
+	return rankEntries(s.cache, query, topK, "", "")
 }
 
 // SearchWithFilter returns top-K results filtered by metadata key=value.
@@ -331,45 +300,9 @@ func (s *SQLiteStore) SearchWithFilter(query []float64, topK int, filterKey, fil
 		return nil
 	}
 
-	normalized := normalizeVector(query)
-
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	type scoredEntry struct {
-		entry *VectorEntry
-		score float64
-	}
-
-	var results []scoredEntry
-	for _, e := range s.cache {
-		if filterKey != "" {
-			val, ok := e.Metadata[filterKey]
-			if !ok || val != filterValue {
-				continue
-			}
-		}
-		sim := cosineSimilarity(normalized, e.Vector)
-		results = append(results, scoredEntry{entry: e, score: sim})
-	}
-
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].score > results[j].score
-	})
-
-	if topK > len(results) {
-		topK = len(results)
-	}
-
-	out := make([]SearchResult, topK)
-	for i := 0; i < topK; i++ {
-		out[i] = SearchResult{
-			ID:       results[i].entry.ID,
-			Score:    results[i].score,
-			Metadata: copyMap(results[i].entry.Metadata),
-		}
-	}
-	return out
+	return rankEntries(s.cache, query, topK, filterKey, filterValue)
 }
 
 // AllIDs returns all stored vector IDs.
