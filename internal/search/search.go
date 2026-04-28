@@ -73,7 +73,7 @@ func NewDDGSEngine() *DDGSEngine { return &DDGSEngine{} }
 func (e *DDGSEngine) Name() string { return "ddgs" }
 
 func (e *DDGSEngine) Search(ctx context.Context, query string, count int) ([]SearchResult, error) {
-	return searchWithDDGS(query, count)
+	return searchWithDDGS(ctx, query, count)
 }
 
 // --- DDGLiteEngine ---

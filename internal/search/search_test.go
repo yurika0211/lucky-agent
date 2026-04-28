@@ -1144,7 +1144,7 @@ func TestManagerFetchURLNilResult(t *testing.T) {
 	mgr.fetchEngines = []FetchEngine{
 		&mockFetchEngine{name: "nil-result", result: nil, err: nil},
 		&mockFetchEngine{
-			name: "good",
+			name:   "good",
 			result: &FetchResult{Content: "fallback", URL: "https://example.com", Source: "good"},
 		},
 	}
@@ -1598,7 +1598,9 @@ func TestSearchWithBraveMock(t *testing.T) {
 }
 
 func TestSearchWithDDGSMock(t *testing.T) {
-	_, err := searchWithDDGS("test query", 5)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err := searchWithDDGS(ctx, "test query", 5)
 	if err != nil {
 		t.Logf("searchWithDDGS error (expected if python3/ddgs not available): %v", err)
 	}

@@ -3,6 +3,7 @@ package search
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -72,13 +73,13 @@ func searchWithBrave(apiKey, proxy, query string, count int) ([]SearchResult, er
 // ddgs Python Package
 // ---------------------------------------------------------------------------
 
-func searchWithDDGS(query string, count int) ([]SearchResult, error) {
+func searchWithDDGS(ctx context.Context, query string, count int) ([]SearchResult, error) {
 	script := fmt.Sprintf(
 		`import json; from ddgs import DDGS; ddgs=DDGS(timeout=10); results=ddgs.text(%q, max_results=%d); print(json.dumps(results, ensure_ascii=False))`,
 		query, count,
 	)
 
-	cmd := exec.Command("python3", "-c", script)
+	cmd := exec.CommandContext(ctx, "python3", "-c", script)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = nil

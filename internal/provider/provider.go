@@ -156,18 +156,46 @@ func (r *Registry) Close() error {
 
 // --- OpenAI Provider ---
 
-type OpenAIProvider struct {
+type openAIBaseProvider struct {
 	cfg Config
 }
 
-func NewOpenAIProvider(cfg Config) Provider {
+func newOpenAIBaseProvider(cfg Config) openAIBaseProvider {
 	if cfg.APIBase == "" {
 		cfg.APIBase = "https://api.openai.com/v1"
 	}
 	if cfg.Model == "" {
 		cfg.Model = "gpt-4o"
 	}
-	return &OpenAIProvider{cfg: cfg}
+	return openAIBaseProvider{cfg: cfg}
+}
+
+func (p *openAIBaseProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
+	return callOpenAI(ctx, p.cfg, messages, CallOptions{})
+}
+
+func (p *openAIBaseProvider) ChatStream(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
+	return callOpenAIStream(ctx, p.cfg, messages, CallOptions{})
+}
+
+// ChatWithOptions 发送消息（支持 function calling）
+func (p *openAIBaseProvider) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
+	return callOpenAI(ctx, p.cfg, messages, opts)
+}
+
+// ChatStreamWithOptions 发送消息流式（支持 function calling）
+func (p *openAIBaseProvider) ChatStreamWithOptions(ctx context.Context, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
+	return callOpenAIStream(ctx, p.cfg, messages, opts)
+}
+
+type OpenAIProvider struct {
+	openAIBaseProvider
+}
+
+func NewOpenAIProvider(cfg Config) Provider {
+	return &OpenAIProvider{
+		openAIBaseProvider: newOpenAIBaseProvider(cfg),
+	}
 }
 
 func (p *OpenAIProvider) Name() string { return "openai" }
@@ -179,38 +207,16 @@ func (p *OpenAIProvider) Validate() error {
 	return nil
 }
 
-func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
-	return callOpenAI(ctx, p.cfg, messages, CallOptions{})
-}
-
-func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
-	return callOpenAIStream(ctx, p.cfg, messages, CallOptions{})
-}
-
-// ChatWithOptions 发送消息（支持 function calling）
-func (p *OpenAIProvider) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
-	return callOpenAI(ctx, p.cfg, messages, opts)
-}
-
-// ChatStreamWithOptions 发送消息流式（支持 function calling）
-func (p *OpenAIProvider) ChatStreamWithOptions(ctx context.Context, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
-	return callOpenAIStream(ctx, p.cfg, messages, opts)
-}
-
 // --- OpenAI-Compatible Provider ---
 
 type OpenAICompatibleProvider struct {
-	cfg Config
+	openAIBaseProvider
 }
 
 func NewOpenAICompatibleProvider(cfg Config) Provider {
-	if cfg.APIBase == "" {
-		cfg.APIBase = "https://api.openai.com/v1"
+	return &OpenAICompatibleProvider{
+		openAIBaseProvider: newOpenAIBaseProvider(cfg),
 	}
-	if cfg.Model == "" {
-		cfg.Model = "gpt-4o"
-	}
-	return &OpenAICompatibleProvider{cfg: cfg}
 }
 
 func (p *OpenAICompatibleProvider) Name() string { return "openai-compatible" }
@@ -223,24 +229,6 @@ func (p *OpenAICompatibleProvider) Validate() error {
 		return fmt.Errorf("%s: api_base is required", p.cfg.Name)
 	}
 	return nil
-}
-
-func (p *OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
-	return callOpenAI(ctx, p.cfg, messages, CallOptions{})
-}
-
-func (p *OpenAICompatibleProvider) ChatStream(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
-	return callOpenAIStream(ctx, p.cfg, messages, CallOptions{})
-}
-
-// ChatWithOptions 发送消息（支持 function calling）
-func (p *OpenAICompatibleProvider) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
-	return callOpenAI(ctx, p.cfg, messages, opts)
-}
-
-// ChatStreamWithOptions 发送消息流式（支持 function calling）
-func (p *OpenAICompatibleProvider) ChatStreamWithOptions(ctx context.Context, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
-	return callOpenAIStream(ctx, p.cfg, messages, opts)
 }
 
 // Ensure interfaces are satisfied
