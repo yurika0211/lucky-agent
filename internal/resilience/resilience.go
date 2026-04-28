@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -53,29 +54,16 @@ func DefaultIsRetryable(err error) bool {
 		return true
 	}
 	// Rate limit
-	if contains(msg, "429") || contains(msg, "rate limit") || contains(msg, "too many requests") {
+	if strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests") {
 		return true
 	}
 	// Server errors
-	if contains(msg, "500") || contains(msg, "502") || contains(msg, "503") || contains(msg, "504") {
+	if strings.Contains(msg, "500") || strings.Contains(msg, "502") || strings.Contains(msg, "503") || strings.Contains(msg, "504") {
 		return true
 	}
 	// Connection errors
-	if contains(msg, "connection refused") || contains(msg, "connection reset") || contains(msg, "timeout") {
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "timeout") {
 		return true
-	}
-	return false
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && searchString(s, sub)
-}
-
-func searchString(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
 	}
 	return false
 }

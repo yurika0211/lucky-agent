@@ -51,7 +51,7 @@ func InitLogger(cfg Config) {
 
 	level := parseLevel(cfg.Level)
 	handlerOpts := &slog.HandlerOptions{
-		Level: level,
+		Level:     level,
 		AddSource: level <= slog.LevelDebug,
 	}
 
@@ -79,7 +79,6 @@ func InitLogger(cfg Config) {
 	default:
 		handler = slog.NewTextHandler(writer, handlerOpts)
 	}
-
 	global = slog.New(handler)
 	slog.SetDefault(global)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -51,7 +52,7 @@ func TestRetryExhausted(t *testing.T) {
 	if err == nil {
 		t.Error("expected error")
 	}
-	if !contains(err.Error(), "retry exhausted") {
+	if !strings.Contains(err.Error(), "retry exhausted") {
 		t.Errorf("expected retry exhausted error, got %v", err)
 	}
 }
@@ -410,7 +411,7 @@ func TestResilientProviderCircuitBreaker(t *testing.T) {
 	if err == nil {
 		t.Error("expected circuit breaker rejection")
 	}
-	if !contains(err.Error(), "circuit breaker") {
+	if !strings.Contains(err.Error(), "circuit breaker") {
 		t.Errorf("expected circuit breaker error, got %v", err)
 	}
 }

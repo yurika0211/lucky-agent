@@ -20,10 +20,12 @@ import (
 	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/middleware"
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/multimodal"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/rag"
+	"github.com/yurika0211/luckyharness/internal/resilience"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -71,6 +73,8 @@ type Agent struct {
 	contextCache   *contextMessageCache
 	mediaProcessor *multimodal.Processor
 	chatCount      int // 对话计数，用于触发自动摘要
+	activeModel    string
+	activeAPIBase  string
 }
 
 func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool) {
@@ -119,6 +123,129 @@ func parseEmbedderDimensionEnv(raw string) (int, bool) {
 	return dim, true
 }
 
+func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) provider.Config {
+	model := c.Model
+	if strings.TrimSpace(modelOverride) != "" {
+		model = strings.TrimSpace(modelOverride)
+	}
+	apiBase := c.APIBase
+	if strings.TrimSpace(apiBaseOverride) != "" {
+		apiBase = strings.TrimSpace(apiBaseOverride)
+	}
+	return provider.Config{
+		Name:         c.Provider,
+		APIKey:       c.APIKey,
+		APIBase:      apiBase,
+		Model:        model,
+		MaxTokens:    c.MaxTokens,
+		Temperature:  c.Temperature,
+		ExtraHeaders: c.ExtraHeaders,
+		Limits:       c.Limits,
+		Retry:        c.Retry,
+		CircuitBreaker: provider.CircuitBreakerConfig{
+			Enabled:         c.CircuitBreaker.Enabled,
+			ErrorThreshold:  c.CircuitBreaker.ErrorThreshold,
+			WindowSeconds:   c.CircuitBreaker.WindowSeconds,
+			TimeoutSeconds:  c.CircuitBreaker.TimeoutSeconds,
+			HalfOpenMaxReqs: c.CircuitBreaker.HalfOpenMaxReqs,
+		},
+		RateLimit: provider.RateLimitConfig{
+			Enabled:           c.RateLimit.Enabled,
+			RequestsPerMinute: c.RateLimit.RequestsPerMinute,
+			TokensPerMinute:   c.RateLimit.TokensPerMinute,
+			BurstSize:         c.RateLimit.BurstSize,
+		},
+		Context: provider.ContextConfig{
+			MaxHistoryTurns:      c.Context.MaxHistoryTurns,
+			MaxContextTokens:     c.Context.MaxContextTokens,
+			CompressionThreshold: c.Context.CompressionThreshold,
+		},
+	}
+}
+
+func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.Provider {
+	if p == nil || c == nil {
+		return p
+	}
+	chain := middleware.NewChain()
+
+	if c.Retry.Enabled {
+		retryCfg := resilience.DefaultRetryConfig()
+		if c.Retry.MaxAttempts > 0 {
+			retryCfg.MaxAttempts = c.Retry.MaxAttempts
+		}
+		if c.Retry.InitialDelayMs > 0 {
+			retryCfg.InitialDelay = time.Duration(c.Retry.InitialDelayMs) * time.Millisecond
+		}
+		if c.Retry.MaxDelayMs > 0 {
+			retryCfg.MaxDelay = time.Duration(c.Retry.MaxDelayMs) * time.Millisecond
+		}
+		chain.Use(middleware.NewRetryMiddleware(retryCfg))
+	}
+
+	if c.CircuitBreaker.Enabled {
+		cbCfg := resilience.DefaultCircuitBreakerConfig()
+		if c.CircuitBreaker.ErrorThreshold > 0 {
+			cbCfg.FailureThreshold = c.CircuitBreaker.ErrorThreshold
+		}
+		if c.CircuitBreaker.TimeoutSeconds > 0 {
+			cbCfg.Timeout = time.Duration(c.CircuitBreaker.TimeoutSeconds) * time.Second
+		}
+		if c.CircuitBreaker.HalfOpenMaxReqs > 0 {
+			cbCfg.HalfOpenMaxReqs = c.CircuitBreaker.HalfOpenMaxReqs
+		}
+		chain.Use(middleware.NewCircuitBreakerMiddleware(cbCfg))
+	}
+
+	if c.RateLimit.Enabled {
+		limit := c.RateLimit.RequestsPerMinute
+		if limit <= 0 {
+			limit = 60
+		}
+		chain.Use(middleware.NewRateLimitMiddleware(limit, time.Minute))
+	}
+
+	if chain.Len() == 0 {
+		return p
+	}
+	return middleware.NewMiddlewareProvider(p, chain)
+}
+
+func (a *Agent) maybeRouteModel(userInput string) {
+	if a == nil || a.cfg == nil || a.registry == nil {
+		return
+	}
+	cfg := a.cfg.Get()
+	if !cfg.ModelRouter.Enable || len(cfg.Fallbacks) > 0 {
+		return
+	}
+	router := config.NewModelRouter(cfg.ModelRouter)
+	tokenCount := len(userInput) / 4
+	if a.contextEst != nil {
+		tokenCount = a.contextEst.Estimate(userInput)
+	}
+	model, apiBase := router.SelectModelForTask(userInput, tokenCount)
+	if strings.TrimSpace(model) == "" {
+		return
+	}
+	if model == a.activeModel && strings.TrimSpace(apiBase) == strings.TrimSpace(a.activeAPIBase) {
+		return
+	}
+
+	pCfg := toProviderConfig(cfg, model, apiBase)
+	routedProvider, err := a.registry.Resolve(pCfg)
+	if err != nil {
+		return
+	}
+	a.provider = wrapProviderWithMiddleware(routedProvider, cfg)
+	a.activeModel = model
+	if strings.TrimSpace(apiBase) != "" {
+		a.activeAPIBase = apiBase
+	} else {
+		a.activeAPIBase = cfg.APIBase
+	}
+}
+
 // New 创建 Agent
 func New(cfg *config.Manager) (*Agent, error) {
 	// v0.37.0: 从环境变量覆盖 web_search 配置
@@ -155,7 +282,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		tokenStore = nil // 非关键错误
 	}
 
-	// 解析 Provider（支持降级链）
+		// 解析 Provider（支持降级链）
 	var p provider.Provider
 	if len(c.Fallbacks) > 0 {
 		// 使用降级链模式
@@ -181,57 +308,15 @@ func New(cfg *config.Manager) (*Agent, error) {
 			return nil, fmt.Errorf("create fallback chain: %w", err)
 		}
 		p = chain
-	} else {
-		// 单 provider 模式
-		pCfg := provider.Config{
-			Name:         c.Provider,
-			APIKey:       c.APIKey,
-			APIBase:      c.APIBase,
-			Model:        c.Model,
-			MaxTokens:    c.MaxTokens,
-			Temperature:  c.Temperature,
-			ExtraHeaders: c.ExtraHeaders,
-			Limits: provider.LimitsConfig{
-				MaxTokens:              c.Limits.MaxTokens,
-				Temperature:            c.Limits.Temperature,
-				TimeoutSeconds:         c.Limits.TimeoutSeconds,
-				MaxTimeoutSeconds:      c.Limits.MaxTimeoutSeconds,
-				MaxToolCalls:           c.Limits.MaxToolCalls,
-				MaxConcurrentToolCalls: c.Limits.MaxConcurrentToolCalls,
-			},
-			Retry: provider.RetryConfig{
-				Enabled:            c.Retry.Enabled,
-				MaxAttempts:        c.Retry.MaxAttempts,
-				InitialDelayMs:     c.Retry.InitialDelayMs,
-				MaxDelayMs:         c.Retry.MaxDelayMs,
-				RetryOnRateLimit:   c.Retry.RetryOnRateLimit,
-				RetryOnTimeout:     c.Retry.RetryOnTimeout,
-				RetryOnServerError: c.Retry.RetryOnServerError,
-			},
-			CircuitBreaker: provider.CircuitBreakerConfig{
-				Enabled:         c.CircuitBreaker.Enabled,
-				ErrorThreshold:  c.CircuitBreaker.ErrorThreshold,
-				WindowSeconds:   c.CircuitBreaker.WindowSeconds,
-				TimeoutSeconds:  c.CircuitBreaker.TimeoutSeconds,
-				HalfOpenMaxReqs: c.CircuitBreaker.HalfOpenMaxReqs,
-			},
-			RateLimit: provider.RateLimitConfig{
-				Enabled:           c.RateLimit.Enabled,
-				RequestsPerMinute: c.RateLimit.RequestsPerMinute,
-				TokensPerMinute:   c.RateLimit.TokensPerMinute,
-				BurstSize:         c.RateLimit.BurstSize,
-			},
-			Context: provider.ContextConfig{
-				MaxHistoryTurns:      c.Context.MaxHistoryTurns,
-				MaxContextTokens:     c.Context.MaxContextTokens,
-				CompressionThreshold: c.Context.CompressionThreshold,
-			},
+		} else {
+			// 单 provider 模式
+			pCfg := toProviderConfig(c, "", "")
+			p, err = registry.Resolve(pCfg)
+			if err != nil {
+				return nil, fmt.Errorf("resolve provider: %w", err)
+			}
 		}
-		p, err = registry.Resolve(pCfg)
-		if err != nil {
-			return nil, fmt.Errorf("resolve provider: %w", err)
-		}
-	}
+	p = wrapProviderWithMiddleware(p, c)
 
 	// 创建记忆存储
 	mem, err := memory.NewStore(cfg.HomeDir() + "/memory")
@@ -520,6 +605,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 		autonomy:       autonomyKit,
 		contextCache:   newContextMessageCache(64),
 		mediaProcessor: mediaProcessor,
+		activeModel:    c.Model,
+		activeAPIBase:  c.APIBase,
 	}
 
 	a.registerCronTools()
@@ -618,6 +705,8 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 
 // chatWithSession 是 Chat/ChatWithSession 的共享实现。
 func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
+	a.maybeRouteModel(userInput)
+
 	// 优先使用 RunLoop（支持 function calling / 工具调用）
 	loopCfg := DefaultLoopConfig()
 	if a.cfg != nil {
@@ -673,6 +762,7 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 
 // chatStreamSimple 是不使用工具的简单流式聊天（作为 RunLoop 的回退）。
 func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, userInput string) (string, error) {
+	a.maybeRouteModel(userInput)
 	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
 
 	// 调用 Provider
@@ -724,6 +814,7 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 
 // ChatStream 执行流式对话
 func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provider.StreamChunk, error) {
+	a.maybeRouteModel(userInput)
 	sess := a.sessions.New()
 	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
 
@@ -1884,7 +1975,9 @@ func (a *Agent) SwitchModel(modelID string) error {
 		return fmt.Errorf("create provider %s: %w", providerName, err)
 	}
 
-	a.provider = p
+	a.provider = wrapProviderWithMiddleware(p, cfg)
+	a.activeModel = modelID
+	a.activeAPIBase = cfg.APIBase
 	return nil
 }
 

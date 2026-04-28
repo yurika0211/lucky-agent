@@ -3,14 +3,17 @@ package embedder
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"math"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	jsoniter "github.com/json-iterator/go"
 )
+
+var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // MockEmbedder is a deterministic hash-based embedder for testing.
 type MockEmbedder struct {
@@ -215,7 +218,7 @@ func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 		Input: texts,
 	}
 
-	data, err := json.Marshal(reqBody)
+	data, err := jsonAPI.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request body: %w", err)
 	}
@@ -247,7 +250,7 @@ func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	}
 
 	var respBody embeddingResponse
-	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+	if err := jsonAPI.NewDecoder(resp.Body).Decode(&respBody); err != nil {
 		return nil, fmt.Errorf("failed to decode response body: %w", err)
 	}
 

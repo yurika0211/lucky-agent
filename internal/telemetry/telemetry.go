@@ -33,6 +33,11 @@ var (
 	propagator propagation.TextMapPropagator
 )
 
+func init() {
+	tracer = trace.NewNoopTracerProvider().Tracer(serviceName)
+	propagator = propagation.NewCompositeTextMapPropagator()
+}
+
 // Config holds telemetry configuration.
 type Config struct {
 	Enabled      bool   `yaml:"enabled"`
@@ -206,6 +211,47 @@ func GinMiddleware() gin.HandlerFunc {
 			c.Header("X-Trace-ID", traceID)
 		}
 	}
+}
+
+// HTTPMiddleware returns a net/http middleware for tracing requests.
+func HTTPMiddleware(next http.Handler) http.Handler {
+	if next == nil {
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := propagator.Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+		spanName := r.Method + " " + r.URL.Path
+		ctx, span := tracer.Start(ctx, spanName,
+			trace.WithAttributes(
+				attribute.String("http.request.method", r.Method),
+				attribute.String("url.path", r.URL.Path),
+			),
+		)
+		defer span.End()
+
+		rr := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		next.ServeHTTP(rr, r.WithContext(ctx))
+
+		span.SetAttributes(semconv.HTTPResponseStatusCode(rr.statusCode))
+		if rr.statusCode >= 400 {
+			span.SetStatus(codes.Error, http.StatusText(rr.statusCode))
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		if traceID := TraceIDFromContext(ctx); traceID != "" {
+			rr.Header().Set("X-Trace-ID", traceID)
+		}
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.statusCode = code
+	r.ResponseWriter.WriteHeader(code)
 }
 
 // GRPCUnaryInterceptor returns a gRPC unary server interceptor for tracing.

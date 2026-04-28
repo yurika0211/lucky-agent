@@ -18,7 +18,11 @@ import (
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/telemetry"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var shellCommandSeparator = regexp.MustCompile(`\s*(?:;|&&|\|\|)\s*`)
@@ -180,6 +184,8 @@ func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfi
 
 // RunLoopWithSession 执行 Agent Loop（带会话上下文）
 func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, userInput string, loopCfg LoopConfig) (result *LoopResult, err error) {
+	a.maybeRouteModel(userInput)
+
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
 
@@ -192,6 +198,13 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		sessionID = sess.ID
 	}
 	startAt := time.Now()
+	ctx, span := telemetry.StartSpan(ctx, "agent.loop",
+		trace.WithAttributes(
+			attribute.String("agent.session_id", sessionID),
+			attribute.Int("agent.max_iterations", loopCfg.MaxIterations),
+		),
+	)
+	defer span.End()
 	logger.Info("agent loop started",
 		"session_id", sessionID,
 		"max_iterations", loopCfg.MaxIterations,
@@ -216,10 +229,19 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			"duration_ms", time.Since(startAt).Milliseconds(),
 		}
 		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			fields = append(fields, "error", err)
 			logger.Warn("agent loop finished with error", fields...)
 			return
 		}
+		span.SetStatus(codes.Ok, "")
+		span.SetAttributes(
+			attribute.String("agent.state", state),
+			attribute.Int("agent.iterations", iterations),
+			attribute.Int("agent.tokens_used", tokens),
+			attribute.Int64("agent.duration_ms", time.Since(startAt).Milliseconds()),
+		)
 		logger.Info("agent loop finished", fields...)
 	}()
 

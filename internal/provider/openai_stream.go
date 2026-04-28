@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,7 +13,11 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	jsoniter "github.com/json-iterator/go"
 )
+
+var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // openaiChatRequest 是发送给 OpenAI API 的请求体
 type openaiChatRequest struct {
@@ -313,7 +316,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 		}
 	}
 
-	body, err := json.Marshal(reqBody)
+	body, err := jsonAPI.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -339,7 +342,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	}
 
 	var chatResp openaiChatResponse
-	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+	if err := jsonAPI.Unmarshal(respBody, &chatResp); err != nil {
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
@@ -507,7 +510,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		}
 	}
 
-	body, err := json.Marshal(reqBody)
+	body, err := jsonAPI.Marshal(reqBody)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -570,7 +573,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 			}
 
 			var chatResp openaiChatResponse
-			if err := json.Unmarshal([]byte(data), &chatResp); err != nil {
+			if err := jsonAPI.Unmarshal([]byte(data), &chatResp); err != nil {
 				continue
 			}
 
