@@ -140,10 +140,13 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 	}
 }
 
+type telegramCommandHandler func(ctx context.Context, msg *gateway.Message) error
+
 // Handler processes Telegram bot commands and messages with per-chat session management.
 type Handler struct {
-	adapter *Adapter
-	agent   agentProvider
+	adapter  *Adapter
+	agent    agentProvider
+	commands map[string]telegramCommandHandler
 
 	mu         sync.RWMutex
 	sessions   map[string]string // chatID → sessionID
@@ -202,9 +205,10 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		ap = agentProviderAdapter{a}
 	}
 	memeDir, memeProbability, memeCooldown := resolveRandomMemeConfig()
-	return &Handler{
+	h := &Handler{
 		adapter:                   adapter,
 		agent:                     ap,
+		commands:                  make(map[string]telegramCommandHandler),
 		sessions:                  make(map[string]string),
 		tasks:                     make(map[string]*chatTask),
 		queues:                    make(map[string]*chatQueue),
@@ -220,6 +224,30 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		memeRand:                  rand.New(rand.NewSource(time.Now().UnixNano())),
 		memeNow:                   time.Now,
 		memeLastSent:              make(map[string]time.Time),
+	}
+	h.commands = h.buildCommandRegistry()
+	return h
+}
+
+func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
+	return map[string]telegramCommandHandler{
+		"start":   h.handleStart,
+		"help":    h.handleHelp,
+		"chat":    func(ctx context.Context, msg *gateway.Message) error { return h.dispatchChatAsync(ctx, msg, msg.Args) },
+		"model":   h.handleModel,
+		"soul":    h.handleSoul,
+		"tools":   h.handleTools,
+		"reset":   h.handleReset,
+		"history": h.handleHistory,
+		"session": h.handleSession,
+		"skills":  h.handleSkills,
+		"cron":    h.handleCron,
+		"metrics": h.handleMetrics,
+		"health":  h.handleHealth,
+		"new":     h.handleNew,
+		"stop":    h.handleStop,
+		"status":  h.handleStatus,
+		"restart": h.handleRestart,
 	}
 }
 
@@ -670,46 +698,10 @@ func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, a
 
 // handleCommand dispatches bot commands.
 func (h *Handler) handleCommand(ctx context.Context, msg *gateway.Message) error {
-	switch msg.Command {
-	case "start":
-		return h.handleStart(ctx, msg)
-	case "help":
-		return h.handleHelp(ctx, msg)
-	case "chat":
-		return h.dispatchChatAsync(ctx, msg, msg.Args)
-	case "model":
-		return h.handleModel(ctx, msg)
-	case "soul":
-		return h.handleSoul(ctx, msg)
-	case "tools":
-		return h.handleTools(ctx, msg)
-	case "reset":
-		return h.handleReset(ctx, msg)
-	case "history":
-		return h.handleHistory(ctx, msg)
-	case "session":
-		return h.handleSession(ctx, msg)
-	// v0.36.0: 新增命令
-	case "skills":
-		return h.handleSkills(ctx, msg)
-	case "cron":
-		return h.handleCron(ctx, msg)
-	case "metrics":
-		return h.handleMetrics(ctx, msg)
-	case "health":
-		return h.handleHealth(ctx, msg)
-	// v0.56.0: nanobot 风格内置命令
-	case "new":
-		return h.handleNew(ctx, msg)
-	case "stop":
-		return h.handleStop(ctx, msg)
-	case "status":
-		return h.handleStatus(ctx, msg)
-	case "restart":
-		return h.handleRestart(ctx, msg)
-	default:
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Unknown command: /%s\nType /help for available commands.", msg.Command))
+	if handler, ok := h.commands[msg.Command]; ok {
+		return handler(ctx, msg)
 	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Unknown command: /%s\nType /help for available commands.", msg.Command))
 }
 
 // handleStart sends a welcome message.
@@ -1038,6 +1030,49 @@ func (h *Handler) sendFinalAssistantResponse(msg *gateway.Message, response stri
 	}
 }
 
+func (h *Handler) openChatEventStream(ctx context.Context, chatID, text, sessionID string) (<-chan agent.ChatEvent, error) {
+	events, err := h.agent.ChatWithSessionStream(ctx, sessionID, text)
+	if err == nil {
+		return events, nil
+	}
+	if !strings.Contains(err.Error(), "session not found") {
+		return nil, err
+	}
+
+	h.resetSession(chatID)
+	retrySessionID := h.getSessionID(chatID)
+	return h.agent.ChatWithSessionStream(ctx, retrySessionID, text)
+}
+
+func runChatEventLoop(
+	chatCtx context.Context,
+	events <-chan agent.ChatEvent,
+	onTimeout func(err error) (sentResult bool),
+	onEvent func(evt agent.ChatEvent) (stop bool, sentResult bool),
+) (sentResult bool) {
+	for {
+		select {
+		case <-chatCtx.Done():
+			if onTimeout == nil {
+				return false
+			}
+			return onTimeout(chatCtx.Err())
+
+		case evt, ok := <-events:
+			if !ok {
+				return sentResult
+			}
+			stop, marked := onEvent(evt)
+			if marked {
+				sentResult = true
+			}
+			if stop {
+				return sentResult
+			}
+		}
+	}
+}
+
 // handleChatNarrativeStream 自然语言进度模式（不使用流式占位消息）。
 // 中间步骤和最终结论都作为独立消息发送，保证“结论在最后”。
 func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
@@ -1049,54 +1084,39 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	chatCtx, chatCancel := context.WithTimeout(ctx, h.effectiveChatStreamTimeout())
 	defer chatCancel()
 
-	events, err := h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
+	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, text, sessionID)
 	if err != nil {
-		// session 可能坏了，重试
-		if strings.Contains(err.Error(), "session not found") {
-			h.resetSession(msg.Chat.ID)
-			sessionID = h.getSessionID(msg.Chat.ID)
-			events, err = h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
+		switch {
+		case isTaskTimeoutError(err):
+			h.sendProgressMessage(msg, "⏱ 请求超时")
+		case isTaskCanceledError(err):
+			h.sendProgressMessage(msg, "🛑 当前任务已停止")
+		default:
+			h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
 		}
-		if err != nil {
-			switch {
-			case isTaskTimeoutError(err):
-				h.sendProgressMessage(msg, "⏱ 请求超时")
-			case isTaskCanceledError(err):
-				h.sendProgressMessage(msg, "🛑 当前任务已停止")
-			default:
-				h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
-			}
-			return nil
-		}
+		return nil
 	}
 
 	var finalContent strings.Builder
 	toolCallCount := 0
 	lastProgress := ""
-	ended := false
-	sentResult := false
 	var toolNarratives []string
 	currentRound := 1
 	var roundObservations []string
 	summaryMode := h.effectiveProgressSummaryWithLLM()
 
-	for !ended {
-		select {
-		case <-chatCtx.Done():
-			if errors.Is(chatCtx.Err(), context.DeadlineExceeded) {
+	sentResult := runChatEventLoop(
+		chatCtx,
+		events,
+		func(err error) bool {
+			if errors.Is(err, context.DeadlineExceeded) {
 				h.sendProgressMessage(msg, "⏱ 请求超时")
 			} else {
 				h.sendProgressMessage(msg, "🛑 当前任务已停止")
 			}
-			sentResult = true
-			ended = true
-
-		case evt, ok := <-events:
-			if !ok {
-				ended = true
-				break
-			}
-
+			return true
+		},
+		func(evt agent.ChatEvent) (bool, bool) {
 			switch evt.Type {
 			case agent.ChatEventThinking:
 				if summaryMode {
@@ -1160,8 +1180,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 					finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 				}
 				h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
-				sentResult = true
-				ended = true
+				return true, true
 
 			case agent.ChatEventError:
 				if isTaskTimeoutError(evt.Err) {
@@ -1175,11 +1194,11 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 					}
 					h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", errMsg))
 				}
-				sentResult = true
-				ended = true
+				return true, true
 			}
-		}
-	}
+			return false, false
+		},
+	)
 
 	if !sentResult {
 		finalOutput := strings.TrimSpace(finalContent.String())
@@ -1211,59 +1230,45 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	chatCtx, chatCancel := context.WithTimeout(ctx, h.effectiveChatStreamTimeout())
 	defer chatCancel()
 
-	// 启动流式对话
-	events, err := h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
+	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, text, sessionID)
 	if err != nil {
-		// session 可能坏了，重试
-		if strings.Contains(err.Error(), "session not found") {
-			h.resetSession(msg.Chat.ID)
-			sessionID = h.getSessionID(msg.Chat.ID)
-			events, err = h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
-		}
-		if err != nil {
-			if isTaskTimeoutError(err) {
-				sender.SetResult("⏱ 请求超时")
-				sender.Finish()
-				return nil
-			}
-			if isTaskCanceledError(err) {
-				sender.SetResult("🛑 当前任务已停止")
-				sender.Finish()
-				return nil
-			}
-			sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
+		if isTaskTimeoutError(err) {
+			sender.SetResult("⏱ 请求超时")
 			sender.Finish()
 			return nil
 		}
+		if isTaskCanceledError(err) {
+			sender.SetResult("🛑 当前任务已停止")
+			sender.Finish()
+			return nil
+		}
+		sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
+		sender.Finish()
+		return nil
 	}
 
 	var finalContent strings.Builder
 	toolCallCount := 0
 	lastProgress := ""
-	ended := false
-	sentResult := false
 	var toolNarratives []string
 	narrativeMode := h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage()
 	summaryMode := narrativeMode && h.effectiveProgressSummaryWithLLM()
 	currentRound := 1
 	var roundObservations []string
 
-	for !ended {
-		select {
-		case <-chatCtx.Done():
-			if errors.Is(chatCtx.Err(), context.DeadlineExceeded) {
+	sentResult := runChatEventLoop(
+		chatCtx,
+		events,
+		func(err error) bool {
+			if errors.Is(err, context.DeadlineExceeded) {
 				sender.SetResult("⏱ 请求超时")
 			} else {
 				sender.SetResult("🛑 当前任务已停止")
 			}
 			sender.Finish()
-			sentResult = true
-			ended = true
-		case evt, ok := <-events:
-			if !ok {
-				ended = true
-				break
-			}
+			return true
+		},
+		func(evt agent.ChatEvent) (bool, bool) {
 			switch evt.Type {
 			case agent.ChatEventThinking:
 				if summaryMode {
@@ -1354,7 +1359,9 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				if resolveErr != nil {
 					sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(resolveErr.Error(), 200)))
 					sender.Finish()
-				} else if len(media) > 0 {
+					return true, true
+				}
+				if len(media) > 0 {
 					placeholder := textOnly
 					if strings.TrimSpace(placeholder) == "" {
 						placeholder = summarizeOutboundMedia(media)
@@ -1364,28 +1371,23 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 					if err := h.sendAssistantMedia(context.Background(), msg, media); err != nil {
 						h.sendProgressMessage(msg, fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200)))
 					}
-				} else {
-					// 最终结果替换整个消息
-					sender.SetResult(finalOutput)
-					sender.Finish()
+					return true, true
 				}
-				sentResult = true
-				ended = true
+				// 最终结果替换整个消息
+				sender.SetResult(finalOutput)
+				sender.Finish()
+				return true, true
 
 			case agent.ChatEventError:
 				if isTaskTimeoutError(evt.Err) {
 					sender.SetResult("⏱ 请求超时")
 					sender.Finish()
-					sentResult = true
-					ended = true
-					break
+					return true, true
 				}
 				if isTaskCanceledError(evt.Err) {
 					sender.SetResult("🛑 当前任务已停止")
 					sender.Finish()
-					sentResult = true
-					ended = true
-					break
+					return true, true
 				}
 				errMsg := evt.Err.Error()
 				if len(errMsg) > 200 {
@@ -1393,11 +1395,11 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				}
 				sender.SetResult(fmt.Sprintf("❌ Error: %s", errMsg))
 				sender.Finish()
-				sentResult = true
-				ended = true
+				return true, true
 			}
-		}
-	}
+			return false, false
+		},
+	)
 
 	if !sentResult {
 		finalOutput := finalContent.String()

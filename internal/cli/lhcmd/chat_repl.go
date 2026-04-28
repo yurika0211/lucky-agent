@@ -144,20 +144,21 @@ func startREPL(mgr *config.Manager) error {
 }
 
 // handleCommand 处理 REPL 命令
-func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, cronStore *cron.Store, watcher *cron.Watcher, sessionMgr *session.Manager, currentSession **session.Session, cfgMgr *config.Manager) (handled bool, exit bool) {
-	parts := strings.SplitN(input, " ", 2)
-	cmd := parts[0]
-	arg := ""
-	if len(parts) > 1 {
-		arg = strings.TrimSpace(parts[1])
-	}
+type replCommandContext struct {
+	agent          *agent.Agent
+	loopCfg        *agent.LoopConfig
+	cronEngine     *cron.Engine
+	cronStore      *cron.Store
+	watcher        *cron.Watcher
+	sessionMgr     *session.Manager
+	currentSession **session.Session
+	cfgMgr         *config.Manager
+}
 
-	switch cmd {
-	case "/quit", "/exit", "/q":
-		fmt.Println("👋 Bye!")
-		return true, true
+type replCommandFunc func(ctx replCommandContext, arg string) (handled bool, exit bool)
 
-	case "/help":
+func buildREPLCommandRegistry() map[string]replCommandFunc {
+	showHelp := func(_ replCommandContext, _ string) (bool, bool) {
 		fmt.Println("📋 命令列表:")
 		fmt.Println("  /quit, /exit       退出")
 		fmt.Println("  /help              显示帮助")
@@ -216,254 +217,289 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /embedder test [text]  测试嵌入模型")
 		fmt.Println("  /clear             清屏")
 		return true, false
-
-	case "/yolo":
-		loopCfg.AutoApprove = !loopCfg.AutoApprove
-		if loopCfg.AutoApprove {
-			fmt.Println("🚀 YOLO mode ON — 工具调用自动批准")
-		} else {
-			fmt.Println("🔒 YOLO mode OFF — 工具调用需确认")
-		}
-		return true, false
-
-	case "/model":
-		if arg == "" {
-			fmt.Printf("当前模型: %s\n", a.Provider().Name())
-		} else {
-			if err := a.SwitchModel(arg); err != nil {
-				fmt.Printf("❌ %v\n", err)
-			} else {
-				fmt.Printf("✅ 已切换到模型: %s\n", arg)
-			}
-		}
-		return true, false
-
-	case "/models":
-		models := a.Catalog().List()
-		if len(models) == 0 {
-			fmt.Println("📋 模型目录为空")
-		} else {
-			fmt.Println("📋 可用模型:")
-			currentProvider := ""
-			for _, m := range models {
-				if m.Provider != currentProvider {
-					currentProvider = m.Provider
-					fmt.Printf("\n  [%s]\n", currentProvider)
-				}
-				costInfo := ""
-				if m.CostPer1kIn > 0 {
-					costInfo = fmt.Sprintf(" ($%.4f/$%.4f per 1k)", m.CostPer1kIn, m.CostPer1kOut)
-				} else {
-					costInfo = " (免费/本地)"
-				}
-				fmt.Printf("    %-40s %s%s\n", m.ID, m.DisplayName, costInfo)
-			}
-		}
-		return true, false
-
-	case "/soul":
-		fmt.Println(a.Soul().SystemPrompt())
-		return true, false
-
-	case "/tools":
-		list := a.Tools().FormatToolList()
-		if list == "" {
-			fmt.Println("🔧 暂无注册工具")
-		} else {
-			fmt.Println("🔧 可用工具:")
-			fmt.Println(list)
-		}
-		return true, false
-
-	case "/remember":
-		if arg == "" {
-			fmt.Println("用法: /remember <content>")
-		} else {
-			if err := a.Remember(arg, "user"); err != nil {
-				fmt.Printf("❌ %v\n", err)
-			} else {
-				fmt.Println("💾 已保存为中期记忆")
-			}
-		}
-		return true, false
-
-	case "/remember-long":
-		if arg == "" {
-			fmt.Println("用法: /remember-long <content>")
-		} else {
-			if err := a.RememberLongTerm(arg, "user"); err != nil {
-				fmt.Printf("❌ %v\n", err)
-			} else {
-				fmt.Println("🧠 已保存为长期记忆（核心记忆）")
-			}
-		}
-		return true, false
-
-	case "/recall":
-		if arg == "" {
-			fmt.Println("用法: /recall <query>")
-		} else {
-			results := a.Recall(arg)
-			if len(results) == 0 {
-				fmt.Println("🔍 未找到相关记忆")
-			} else {
-				fmt.Printf("🔍 找到 %d 条记忆:\n", len(results))
-				for _, e := range results {
-					tierLabel := tierEmoji(e.Tier)
-					fmt.Printf("  %s [%s] %s (重要度:%.1f 访问:%d)\n",
-						tierLabel, e.Tier.String(), e.Content, e.Importance, e.AccessCount)
-				}
-			}
-		}
-		return true, false
-
-	case "/memstats":
-		stats := a.MemoryStats()
-		fmt.Println("📊 记忆统计:")
-		fmt.Printf("  🟡 短期 (会话): %d 条\n", stats[memory.TierShort])
-		fmt.Printf("  🔵 中期 (日常): %d 条\n", stats[memory.TierMedium])
-		fmt.Printf("  🟢 长期 (核心): %d 条\n", stats[memory.TierLong])
-		total := stats[memory.TierShort] + stats[memory.TierMedium] + stats[memory.TierLong]
-		fmt.Printf("  📦 总计: %d 条\n", total)
-		return true, false
-
-	case "/memdecay":
-		deleted := a.DecayMemory(0.05)
-		fmt.Printf("🗑️ 已衰减 %d 条低权重记忆\n", deleted)
-		return true, false
-
-	case "/promote":
-		if arg == "" {
-			fmt.Println("用法: /promote <memory-id>")
-		} else {
-			if err := a.PromoteMemory(arg); err != nil {
-				fmt.Printf("❌ %v\n", err)
-			} else {
-				fmt.Println("⬆️ 记忆层级已提升")
-			}
-		}
-		return true, false
-
-	case "/clear":
-		fmt.Print("\033[2J\033[H")
-		return true, false
-
-	case "/sessions":
-		infos := sessionMgr.ListInfo()
-		if len(infos) == 0 {
-			fmt.Println("📋 暂无会话")
-		} else {
-			fmt.Println("📋 会话列表:")
-			for _, info := range infos {
-				active := ""
-				if info.ID == (*currentSession).ID {
-					active = " ← 当前"
-				}
-				title := info.Title
-				if title == "" {
-					title = "(无标题)"
-				}
-				fmt.Printf("  %s | %s | %d 条消息 | %s%s\n",
-					info.ID[:8], title, info.MessageCount,
-					info.UpdatedAt.Format("2006-01-02 15:04"), active)
-			}
-		}
-		return true, false
-
-	case "/session":
-		return handleSessionCommand(arg, sessionMgr, currentSession), false
-
-	case "/reload":
-		if err := cfgMgr.Reload(); err != nil {
-			fmt.Printf("❌ 重载配置失败: %v\n", err)
-		} else {
-			cfg := cfgMgr.Get()
-			fmt.Printf("✅ 配置已重载 | Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
-		}
-		return true, false
-
-	case "/skills":
-		if arg == "" {
-			fmt.Println("用法: /skills <directory>")
-		} else {
-			count, err := a.LoadSkills(arg)
-			if err != nil {
-				fmt.Printf("❌ %v\n", err)
-			} else {
-				fmt.Printf("✅ 已加载 %d 个 Skill 插件\n", count)
-			}
-		}
-		return true, false
-
-	case "/mcp":
-		parts := strings.Fields(arg)
-		if len(parts) < 2 {
-			fmt.Println("用法: /mcp <name> <url> [api_key]")
-		} else {
-			apiKey := ""
-			if len(parts) > 2 {
-				apiKey = parts[2]
-			}
-			a.ConnectMCPServer(parts[0], parts[1], apiKey)
-			fmt.Printf("✅ 已连接 MCP Server: %s (%s)\n", parts[0], parts[1])
-		}
-		return true, false
-
-	case "/approve":
-		if arg == "" {
-			fmt.Println("用法: /approve <tool_name>")
-		} else {
-			if err := a.Tools().SetPermissionOverride(arg, 0); err != nil { // PermAuto = 0
-				fmt.Printf("❌ %v\n", err)
-			} else {
-				fmt.Printf("✅ 工具 %s 已设为自动批准\n", arg)
-			}
-		}
-		return true, false
-
-	case "/deny":
-		if arg == "" {
-			fmt.Println("用法: /deny <tool_name>")
-		} else {
-			if err := a.Tools().SetPermissionOverride(arg, 2); err != nil { // PermDeny = 2
-				fmt.Printf("❌ %v\n", err)
-			} else {
-				fmt.Printf("🔴 工具 %s 已禁止使用\n", arg)
-			}
-		}
-		return true, false
-
-	case "/cron":
-		return handleCronCommand(arg, cronEngine, cronStore, a, *loopCfg), false
-
-	case "/watch":
-		return handleWatchCommand(arg, watcher), false
-
-	case "/profile":
-		return handleProfileCommand(arg), false
-
-	case "/dashboard":
-		return handleDashboardCommand(arg), false
-
-	case "/serve":
-		return handleServeCommand(arg, a), false
-
-	case "/context":
-		return handleContextCommand(arg, a), false
-
-	case "/rag":
-		return handleRAGCommand(arg, a), false
-
-	case "/fc":
-		return handleFCCommand(arg, a), false
-
-	case "/embedder":
-		return handleEmbedderCommand(arg, a), false
-
-	default:
-		fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
-		return true, false
 	}
+
+	quit := func(_ replCommandContext, _ string) (bool, bool) {
+		fmt.Println("👋 Bye!")
+		return true, true
+	}
+
+	return map[string]replCommandFunc{
+		"/quit": quit,
+		"/exit": quit,
+		"/q":    quit,
+		"/help": showHelp,
+		"/yolo": func(ctx replCommandContext, _ string) (bool, bool) {
+			ctx.loopCfg.AutoApprove = !ctx.loopCfg.AutoApprove
+			if ctx.loopCfg.AutoApprove {
+				fmt.Println("🚀 YOLO mode ON — 工具调用自动批准")
+			} else {
+				fmt.Println("🔒 YOLO mode OFF — 工具调用需确认")
+			}
+			return true, false
+		},
+		"/model": func(ctx replCommandContext, arg string) (bool, bool) {
+			if arg == "" {
+				fmt.Printf("当前模型: %s\n", ctx.agent.Provider().Name())
+			} else {
+				if err := ctx.agent.SwitchModel(arg); err != nil {
+					fmt.Printf("❌ %v\n", err)
+				} else {
+					fmt.Printf("✅ 已切换到模型: %s\n", arg)
+				}
+			}
+			return true, false
+		},
+		"/models": func(ctx replCommandContext, _ string) (bool, bool) {
+			models := ctx.agent.Catalog().List()
+			if len(models) == 0 {
+				fmt.Println("📋 模型目录为空")
+			} else {
+				fmt.Println("📋 可用模型:")
+				currentProvider := ""
+				for _, m := range models {
+					if m.Provider != currentProvider {
+						currentProvider = m.Provider
+						fmt.Printf("\n  [%s]\n", currentProvider)
+					}
+					costInfo := ""
+					if m.CostPer1kIn > 0 {
+						costInfo = fmt.Sprintf(" ($%.4f/$%.4f per 1k)", m.CostPer1kIn, m.CostPer1kOut)
+					} else {
+						costInfo = " (免费/本地)"
+					}
+					fmt.Printf("    %-40s %s%s\n", m.ID, m.DisplayName, costInfo)
+				}
+			}
+			return true, false
+		},
+		"/soul": func(ctx replCommandContext, _ string) (bool, bool) {
+			fmt.Println(ctx.agent.Soul().SystemPrompt())
+			return true, false
+		},
+		"/tools": func(ctx replCommandContext, _ string) (bool, bool) {
+			list := ctx.agent.Tools().FormatToolList()
+			if list == "" {
+				fmt.Println("🔧 暂无注册工具")
+			} else {
+				fmt.Println("🔧 可用工具:")
+				fmt.Println(list)
+			}
+			return true, false
+		},
+		"/remember": func(ctx replCommandContext, arg string) (bool, bool) {
+			if arg == "" {
+				fmt.Println("用法: /remember <content>")
+			} else {
+				if err := ctx.agent.Remember(arg, "user"); err != nil {
+					fmt.Printf("❌ %v\n", err)
+				} else {
+					fmt.Println("💾 已保存为中期记忆")
+				}
+			}
+			return true, false
+		},
+		"/remember-long": func(ctx replCommandContext, arg string) (bool, bool) {
+			if arg == "" {
+				fmt.Println("用法: /remember-long <content>")
+			} else {
+				if err := ctx.agent.RememberLongTerm(arg, "user"); err != nil {
+					fmt.Printf("❌ %v\n", err)
+				} else {
+					fmt.Println("🧠 已保存为长期记忆（核心记忆）")
+				}
+			}
+			return true, false
+		},
+		"/recall": func(ctx replCommandContext, arg string) (bool, bool) {
+			if arg == "" {
+				fmt.Println("用法: /recall <query>")
+			} else {
+				results := ctx.agent.Recall(arg)
+				if len(results) == 0 {
+					fmt.Println("🔍 未找到相关记忆")
+				} else {
+					fmt.Printf("🔍 找到 %d 条记忆:\n", len(results))
+					for _, e := range results {
+						tierLabel := tierEmoji(e.Tier)
+						fmt.Printf("  %s [%s] %s (重要度:%.1f 访问:%d)\n",
+							tierLabel, e.Tier.String(), e.Content, e.Importance, e.AccessCount)
+					}
+				}
+			}
+			return true, false
+		},
+		"/memstats": func(ctx replCommandContext, _ string) (bool, bool) {
+			stats := ctx.agent.MemoryStats()
+			fmt.Println("📊 记忆统计:")
+			fmt.Printf("  🟡 短期 (会话): %d 条\n", stats[memory.TierShort])
+			fmt.Printf("  🔵 中期 (日常): %d 条\n", stats[memory.TierMedium])
+			fmt.Printf("  🟢 长期 (核心): %d 条\n", stats[memory.TierLong])
+			total := stats[memory.TierShort] + stats[memory.TierMedium] + stats[memory.TierLong]
+			fmt.Printf("  📦 总计: %d 条\n", total)
+			return true, false
+		},
+		"/memdecay": func(ctx replCommandContext, _ string) (bool, bool) {
+			deleted := ctx.agent.DecayMemory(0.05)
+			fmt.Printf("🗑️ 已衰减 %d 条低权重记忆\n", deleted)
+			return true, false
+		},
+		"/promote": func(ctx replCommandContext, arg string) (bool, bool) {
+			if arg == "" {
+				fmt.Println("用法: /promote <memory-id>")
+			} else {
+				if err := ctx.agent.PromoteMemory(arg); err != nil {
+					fmt.Printf("❌ %v\n", err)
+				} else {
+					fmt.Println("⬆️ 记忆层级已提升")
+				}
+			}
+			return true, false
+		},
+		"/clear": func(_ replCommandContext, _ string) (bool, bool) {
+			fmt.Print("\033[2J\033[H")
+			return true, false
+		},
+		"/sessions": func(ctx replCommandContext, _ string) (bool, bool) {
+			infos := ctx.sessionMgr.ListInfo()
+			if len(infos) == 0 {
+				fmt.Println("📋 暂无会话")
+			} else {
+				fmt.Println("📋 会话列表:")
+				for _, info := range infos {
+					active := ""
+					if info.ID == (*ctx.currentSession).ID {
+						active = " ← 当前"
+					}
+					title := info.Title
+					if title == "" {
+						title = "(无标题)"
+					}
+					fmt.Printf("  %s | %s | %d 条消息 | %s%s\n",
+						info.ID[:8], title, info.MessageCount,
+						info.UpdatedAt.Format("2006-01-02 15:04"), active)
+				}
+			}
+			return true, false
+		},
+		"/session": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleSessionCommand(arg, ctx.sessionMgr, ctx.currentSession), false
+		},
+		"/reload": func(ctx replCommandContext, _ string) (bool, bool) {
+			if err := ctx.cfgMgr.Reload(); err != nil {
+				fmt.Printf("❌ 重载配置失败: %v\n", err)
+			} else {
+				cfg := ctx.cfgMgr.Get()
+				fmt.Printf("✅ 配置已重载 | Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
+			}
+			return true, false
+		},
+		"/skills": func(ctx replCommandContext, arg string) (bool, bool) {
+			if arg == "" {
+				fmt.Println("用法: /skills <directory>")
+			} else {
+				count, err := ctx.agent.LoadSkills(arg)
+				if err != nil {
+					fmt.Printf("❌ %v\n", err)
+				} else {
+					fmt.Printf("✅ 已加载 %d 个 Skill 插件\n", count)
+				}
+			}
+			return true, false
+		},
+		"/mcp": func(ctx replCommandContext, arg string) (bool, bool) {
+			parts := strings.Fields(arg)
+			if len(parts) < 2 {
+				fmt.Println("用法: /mcp <name> <url> [api_key]")
+			} else {
+				apiKey := ""
+				if len(parts) > 2 {
+					apiKey = parts[2]
+				}
+				ctx.agent.ConnectMCPServer(parts[0], parts[1], apiKey)
+				fmt.Printf("✅ 已连接 MCP Server: %s (%s)\n", parts[0], parts[1])
+			}
+			return true, false
+		},
+		"/approve": func(ctx replCommandContext, arg string) (bool, bool) {
+			if arg == "" {
+				fmt.Println("用法: /approve <tool_name>")
+			} else {
+				if err := ctx.agent.Tools().SetPermissionOverride(arg, 0); err != nil { // PermAuto = 0
+					fmt.Printf("❌ %v\n", err)
+				} else {
+					fmt.Printf("✅ 工具 %s 已设为自动批准\n", arg)
+				}
+			}
+			return true, false
+		},
+		"/deny": func(ctx replCommandContext, arg string) (bool, bool) {
+			if arg == "" {
+				fmt.Println("用法: /deny <tool_name>")
+			} else {
+				if err := ctx.agent.Tools().SetPermissionOverride(arg, 2); err != nil { // PermDeny = 2
+					fmt.Printf("❌ %v\n", err)
+				} else {
+					fmt.Printf("🔴 工具 %s 已禁止使用\n", arg)
+				}
+			}
+			return true, false
+		},
+		"/cron": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleCronCommand(arg, ctx.cronEngine, ctx.cronStore, ctx.agent, *ctx.loopCfg), false
+		},
+		"/watch": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleWatchCommand(arg, ctx.watcher), false
+		},
+		"/profile": func(_ replCommandContext, arg string) (bool, bool) {
+			return handleProfileCommand(arg), false
+		},
+		"/dashboard": func(_ replCommandContext, arg string) (bool, bool) {
+			return handleDashboardCommand(arg), false
+		},
+		"/serve": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleServeCommand(arg, ctx.agent), false
+		},
+		"/context": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleContextCommand(arg, ctx.agent), false
+		},
+		"/rag": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleRAGCommand(arg, ctx.agent), false
+		},
+		"/fc": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleFCCommand(arg, ctx.agent), false
+		},
+		"/embedder": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleEmbedderCommand(arg, ctx.agent), false
+		},
+	}
+}
+
+func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, cronStore *cron.Store, watcher *cron.Watcher, sessionMgr *session.Manager, currentSession **session.Session, cfgMgr *config.Manager) (handled bool, exit bool) {
+	parts := strings.SplitN(input, " ", 2)
+	cmd := parts[0]
+	arg := ""
+	if len(parts) > 1 {
+		arg = strings.TrimSpace(parts[1])
+	}
+
+	ctx := replCommandContext{
+		agent:          a,
+		loopCfg:        loopCfg,
+		cronEngine:     cronEngine,
+		cronStore:      cronStore,
+		watcher:        watcher,
+		sessionMgr:     sessionMgr,
+		currentSession: currentSession,
+		cfgMgr:         cfgMgr,
+	}
+
+	if fn, ok := buildREPLCommandRegistry()[cmd]; ok {
+		return fn(ctx, arg)
+	}
+
+	fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
+	return true, false
 }
 
 func tierEmoji(t memory.Tier) string {

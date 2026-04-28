@@ -4,17 +4,19 @@ import (
 	"bufio"
 	"context"
 	"crypto/subtle"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	jsoniter "github.com/json-iterator/go"
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/contextx"
@@ -26,11 +28,14 @@ import (
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/telemetry"
 	"github.com/yurika0211/luckyharness/internal/tool"
 	"github.com/yurika0211/luckyharness/internal/utils"
 	"github.com/yurika0211/luckyharness/internal/websocket"
 	"github.com/yurika0211/luckyharness/internal/workflow"
 )
+
+var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
 // Server 是 LuckyHarness 的 HTTP API Server
 type Server struct {
@@ -59,6 +64,8 @@ type Server struct {
 
 	// v0.24.0: Workflow Engine
 	workflowEngine *workflow.WorkflowEngine
+	telemetryOn    bool
+	telemetryStop  func(context.Context) error
 }
 
 // ServerConfig API Server 配置
@@ -137,6 +144,11 @@ type ErrorResponse struct {
 	Error   string `json:"error"`
 	Code    int    `json:"code"`
 	Details string `json:"details,omitempty"`
+}
+
+type routeEntry struct {
+	path    string
+	handler http.HandlerFunc
 }
 
 type responseRecorder struct {
@@ -239,6 +251,8 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	workflowExecutor := workflow.NewDefaultExecutor()
 	workflowEngine := workflow.NewWorkflowEngine(workflowExecutor, 10)
 
+	telemetryOn, telemetryStop := setupTelemetryFromEnv()
+
 	return &Server{
 		agent:       a,
 		config:      cfg,
@@ -252,7 +266,37 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		collabRegistry:  collabRegistry,
 		delegateManager: delegateManager,
 		workflowEngine:  workflowEngine,
+		telemetryOn:     telemetryOn,
+		telemetryStop:   telemetryStop,
 	}
+}
+
+func setupTelemetryFromEnv() (bool, func(context.Context) error) {
+	enabled := strings.EqualFold(strings.TrimSpace(os.Getenv("LH_TELEMETRY_ENABLED")), "true")
+	if !enabled {
+		return false, nil
+	}
+
+	cfg := telemetry.DefaultConfig()
+	if v := strings.TrimSpace(os.Getenv("LH_TELEMETRY_EXPORTER")); v != "" {
+		cfg.ExporterType = v
+	}
+	if v := strings.TrimSpace(os.Getenv("LH_TELEMETRY_OTLP_ENDPOINT")); v != "" {
+		cfg.OTLPEndpoint = v
+	}
+	if v := strings.TrimSpace(os.Getenv("LH_TELEMETRY_SAMPLE_RATE")); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			cfg.SampleRate = f
+		}
+	}
+
+	stop, err := telemetry.Setup(context.Background(), cfg)
+	if err != nil {
+		logger.Warn("telemetry setup failed", "error", err)
+		return false, nil
+	}
+	logger.Info("telemetry enabled", "exporter", cfg.ExporterType, "sample_rate", cfg.SampleRate)
+	return true, stop
 }
 
 // Start 启动 API Server
@@ -265,84 +309,66 @@ func (s *Server) Start() error {
 
 	mux := http.NewServeMux()
 
-	// API v1 路由
-	mux.HandleFunc("/api/v1/health", s.handleHealth)
-	mux.HandleFunc("/api/v1/health/live", s.handleHealthLiveness)
-	mux.HandleFunc("/api/v1/health/ready", s.handleHealthReadiness)
-	mux.HandleFunc("/api/v1/health/detail", s.handleHealthDetail)
-	mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
-	mux.HandleFunc("/api/v1/chat", s.handleChat)
-	mux.HandleFunc("/api/v1/chat/sync", s.handleChatSync)
-	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
-	mux.HandleFunc("/api/v1/memory", s.handleMemory)
-	mux.HandleFunc("/api/v1/memory/recall", s.handleMemoryRecall)
-	mux.HandleFunc("/api/v1/memory/stats", s.handleMemoryStats)
-	mux.HandleFunc("/api/v1/tools", s.handleTools)
-	mux.HandleFunc("/api/v1/stats", s.handleStats)
-	mux.HandleFunc("/api/v1/soul", s.handleSoul)
-	mux.HandleFunc("/api/v1/context", s.handleContext)
-	mux.HandleFunc("/api/v1/context/fit", s.handleContextFit)
-	mux.HandleFunc("/api/v1/rag/index", s.handleRAGIndex)
-	mux.HandleFunc("/api/v1/rag/search", s.handleRAGSearch)
-	mux.HandleFunc("/api/v1/rag/stats", s.handleRAGStats)
-	mux.HandleFunc("/api/v1/rag/store", s.handleRAGStore) // v0.21.0: SQLite 持久化
-
-	// v0.23.0: 流式 RAG
-	mux.HandleFunc("/api/v1/rag/stream/watch", s.handleRAGStreamWatch)
-	mux.HandleFunc("/api/v1/rag/stream/scan", s.handleRAGStreamScan)
-	mux.HandleFunc("/api/v1/rag/stream/start", s.handleRAGStreamStart)
-	mux.HandleFunc("/api/v1/rag/stream/stop", s.handleRAGStreamStop)
-	mux.HandleFunc("/api/v1/rag/stream/status", s.handleRAGStreamStatus)
-	mux.HandleFunc("/api/v1/rag/stream/index", s.handleRAGStreamIndex)
-	mux.HandleFunc("/api/v1/rag/stream/queue", s.handleRAGStreamQueue)
-	mux.HandleFunc("/api/v1/rag/stream/process", s.handleRAGStreamProcess)
-
-	// v0.15.0: Plugin API
-	mux.HandleFunc("/api/v1/plugins", s.handlePlugins)
-	mux.HandleFunc("/api/v1/plugins/search", s.handlePluginSearch)
-	mux.HandleFunc("/api/v1/plugins/install", s.handlePluginInstall)
-
-	// v0.16.0: Function Calling API
-	mux.HandleFunc("/api/v1/fc", s.handleFunctionCalling)
-	mux.HandleFunc("/api/v1/fc/tools", s.handleFCTools)
-	mux.HandleFunc("/api/v1/fc/history", s.handleFCHistory)
-
-	// v0.18.0: WebSocket
-	mux.HandleFunc("/api/v1/ws", s.handleWebSocket)
-	mux.HandleFunc("/api/v1/ws/stats", s.handleWSStats)
-
-	// v0.19.0: SOUL 模板
-	mux.HandleFunc("/api/v1/soul/templates", s.handleSoulTemplates)
-	mux.HandleFunc("/api/v1/soul/templates/", s.handleSoulTemplateByID)
-
-	// v0.21.0: 嵌入模型管理
-	mux.HandleFunc("/api/v1/embedders", s.handleEmbedderList)
-	mux.HandleFunc("/api/v1/embedders/register", s.handleEmbedderRegister)
-	mux.HandleFunc("/api/v1/embedders/switch", s.handleEmbedderSwitch)
-	mux.HandleFunc("/api/v1/embedders/", s.handleEmbedderRoutes)
-
-	// v0.22.0: Agent 协作
-	mux.HandleFunc("/api/v1/agents", s.handleAgentsList)
-	mux.HandleFunc("/api/v1/agents/register", s.handleAgentsRegister)
-	mux.HandleFunc("/api/v1/agents/deregister", s.handleAgentsDeregister)
-	mux.HandleFunc("/api/v1/agents/delegate", s.handleAgentsDelegate)
-	mux.HandleFunc("/api/v1/agents/task", s.handleAgentsTask)
-	mux.HandleFunc("/api/v1/agents/tasks", s.handleAgentsTasks)
-	mux.HandleFunc("/api/v1/agents/cancel", s.handleAgentsCancel)
-
-	// v0.24.0: Workflow Engine
-	mux.HandleFunc("/api/v1/workflows", s.handleWorkflows)
-	mux.HandleFunc("/api/v1/workflows/", s.handleWorkflowByID)
-	mux.HandleFunc("/api/v1/workflow-instances", s.handleWorkflowInstances)
-	mux.HandleFunc("/api/v1/workflow-instances/", s.handleWorkflowInstanceByID)
-
-	// v0.6.0: Messaging Gateway
-	mux.HandleFunc("/api/v1/gateways", s.handleGatewaysList)
-	mux.HandleFunc("/api/v1/gateways/telegram/start", s.handleGatewayTelegramStart)
-	mux.HandleFunc("/api/v1/gateways/", s.handleGatewayByName)
-
-	// 根路由
-	mux.HandleFunc("/", s.handleRoot)
+	// API v1 路由（声明式注册）
+	s.registerRoutes(mux, []routeEntry{
+		{path: "/api/v1/health", handler: s.handleHealth},
+		{path: "/api/v1/health/live", handler: s.handleHealthLiveness},
+		{path: "/api/v1/health/ready", handler: s.handleHealthReadiness},
+		{path: "/api/v1/health/detail", handler: s.handleHealthDetail},
+		{path: "/api/v1/metrics", handler: s.handleMetrics},
+		{path: "/api/v1/chat", handler: s.handleChat},
+		{path: "/api/v1/chat/sync", handler: s.handleChatSync},
+		{path: "/api/v1/sessions", handler: s.handleSessions},
+		{path: "/api/v1/memory", handler: s.handleMemory},
+		{path: "/api/v1/memory/recall", handler: s.handleMemoryRecall},
+		{path: "/api/v1/memory/stats", handler: s.handleMemoryStats},
+		{path: "/api/v1/tools", handler: s.handleTools},
+		{path: "/api/v1/stats", handler: s.handleStats},
+		{path: "/api/v1/soul", handler: s.handleSoul},
+		{path: "/api/v1/context", handler: s.handleContext},
+		{path: "/api/v1/context/fit", handler: s.handleContextFit},
+		{path: "/api/v1/rag/index", handler: s.handleRAGIndex},
+		{path: "/api/v1/rag/search", handler: s.handleRAGSearch},
+		{path: "/api/v1/rag/stats", handler: s.handleRAGStats},
+		{path: "/api/v1/rag/store", handler: s.handleRAGStore}, // v0.21.0: SQLite 持久化
+		{path: "/api/v1/rag/stream/watch", handler: s.handleRAGStreamWatch},
+		{path: "/api/v1/rag/stream/scan", handler: s.handleRAGStreamScan},
+		{path: "/api/v1/rag/stream/start", handler: s.handleRAGStreamStart},
+		{path: "/api/v1/rag/stream/stop", handler: s.handleRAGStreamStop},
+		{path: "/api/v1/rag/stream/status", handler: s.handleRAGStreamStatus},
+		{path: "/api/v1/rag/stream/index", handler: s.handleRAGStreamIndex},
+		{path: "/api/v1/rag/stream/queue", handler: s.handleRAGStreamQueue},
+		{path: "/api/v1/rag/stream/process", handler: s.handleRAGStreamProcess},
+		{path: "/api/v1/plugins", handler: s.handlePlugins},
+		{path: "/api/v1/plugins/search", handler: s.handlePluginSearch},
+		{path: "/api/v1/plugins/install", handler: s.handlePluginInstall},
+		{path: "/api/v1/fc", handler: s.handleFunctionCalling},
+		{path: "/api/v1/fc/tools", handler: s.handleFCTools},
+		{path: "/api/v1/fc/history", handler: s.handleFCHistory},
+		{path: "/api/v1/ws", handler: s.handleWebSocket},
+		{path: "/api/v1/ws/stats", handler: s.handleWSStats},
+		{path: "/api/v1/soul/templates", handler: s.handleSoulTemplates},
+		{path: "/api/v1/soul/templates/", handler: s.handleSoulTemplateByID},
+		{path: "/api/v1/embedders", handler: s.handleEmbedderList},
+		{path: "/api/v1/embedders/register", handler: s.handleEmbedderRegister},
+		{path: "/api/v1/embedders/switch", handler: s.handleEmbedderSwitch},
+		{path: "/api/v1/embedders/", handler: s.handleEmbedderRoutes},
+		{path: "/api/v1/agents", handler: s.handleAgentsList},
+		{path: "/api/v1/agents/register", handler: s.handleAgentsRegister},
+		{path: "/api/v1/agents/deregister", handler: s.handleAgentsDeregister},
+		{path: "/api/v1/agents/delegate", handler: s.handleAgentsDelegate},
+		{path: "/api/v1/agents/task", handler: s.handleAgentsTask},
+		{path: "/api/v1/agents/tasks", handler: s.handleAgentsTasks},
+		{path: "/api/v1/agents/cancel", handler: s.handleAgentsCancel},
+		{path: "/api/v1/workflows", handler: s.handleWorkflows},
+		{path: "/api/v1/workflows/", handler: s.handleWorkflowByID},
+		{path: "/api/v1/workflow-instances", handler: s.handleWorkflowInstances},
+		{path: "/api/v1/workflow-instances/", handler: s.handleWorkflowInstanceByID},
+		{path: "/api/v1/gateways", handler: s.handleGatewaysList},
+		{path: "/api/v1/gateways/telegram/start", handler: s.handleGatewayTelegramStart},
+		{path: "/api/v1/gateways/", handler: s.handleGatewayByName},
+		{path: "/", handler: s.handleRoot},
+	})
 
 	var handler http.Handler = mux
 
@@ -352,6 +378,9 @@ func (s *Server) Start() error {
 	handler = s.authMiddleware(handler)
 	if s.config.EnableCORS {
 		handler = s.corsMiddleware(handler)
+	}
+	if s.telemetryOn {
+		handler = telemetry.HTTPMiddleware(handler)
 	}
 	// 放在最外层，覆盖鉴权/限流/CORS 失败等所有请求路径。
 	handler = s.loggingMiddleware(handler)
@@ -406,6 +435,11 @@ func (s *Server) Stop() error {
 
 	if err := s.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown server: %w", err)
+	}
+	if s.telemetryStop != nil {
+		if err := s.telemetryStop(ctx); err != nil {
+			logger.Warn("telemetry shutdown failed", "error", err)
+		}
 	}
 
 	s.running = false
@@ -537,7 +571,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.metrics.RecordChatRequest()
 
 	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
 		return
 	}
@@ -581,7 +615,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for event := range events {
-		data, _ := json.Marshal(map[string]interface{}{
+		data, _ := jsonAPI.Marshal(map[string]interface{}{
 			"type":      eventTypeString(event.Type),
 			"content":   event.Content,
 			"iteration": event.Iteration,
@@ -596,7 +630,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	duration := time.Since(start)
-	summary, _ := json.Marshal(map[string]interface{}{
+	summary, _ := jsonAPI.Marshal(map[string]interface{}{
 		"type":     "complete",
 		"duration": duration.String(),
 	})
@@ -621,7 +655,7 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 	s.metrics.RecordChatRequest()
 
 	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
 		return
 	}
@@ -809,59 +843,58 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 
 // handleMemory 记忆管理
 func (s *Server) handleMemory(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		// 列出所有记忆
-		stats := s.agent.MemoryStats()
-		s.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"stats": map[string]int{
-				"short":  stats[memory.TierShort],
-				"medium": stats[memory.TierMedium],
-				"long":   stats[memory.TierLong],
-			},
-		})
+	s.dispatchMethod(w, r, map[string]func(){
+		http.MethodGet: func() {
+			// 列出所有记忆
+			stats := s.agent.MemoryStats()
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"stats": map[string]int{
+					"short":  stats[memory.TierShort],
+					"medium": stats[memory.TierMedium],
+					"long":   stats[memory.TierLong],
+				},
+			})
 
-	case http.MethodPost:
-		// 保存记忆
-		var body struct {
-			Content  string `json:"content"`
-			Category string `json:"category"`
-			LongTerm bool   `json:"long_term"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
-			return
-		}
+		},
+		http.MethodPost: func() {
+			// 保存记忆
+			var body struct {
+				Content  string `json:"content"`
+				Category string `json:"category"`
+				LongTerm bool   `json:"long_term"`
+			}
+			if err := jsonAPI.NewDecoder(r.Body).Decode(&body); err != nil {
+				s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+				return
+			}
 
-		if body.Content == "" {
-			s.sendError(w, "content is required", http.StatusBadRequest, "")
-			return
-		}
+			if body.Content == "" {
+				s.sendError(w, "content is required", http.StatusBadRequest, "")
+				return
+			}
 
-		if body.Category == "" {
-			body.Category = "user"
-		}
+			if body.Category == "" {
+				body.Category = "user"
+			}
 
-		var err error
-		if body.LongTerm {
-			err = s.agent.RememberLongTerm(body.Content, body.Category)
-		} else {
-			err = s.agent.Remember(body.Content, body.Category)
-		}
+			var err error
+			if body.LongTerm {
+				err = s.agent.RememberLongTerm(body.Content, body.Category)
+			} else {
+				err = s.agent.Remember(body.Content, body.Category)
+			}
 
-		if err != nil {
-			s.sendError(w, "save memory failed", http.StatusInternalServerError, err.Error())
-			return
-		}
+			if err != nil {
+				s.sendError(w, "save memory failed", http.StatusInternalServerError, err.Error())
+				return
+			}
 
-		s.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"status":    "saved",
-			"long_term": body.LongTerm,
-		})
-
-	default:
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-	}
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"status":    "saved",
+				"long_term": body.LongTerm,
+			})
+		},
+	})
 }
 
 // handleMemoryRecall 记忆搜索
@@ -1253,21 +1286,37 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 func (s *Server) sendJSON(w http.ResponseWriter, status int, data interface{}) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	jsonAPI.NewEncoder(w).Encode(data)
 }
 
 func (s *Server) sendError(w http.ResponseWriter, msg string, code int, details string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(ErrorResponse{
+	jsonAPI.NewEncoder(w).Encode(ErrorResponse{
 		Error:   msg,
 		Code:    code,
 		Details: details,
 	})
 }
 
+func (s *Server) registerRoutes(mux *http.ServeMux, routes []routeEntry) {
+	for _, route := range routes {
+		mux.HandleFunc(route.path, route.handler)
+	}
+}
+
+func (s *Server) dispatchMethod(w http.ResponseWriter, r *http.Request, handlers map[string]func()) bool {
+	handler, ok := handlers[r.Method]
+	if !ok {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return false
+	}
+	handler()
+	return true
+}
+
 func (s *Server) sendSSEError(w io.Writer, flusher http.Flusher, msg string) {
-	data, _ := json.Marshal(map[string]interface{}{
+	data, _ := jsonAPI.Marshal(map[string]interface{}{
 		"type":  "error",
 		"error": msg,
 	})
@@ -1413,7 +1462,7 @@ func (s *Server) handleContextFit(w http.ResponseWriter, r *http.Request) {
 		Strategy string `json:"strategy,omitempty"` // oldest_first, low_priority_first, sliding_window, summarize
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1505,105 +1554,103 @@ func (s *Server) handleContextFit(w http.ResponseWriter, r *http.Request) {
 
 // handleRAGIndex 索引文档到 RAG 知识库
 func (s *Server) handleRAGIndex(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		var req struct {
-			Source  string `json:"source"`            // 文件路径或来源标识
-			Title   string `json:"title,omitempty"`   // 文档标题（索引文本时使用）
-			Content string `json:"content,omitempty"` // 文本内容（索引文本时使用）
-			Dir     string `json:"dir,omitempty"`     // 目录路径（批量索引时使用）
-		}
+	s.dispatchMethod(w, r, map[string]func(){
+		http.MethodPost: func() {
+			var req struct {
+				Source  string `json:"source"`            // 文件路径或来源标识
+				Title   string `json:"title,omitempty"`   // 文档标题（索引文本时使用）
+				Content string `json:"content,omitempty"` // 文本内容（索引文本时使用）
+				Dir     string `json:"dir,omitempty"`     // 目录路径（批量索引时使用）
+			}
 
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
-			return
-		}
-
-		ragMgr := s.agent.RAG()
-		if ragMgr == nil {
-			s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
-			return
-		}
-
-		var result map[string]interface{}
-		if req.Dir != "" {
-			// 批量索引目录
-			docs, err := ragMgr.IndexDirectory(req.Dir)
-			if err != nil {
-				s.sendError(w, "index directory failed", http.StatusInternalServerError, err.Error())
+			if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
+				s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
 				return
 			}
-			docIDs := make([]string, len(docs))
-			for i, d := range docs {
-				docIDs[i] = d.ID
-			}
-			result = map[string]interface{}{
-				"action":  "index_directory",
-				"dir":     req.Dir,
-				"indexed": len(docs),
-				"doc_ids": docIDs,
-			}
-		} else if req.Content != "" {
-			// 索引文本内容
-			title := req.Title
-			if title == "" {
-				title = req.Source
-			}
-			doc, err := ragMgr.IndexText(req.Source, title, req.Content)
-			if err != nil {
-				s.sendError(w, "index text failed", http.StatusInternalServerError, err.Error())
+
+			ragMgr := s.agent.RAG()
+			if ragMgr == nil {
+				s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
 				return
 			}
-			result = map[string]interface{}{
-				"action":     "index_text",
-				"doc_id":     doc.ID,
-				"title":      doc.Title,
-				"chunks":     len(doc.Chunks),
-				"indexed_at": doc.IndexedAt,
-			}
-		} else if req.Source != "" {
-			// 索引单个文件
-			doc, err := ragMgr.IndexFile(req.Source)
-			if err != nil {
-				s.sendError(w, "index file failed", http.StatusInternalServerError, err.Error())
+
+			var result map[string]interface{}
+			if req.Dir != "" {
+				// 批量索引目录
+				docs, err := ragMgr.IndexDirectory(req.Dir)
+				if err != nil {
+					s.sendError(w, "index directory failed", http.StatusInternalServerError, err.Error())
+					return
+				}
+				docIDs := make([]string, len(docs))
+				for i, d := range docs {
+					docIDs[i] = d.ID
+				}
+				result = map[string]interface{}{
+					"action":  "index_directory",
+					"dir":     req.Dir,
+					"indexed": len(docs),
+					"doc_ids": docIDs,
+				}
+			} else if req.Content != "" {
+				// 索引文本内容
+				title := req.Title
+				if title == "" {
+					title = req.Source
+				}
+				doc, err := ragMgr.IndexText(req.Source, title, req.Content)
+				if err != nil {
+					s.sendError(w, "index text failed", http.StatusInternalServerError, err.Error())
+					return
+				}
+				result = map[string]interface{}{
+					"action":     "index_text",
+					"doc_id":     doc.ID,
+					"title":      doc.Title,
+					"chunks":     len(doc.Chunks),
+					"indexed_at": doc.IndexedAt,
+				}
+			} else if req.Source != "" {
+				// 索引单个文件
+				doc, err := ragMgr.IndexFile(req.Source)
+				if err != nil {
+					s.sendError(w, "index file failed", http.StatusInternalServerError, err.Error())
+					return
+				}
+				result = map[string]interface{}{
+					"action":     "index_file",
+					"doc_id":     doc.ID,
+					"title":      doc.Title,
+					"chunks":     len(doc.Chunks),
+					"indexed_at": doc.IndexedAt,
+				}
+			} else {
+				s.sendError(w, "must provide source, content, or dir", http.StatusBadRequest, "")
 				return
 			}
-			result = map[string]interface{}{
-				"action":     "index_file",
-				"doc_id":     doc.ID,
-				"title":      doc.Title,
-				"chunks":     len(doc.Chunks),
-				"indexed_at": doc.IndexedAt,
+
+			s.sendJSON(w, http.StatusOK, result)
+		},
+		http.MethodDelete: func() {
+			var req struct {
+				DocID string `json:"doc_id"`
 			}
-		} else {
-			s.sendError(w, "must provide source, content, or dir", http.StatusBadRequest, "")
-			return
-		}
-
-		s.sendJSON(w, http.StatusOK, result)
-
-	case http.MethodDelete:
-		var req struct {
-			DocID string `json:"doc_id"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
-			return
-		}
-		ragMgr := s.agent.RAG()
-		if ragMgr == nil {
-			s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
-			return
-		}
-		removed := ragMgr.RemoveDocument(req.DocID)
-		s.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"doc_id":  req.DocID,
-			"removed": removed,
-		})
-
-	default:
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-	}
+			if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
+				s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+				return
+			}
+			ragMgr := s.agent.RAG()
+			if ragMgr == nil {
+				s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
+				return
+			}
+			removed := ragMgr.RemoveDocument(req.DocID)
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"doc_id":  req.DocID,
+				"removed": removed,
+			})
+		},
+	})
 }
 
 // handleRAGSearch 搜索 RAG 知识库
@@ -1620,7 +1667,7 @@ func (s *Server) handleRAGSearch(w http.ResponseWriter, r *http.Request) {
 		Source   string  `json:"source,omitempty"` // 按来源过滤
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1735,70 +1782,68 @@ func (s *Server) handleRAGStats(w http.ResponseWriter, r *http.Request) {
 // POST: 执行 function calling
 // GET: 获取 function calling 状态
 func (s *Server) handleFunctionCalling(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		s.sendJSON(w, http.StatusOK, map[string]any{
-			"version":     "0.20.0",
-			"description": "OpenAI Function Calling support",
-			"endpoints": map[string]string{
-				"POST /api/v1/fc":         "Execute function calling",
-				"GET  /api/v1/fc/tools":   "List available function tools",
-				"GET  /api/v1/fc/history": "Get function call history",
-			},
-		})
-
-	case http.MethodPost:
-		var req fcRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
-			return
-		}
-
-		if req.Message == "" {
-			s.sendError(w, "message is required", http.StatusBadRequest, "")
-			return
-		}
-
-		loopCfg := agent.DefaultLoopConfig()
-		if s.agent != nil && s.agent.Config() != nil {
-			cfg := s.agent.Config().Get()
-			agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
-		}
-		loopCfg.AutoApprove = req.AutoApprove
-		if req.MaxIter > 0 {
-			loopCfg.MaxIterations = req.MaxIter
-		}
-
-		start := time.Now()
-		result, err := s.agent.RunLoop(r.Context(), req.Message, loopCfg)
-		if err != nil {
-			s.sendError(w, "function calling failed", http.StatusInternalServerError, err.Error())
-			return
-		}
-
-		duration := time.Since(start)
-		resp := fcResponse{
-			Response:   result.Response,
-			Iterations: result.Iterations,
-			TokensUsed: result.TokensUsed,
-			Duration:   duration.String(),
-			State:      result.State.String(),
-		}
-
-		for _, tc := range result.ToolCalls {
-			resp.ToolCalls = append(resp.ToolCalls, toolCallInfo{
-				Name:      tc.Name,
-				Arguments: tc.Arguments,
-				Result:    tc.Result,
-				Duration:  tc.Duration.String(),
+	s.dispatchMethod(w, r, map[string]func(){
+		http.MethodGet: func() {
+			s.sendJSON(w, http.StatusOK, map[string]any{
+				"version":     "0.20.0",
+				"description": "OpenAI Function Calling support",
+				"endpoints": map[string]string{
+					"POST /api/v1/fc":         "Execute function calling",
+					"GET  /api/v1/fc/tools":   "List available function tools",
+					"GET  /api/v1/fc/history": "Get function call history",
+				},
 			})
-		}
+		},
+		http.MethodPost: func() {
+			var req fcRequest
+			if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
+				s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+				return
+			}
 
-		s.sendJSON(w, http.StatusOK, resp)
+			if req.Message == "" {
+				s.sendError(w, "message is required", http.StatusBadRequest, "")
+				return
+			}
 
-	default:
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-	}
+			loopCfg := agent.DefaultLoopConfig()
+			if s.agent != nil && s.agent.Config() != nil {
+				cfg := s.agent.Config().Get()
+				agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+			}
+			loopCfg.AutoApprove = req.AutoApprove
+			if req.MaxIter > 0 {
+				loopCfg.MaxIterations = req.MaxIter
+			}
+
+			start := time.Now()
+			result, err := s.agent.RunLoop(r.Context(), req.Message, loopCfg)
+			if err != nil {
+				s.sendError(w, "function calling failed", http.StatusInternalServerError, err.Error())
+				return
+			}
+
+			duration := time.Since(start)
+			resp := fcResponse{
+				Response:   result.Response,
+				Iterations: result.Iterations,
+				TokensUsed: result.TokensUsed,
+				Duration:   duration.String(),
+				State:      result.State.String(),
+			}
+
+			for _, tc := range result.ToolCalls {
+				resp.ToolCalls = append(resp.ToolCalls, toolCallInfo{
+					Name:      tc.Name,
+					Arguments: tc.Arguments,
+					Result:    tc.Result,
+					Duration:  tc.Duration.String(),
+				})
+			}
+
+			s.sendJSON(w, http.StatusOK, resp)
+		},
+	})
 }
 
 // handleFCTools 列出可用的 function calling 工具
@@ -1880,65 +1925,63 @@ func (s *Server) handleRAGStore(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.Method {
-	case http.MethodGet:
-		// 获取存储后端信息
-		result := map[string]interface{}{
-			"backend": "memory",
-			"sqlite":  false,
-		}
+	s.dispatchMethod(w, r, map[string]func(){
+		http.MethodGet: func() {
+			// 获取存储后端信息
+			result := map[string]interface{}{
+				"backend": "memory",
+				"sqlite":  false,
+			}
 
-		if ragMgr.IsSQLite() {
-			sqlStore := ragMgr.SQLiteStore()
-			count, dbSize, err := sqlStore.Stats()
-			if err != nil {
-				s.sendError(w, "failed to get sqlite stats", http.StatusInternalServerError, err.Error())
+			if ragMgr.IsSQLite() {
+				sqlStore := ragMgr.SQLiteStore()
+				count, dbSize, err := sqlStore.Stats()
+				if err != nil {
+					s.sendError(w, "failed to get sqlite stats", http.StatusInternalServerError, err.Error())
+					return
+				}
+				result = map[string]interface{}{
+					"backend":   "sqlite",
+					"sqlite":    true,
+					"db_path":   sqlStore.Path(),
+					"entries":   count,
+					"db_size":   dbSize,
+					"dimension": sqlStore.Dimension(),
+				}
+			} else {
+				store := ragMgr.Store()
+				result = map[string]interface{}{
+					"backend":   "memory",
+					"sqlite":    false,
+					"entries":   store.Len(),
+					"dimension": store.Dimension(),
+				}
+			}
+
+			s.sendJSON(w, http.StatusOK, result)
+		},
+		http.MethodPost: func() {
+			// 迁移到 SQLite 后端
+			var req struct {
+				DBPath string `json:"db_path,omitempty"` // 可选自定义路径
+			}
+			if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
+				s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
 				return
 			}
-			result = map[string]interface{}{
-				"backend":   "sqlite",
-				"sqlite":    true,
-				"db_path":   sqlStore.Path(),
-				"entries":   count,
-				"db_size":   dbSize,
-				"dimension": sqlStore.Dimension(),
+
+			if ragMgr.IsSQLite() {
+				s.sendError(w, "already using SQLite backend", http.StatusConflict, "")
+				return
 			}
-		} else {
-			store := ragMgr.Store()
-			result = map[string]interface{}{
-				"backend":   "memory",
-				"sqlite":    false,
-				"entries":   store.Len(),
-				"dimension": store.Dimension(),
-			}
-		}
 
-		s.sendJSON(w, http.StatusOK, result)
-
-	case http.MethodPost:
-		// 迁移到 SQLite 后端
-		var req struct {
-			DBPath string `json:"db_path,omitempty"` // 可选自定义路径
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
-			return
-		}
-
-		if ragMgr.IsSQLite() {
-			s.sendError(w, "already using SQLite backend", http.StatusConflict, "")
-			return
-		}
-
-		// 迁移逻辑由 Agent 层处理
-		s.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"message": "migration to SQLite requires restart with SQLite backend enabled",
-			"hint":    "SQLite backend is enabled by default in v0.21.0+",
-		})
-
-	default:
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-	}
+			// 迁移逻辑由 Agent 层处理
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"message": "migration to SQLite requires restart with SQLite backend enabled",
+				"hint":    "SQLite backend is enabled by default in v0.21.0+",
+			})
+		},
+	})
 }
 
 // ============================================================================
@@ -1946,40 +1989,38 @@ func (s *Server) handleRAGStore(w http.ResponseWriter, r *http.Request) {
 // ============================================================================
 
 func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		workflows := s.workflowEngine.ListWorkflows()
-		s.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"workflows": workflows,
-			"count":     len(workflows),
-		})
+	s.dispatchMethod(w, r, map[string]func(){
+		http.MethodGet: func() {
+			workflows := s.workflowEngine.ListWorkflows()
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"workflows": workflows,
+				"count":     len(workflows),
+			})
+		},
+		http.MethodPost: func() {
+			var req struct {
+				Name        string           `json:"name"`
+				Description string           `json:"description,omitempty"`
+				Tasks       []*workflow.Task `json:"tasks"`
+				Version     string           `json:"version,omitempty"`
+			}
+			if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
+				s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+				return
+			}
 
-	case http.MethodPost:
-		var req struct {
-			Name        string           `json:"name"`
-			Description string           `json:"description,omitempty"`
-			Tasks       []*workflow.Task `json:"tasks"`
-			Version     string           `json:"version,omitempty"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
-			return
-		}
+			wf := workflow.NewWorkflow(req.Name, req.Tasks)
+			wf.Description = req.Description
+			wf.Version = req.Version
 
-		wf := workflow.NewWorkflow(req.Name, req.Tasks)
-		wf.Description = req.Description
-		wf.Version = req.Version
+			if err := s.workflowEngine.RegisterWorkflow(wf); err != nil {
+				s.sendError(w, "invalid workflow", http.StatusBadRequest, err.Error())
+				return
+			}
 
-		if err := s.workflowEngine.RegisterWorkflow(wf); err != nil {
-			s.sendError(w, "invalid workflow", http.StatusBadRequest, err.Error())
-			return
-		}
-
-		s.sendJSON(w, http.StatusCreated, wf)
-
-	default:
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-	}
+			s.sendJSON(w, http.StatusCreated, wf)
+		},
+	})
 }
 
 func (s *Server) handleWorkflowByID(w http.ResponseWriter, r *http.Request) {
@@ -1989,56 +2030,52 @@ func (s *Server) handleWorkflowByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.Method {
-	case http.MethodGet:
-		wf, ok := s.workflowEngine.GetWorkflow(id)
-		if !ok {
-			s.sendError(w, "workflow not found", http.StatusNotFound, "")
-			return
-		}
-		s.sendJSON(w, http.StatusOK, wf)
-
-	case http.MethodDelete:
-		if err := s.workflowEngine.DeleteWorkflow(id); err != nil {
-			s.sendError(w, "failed to delete workflow", http.StatusInternalServerError, err.Error())
-			return
-		}
-		s.sendJSON(w, http.StatusOK, map[string]string{"message": "workflow deleted"})
-
-	default:
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-	}
+	s.dispatchMethod(w, r, map[string]func(){
+		http.MethodGet: func() {
+			wf, ok := s.workflowEngine.GetWorkflow(id)
+			if !ok {
+				s.sendError(w, "workflow not found", http.StatusNotFound, "")
+				return
+			}
+			s.sendJSON(w, http.StatusOK, wf)
+		},
+		http.MethodDelete: func() {
+			if err := s.workflowEngine.DeleteWorkflow(id); err != nil {
+				s.sendError(w, "failed to delete workflow", http.StatusInternalServerError, err.Error())
+				return
+			}
+			s.sendJSON(w, http.StatusOK, map[string]string{"message": "workflow deleted"})
+		},
+	})
 }
 
 func (s *Server) handleWorkflowInstances(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		instances := s.workflowEngine.ListInstances()
-		s.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"instances": instances,
-			"count":     len(instances),
-		})
+	s.dispatchMethod(w, r, map[string]func(){
+		http.MethodGet: func() {
+			instances := s.workflowEngine.ListInstances()
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"instances": instances,
+				"count":     len(instances),
+			})
+		},
+		http.MethodPost: func() {
+			var req struct {
+				WorkflowID string `json:"workflowId"`
+			}
+			if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
+				s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+				return
+			}
 
-	case http.MethodPost:
-		var req struct {
-			WorkflowID string `json:"workflowId"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
-			return
-		}
+			instance, err := s.workflowEngine.StartWorkflow(req.WorkflowID)
+			if err != nil {
+				s.sendError(w, "failed to start workflow", http.StatusBadRequest, err.Error())
+				return
+			}
 
-		instance, err := s.workflowEngine.StartWorkflow(req.WorkflowID)
-		if err != nil {
-			s.sendError(w, "failed to start workflow", http.StatusBadRequest, err.Error())
-			return
-		}
-
-		s.sendJSON(w, http.StatusCreated, instance)
-
-	default:
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-	}
+			s.sendJSON(w, http.StatusCreated, instance)
+		},
+	})
 }
 
 func (s *Server) handleWorkflowInstanceByID(w http.ResponseWriter, r *http.Request) {
@@ -2051,36 +2088,34 @@ func (s *Server) handleWorkflowInstanceByID(w http.ResponseWriter, r *http.Reque
 
 	id := parts[0]
 
-	switch r.Method {
-	case http.MethodGet:
-		instance, ok := s.workflowEngine.GetInstance(id)
-		if !ok {
-			s.sendError(w, "instance not found", http.StatusNotFound, "")
-			return
-		}
+	s.dispatchMethod(w, r, map[string]func(){
+		http.MethodGet: func() {
+			instance, ok := s.workflowEngine.GetInstance(id)
+			if !ok {
+				s.sendError(w, "instance not found", http.StatusNotFound, "")
+				return
+			}
 
-		// Check if requesting results
-		if len(parts) > 1 && parts[1] == "results" {
-			s.sendJSON(w, http.StatusOK, map[string]interface{}{
-				"instanceId": instance.ID,
-				"status":     instance.GetStatus(),
-				"results":    instance.Results,
-			})
-			return
-		}
+			// Check if requesting results
+			if len(parts) > 1 && parts[1] == "results" {
+				s.sendJSON(w, http.StatusOK, map[string]interface{}{
+					"instanceId": instance.ID,
+					"status":     instance.GetStatus(),
+					"results":    instance.Results,
+				})
+				return
+			}
 
-		s.sendJSON(w, http.StatusOK, instance)
-
-	case http.MethodDelete:
-		if err := s.workflowEngine.CancelInstance(id); err != nil {
-			s.sendError(w, "failed to cancel instance", http.StatusNotFound, err.Error())
-			return
-		}
-		s.sendJSON(w, http.StatusOK, map[string]string{"message": "instance cancelled"})
-
-	default:
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-	}
+			s.sendJSON(w, http.StatusOK, instance)
+		},
+		http.MethodDelete: func() {
+			if err := s.workflowEngine.CancelInstance(id); err != nil {
+				s.sendError(w, "failed to cancel instance", http.StatusNotFound, err.Error())
+				return
+			}
+			s.sendJSON(w, http.StatusOK, map[string]string{"message": "instance cancelled"})
+		},
+	})
 }
 
 // ===== v0.6.0: Messaging Gateway Handlers =====
@@ -2111,7 +2146,7 @@ func (s *Server) handleGatewayTelegramStart(w http.ResponseWriter, r *http.Reque
 		AllowedChats []string `json:"allowed_chats,omitempty"`
 		AdminIDs     []string `json:"admin_ids,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
 		s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
 		return
 	}
