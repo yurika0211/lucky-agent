@@ -43,6 +43,74 @@
   - CLI 兼容别名：`msg_gateway.telegram.show_tool_chain`
   - 说明：`config.json` / `config.example.json` 中的持久化字段仍然是 `show_tool_details_in_result`
 
+## Provider 治理配置（已接入运行时）
+
+以下配置已在 Provider 实际调用路径生效：
+
+- `retry.*`
+- `circuit_breaker.*`
+- `rate_limit.*`
+
+也就是不仅仅“可配置”，而是会在运行时通过中间件链包裹当前 provider。
+
+## model_router 生效规则
+
+- 开启 `model_router.enable=true` 后，Agent 会在每轮开始按任务复杂度尝试选模型。
+- 如果同时配置了 `fallbacks`，则自动路由会跳过，不与降级链叠加。
+- 需要“自动选模型”时，不要同时启用 `fallbacks`。
+
+说明：
+
+- `model_router.*` 目前建议直接编辑 `config.json`。
+- `lh config set` 已覆盖大量字段，但并未覆盖全部 `model_router` 子字段。
+
+## Telemetry 环境变量
+
+Telemetry 由环境变量控制，不在 `config.json` 内配置：
+
+- `LH_TELEMETRY_ENABLED`
+- `LH_TELEMETRY_EXPORTER`
+- `LH_TELEMETRY_OTLP_ENDPOINT`
+- `LH_TELEMETRY_SAMPLE_RATE`
+
+示例：
+
+```bash
+export LH_TELEMETRY_ENABLED=true
+export LH_TELEMETRY_EXPORTER=stdout
+export LH_TELEMETRY_SAMPLE_RATE=1.0
+```
+
+OTLP 示例：
+
+```bash
+export LH_TELEMETRY_ENABLED=true
+export LH_TELEMETRY_EXPORTER=otlp
+export LH_TELEMETRY_OTLP_ENDPOINT=127.0.0.1:4317
+```
+
+## JSON 序列化热路径
+
+当前服务端、Provider 流式路径、Embedder 路径使用 `jsoniter` 兼容模式：
+
+- `internal/server/server.go`
+- `internal/provider/openai_stream.go`
+- `internal/embedder/providers.go`
+
+兼容模式是 `ConfigCompatibleWithStandardLibrary`，目标是降低开销且保持标准库行为兼容。
+
+## .env 导出注意事项
+
+如果要 `source .env`，赋值不要带空格。错误写法会导致 `command not found`。
+
+正确示例：
+
+```bash
+EMBEDDING_MODEL_NAME="jina-embeddings-v4"
+EMBEDDING_MODEL_KEY="sk-xxx"
+EMBEDDING_MODEL_URL="https://proxy.pieixan.icu/v1"
+```
+
 ## 生效方式
 
 编辑 `config.json` 后重启对应进程即可生效。

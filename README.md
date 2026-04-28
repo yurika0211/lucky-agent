@@ -14,6 +14,40 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 - 📱 **多平台网关** — Telegram/Discord/Slack/微信等消息平台接入
 - ⏰ **定时任务** — 自然语言 cron 调度
 
+## 当前运行态（2026-04-28）
+
+以下能力是当前代码已接入并在运行路径生效的：
+
+- Provider 治理中间件：`retry` / `circuit_breaker` / `rate_limit`
+- 模型路由：`model_router` 在 chat/loop 入口生效
+- Telemetry：支持 HTTP 中间件链路 + Agent Loop span
+- JSON 热路径：server/provider/embedder 切到 `jsoniter` 兼容模式
+
+关键行为说明：
+
+- 当配置了 `fallbacks` 时，`model_router` 会主动跳过，避免两套路由策略冲突。
+- Telemetry 使用环境变量开关，不走 `config.json` 字段。
+- `jsoniter` 当前使用兼容模式，行为与标准库保持一致优先。
+
+Telemetry 环境变量：
+
+- `LH_TELEMETRY_ENABLED`
+- `LH_TELEMETRY_EXPORTER`
+- `LH_TELEMETRY_OTLP_ENDPOINT`
+- `LH_TELEMETRY_SAMPLE_RATE`
+
+最小示例：
+
+```bash
+export LH_TELEMETRY_ENABLED=true
+export LH_TELEMETRY_EXPORTER=stdout
+go run ./cmd/lh serve --addr 127.0.0.1:9090
+```
+
+说明：
+
+- 当前版本未声明已完成 `zap` 全量替换，请继续按现有日志路径使用。
+
 ## 版本路线
 
 | 版本 | 主题 | 核心特性 |

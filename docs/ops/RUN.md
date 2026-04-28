@@ -1,47 +1,96 @@
- 在项目根目录直接这样启动（推荐）：
+# LuckyHarness 运行手册
 
-  cd /media/shiokou/DevRepo43/DevHub/Projects/2026-myapp/luckyharness
+## 1) 在源码目录运行
 
-  # 1) 初始化
-  go run ./cmd/lh init
+```bash
+cd /media/shiokou/DevRepo43/DevHub/Projects/2026-myapp/luckyharness
+```
 
-  # 2) 配置模型提供商（示例：OpenAI）
-  go run ./cmd/lh config set provider openai
-  go run ./cmd/lh config set api_key sk-xxx
+建议直接用源码命令启动，避免使用历史构建产物。
 
-  # 3) 启动交互聊天
-  go run ./cmd/lh chat
+## 2) 初始化配置
 
-  如果要启动 API 服务：
+```bash
+go run ./cmd/lh init
+```
 
-  go run ./cmd/lh serve --addr :9090
-  
-  go run ./cmd/lh msg-gateway start --platform telegram
+默认配置文件位置：
 
-  如果你更想用编译后的二进制：
+`~/.luckyharness/config.json`
 
-  go build -o lh ./cmd/lh
-  ./lh serve
+完整模板：
 
-  注意：仓库里现有 ./lh 是旧构建（v0.38.2），源码当前跑出来是 v0.20.0，建议先
-  go build 再用 ./lh。
-  如果想把配置写在项目内而不是 ~/.luckyharness，先执行：
+`config.example.json`
 
-  export HOME="$PWD/.lh-home"
-  cd /media/shiokou/DevRepo43/DevHub/Projects/2026-myapp/luckyharness
- 
-   # 先配好大模型（否则机器人收得到消息但可能回复失败）
-   ./lh init
-   ./lh config set provider openai
-   ./lh config set api_key sk-xxx
- 
-   # 启动 Telegram 网关（token 从 @BotFather 获取）
-   ./lh msg-gateway start --platform telegram --token "<YOUR_TG_BOT_TOKEN>"
-   --api-addr 127.0.0.1:9090
- 
-   然后去 Telegram 给你的 bot 发消息即可。
- 
-   常用管理命令：
- 
-   ./lh msg-gateway status --api-addr 127.0.0.1:9090
-   ./lh msg-gateway stop telegram --api-addr 127.0.0.1:9090
+## 3) 配置 LLM（最小可用）
+
+```bash
+go run ./cmd/lh config set provider openai
+go run ./cmd/lh config set api_key sk-xxx
+go run ./cmd/lh config set model gpt-4o-mini
+go run ./cmd/lh config set api_base https://api.openai.com/v1
+```
+
+## 4) 启动交互对话
+
+```bash
+go run ./cmd/lh chat
+```
+
+## 5) 启动 API 服务
+
+```bash
+go run ./cmd/lh serve --addr 127.0.0.1:9090
+```
+
+常用健康检查：
+
+```bash
+curl -sS http://127.0.0.1:9090/api/v1/health
+```
+
+## 6) 启动 Telegram 网关
+
+```bash
+go run ./cmd/lh msg-gateway start \
+  --platform telegram \
+  --token "<YOUR_TG_BOT_TOKEN>" \
+  --api-addr 127.0.0.1:9090
+```
+
+常用管理命令：
+
+```bash
+go run ./cmd/lh msg-gateway status --api-addr 127.0.0.1:9090
+go run ./cmd/lh msg-gateway stop telegram --api-addr 127.0.0.1:9090
+```
+
+## 7) 可选：启用 Telemetry
+
+Telemetry 通过环境变量控制，主要用于 HTTP 请求链路和 Agent Loop span。
+
+```bash
+export LH_TELEMETRY_ENABLED=true
+export LH_TELEMETRY_EXPORTER=stdout
+export LH_TELEMETRY_SAMPLE_RATE=1.0
+go run ./cmd/lh serve --addr 127.0.0.1:9090
+```
+
+如果使用 OTLP：
+
+```bash
+export LH_TELEMETRY_ENABLED=true
+export LH_TELEMETRY_EXPORTER=otlp
+export LH_TELEMETRY_OTLP_ENDPOINT=127.0.0.1:4317
+go run ./cmd/lh serve --addr 127.0.0.1:9090
+```
+
+## 8) 使用项目内 HOME 隔离配置（可选）
+
+```bash
+export HOME="$PWD/.lh-home"
+go run ./cmd/lh init
+go run ./cmd/lh chat
+```
+
+这样会把配置和会话数据写到 `./.lh-home/.luckyharness`，便于测试隔离。
