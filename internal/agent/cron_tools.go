@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -53,9 +54,13 @@ func (a *Agent) restoreCronJobs() (int, error) {
 			return nil, nil, fmt.Errorf("command is empty")
 		}
 
-		return a.buildCronTask(job.ID, mode, command), map[string]string{
+		metadata := map[string]string{
 			"mode": mode.String(),
-		}, nil
+		}
+		for k, v := range job.Metadata {
+			metadata[k] = v
+		}
+		return a.buildCronTask(job.ID, mode, command, metadata), metadata, nil
 	})
 }
 
@@ -75,10 +80,13 @@ func (a *Agent) registerCronTools() {
 		Source:      "builtin",
 		Permission:  tool.PermApprove,
 		Parameters: map[string]tool.Param{
-			"id":       {Type: "string", Description: "Unique job ID", Required: true},
-			"schedule": {Type: "string", Description: "Natural language schedule or 5-field cron expression", Required: true},
-			"mode":     {Type: "string", Description: "Execution mode: shell or agent", Required: false, Default: "shell"},
-			"command":  {Type: "string", Description: "Shell command to run, or agent prompt when mode=agent", Required: true},
+			"id":                  {Type: "string", Description: "Unique job ID", Required: true},
+			"schedule":            {Type: "string", Description: "Natural language schedule or 5-field cron expression", Required: true},
+			"mode":                {Type: "string", Description: "Execution mode: shell or agent", Required: false, Default: "shell"},
+			"command":             {Type: "string", Description: "Shell command to run, or agent prompt when mode=agent", Required: true},
+			"platform":            {Type: "string", Description: "Optional notification platform, e.g. telegram", Required: false},
+			"chat_id":             {Type: "string", Description: "Optional target chat ID for notification delivery", Required: false},
+			"reply_to_message_id": {Type: "string", Description: "Optional reply target message ID", Required: false},
 		},
 		Handler: a.handleCronAdd,
 	})
@@ -163,12 +171,21 @@ func (a *Agent) handleCronAdd(args map[string]any) (string, error) {
 		return "", fmt.Errorf("invalid mode %q (use shell or agent)", modeText)
 	}
 
-	task := a.buildCronTask(id, mode, command)
 	meta := map[string]string{
 		"mode":          string(mode),
 		"command":       command,
 		"schedule_text": scheduleText,
 	}
+	if platform, ok := args["platform"].(string); ok && strings.TrimSpace(platform) != "" {
+		meta["platform"] = strings.TrimSpace(platform)
+	}
+	if chatID, ok := args["chat_id"].(string); ok && strings.TrimSpace(chatID) != "" {
+		meta["chatID"] = strings.TrimSpace(chatID)
+	}
+	if replyTo, ok := args["reply_to_message_id"].(string); ok && strings.TrimSpace(replyTo) != "" {
+		meta["replyToMsgID"] = strings.TrimSpace(replyTo)
+	}
+	task := a.buildCronTask(id, mode, command, meta)
 	if err := a.cronEngine.AddJobWithMeta(id, "Cron: "+id, command, schedule, task, meta); err != nil {
 		return "", err
 	}
@@ -280,7 +297,7 @@ func (a *Agent) handleCronStatus(args map[string]any) (string, error) {
 	return string(result), nil
 }
 
-func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string) func() error {
+func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, metadata map[string]string) func() error {
 	return func() error {
 		fmt.Printf("\n⏰ [cron:%s] %s\n", id, command)
 
@@ -296,10 +313,12 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string) func
 			sess := a.Sessions().NewWithTitle("cron-" + id)
 			result, err := a.RunLoopWithSession(context.Background(), sess, command, runCfg)
 			if err != nil {
+				a.sendCronNotification(metadata, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", id, err.Error()))
 				return err
 			}
 			if out := strings.TrimSpace(result.Response); out != "" {
 				fmt.Println(out)
+				a.sendCronNotification(metadata, fmt.Sprintf("⏰ 定时任务 [%s] 执行结果:\n\n%s", id, out))
 			}
 			return nil
 
@@ -313,14 +332,40 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string) func
 			}, "")
 			if res != nil && strings.TrimSpace(res.Output) != "" {
 				fmt.Println(res.Output)
+				a.sendCronNotification(metadata, fmt.Sprintf("⏰ 定时任务 [%s] 执行结果:\n\n%s", id, strings.TrimSpace(res.Output)))
 			}
 			if err != nil {
+				a.sendCronNotification(metadata, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", id, err.Error()))
 				return err
 			}
 			if res != nil && strings.Contains(res.Output, "[exit code:") {
+				a.sendCronNotification(metadata, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: shell command exited with non-zero status", id))
 				return fmt.Errorf("shell command exited with non-zero status")
 			}
 			return nil
 		}
 	}
+}
+
+func (a *Agent) sendCronNotification(metadata map[string]string, message string) {
+	if a == nil || a.msgGateway == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+	platform := strings.TrimSpace(metadata["platform"])
+	chatID := strings.TrimSpace(metadata["chatID"])
+	if platform == "" || chatID == "" {
+		return
+	}
+	gw, ok := a.msgGateway.Get(platform)
+	if !ok || gw == nil || !gw.IsRunning() {
+		return
+	}
+	replyToMsgID := strings.TrimSpace(metadata["replyToMsgID"])
+	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if replyToMsgID != "" {
+		_ = gw.SendWithReply(sendCtx, chatID, replyToMsgID, message)
+		return
+	}
+	_ = gw.Send(sendCtx, chatID, message)
 }

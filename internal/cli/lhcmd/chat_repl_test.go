@@ -70,6 +70,22 @@ func TestParseCronTaskCommandAgentPrefix(t *testing.T) {
 	}
 }
 
+func TestParseCronNotificationTargetTelegramPrefix(t *testing.T) {
+	platform, chatID, replyToMsgID, stripped := parseCronNotificationTarget("tg:12345/77 agent: remind me")
+	if platform != "telegram" {
+		t.Fatalf("expected telegram platform, got %q", platform)
+	}
+	if chatID != "12345" {
+		t.Fatalf("expected chatID 12345, got %q", chatID)
+	}
+	if replyToMsgID != "77" {
+		t.Fatalf("expected replyToMsgID 77, got %q", replyToMsgID)
+	}
+	if stripped != "agent: remind me" {
+		t.Fatalf("unexpected stripped command %q", stripped)
+	}
+}
+
 func TestCronStoreSaveAndLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 	store := cron.NewStore(filepath.Join(tmpDir, "cron_jobs.json"))
@@ -86,6 +102,8 @@ func TestCronStoreSaveAndLoad(t *testing.T) {
 			"mode":          string(cronTaskShell),
 			"command":       "echo persisted",
 			"schedule_text": "每小时",
+			"platform":      "telegram",
+			"chatID":        "12345",
 		},
 	)
 	if err != nil {
@@ -120,5 +138,11 @@ func TestCronStoreSaveAndLoad(t *testing.T) {
 	}
 	if got := job.Metadata["schedule_text"]; got != "每小时" {
 		t.Fatalf("expected schedule_text preserved, got %q", got)
+	}
+	if got := job.Metadata["platform"]; got != "telegram" {
+		t.Fatalf("expected platform metadata preserved, got %q", got)
+	}
+	if got := job.Metadata["chatID"]; got != "12345" {
+		t.Fatalf("expected chatID metadata preserved, got %q", got)
 	}
 }

@@ -36,6 +36,9 @@ type cronAddSpec struct {
 	Command      string
 	Mode         cronTaskMode
 	Payload      string
+	Platform     string
+	ChatID       string
+	ReplyToMsgID string
 }
 
 // startREPL 启动交互式 REPL
@@ -502,6 +505,15 @@ func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *ag
 			"command":       spec.Command,
 			"schedule_text": spec.ScheduleText,
 		}
+		if spec.Platform != "" {
+			meta["platform"] = spec.Platform
+		}
+		if spec.ChatID != "" {
+			meta["chatID"] = spec.ChatID
+		}
+		if spec.ReplyToMsgID != "" {
+			meta["replyToMsgID"] = spec.ReplyToMsgID
+		}
 		if err := engine.AddJobWithMeta(spec.ID, "Cron: "+spec.ID, spec.Command, spec.Schedule, task, meta); err != nil {
 			fmt.Printf("❌ %v\n", err)
 		} else {
@@ -655,7 +667,8 @@ func parseCronAddSpec(parts []string) (*cronAddSpec, error) {
 			}
 		}
 
-		mode, payload := parseCronTaskCommand(command)
+		platform, chatID, replyToMsgID, strippedCommand := parseCronNotificationTarget(command)
+		mode, payload := parseCronTaskCommand(strippedCommand)
 		if payload == "" {
 			return nil, fmt.Errorf("command 不能为空")
 		}
@@ -664,9 +677,12 @@ func parseCronAddSpec(parts []string) (*cronAddSpec, error) {
 			ID:           id,
 			Schedule:     schedule,
 			ScheduleText: scheduleText,
-			Command:      command,
+			Command:      strippedCommand,
 			Mode:         mode,
 			Payload:      payload,
+			Platform:     platform,
+			ChatID:       chatID,
+			ReplyToMsgID: replyToMsgID,
 		}, nil
 	}
 
@@ -702,6 +718,36 @@ func parseCronTaskCommand(command string) (cronTaskMode, string) {
 	}
 }
 
+func parseCronNotificationTarget(command string) (platform, chatID, replyToMsgID, stripped string) {
+	trimmed := strings.TrimSpace(command)
+	lower := strings.ToLower(trimmed)
+	const tgPrefix = "tg:"
+	const telegramPrefix = "telegram:"
+
+	switch {
+	case strings.HasPrefix(lower, tgPrefix):
+		trimmed = strings.TrimSpace(trimmed[len(tgPrefix):])
+		platform = "telegram"
+	case strings.HasPrefix(lower, telegramPrefix):
+		trimmed = strings.TrimSpace(trimmed[len(telegramPrefix):])
+		platform = "telegram"
+	default:
+		return "", "", "", command
+	}
+
+	target, rest, ok := strings.Cut(trimmed, " ")
+	if !ok {
+		return "", "", "", command
+	}
+	chatID, replyToMsgID, _ = strings.Cut(strings.TrimSpace(target), "/")
+	chatID = strings.TrimSpace(chatID)
+	replyToMsgID = strings.TrimSpace(replyToMsgID)
+	if chatID == "" {
+		return "", "", "", command
+	}
+	return platform, chatID, replyToMsgID, strings.TrimSpace(rest)
+}
+
 func buildCronTask(spec *cronAddSpec, a *agent.Agent, loopCfg agent.LoopConfig) func() error {
 	return func() error {
 		fmt.Printf("\n⏰ [cron:%s] %s\n", spec.ID, spec.Command)
@@ -718,10 +764,12 @@ func buildCronTask(spec *cronAddSpec, a *agent.Agent, loopCfg agent.LoopConfig) 
 			sess := a.Sessions().NewWithTitle("cron-" + spec.ID)
 			result, err := a.RunLoopWithSession(context.Background(), sess, spec.Payload, runCfg)
 			if err != nil {
+				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", spec.ID, err.Error()))
 				return err
 			}
 			if strings.TrimSpace(result.Response) != "" {
 				fmt.Println(result.Response)
+				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行结果:\n\n%s", spec.ID, strings.TrimSpace(result.Response)))
 			}
 			return nil
 
@@ -736,16 +784,43 @@ func buildCronTask(spec *cronAddSpec, a *agent.Agent, loopCfg agent.LoopConfig) 
 			}, "")
 			if res != nil && strings.TrimSpace(res.Output) != "" {
 				fmt.Println(res.Output)
+				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行结果:\n\n%s", spec.ID, strings.TrimSpace(res.Output)))
 			}
 			if err != nil {
+				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", spec.ID, err.Error()))
 				return err
 			}
 			if res != nil && strings.Contains(res.Output, "[exit code:") {
+				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: shell command exited with non-zero status", spec.ID))
 				return fmt.Errorf("shell command exited with non-zero status")
 			}
 			return nil
 		}
 	}
+}
+
+func sendCronNotification(a *agent.Agent, spec *cronAddSpec, message string) {
+	if a == nil || spec == nil || strings.TrimSpace(message) == "" {
+		return
+	}
+	if spec.Platform == "" || spec.ChatID == "" {
+		return
+	}
+	gm := a.MsgGateway()
+	if gm == nil {
+		return
+	}
+	gw, ok := gm.Get(spec.Platform)
+	if !ok || gw == nil || !gw.IsRunning() {
+		return
+	}
+	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if spec.ReplyToMsgID != "" {
+		_ = gw.SendWithReply(sendCtx, spec.ChatID, spec.ReplyToMsgID, message)
+		return
+	}
+	_ = gw.Send(sendCtx, spec.ChatID, message)
 }
 
 // handleWatchCommand 处理 /watch 命令

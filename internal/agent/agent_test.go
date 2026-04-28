@@ -13,6 +13,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/cron"
+	msggateway "github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
@@ -863,6 +864,31 @@ func (p *loopingFunctionProvider) ChatWithOptions(ctx context.Context, messages 
 func (p *loopingFunctionProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
 	return nil, fmt.Errorf("unexpected ChatStreamWithOptions call")
 }
+
+type cronNotifyGateway struct {
+	name     string
+	running  bool
+	messages []string
+}
+
+func (g *cronNotifyGateway) Name() string { return g.name }
+func (g *cronNotifyGateway) Start(ctx context.Context) error {
+	g.running = true
+	return nil
+}
+func (g *cronNotifyGateway) Stop() error {
+	g.running = false
+	return nil
+}
+func (g *cronNotifyGateway) Send(ctx context.Context, chatID string, message string) error {
+	g.messages = append(g.messages, message)
+	return nil
+}
+func (g *cronNotifyGateway) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	g.messages = append(g.messages, message)
+	return nil
+}
+func (g *cronNotifyGateway) IsRunning() bool { return g.running }
 
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
@@ -1901,6 +1927,51 @@ func TestCronAddAgentModeExecutesLoop(t *testing.T) {
 	}
 	if err := job.Task(); err != nil {
 		t.Fatalf("agent cron task error = %v", err)
+	}
+}
+
+func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &mockProvider{name: "test-mock"}
+
+	gm := msggateway.NewGatewayManager()
+	gw := &cronNotifyGateway{name: "telegram", running: true}
+	if err := gm.Register(gw); err != nil {
+		t.Fatalf("register gateway: %v", err)
+	}
+	a.msgGateway = gm
+
+	if _, err := a.Tools().Call("cron_add", map[string]any{
+		"id":                  "agent-job-tg",
+		"schedule":            "每小时",
+		"mode":                "agent",
+		"command":             "say hello from cron agent",
+		"platform":            "telegram",
+		"chat_id":             "12345",
+		"reply_to_message_id": "77",
+	}); err != nil {
+		t.Fatalf("cron_add(agent telegram) error = %v", err)
+	}
+
+	job, ok := a.CronEngine().GetJob("agent-job-tg")
+	if !ok {
+		t.Fatal("expected agent-job-tg to exist")
+	}
+	if err := job.Task(); err != nil {
+		t.Fatalf("agent cron task error = %v", err)
+	}
+	if len(gw.messages) == 0 {
+		t.Fatal("expected telegram notification to be sent")
 	}
 }
 

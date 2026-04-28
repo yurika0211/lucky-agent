@@ -16,11 +16,12 @@ type PersistedState struct {
 }
 
 type PersistedJob struct {
-	ID           string `json:"id"`
-	ScheduleText string `json:"schedule_text"`
-	Command      string `json:"command"`
-	Mode         string `json:"mode"`
-	Paused       bool   `json:"paused"`
+	ID           string            `json:"id"`
+	ScheduleText string            `json:"schedule_text"`
+	Command      string            `json:"command"`
+	Mode         string            `json:"mode"`
+	Paused       bool              `json:"paused"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
 
 type Store struct {
@@ -66,6 +67,7 @@ func (s *Store) Save(engine *Engine) error {
 			Command:      command,
 			Mode:         mode,
 			Paused:       job.Status == StatusPaused,
+			Metadata:     copyMetadata(job.Metadata),
 		})
 	}
 
@@ -116,6 +118,9 @@ func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() 
 		if metadata == nil {
 			metadata = make(map[string]string)
 		}
+		for k, v := range pj.Metadata {
+			metadata[k] = v
+		}
 		if strings.TrimSpace(metadata["mode"]) == "" {
 			metadata["mode"] = pj.Mode
 		}
@@ -137,6 +142,17 @@ func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() 
 		engine.Start()
 	}
 	return restored, nil
+}
+
+func copyMetadata(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(src))
+	for k, v := range src {
+		out[k] = v
+	}
+	return out
 }
 
 func ParsePersistedSchedule(input string) (Schedule, error) {
