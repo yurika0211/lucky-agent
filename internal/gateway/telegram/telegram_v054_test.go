@@ -3720,9 +3720,6 @@ func TestV054HandleChatStreamNaturalProgressFinalOnly(t *testing.T) {
 	if sender.content.Len() != 0 {
 		t.Fatalf("expected no streaming append in natural progress mode, got content length %d", sender.content.Len())
 	}
-	if !strings.HasPrefix(sender.result, "我整理好啦，下面这部分你可以直接看：\n") {
-		t.Fatalf("expected wrapped final conclusion, got: %q", sender.result)
-	}
 }
 
 func TestV054HandleChatStreamErrorEvent(t *testing.T) {

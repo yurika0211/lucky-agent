@@ -11,6 +11,9 @@ import (
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
+/*
+AnalyzeAttachments 使用多模态处理器分析附件并返回汇总文本。
+*/
 func (a *Agent) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
 	if a == nil || a.mediaProcessor == nil || len(attachments) == 0 {
 		return "", nil
@@ -40,6 +43,9 @@ func (a *Agent) AnalyzeAttachments(ctx context.Context, attachments []gateway.At
 	return "[Multimodal Analysis]\n" + strings.Join(sections, "\n\n"), nil
 }
 
+/*
+buildMultimodalInput 将网关附件转换为多模态分析输入。
+*/
 func buildMultimodalInput(att gateway.Attachment) (*multimodal.Input, string, error) {
 	modality := attachmentModality(att)
 	title := attachmentTitle(att, 0)
@@ -71,6 +77,9 @@ func buildMultimodalInput(att gateway.Attachment) (*multimodal.Input, string, er
 	return nil, title, fmt.Errorf("attachment has no downloadable data or url")
 }
 
+/*
+attachmentModality 根据附件类型推断多模态处理所需的模态。
+*/
 func attachmentModality(att gateway.Attachment) multimodal.Modality {
 	switch att.Type {
 	case gateway.AttachmentImage:
@@ -89,6 +98,9 @@ func attachmentModality(att gateway.Attachment) multimodal.Modality {
 	}
 }
 
+/*
+attachmentTitle 生成人类可读的附件标题。
+*/
 func attachmentTitle(att gateway.Attachment, idx int) string {
 	name := strings.TrimSpace(att.FileName)
 	if name == "" {
@@ -113,6 +125,9 @@ func attachmentTitle(att gateway.Attachment, idx int) string {
 	return fmt.Sprintf("%s: %s", prefix, name)
 }
 
+/*
+formatAttachmentAnalysis 将单个附件的分析结果格式化为文本。
+*/
 func formatAttachmentAnalysis(title string, result *multimodal.AnalysisResult) string {
 	if result == nil {
 		return title + "\n- analysis: unavailable"

@@ -10,9 +10,9 @@ import (
 
 // mockProvider 用于测试的 mock Provider
 type mockProvider struct {
-	name      string
-	chatErr    error
-	streamErr  error
+	name        string
+	chatErr     error
+	streamErr   error
 	validateErr error
 }
 
@@ -307,11 +307,11 @@ func TestFallbackChainOnSwitch(t *testing.T) {
 func TestAnthropicProviderDefaults(t *testing.T) {
 	p := NewAnthropicProvider(Config{})
 	ap := p.(*AnthropicProvider)
-	if ap.cfg.APIBase != "https://api.anthropic.com" {
-		t.Errorf("expected default APIBase, got %s", ap.cfg.APIBase)
+	if ap.cfg.LlmProvider.BaseURL != "https://api.anthropic.com" {
+		t.Errorf("expected default APIBase, got %s", ap.cfg.LlmProvider.BaseURL)
 	}
-	if ap.cfg.Model != "claude-sonnet-4-20250514" {
-		t.Errorf("expected default model, got %s", ap.cfg.Model)
+	if ap.cfg.LlmProvider.Model != "claude-sonnet-4-20250514" {
+		t.Errorf("expected default model, got %s", ap.cfg.LlmProvider.Model)
 	}
 }
 
@@ -321,7 +321,7 @@ func TestAnthropicProviderValidate(t *testing.T) {
 		t.Error("expected error for missing api_key")
 	}
 
-	p2 := NewAnthropicProvider(Config{APIKey: "sk-ant-test"})
+	p2 := NewAnthropicProvider(Config{LlmProvider: LlmProvider{APIKey: "sk-ant-test"}})
 	if err := p2.Validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -332,11 +332,11 @@ func TestAnthropicProviderValidate(t *testing.T) {
 func TestOllamaProviderDefaults(t *testing.T) {
 	p := NewOllamaProvider(Config{})
 	op := p.(*OllamaProvider)
-	if op.cfg.APIBase != "http://localhost:11434" {
-		t.Errorf("expected default APIBase, got %s", op.cfg.APIBase)
+	if op.cfg.LlmProvider.BaseURL != "http://localhost:11434" {
+		t.Errorf("expected default APIBase, got %s", op.cfg.LlmProvider.BaseURL)
 	}
-	if op.cfg.Model != "llama3" {
-		t.Errorf("expected default model llama3, got %s", op.cfg.Model)
+	if op.cfg.LlmProvider.Model != "llama3" {
+		t.Errorf("expected default model llama3, got %s", op.cfg.LlmProvider.Model)
 	}
 }
 
@@ -345,11 +345,11 @@ func TestOllamaProviderDefaults(t *testing.T) {
 func TestOpenRouterProviderDefaults(t *testing.T) {
 	p := NewOpenRouterProvider(Config{})
 	op := p.(*OpenRouterProvider)
-	if op.cfg.APIBase != "https://openrouter.ai/api/v1" {
-		t.Errorf("expected default APIBase, got %s", op.cfg.APIBase)
+	if op.cfg.LlmProvider.BaseURL != "https://openrouter.ai/api/v1" {
+		t.Errorf("expected default APIBase, got %s", op.cfg.LlmProvider.BaseURL)
 	}
-	if op.cfg.Model != "openai/gpt-4o" {
-		t.Errorf("expected default model, got %s", op.cfg.Model)
+	if op.cfg.LlmProvider.Model != "openai/gpt-4o" {
+		t.Errorf("expected default model, got %s", op.cfg.LlmProvider.Model)
 	}
 }
 
@@ -359,7 +359,7 @@ func TestOpenRouterProviderValidate(t *testing.T) {
 		t.Error("expected error for missing api_key")
 	}
 
-	p2 := NewOpenRouterProvider(Config{APIKey: "sk-or-test"})
+	p2 := NewOpenRouterProvider(Config{LlmProvider: LlmProvider{APIKey: "sk-or-test"}})
 	if err := p2.Validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -371,11 +371,11 @@ func TestRegistryAvailableWithNewProviders(t *testing.T) {
 	r := NewRegistry()
 	available := r.Available()
 	expected := map[string]bool{
-		"openai":           false,
+		"openai":            false,
 		"openai-compatible": false,
-		"anthropic":        false,
-		"ollama":           false,
-		"openrouter":       false,
+		"anthropic":         false,
+		"ollama":            false,
+		"openrouter":        false,
 	}
 
 	for _, name := range available {
@@ -569,9 +569,9 @@ func TestModelCatalogFindByCapability(t *testing.T) {
 func TestModelCatalogRegister(t *testing.T) {
 	catalog := NewModelCatalog()
 	custom := ModelInfo{
-		ID:          "custom-model",
-		Provider:    "custom",
-		DisplayName: "Custom Model",
+		ID:           "custom-model",
+		Provider:     "custom",
+		DisplayName:  "Custom Model",
 		Capabilities: []string{"chat"},
 	}
 	catalog.Register(custom)
@@ -589,14 +589,14 @@ func TestModelCatalogResolveProvider(t *testing.T) {
 	catalog := NewModelCatalog()
 
 	tests := []struct {
-		modelID     string
-		expected    string
+		modelID  string
+		expected string
 	}{
 		{"gpt-4o", "openai"},
 		{"claude-3-haiku-20240307", "anthropic"},
 		{"openai/gpt-4o", "openrouter"},
 		{"llama3", "ollama"},
-		{"gpt-5-turbo", "openai"},     // 未知但前缀匹配
+		{"gpt-5-turbo", "openai"},      // 未知但前缀匹配
 		{"claude-4-opus", "anthropic"}, // 未知但前缀匹配
 		{"unknown-model", "ollama"},    // 默认回退
 	}

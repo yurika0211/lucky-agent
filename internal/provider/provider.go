@@ -64,15 +64,27 @@ type Provider interface {
 	Validate() error
 }
 
+type EmbeddingProvider struct {
+	APIKey    string `json:"api_key"`
+	BaseURL   string `json:"base_url"`
+	Model     string `json:"model"`
+	Dimension int    `json:"dimension"`
+}
+
+type LlmProvider struct {
+	Name        string  `json:"name"`
+	APIKey      string  `json:"api_key"`
+	BaseURL     string  `json:"base_url"`
+	Model       string  `json:"model"`
+	Dimension   int     `json:"dimension"`
+	Temperature float64 `json:"temperature"`
+}
+
 // Config 是 Provider 的配置
 type Config struct {
-	Name         string
-	APIKey       string
-	APIBase      string
-	Model        string
-	MaxTokens    int
-	Temperature  float64
-	ExtraHeaders map[string]string `json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
+	LlmProvider       LlmProvider       `json:"llm_provider"`
+	EmbeddingProvider EmbeddingProvider `json:"embedding_provider"`
+	ExtraHeaders      map[string]string `json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
 
 	// v0.56.0: 限制参数从配置文件加载
 	Limits         LimitsConfig         `json:"limits,omitempty"`
@@ -83,11 +95,13 @@ type Config struct {
 }
 
 // Reuse config package types to avoid duplicated schema drift.
-type LimitsConfig = config.LimitsConfig
-type RetryConfig = config.RetryConfig
-type CircuitBreakerConfig = config.CircuitBreakerConfig
-type RateLimitConfig = config.RateLimitConfig
-type ContextConfig = config.ContextConfig
+type (
+	LimitsConfig         = config.LimitsConfig
+	RetryConfig          = config.RetryConfig
+	CircuitBreakerConfig = config.CircuitBreakerConfig
+	RateLimitConfig      = config.RateLimitConfig
+	ContextConfig        = config.ContextConfig
+)
 
 // Registry 管理所有已注册的 Provider
 type Registry struct {
@@ -140,7 +154,7 @@ func (r *Registry) Available() []string {
 }
 
 func (r *Registry) Resolve(cfg Config) (Provider, error) {
-	name := cfg.Name
+	name := cfg.LlmProvider.Name
 	if name == "" {
 		name = "openai"
 	}
@@ -161,11 +175,11 @@ type openAIBaseProvider struct {
 }
 
 func newOpenAIBaseProvider(cfg Config) openAIBaseProvider {
-	if cfg.APIBase == "" {
-		cfg.APIBase = "https://api.openai.com/v1"
+	if cfg.LlmProvider.APIKey == "" {
+		cfg.LlmProvider.BaseURL = "https://api.openai.com/v1"
 	}
-	if cfg.Model == "" {
-		cfg.Model = "gpt-4o"
+	if cfg.LlmProvider.Model == "" {
+		cfg.LlmProvider.Model = "gpt-4o"
 	}
 	return openAIBaseProvider{cfg: cfg}
 }
@@ -201,7 +215,7 @@ func NewOpenAIProvider(cfg Config) Provider {
 func (p *OpenAIProvider) Name() string { return "openai" }
 
 func (p *OpenAIProvider) Validate() error {
-	if p.cfg.APIKey == "" {
+	if p.cfg.LlmProvider.APIKey == "" {
 		return fmt.Errorf("openai: api_key is required")
 	}
 	return nil
@@ -222,11 +236,11 @@ func NewOpenAICompatibleProvider(cfg Config) Provider {
 func (p *OpenAICompatibleProvider) Name() string { return "openai-compatible" }
 
 func (p *OpenAICompatibleProvider) Validate() error {
-	if p.cfg.APIKey == "" {
-		return fmt.Errorf("%s: api_key is required", p.cfg.Name)
+	if p.cfg.LlmProvider.APIKey == "" {
+		return fmt.Errorf("%s: api_key is required", p.cfg.LlmProvider.Name)
 	}
-	if p.cfg.APIBase == "" {
-		return fmt.Errorf("%s: api_base is required", p.cfg.Name)
+	if p.cfg.LlmProvider.BaseURL == "" {
+		return fmt.Errorf("%s: api_base is required", p.cfg.LlmProvider.BaseURL)
 	}
 	return nil
 }

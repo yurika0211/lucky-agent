@@ -34,9 +34,9 @@ type FunctionResult struct {
 type CallMode int
 
 const (
-	CallModeAuto    CallMode = iota // 自动决定是否调用函数
-	CallModeNone                     // 不调用函数
-	CallModeForce                    // 强制调用指定函数
+	CallModeAuto  CallMode = iota // 自动决定是否调用函数
+	CallModeNone                  // 不调用函数
+	CallModeForce                 // 强制调用指定函数
 )
 
 // Options 是 function calling 的配置选项
@@ -61,7 +61,7 @@ type Manager struct {
 	mu       sync.RWMutex
 	registry *tool.Registry
 	results  map[string]*FunctionResult // callID -> result
-	history  []CallEntry               // 调用历史
+	history  []CallEntry                // 调用历史
 }
 
 // CallEntry 记录一次完整的函数调用
@@ -82,7 +82,7 @@ func NewManager(registry *tool.Registry) *Manager {
 
 // BuildTools 构建 OpenAI function calling 的 tools 参数
 func (m *Manager) BuildTools() []map[string]any {
-	tools := m.registry.ListEnabled()
+	tools := m.registry.ListModelVisible()
 	if len(tools) == 0 {
 		return nil
 	}
@@ -216,8 +216,8 @@ func BuildToolMessages(calls []FunctionCall, results []FunctionResult) []ToolMes
 
 	// assistant 消息（含 tool_calls）
 	assistantMsg := ToolMessage{
-		Role:       "assistant",
-		ToolCalls:  calls,
+		Role:      "assistant",
+		ToolCalls: calls,
 	}
 	messages = append(messages, assistantMsg)
 

@@ -1,7 +1,10 @@
 package utils
 
-// ChunkFeature describes a candidate context chunk for ranking.
-// All score fields are expected in [0,1].
+/*
+ChunkFeature 描述一个可参与排序的上下文分块特征。
+
+除 Tokens 外，其余分数字段都约定落在 [0,1] 区间内。
+*/
 type ChunkFeature struct {
 	Relevance        float64
 	Recency          float64
@@ -11,7 +14,9 @@ type ChunkFeature struct {
 	Tokens           int
 }
 
-// ScoreWeights controls the weighted contribution of each feature.
+/*
+ScoreWeights 定义各个特征在上下文评分中的权重占比。
+*/
 type ScoreWeights struct {
 	Relevance        float64
 	Recency          float64
@@ -20,7 +25,9 @@ type ScoreWeights struct {
 	DuplicatePenalty float64
 }
 
-// DefaultScoreWeights returns baseline weights for context selection.
+/*
+DefaultScoreWeights 返回上下文选择使用的默认权重配置。
+*/
 func DefaultScoreWeights() ScoreWeights {
 	return ScoreWeights{
 		Relevance:        0.45,
@@ -31,7 +38,11 @@ func DefaultScoreWeights() ScoreWeights {
 	}
 }
 
-// ScoreChunk returns a weighted score in [0,+inf), with duplicate penalty subtracted.
+/*
+ScoreChunk 计算单个上下文分块的加权得分。
+
+重复惩罚项会从总分中扣除，最终结果被限制为不小于 0。
+*/
 func ScoreChunk(feature ChunkFeature, weights ScoreWeights) float64 {
 	w := sanitizeWeights(weights)
 
@@ -47,7 +58,11 @@ func ScoreChunk(feature ChunkFeature, weights ScoreWeights) float64 {
 	return score
 }
 
-// ScorePerToken returns score density for budget-constrained ranking.
+/*
+ScorePerToken 返回按 token 成本归一化后的分数密度。
+
+这个指标适合在上下文预算受限时用于比较不同分块的性价比。
+*/
 func ScorePerToken(feature ChunkFeature, weights ScoreWeights) float64 {
 	tokens := feature.Tokens
 	if tokens <= 0 {
@@ -56,6 +71,11 @@ func ScorePerToken(feature ChunkFeature, weights ScoreWeights) float64 {
 	return ScoreChunk(feature, weights) / float64(tokens)
 }
 
+/*
+sanitizeWeights 对评分权重做归一化前的安全修正。
+
+当传入零值配置时会回退到默认权重；所有负数权重也会被钳制为 0。
+*/
 func sanitizeWeights(w ScoreWeights) ScoreWeights {
 	if w == (ScoreWeights{}) {
 		return DefaultScoreWeights()
@@ -78,6 +98,9 @@ func sanitizeWeights(w ScoreWeights) ScoreWeights {
 	return w
 }
 
+/*
+clamp01 将浮点值限制在 [0,1] 区间内。
+*/
 func clamp01(v float64) float64 {
 	if v < 0 {
 		return 0

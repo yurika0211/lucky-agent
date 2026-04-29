@@ -42,10 +42,12 @@ func NewFallbackChain(configs []FallbackConfig, registry *Registry) (*FallbackCh
 
 	for _, fc := range configs {
 		pCfg := Config{
-			Name:    fc.Name,
-			APIKey:  fc.APIKey,
-			APIBase: fc.APIBase,
-			Model:   fc.Model,
+			LlmProvider: LlmProvider{
+				Name:    fc.Name,
+				BaseURL: fc.APIBase,
+				Model:   fc.Model,
+				APIKey:  fc.APIKey,
+			},
 		}
 		p, err := registry.Resolve(pCfg)
 		if err != nil {
@@ -298,7 +300,7 @@ func (fc *FallbackChain) ResetAllCooldowns() {
 
 // Ensure FallbackChain implements Provider and FunctionCallingProvider
 var (
-	_ Provider              = (*FallbackChain)(nil)
+	_ Provider                = (*FallbackChain)(nil)
 	_ FunctionCallingProvider = (*FallbackChain)(nil)
 )
 

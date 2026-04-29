@@ -24,7 +24,7 @@ func newUpstreamCapture(kind string, cfg Config, requestBody []byte) *upstreamCa
 		return &upstreamCapture{}
 	}
 
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return &upstreamCapture{}
 	}
 
@@ -36,12 +36,16 @@ func newUpstreamCapture(kind string, cfg Config, requestBody []byte) *upstreamCa
 	meta := map[string]any{
 		"captured_at": now.Format(time.RFC3339Nano),
 		"kind":        kind,
-		"provider":    cfg.Name,
-		"model":       cfg.Model,
-		"api_base":    cfg.APIBase,
+		"LlmProvider": LlmProvider{
+			Name:        cfg.LlmProvider.Name,
+			APIKey:      cfg.LlmProvider.APIKey,
+			BaseURL:     cfg.LlmProvider.BaseURL,
+			Model:       cfg.LlmProvider.Model,
+			Temperature: cfg.LlmProvider.Temperature,
+		},
 	}
 	_ = writeJSON(prefix+".meta.json", meta)
-	_ = os.WriteFile(prefix+".request.json", requestBody, 0600)
+	_ = os.WriteFile(prefix+".request.json", requestBody, 0o600)
 
 	return &upstreamCapture{
 		enabled: true,
@@ -56,7 +60,7 @@ func (c *upstreamCapture) writeError(stage string, err error) {
 	_ = os.WriteFile(
 		c.prefix+".error.txt",
 		[]byte(fmt.Sprintf("stage=%s\nerror=%v\n", stage, err)),
-		0600,
+		0o600,
 	)
 }
 
@@ -75,7 +79,7 @@ func (c *upstreamCapture) writeResponseBody(body []byte) {
 	if c == nil || !c.enabled {
 		return
 	}
-	_ = os.WriteFile(c.prefix+".response.body.txt", body, 0600)
+	_ = os.WriteFile(c.prefix+".response.body.txt", body, 0o600)
 }
 
 func writeJSON(path string, v any) error {
@@ -83,6 +87,5 @@ func writeJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0600)
+	return os.WriteFile(path, b, 0o600)
 }
-

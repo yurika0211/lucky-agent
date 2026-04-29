@@ -48,8 +48,10 @@ func TestDoOpenAIRequestRetriesOnTransportError(t *testing.T) {
 	}
 
 	cfg := Config{
-		APIBase: "https://api.boaiak.com/v1",
-		APIKey:  "sk-test",
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.boaiak.com/v1",
+			APIKey:  "sk-test",
+		},
 		Retry: RetryConfig{
 			Enabled:        true,
 			MaxAttempts:    2,
@@ -137,9 +139,11 @@ func TestCallOpenAIUsesStreamFirstForMiniModel(t *testing.T) {
 	}
 
 	cfg := Config{
-		APIBase: "https://api.openai.com/v1",
-		APIKey:  "sk-test",
-		Model:   "gpt-5.4-mini",
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+			Model:   "gpt-5.4-mini",
+		},
 	}
 
 	resp, err := callOpenAI(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, CallOptions{})

@@ -2,8 +2,11 @@ package utils
 
 const ellipsis = "..."
 
-// Truncate truncates by byte length and appends "..." when overflow happens.
-// The returned string may be longer than maxLen because of the suffix.
+/*
+Truncate 按字节长度截断字符串，并在超出长度时追加 "..."。
+
+由于会附加省略号，返回结果的总长度可能大于 maxLen。
+*/
 func Truncate(s string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""
@@ -14,7 +17,9 @@ func Truncate(s string, maxLen int) string {
 	return s[:maxLen] + ellipsis
 }
 
-// TruncateKeepLength truncates by byte length and keeps the final length <= maxLen.
+/*
+TruncateKeepLength 按字节长度截断字符串，并保证最终长度不超过 maxLen。
+*/
 func TruncateKeepLength(s string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""

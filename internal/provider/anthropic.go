@@ -19,11 +19,11 @@ type AnthropicProvider struct {
 }
 
 func NewAnthropicProvider(cfg Config) Provider {
-	if cfg.APIBase == "" {
-		cfg.APIBase = "https://api.anthropic.com"
+	if cfg.LlmProvider.BaseURL == "" {
+		cfg.LlmProvider.BaseURL = "https://api.anthropic.com"
 	}
-	if cfg.Model == "" {
-		cfg.Model = "claude-sonnet-4-20250514"
+	if cfg.LlmProvider.Model == "" {
+		cfg.LlmProvider.Model = "claude-sonnet-4-20250514"
 	}
 	return &AnthropicProvider{cfg: cfg}
 }
@@ -31,7 +31,7 @@ func NewAnthropicProvider(cfg Config) Provider {
 func (p *AnthropicProvider) Name() string { return "anthropic" }
 
 func (p *AnthropicProvider) Validate() error {
-	if p.cfg.APIKey == "" {
+	if p.cfg.LlmProvider.APIKey == "" {
 		return fmt.Errorf("anthropic: api_key is required")
 	}
 	return nil
@@ -104,8 +104,8 @@ func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (*Resp
 	}
 
 	reqBody := anthropicRequest{
-		Model:     p.cfg.Model,
-		MaxTokens: p.cfg.MaxTokens,
+		Model:     p.cfg.LlmProvider.Model,
+		MaxTokens: p.cfg.Limits.MaxTokens,
 		Messages:  apiMsgs,
 		System:    strings.TrimSpace(systemPrompt),
 		Stream:    false,
@@ -119,13 +119,13 @@ func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (*Resp
 		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", p.cfg.APIBase+"/v1/messages", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", p.cfg.LlmProvider.BaseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: create request: %w", err)
 	}
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", p.cfg.APIKey)
+	req.Header.Set("x-api-key", p.cfg.LlmProvider.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -179,8 +179,8 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message) 
 	}
 
 	reqBody := anthropicRequest{
-		Model:     p.cfg.Model,
-		MaxTokens: p.cfg.MaxTokens,
+		Model:     p.cfg.LlmProvider.Model,
+		MaxTokens: p.cfg.Limits.MaxTokens,
 		Messages:  apiMsgs,
 		System:    strings.TrimSpace(systemPrompt),
 		Stream:    true,
@@ -194,13 +194,13 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message) 
 		return nil, fmt.Errorf("anthropic: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", p.cfg.APIBase+"/v1/messages", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", p.cfg.LlmProvider.BaseURL+"/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: create request: %w", err)
 	}
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", p.cfg.APIKey)
+	req.Header.Set("x-api-key", p.cfg.LlmProvider.APIKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	resp, err := http.DefaultClient.Do(req)
@@ -243,20 +243,20 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message) 
 				if event.Delta != nil && event.Delta.Text != "" {
 					ch <- StreamChunk{
 						Content: event.Delta.Text,
-						Model:   p.cfg.Model,
+						Model:   p.cfg.LlmProvider.Model,
 					}
 				}
 			case "message_stop":
-				ch <- StreamChunk{Done: true, FinishReason: "stop", Model: p.cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: "stop", Model: p.cfg.LlmProvider.Model}
 				return
 			case "message_delta":
 				if event.Delta != nil && event.Delta.StopReason != "" {
-					ch <- StreamChunk{Done: true, FinishReason: event.Delta.StopReason, Model: p.cfg.Model}
+					ch <- StreamChunk{Done: true, FinishReason: event.Delta.StopReason, Model: p.cfg.LlmProvider.Model}
 					return
 				}
 			case "error":
 				// Anthropic error event
-				ch <- StreamChunk{Done: true, FinishReason: "error", Model: p.cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: "error", Model: p.cfg.LlmProvider.Model}
 				return
 			}
 		}

@@ -48,6 +48,70 @@ func TestBuildToolsEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildToolsSkipsHiddenFromModel(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:            "visible_tool",
+		Description:     "Visible tool",
+		Parameters:      map[string]tool.Param{},
+		Handler:         func(args map[string]any) (string, error) { return "ok", nil },
+		Permission:      tool.PermAuto,
+		Category:        tool.CatBuiltin,
+		HiddenFromModel: false,
+	})
+	registry.Register(&tool.Tool{
+		Name:            "hidden_tool",
+		Description:     "Hidden tool",
+		Parameters:      map[string]tool.Param{},
+		Handler:         func(args map[string]any) (string, error) { return "ok", nil },
+		Permission:      tool.PermAuto,
+		Category:        tool.CatBuiltin,
+		HiddenFromModel: true,
+	})
+
+	mgr := NewManager(registry)
+	tools := mgr.BuildTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 visible tool, got %d", len(tools))
+	}
+	fn, _ := tools[0]["function"].(map[string]any)
+	if fn["name"] != "visible_tool" {
+		t.Fatalf("expected visible_tool, got %v", fn["name"])
+	}
+}
+
+func TestBuildToolsSkipsHiddenAutonomyTools(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:            "autonomy_status",
+		Description:     "hidden autonomy tool",
+		Parameters:      map[string]tool.Param{},
+		Handler:         func(args map[string]any) (string, error) { return "ok", nil },
+		Permission:      tool.PermAuto,
+		Category:        tool.CatDelegate,
+		HiddenFromModel: true,
+	})
+	registry.Register(&tool.Tool{
+		Name:            "rag_search",
+		Description:     "visible rag tool",
+		Parameters:      map[string]tool.Param{},
+		Handler:         func(args map[string]any) (string, error) { return "ok", nil },
+		Permission:      tool.PermAuto,
+		Category:        tool.CatBuiltin,
+		HiddenFromModel: false,
+	})
+
+	mgr := NewManager(registry)
+	tools := mgr.BuildTools()
+	if len(tools) != 1 {
+		t.Fatalf("expected only visible tool, got %d", len(tools))
+	}
+	fn, _ := tools[0]["function"].(map[string]any)
+	if fn["name"] != "rag_search" {
+		t.Fatalf("expected rag_search, got %v", fn["name"])
+	}
+}
+
 func TestExecuteCalls(t *testing.T) {
 	registry := tool.NewRegistry()
 	registry.Register(&tool.Tool{

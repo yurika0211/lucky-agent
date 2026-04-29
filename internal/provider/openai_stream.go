@@ -224,7 +224,7 @@ func retryDelay(settings openAIRetrySettings, attempt int) time.Duration {
 
 func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Response, error) {
 	settings := resolveOpenAIRetrySettings(cfg)
-	url := strings.TrimRight(cfg.APIBase, "/") + "/chat/completions"
+	url := strings.TrimRight(cfg.LlmProvider.BaseURL, "/") + "/chat/completions"
 
 	var lastErr error
 	for attempt := 1; attempt <= settings.MaxAttempts; attempt++ {
@@ -233,7 +233,7 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 			return nil, fmt.Errorf("create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+		req.Header.Set("Authorization", "Bearer "+cfg.LlmProvider.APIKey)
 		for k, v := range cfg.ExtraHeaders {
 			req.Header.Set(k, v)
 		}
@@ -276,25 +276,25 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (*Response, error) {
 	// 部分模型/网关组合（如 gpt-5.4-mini）非流式会返回空 content 但计费已发生。
 	// 这类模型优先走 stream 聚合，避免一次非流式空响应 + 二次 stream 重试。
-	if shouldPreferStreamFirst(cfg.Model) {
+	if shouldPreferStreamFirst(cfg.LlmProvider.Model) {
 		streamResult, err := retryWithStream(ctx, cfg, messages, opts)
 		if err == nil && streamResult != nil && (streamResult.Content != "" || len(streamResult.ToolCalls) > 0) {
-			log.Printf("[provider] stream-first OK (model=%s): content_len=%d, tool_calls=%d", cfg.Model, len(streamResult.Content), len(streamResult.ToolCalls))
+			log.Printf("[provider] stream-first OK (model=%s): content_len=%d, tool_calls=%d", cfg.LlmProvider.Model, len(streamResult.Content), len(streamResult.ToolCalls))
 			return streamResult, nil
 		}
 		if err != nil {
-			log.Printf("[provider] stream-first failed, fallback to non-stream (model=%s): %v", cfg.Model, err)
+			log.Printf("[provider] stream-first failed, fallback to non-stream (model=%s): %v", cfg.LlmProvider.Model, err)
 		} else {
-			log.Printf("[provider] stream-first empty, fallback to non-stream (model=%s)", cfg.Model)
+			log.Printf("[provider] stream-first empty, fallback to non-stream (model=%s)", cfg.LlmProvider.Model)
 		}
 	}
 
 	reqBody := openaiChatRequest{
-		Model:               cfg.Model,
+		Model:               cfg.LlmProvider.Model,
 		Messages:            toOpenAIMessages(messages),
-		MaxTokens:           cfg.MaxTokens,
-		MaxCompletionTokens: cfg.MaxTokens,
-		Temperature:         cfg.Temperature,
+		MaxTokens:           cfg.Limits.MaxTokens,
+		MaxCompletionTokens: cfg.Limits.MaxTokens,
+		Temperature:         cfg.LlmProvider.Temperature,
 		Stream:              false,
 	}
 
@@ -354,7 +354,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	result := &Response{
 		Content:      choice.Message.Content,
 		FinishReason: choice.FinishReason,
-		Model:        cfg.Model,
+		Model:        cfg.LlmProvider.Model,
 	}
 	if chatResp.Usage != nil {
 		result.TokensUsed = chatResp.Usage.TotalTokens
@@ -381,7 +381,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	// 用流式重试（某些 API 代理如 api.boaiak.com 的 gpt-5.4-mini 非流式不返回 content）
 	hasUsage := chatResp.Usage != nil && chatResp.Usage.CompletionTokens > 0
 	if result.Content == "" && len(result.ToolCalls) == 0 && hasUsage {
-		log.Printf("[provider] non-stream empty content with %d completion_tokens, retrying stream (model=%s)", chatResp.Usage.CompletionTokens, cfg.Model)
+		log.Printf("[provider] non-stream empty content with %d completion_tokens, retrying stream (model=%s)", chatResp.Usage.CompletionTokens, cfg.LlmProvider.APIKey)
 		streamResult, err := retryWithStream(ctx, cfg, messages, opts)
 		if err == nil && streamResult != nil && (streamResult.Content != "" || len(streamResult.ToolCalls) > 0) {
 			log.Printf("[provider] stream retry OK: content_len=%d, tool_calls=%d", len(streamResult.Content), len(streamResult.ToolCalls))
@@ -476,7 +476,7 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 	return &Response{
 		Content:   content.String(),
 		ToolCalls: toolCalls,
-		Model:     cfg.Model,
+		Model:     cfg.LlmProvider.Model,
 	}, nil
 }
 
@@ -484,11 +484,11 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 // 支持文本内容和工具调用的流式解析
 func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
 	reqBody := openaiChatRequest{
-		Model:               cfg.Model,
+		Model:               cfg.LlmProvider.Model,
 		Messages:            toOpenAIMessages(messages),
-		MaxTokens:           cfg.MaxTokens,
-		MaxCompletionTokens: cfg.MaxTokens,
-		Temperature:         cfg.Temperature,
+		MaxTokens:           cfg.Limits.MaxTokens,
+		MaxCompletionTokens: cfg.Limits.MaxTokens,
+		Temperature:         cfg.LlmProvider.Temperature,
 		Stream:              true,
 	}
 
@@ -540,7 +540,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		bodyReader := io.Reader(resp.Body)
 		var captureFile *os.File
 		if capture != nil && capture.enabled {
-			f, fileErr := os.OpenFile(capture.prefix+".response.sse.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+			f, fileErr := os.OpenFile(capture.prefix+".response.sse.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 			if fileErr != nil {
 				capture.writeError("open_sse_capture", fileErr)
 			} else {
@@ -568,7 +568,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 
 			// 流结束标记
 			if data == "[DONE]" {
-				ch <- StreamChunk{Done: true, FinishReason: lastFinishReason, Model: cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: lastFinishReason, Model: cfg.LlmProvider.Model}
 				return
 			}
 
@@ -590,7 +590,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 			if choice.Delta != nil && choice.Delta.Content != "" {
 				ch <- StreamChunk{
 					Content: choice.Delta.Content,
-					Model:   cfg.Model,
+					Model:   cfg.LlmProvider.Model,
 				}
 			}
 
@@ -607,18 +607,18 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 				}
 				ch <- StreamChunk{
 					ToolCallDeltas: deltas,
-					Model:          cfg.Model,
+					Model:          cfg.LlmProvider.Model,
 				}
 			}
 
 			if choice.FinishReason == "stop" || choice.FinishReason == "length" {
-				ch <- StreamChunk{Done: true, FinishReason: choice.FinishReason, Model: cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: choice.FinishReason, Model: cfg.LlmProvider.Model}
 				return
 			}
 
 			// 工具调用完成
 			if choice.FinishReason == "tool_calls" {
-				ch <- StreamChunk{Done: true, FinishReason: choice.FinishReason, Model: cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: choice.FinishReason, Model: cfg.LlmProvider.Model}
 				return
 			}
 		}

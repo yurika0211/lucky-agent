@@ -1,6 +1,8 @@
 package utils
 
-// SplitLines splits text by '\n' and trims a trailing '\r' from each line.
+/*
+SplitLines 按 '\n' 拆分文本，并移除每一行尾部可能存在的 '\r'。
+*/
 func SplitLines(s string) []string {
 	var lines []string
 	start := 0
@@ -16,7 +18,9 @@ func SplitLines(s string) []string {
 	return lines
 }
 
-// SplitLinesBytes splits bytes by '\n' and trims a trailing '\r' from each line.
+/*
+SplitLinesBytes 按 '\n' 拆分字节内容，并移除每一行尾部可能存在的 '\r'。
+*/
 func SplitLinesBytes(data []byte) []string {
 	var lines []string
 	start := 0
@@ -32,6 +36,9 @@ func SplitLinesBytes(data []byte) []string {
 	return lines
 }
 
+/*
+trimTrailingCR 去掉字符串末尾单个回车符 '\r'。
+*/
 func trimTrailingCR(s string) string {
 	if len(s) > 0 && s[len(s)-1] == '\r' {
 		return s[:len(s)-1]

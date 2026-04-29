@@ -14,6 +14,9 @@ import (
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
+/*
+recentChatTarget 记录最近一次可回投消息的外部聊天目标。
+*/
 type recentChatTarget struct {
 	Platform     string
 	ChatID       string
@@ -21,6 +24,9 @@ type recentChatTarget struct {
 	UpdatedAt    time.Time
 }
 
+/*
+initHeartbeatService 初始化并启动 HEARTBEAT.md 驱动的心跳服务。
+*/
 func (a *Agent) initHeartbeatService() error {
 	if a == nil || a.cfg == nil || a.provider == nil {
 		return nil
@@ -56,6 +62,9 @@ func (a *Agent) initHeartbeatService() error {
 	return svc.Start()
 }
 
+/*
+registerHeartbeatTools 注册 heartbeat 相关内置工具。
+*/
 func (a *Agent) registerHeartbeatTools() {
 	if a == nil || a.tools == nil {
 		return
@@ -101,12 +110,18 @@ func (a *Agent) RecordRecentChatTarget(platform, chatID, replyToMsgID string) {
 	a.heartbeatMu.Unlock()
 }
 
+/*
+pickRecentChatTarget 读取最近记录的外部聊天目标。
+*/
 func (a *Agent) pickRecentChatTarget() recentChatTarget {
 	a.heartbeatMu.Lock()
 	defer a.heartbeatMu.Unlock()
 	return a.recentTarget
 }
 
+/*
+heartbeatSession 获取或创建心跳专用会话。
+*/
 func (a *Agent) heartbeatSession() *session.Session {
 	a.heartbeatMu.Lock()
 	defer a.heartbeatMu.Unlock()
@@ -122,6 +137,9 @@ func (a *Agent) heartbeatSession() *session.Session {
 	return sess
 }
 
+/*
+executeHeartbeatTasks 通过 Agent Loop 执行心跳任务文本。
+*/
 func (a *Agent) executeHeartbeatTasks(ctx context.Context, tasks string) (string, error) {
 	sess := a.heartbeatSession()
 	loopCfg := DefaultLoopConfig()
@@ -137,6 +155,9 @@ func (a *Agent) executeHeartbeatTasks(ctx context.Context, tasks string) (string
 	return strings.TrimSpace(result.Response), nil
 }
 
+/*
+notifyHeartbeatResponse 将心跳结果发送到最近活跃的聊天目标。
+*/
 func (a *Agent) notifyHeartbeatResponse(ctx context.Context, response string) error {
 	if a == nil || a.msgGateway == nil {
 		return nil

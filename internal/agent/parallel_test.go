@@ -64,7 +64,7 @@ func TestParallelToolExecution(t *testing.T) {
 func TestParallelExecutionTiming(t *testing.T) {
 	// 验证并发执行比串行快
 	reg := tool.NewRegistry()
-	
+
 	for i := 0; i < 3; i++ {
 		name := []string{"tool_a", "tool_b", "tool_c"}[i]
 		reg.Register(&tool.Tool{
@@ -87,19 +87,19 @@ func TestParallelExecutionTiming(t *testing.T) {
 		output string
 	}
 	ch := make(chan result, 3)
-	
+
 	for i := 0; i < 3; i++ {
 		go func(idx int) {
 			output, _ := reg.Call([]string{"tool_a", "tool_b", "tool_c"}[idx], nil)
 			ch <- result{idx, output}
 		}(i)
 	}
-	
+
 	for i := 0; i < 3; i++ {
 		<-ch
 	}
 	elapsed := time.Since(start)
-	
+
 	// 并发应该 < 150ms（串行需要 150ms）
 	if elapsed >= 150*time.Millisecond {
 		t.Errorf("Parallel execution took %v, expected < 150ms", elapsed)

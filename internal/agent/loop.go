@@ -38,6 +38,9 @@ const (
 	StateDone                     // 完成：输出最终结果
 )
 
+/*
+String 返回 LoopState 的可读名称。
+*/
 func (s LoopState) String() string {
 	switch s {
 	case StateReason:
@@ -54,6 +57,9 @@ func (s LoopState) String() string {
 }
 
 // LoopConfig 是 Agent Loop 的配置
+/*
+LoopConfig 定义一次 Agent Loop 执行的关键参数。
+*/
 type LoopConfig struct {
 	MaxIterations          int           // 最大循环次数
 	Timeout                time.Duration // 单次循环超时
@@ -114,6 +120,9 @@ func sanitizeLoopConfig(cfg *LoopConfig) {
 	}
 }
 
+/*
+appendContinuation 将一段续写内容追加到累计回复中。
+*/
 func appendContinuation(dst *strings.Builder, part string) {
 	if strings.TrimSpace(part) == "" {
 		return
@@ -121,6 +130,9 @@ func appendContinuation(dst *strings.Builder, part string) {
 	dst.WriteString(part)
 }
 
+/*
+canonicalToolArguments 将工具参数 JSON 规范化为稳定字符串。
+*/
 func canonicalToolArguments(arguments string) string {
 	trimmed := strings.TrimSpace(arguments)
 	if trimmed == "" {
@@ -139,10 +151,16 @@ func canonicalToolArguments(arguments string) string {
 	return string(canonical)
 }
 
+/*
+toolCallSignature 为工具调用生成用于比较的签名。
+*/
 func toolCallSignature(name, arguments string) string {
 	return name + "|" + canonicalToolArguments(arguments)
 }
 
+/*
+ApplyAgentLoopConfig 将配置文件中的 AgentLoopConfig 应用到运行时 LoopConfig。
+*/
 func ApplyAgentLoopConfig(loopCfg *LoopConfig, cfg config.AgentLoopConfig) {
 	if cfg.MaxIterations > 0 {
 		loopCfg.MaxIterations = cfg.MaxIterations
@@ -163,6 +181,9 @@ func ApplyAgentLoopConfig(loopCfg *LoopConfig, cfg config.AgentLoopConfig) {
 }
 
 // LoopResult 是 Agent Loop 的执行结果
+/*
+LoopResult 描述一次 Agent Loop 执行完成后的结果摘要。
+*/
 type LoopResult struct {
 	Response   string        // 最终回复
 	Iterations int           // 实际循环次数
@@ -171,6 +192,9 @@ type LoopResult struct {
 	TokensUsed int           // 总 token 消耗
 }
 
+/*
+toolCallLog 记录单次工具调用的参数、结果和耗时。
+*/
 type toolCallLog struct {
 	Name      string
 	Arguments string
@@ -619,6 +643,9 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	return result, fmt.Errorf("max iterations (%d) reached", loopCfg.MaxIterations)
 }
 
+/*
+shouldForceSearchSynthesis 判断是否应强制进入搜索结果综合阶段。
+*/
 func shouldForceSearchSynthesis(successfulSearchEvidenceCount, consecutiveToolOnlyIters int) bool {
 	if successfulSearchEvidenceCount >= 3 && consecutiveToolOnlyIters >= 1 {
 		return true
@@ -626,6 +653,9 @@ func shouldForceSearchSynthesis(successfulSearchEvidenceCount, consecutiveToolOn
 	return successfulSearchEvidenceCount >= searchSynthesisThreshold && consecutiveToolOnlyIters >= 2
 }
 
+/*
+isUsefulSearchEvidence 判断某个工具结果是否可作为有效搜索证据。
+*/
 func isUsefulSearchEvidence(toolName, result string) bool {
 	if toolName != "web_search" && toolName != "web_fetch" {
 		return false
@@ -647,6 +677,9 @@ func isUsefulSearchEvidence(toolName, result string) bool {
 	return true
 }
 
+/*
+normalizedToolTarget 提取并归一化工具调用的主要目标对象。
+*/
 func normalizedToolTarget(toolName, arguments string) string {
 	if toolName != "web_fetch" {
 		return ""
@@ -673,6 +706,9 @@ func normalizedToolTarget(toolName, arguments string) string {
 	return u.String()
 }
 
+/*
+executeToolMaybeDedup 执行工具，并在需要时避免重复抓取相同目标。
+*/
 func (a *Agent) executeToolMaybeDedup(name, arguments string, autoApprove bool, sess *session.Session, toolURLRepeatCount map[string]int, toolURLLastResult map[string]string, duplicateFetchLimit int) (string, error) {
 	if key := normalizedToolTarget(name, arguments); key != "" && toolURLRepeatCount[key] > duplicateFetchLimit {
 		if cached := strings.TrimSpace(toolURLLastResult[key]); cached != "" {
@@ -683,6 +719,9 @@ func (a *Agent) executeToolMaybeDedup(name, arguments string, autoApprove bool, 
 	return a.executeToolWithSession(name, arguments, autoApprove, sess)
 }
 
+/*
+compactToolResultForContext 将工具结果压缩成适合继续放入上下文的文本。
+*/
 func compactToolResultForContext(toolName, result string) string {
 	out := strings.TrimSpace(result)
 	if out == "" {
@@ -711,6 +750,9 @@ func compactToolResultForContext(toolName, result string) string {
 }
 
 // extractRequiredToolNames 从用户输入中提取显式点名的工具（按出现顺序）。
+/*
+extractRequiredToolNames 从用户输入中提取被显式点名要求使用的工具名。
+*/
 func (a *Agent) extractRequiredToolNames(input string) []string {
 	type hit struct {
 		name string
@@ -744,6 +786,9 @@ func (a *Agent) extractRequiredToolNames(input string) []string {
 }
 
 // fitContextWindow 裁剪消息列表到上下文窗口内
+/*
+fitContextWindow 将消息序列裁剪到上下文窗口预算内。
+*/
 func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message {
 	if a == nil || a.contextWin == nil {
 		return messages
@@ -757,6 +802,9 @@ func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message
 }
 
 // indexConversationTurn 将一轮对话索引进 RAG（异步执行）
+/*
+indexConversationTurn 异步将一轮对话索引到 RAG 系统中。
+*/
 func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 	go func() {
 		assistantResponse = utils.SanitizeToolProtocolOutput(assistantResponse)
@@ -833,6 +881,9 @@ func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg Loo
 }
 
 // StreamEvent 是流式事件
+/*
+StreamEvent 表示 RunLoopStream 对外暴露的流式事件。
+*/
 type StreamEvent struct {
 	Type      EventType
 	Content   string
@@ -852,11 +903,17 @@ const (
 )
 
 // executeTool 执行工具调用（通过 Gateway）
+/*
+executeTool 在无会话上下文时执行一次工具调用。
+*/
 func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, error) {
 	return a.executeToolWithSession(name, arguments, autoApprove, nil)
 }
 
 // executeToolWithSession 执行工具调用（带 session，支持 shell 上下文持久化）
+/*
+executeToolWithSession 在带会话上下文的情况下执行一次工具调用。
+*/
 func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool, sess *session.Session) (output string, err error) {
 	sessionID := ""
 	if sess != nil {
@@ -886,6 +943,10 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 	// 记忆工具：直接由 agent 处理，不走 gateway
 	if name == "remember" || name == "recall" {
 		output, err = a.handleMemoryTool(name, arguments)
+		return output, err
+	}
+	if name == "rag_search" {
+		output, err = a.handleRAGTool(name, arguments)
 		return output, err
 	}
 
@@ -969,6 +1030,9 @@ func (a *Agent) updateShellContext(sess *session.Session, command, output string
 	}
 }
 
+/*
+splitShellCommands 按常见 shell 连接符拆分命令片段。
+*/
 func splitShellCommands(command string) []string {
 	trimmed := strings.TrimSpace(command)
 	if trimmed == "" {
@@ -977,6 +1041,9 @@ func splitShellCommands(command string) []string {
 	return shellCommandSeparator.Split(trimmed, -1)
 }
 
+/*
+resolveShellPath 根据当前工作目录解析 shell 中的路径参数。
+*/
 func resolveShellPath(baseCwd, target string) string {
 	target = strings.TrimSpace(target)
 	if target == "" {
@@ -994,6 +1061,9 @@ func resolveShellPath(baseCwd, target string) string {
 	return filepath.Clean(target)
 }
 
+/*
+parseShellExport 解析 export 语句中的键值对。
+*/
 func parseShellExport(expr string) (string, string, bool) {
 	key, value, ok := strings.Cut(strings.TrimSpace(expr), "=")
 	if !ok {
@@ -1011,11 +1081,17 @@ func parseShellExport(expr string) (string, string, bool) {
 }
 
 // buildMessages 构建消息列表
+/*
+buildMessages 使用默认上下文选项构造一次普通对话的消息列表。
+*/
 func (a *Agent) buildMessages(userInput string) []provider.Message {
 	return a.buildContextMessages(context.Background(), nil, userInput, defaultContextBuildOptions())
 }
 
 // isToolParallelSafe 检查工具是否可安全并发执行
+/*
+isToolParallelSafe 判断某个工具是否可以安全并发执行。
+*/
 func (a *Agent) isToolParallelSafe(toolName string) bool {
 	t, ok := a.tools.Get(toolName)
 	if !ok {
@@ -1030,6 +1106,9 @@ const ParallelSummarizeThreshold = 20
 // ParallelSummarize 并行摘要对话历史
 // 当对话超过阈值时，将对话分成两半，用 goroutine 并行调用 LLM 摘要
 // 合并结果替换原对话
+/*
+ParallelSummarize 对消息列表执行并行摘要压缩。
+*/
 func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Message, error) {
 	if len(messages) <= ParallelSummarizeThreshold {
 		return messages, nil // 未达阈值，不处理

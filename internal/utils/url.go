@@ -5,7 +5,9 @@ import (
 	"strings"
 )
 
-// NormalizeURL normalizes URL for de-dup and stable comparison.
+/*
+NormalizeURL 对 URL 做标准化处理，以便后续去重和稳定比较。
+*/
 func NormalizeURL(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {

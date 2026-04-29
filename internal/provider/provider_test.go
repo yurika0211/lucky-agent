@@ -8,9 +8,11 @@ func TestRegistryResolve(t *testing.T) {
 	r := NewRegistry()
 
 	cfg := Config{
-		Name:   "openai",
-		APIKey: "test-key",
-		Model:  "gpt-4o",
+		LlmProvider: LlmProvider{
+			Name:   "openai",
+			APIKey: "test-key",
+			Model:  "gpt-4o",
+		},
 	}
 
 	p, err := r.Resolve(cfg)
@@ -41,7 +43,7 @@ func TestRegistryAvailable(t *testing.T) {
 
 func TestRegistryUnknown(t *testing.T) {
 	r := NewRegistry()
-	cfg := Config{Name: "nonexistent"}
+	cfg := Config{LlmProvider: LlmProvider{Name: "nonexistent"}}
 	_, err := r.Create("nonexistent", cfg)
 	if err == nil {
 		t.Error("expected error for unknown provider")
@@ -54,19 +56,19 @@ func TestOpenAIProviderValidate(t *testing.T) {
 		t.Error("expected error for missing api_key")
 	}
 
-	p2 := NewOpenAIProvider(Config{APIKey: "sk-test"})
+	p2 := NewOpenAIProvider(Config{LlmProvider: LlmProvider{APIKey: "sk-test"}})
 	if err := p2.Validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
 func TestOpenAICompatibleProviderValidate(t *testing.T) {
-	p := NewOpenAICompatibleProvider(Config{Name: "test"})
+	p := NewOpenAICompatibleProvider(Config{LlmProvider: LlmProvider{Name: "test"}})
 	if err := p.Validate(); err == nil {
 		t.Error("expected error for missing api_key")
 	}
 
-	p2 := NewOpenAICompatibleProvider(Config{Name: "test", APIKey: "sk-test", APIBase: "http://localhost:8080/v1"})
+	p2 := NewOpenAICompatibleProvider(Config{LlmProvider: LlmProvider{Name: "test", APIKey: "sk-test", BaseURL: "http://localhost:8080/v1"}})
 	if err := p2.Validate(); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -92,10 +94,10 @@ func TestToOpenAIMessages(t *testing.T) {
 func TestProviderDefaults(t *testing.T) {
 	p := NewOpenAIProvider(Config{})
 	cfg := p.(*OpenAIProvider).cfg
-	if cfg.APIBase != "https://api.openai.com/v1" {
-		t.Errorf("expected default APIBase, got %s", cfg.APIBase)
+	if cfg.LlmProvider.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("expected default APIBase, got %s", cfg.LlmProvider.BaseURL)
 	}
-	if cfg.Model != "gpt-4o" {
-		t.Errorf("expected default model gpt-4o, got %s", cfg.Model)
+	if cfg.LlmProvider.Model != "gpt-4o" {
+		t.Errorf("expected default model gpt-4o, got %s", cfg.LlmProvider.Model)
 	}
 }

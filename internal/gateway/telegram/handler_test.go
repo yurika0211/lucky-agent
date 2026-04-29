@@ -338,12 +338,12 @@ func TestAgentProviderAdapter(t *testing.T) {
 	// Create a minimal agent to test the adapter methods
 	mockAgent := &mockAgentProvider{
 		configSnap: agentConfigSnapshot{
-			Model:                  "test-model",
-			Provider:               "test-provider",
-			ChatTimeoutSeconds:     30,
-			ProgressAsMessages:     true,
+			Model:                     "test-model",
+			Provider:                  "test-provider",
+			ChatTimeoutSeconds:        30,
+			ProgressAsMessages:        true,
 			ProgressAsNaturalLanguage: true,
-			ShowToolDetailsInResult: true,
+			ShowToolDetailsInResult:   true,
 		},
 		toolsVal:   tool.NewRegistry(),
 		skillsVal:  []*tool.SkillInfo{},
@@ -442,6 +442,8 @@ func TestPrependToolNarratives(t *testing.T) {
 
 	// With lines
 	got := prependToolNarratives([]string{"step 1", "step 2"}, "final answer")
+	assert.Contains(t, got, "过程摘要")
+	assert.Contains(t, got, "||")
 	assert.Contains(t, got, "我刚刚先做了这些事")
 	assert.Contains(t, got, "step 1")
 	assert.Contains(t, got, "step 2")
@@ -469,8 +471,6 @@ func TestIsTaskTimeoutError(t *testing.T) {
 	assert.False(t, isTaskTimeoutError(fmt.Errorf("some other error")))
 	assert.False(t, isTaskTimeoutError(nil))
 }
-
-
 
 func TestHandlerTaskManagement(t *testing.T) {
 	h := &Handler{
@@ -511,8 +511,6 @@ func TestHandlerTaskManagement(t *testing.T) {
 	assert.False(t, ok2)
 }
 
-
-
 func TestHandlerGetResetSession(t *testing.T) {
 	sessMgr, err := session.NewManager(t.TempDir())
 	require.NoError(t, err)
@@ -538,5 +536,3 @@ func TestHandlerGetResetSession(t *testing.T) {
 	assert.NotEmpty(t, newSid)
 	assert.NotEqual(t, sid, newSid)
 }
-
-

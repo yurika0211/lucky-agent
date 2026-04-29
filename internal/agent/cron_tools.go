@@ -12,6 +12,9 @@ import (
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
+/*
+cronTaskMode 表示定时任务的执行模式。
+*/
 type cronTaskMode string
 
 const (
@@ -19,6 +22,9 @@ const (
 	cronTaskModeAgent cronTaskMode = "agent"
 )
 
+/*
+parseCronSchedule 解析自然语言或标准 cron 表达式为调度对象。
+*/
 func parseCronSchedule(input string) (cron.Schedule, error) {
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "" {
@@ -31,6 +37,9 @@ func parseCronSchedule(input string) (cron.Schedule, error) {
 	return cron.ParseCronExpr(trimmed)
 }
 
+/*
+saveCronJobs 将当前 cron 引擎中的任务持久化到存储。
+*/
 func (a *Agent) saveCronJobs() error {
 	if a == nil || a.cronStore == nil || a.cronEngine == nil {
 		return nil
@@ -38,6 +47,9 @@ func (a *Agent) saveCronJobs() error {
 	return a.cronStore.Save(a.cronEngine)
 }
 
+/*
+restoreCronJobs 从持久化存储恢复 cron 任务。
+*/
 func (a *Agent) restoreCronJobs() (int, error) {
 	if a == nil || a.cronStore == nil || a.cronEngine == nil {
 		return 0, nil
@@ -68,6 +80,9 @@ func (a *Agent) restoreCronJobs() (int, error) {
 	})
 }
 
+/*
+String 返回 cronTaskMode 的字符串形式。
+*/
 func (m cronTaskMode) String() string {
 	return string(m)
 }
@@ -84,7 +99,7 @@ func (a *Agent) registerCronTools() {
 		Source:      "builtin",
 		Permission:  tool.PermApprove,
 		Parameters: map[string]tool.Param{
-			"id":                  {Type: "string", Description: "Unique job ID", Required: true},
+			"id":                  {Type: "string", Description: "Optional job ID. Auto-generated when omitted.", Required: false},
 			"schedule":            {Type: "string", Description: "Natural language schedule or 5-field cron expression", Required: true},
 			"mode":                {Type: "string", Description: "Execution mode: shell or agent", Required: false, Default: "shell"},
 			"command":             {Type: "string", Description: "Shell command to run, or agent prompt when mode=agent", Required: true},
@@ -223,6 +238,9 @@ func (a *Agent) handleCronAdd(args map[string]any) (string, error) {
 	return string(result), nil
 }
 
+/*
+buildCronJobID 根据模式与命令生成较稳定的任务 ID。
+*/
 func buildCronJobID(mode, command string) string {
 	base := strings.ToLower(strings.TrimSpace(mode + "-" + command))
 	base = strings.ReplaceAll(base, "_", "-")
@@ -270,7 +288,7 @@ func (a *Agent) handleCronList(args map[string]any) (string, error) {
 			"error_count":   job.ErrorCount,
 			"mode":          job.Metadata["mode"],
 			"command":       job.Metadata["command"],
-			"schedule_text": job.Metadata["schedule_text"],
+			"schedule_text": cronScheduleText(job),
 		})
 	}
 	result, _ := json.Marshal(map[string]any{
@@ -279,6 +297,19 @@ func (a *Agent) handleCronList(args map[string]any) (string, error) {
 		"jobs":    items,
 	})
 	return string(result), nil
+}
+
+/*
+cronScheduleText 返回定时任务的人类可读调度文本。
+*/
+func cronScheduleText(job *cron.Job) string {
+	if job == nil {
+		return ""
+	}
+	if text := strings.TrimSpace(job.Metadata["schedule_text"]); text != "" {
+		return text
+	}
+	return cron.DescribeSchedule(job.Schedule)
 }
 
 func (a *Agent) handleCronRemove(args map[string]any) (string, error) {

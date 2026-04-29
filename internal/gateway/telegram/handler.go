@@ -26,27 +26,41 @@ import (
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
-// agentProvider 定义 Handler 需要从 Agent 获得的能力接口。
-// 生产代码使用 *agent.Agent 实现，测试代码可注入 mock。
-type agentProvider interface {
-	Sessions() *session.Manager
-	Config() agentConfigProvider
-	SwitchModel(modelID string) error
-	Soul() *soul.Soul
-	Tools() *tool.Registry
-	Skills() []*tool.SkillInfo
-	CronEngine() *cron.Engine
+type chatRuntime interface {
 	Chat(ctx context.Context, userInput string) (string, error)
 	ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error)
 	ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
 	ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error)
 	AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error)
+}
+
+type stateRuntime interface {
+	Sessions() *session.Manager
+	Config() agentConfigProvider
+	SwitchModel(modelID string) error
+	Soul() *soul.Soul
+	Tools() *tool.Registry
+	CronEngine() *cron.Engine
+	Skills() []*tool.SkillInfo
 	Metrics() *metrics.Metrics
 	Memory() *memory.Store
 }
 
+type agentProvider interface {
+	chatRuntime
+	stateRuntime
+}
+
 type activeRouteRecorder interface {
 	RecordRecentChatTarget(platform, chatID, replyToMsgID string)
+}
+
+type telegramSender interface {
+	gateway.StreamGateway
+	SendPhoto(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error
+	SendDocument(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error
+	SendTypingLoop(ctx context.Context, chatID string)
+	ReactToMessage(chatID string, messageID string, emoji string)
 }
 
 // agentConfigProvider 定义 Handler 需要从 config 获得的能力接口。
@@ -148,8 +162,11 @@ type telegramCommandHandler func(ctx context.Context, msg *gateway.Message) erro
 
 // Handler processes Telegram bot commands and messages with per-chat session management.
 type Handler struct {
-	adapter  *Adapter
+	adapter  telegramSender
 	agent    agentProvider
+	chat     chatRuntime
+	state    stateRuntime
+	recorder activeRouteRecorder
 	commands map[string]telegramCommandHandler
 
 	mu         sync.RWMutex
@@ -204,24 +221,33 @@ type chatSessionsData struct {
 
 // NewHandler creates a new Telegram command handler.
 func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
-	var ap agentProvider
+	var runtime agentProviderAdapter
+	var chat chatRuntime
+	var state stateRuntime
+	var recorder activeRouteRecorder
 	if a != nil {
-		ap = agentProviderAdapter{a}
+		runtime = agentProviderAdapter{a}
+		chat = runtime
+		state = runtime
+		recorder = a
 	}
 	memeDir, memeProbability, memeCooldown := resolveRandomMemeConfig()
 	h := &Handler{
 		adapter:                   adapter,
-		agent:                     ap,
+		agent:                     runtime,
+		chat:                      chat,
+		state:                     state,
+		recorder:                  recorder,
 		commands:                  make(map[string]telegramCommandHandler),
 		sessions:                  make(map[string]string),
 		tasks:                     make(map[string]*chatTask),
 		queues:                    make(map[string]*chatQueue),
 		dataDir:                   "", // 默认不持久化，需 SetDataDir 启用
-		chatStreamTimeout:         resolveChatStreamTimeout(ap),
-		progressAsMessages:        resolveProgressAsMessages(ap),
-		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(ap),
-		progressSummaryWithLLM:    resolveProgressSummaryWithLLM(ap),
-		showToolDetailsInResult:   resolveShowToolDetailsInResult(ap),
+		chatStreamTimeout:         resolveChatStreamTimeout(state),
+		progressAsMessages:        resolveProgressAsMessages(state),
+		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(state),
+		progressSummaryWithLLM:    resolveProgressSummaryWithLLM(state),
+		showToolDetailsInResult:   resolveShowToolDetailsInResult(state),
 		memeDir:                   memeDir,
 		memeProbability:           memeProbability,
 		memeCooldown:              memeCooldown,
@@ -288,12 +314,12 @@ func resolveRandomMemeConfig() (string, float64, time.Duration) {
 	return dir, probability, cooldown
 }
 
-func resolveChatStreamTimeout(ap agentProvider) time.Duration {
+func resolveChatStreamTimeout(state stateRuntime) time.Duration {
 	timeout := defaultChatStreamTimeout
-	if ap == nil {
+	if state == nil {
 		return timeout
 	}
-	cfg := ap.Config().Get()
+	cfg := state.Config().Get()
 	if cfg.ChatTimeoutSeconds > 0 {
 		timeout = time.Duration(cfg.ChatTimeoutSeconds) * time.Second
 	}
@@ -303,37 +329,139 @@ func resolveChatStreamTimeout(ap agentProvider) time.Duration {
 	return timeout
 }
 
-func resolveProgressAsMessages(ap agentProvider) bool {
+func resolveProgressAsMessages(state stateRuntime) bool {
 	enabled := true
-	if ap == nil {
+	if state == nil {
 		return enabled
 	}
-	cfg := ap.Config().Get()
+	cfg := state.Config().Get()
 	return cfg.ProgressAsMessages
 }
 
-func resolveProgressAsNaturalLanguage(ap agentProvider) bool {
-	if ap == nil {
+func resolveProgressAsNaturalLanguage(state stateRuntime) bool {
+	if state == nil {
 		return false
 	}
-	cfg := ap.Config().Get()
+	cfg := state.Config().Get()
 	return cfg.ProgressAsNaturalLanguage
 }
 
-func resolveProgressSummaryWithLLM(ap agentProvider) bool {
-	if ap == nil {
+func resolveProgressSummaryWithLLM(state stateRuntime) bool {
+	if state == nil {
 		return false
 	}
-	cfg := ap.Config().Get()
+	cfg := state.Config().Get()
 	return cfg.ProgressSummaryWithLLM
 }
 
-func resolveShowToolDetailsInResult(ap agentProvider) bool {
-	if ap == nil {
+func resolveShowToolDetailsInResult(state stateRuntime) bool {
+	if state == nil {
 		return false
 	}
-	cfg := ap.Config().Get()
+	cfg := state.Config().Get()
 	return cfg.ShowToolDetailsInResult
+}
+
+func (h *Handler) sessionManager() *session.Manager {
+	if h == nil {
+		return nil
+	}
+	if h.state != nil {
+		return h.state.Sessions()
+	}
+	if h.agent != nil {
+		return h.agent.Sessions()
+	}
+	return nil
+}
+
+func (h *Handler) chatService() chatRuntime {
+	if h == nil {
+		return nil
+	}
+	if h.chat != nil {
+		return h.chat
+	}
+	if h.agent != nil {
+		return h.agent
+	}
+	return nil
+}
+
+func (h *Handler) stateService() stateRuntime {
+	if h == nil {
+		return nil
+	}
+	if h.state != nil {
+		return h.state
+	}
+	if h.agent != nil {
+		return h.agent
+	}
+	return nil
+}
+
+func (h *Handler) routeRecorder() activeRouteRecorder {
+	if h == nil {
+		return nil
+	}
+	if h.recorder != nil {
+		return h.recorder
+	}
+	if h.agent != nil {
+		if recorder, ok := any(h.agent).(activeRouteRecorder); ok {
+			return recorder
+		}
+	}
+	return nil
+}
+
+func (h *Handler) tools() *tool.Registry {
+	state := h.stateService()
+	if state == nil {
+		return nil
+	}
+	return state.Tools()
+}
+
+func (h *Handler) metricsCollector() *metrics.Metrics {
+	state := h.stateService()
+	if state == nil {
+		return nil
+	}
+	return state.Metrics()
+}
+
+func (h *Handler) memoryStore() *memory.Store {
+	state := h.stateService()
+	if state == nil {
+		return nil
+	}
+	return state.Memory()
+}
+
+func (h *Handler) cronEngine() *cron.Engine {
+	state := h.stateService()
+	if state == nil {
+		return nil
+	}
+	return state.CronEngine()
+}
+
+func (h *Handler) skillsList() []*tool.SkillInfo {
+	state := h.stateService()
+	if state == nil {
+		return nil
+	}
+	return state.Skills()
+}
+
+func (h *Handler) configSnapshot() agentConfigSnapshot {
+	state := h.stateService()
+	if state == nil {
+		return agentConfigSnapshot{}
+	}
+	return state.Config().Get()
 }
 
 func (h *Handler) effectiveChatStreamTimeout() time.Duration {
@@ -404,8 +532,11 @@ func (h *Handler) loadChatSessions() {
 
 	h.mu.Lock()
 	for chatID, sessionID := range csd.ChatSessions {
-		// 验证 session 是否还存在
-		if _, ok := h.agent.Sessions().Get(sessionID); ok {
+		sessions := h.sessionManager()
+		if sessions == nil {
+			continue
+		}
+		if _, ok := sessions.Get(sessionID); ok {
 			h.sessions[chatID] = sessionID
 		}
 	}
@@ -451,7 +582,11 @@ func (h *Handler) getSessionID(chatID string) string {
 	h.mu.RUnlock()
 
 	// Create new session via agent
-	sess := h.agent.Sessions().New()
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return ""
+	}
+	sess := sessions.New()
 	h.mu.Lock()
 	h.sessions[chatID] = sess.ID
 	h.mu.Unlock()
@@ -461,7 +596,11 @@ func (h *Handler) getSessionID(chatID string) string {
 
 // resetSession creates a new session for the chat, discarding the old one.
 func (h *Handler) resetSession(chatID string) string {
-	sess := h.agent.Sessions().New()
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return ""
+	}
+	sess := sessions.New()
 	h.mu.Lock()
 	h.sessions[chatID] = sess.ID
 	h.mu.Unlock()
@@ -674,8 +813,8 @@ func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, a
 		sections = append(sections, strings.TrimSpace(baseText))
 	}
 
-	if h.agent != nil {
-		analysis, err := h.agent.AnalyzeAttachments(ctx, attachments)
+	if chat := h.chatService(); chat != nil {
+		analysis, err := chat.AnalyzeAttachments(ctx, attachments)
 		if err == nil && strings.TrimSpace(analysis) != "" {
 			sections = append(sections, analysis)
 			return strings.Join(sections, "\n\n")
@@ -773,7 +912,7 @@ func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
 // handleChat sends a message to the agent and returns the response.
 // Uses streaming output with thinking/tool-call visualization when available.
 func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text string) error {
-	if recorder, ok := h.agent.(activeRouteRecorder); ok {
+	if recorder := h.routeRecorder(); recorder != nil {
 		recorder.RecordRecentChatTarget("telegram", msg.Chat.ID, msg.ID)
 	}
 	if strings.TrimSpace(text) == "" {
@@ -838,13 +977,14 @@ func extractRoundNumber(thinking string) int {
 }
 
 func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, lastProgress string) string {
-	if len(observations) == 0 || h.agent == nil {
+	chat := h.chatService()
+	if len(observations) == 0 || chat == nil {
 		return ""
 	}
 	summaryCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
-	summary, err := h.agent.ProgressFeedback(summaryCtx, userInput, round, observations)
+	summary, err := chat.ProgressFeedback(summaryCtx, userInput, round, observations)
 	if err != nil {
 		return ""
 	}
@@ -1050,7 +1190,11 @@ func (h *Handler) sendFinalAssistantResponse(msg *gateway.Message, response stri
 }
 
 func (h *Handler) openChatEventStream(ctx context.Context, chatID, text, sessionID string) (<-chan agent.ChatEvent, error) {
-	events, err := h.agent.ChatWithSessionStream(ctx, sessionID, text)
+	chat := h.chatService()
+	if chat == nil {
+		return nil, fmt.Errorf("chat runtime not available")
+	}
+	events, err := chat.ChatWithSessionStream(ctx, sessionID, text)
 	if err == nil {
 		return events, nil
 	}
@@ -1060,7 +1204,7 @@ func (h *Handler) openChatEventStream(ctx context.Context, chatID, text, session
 
 	h.resetSession(chatID)
 	retrySessionID := h.getSessionID(chatID)
-	return h.agent.ChatWithSessionStream(ctx, retrySessionID, text)
+	return chat.ChatWithSessionStream(ctx, retrySessionID, text)
 }
 
 func runChatEventLoop(
@@ -1483,8 +1627,7 @@ func prependToolNarratives(lines []string, finalOutput string) string {
 		return finalOutput
 	}
 	seen := make(map[string]struct{}, len(lines))
-	var b strings.Builder
-	b.WriteString("我刚刚先做了这些事：\n")
+	summaryLines := make([]string, 0, min(8, len(lines)))
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -1494,10 +1637,27 @@ func prependToolNarratives(lines []string, finalOutput string) string {
 			continue
 		}
 		seen[line] = struct{}{}
+		summaryLines = append(summaryLines, line)
+		if len(summaryLines) >= 8 {
+			break
+		}
+	}
+	if len(summaryLines) == 0 {
+		return finalOutput
+	}
+
+	var b strings.Builder
+	b.WriteString("过程摘要：\n||")
+	b.WriteString("我刚刚先做了这些事：\n")
+	for _, line := range summaryLines {
 		b.WriteString("1. ")
-		b.WriteString(line)
+		b.WriteString(clipOneLine(line, 120))
 		b.WriteString("\n")
 	}
+	if len(lines) > len(summaryLines) {
+		b.WriteString("1. 还有更多中间步骤，已省略\n")
+	}
+	b.WriteString("||")
 	b.WriteString("\n")
 	b.WriteString(strings.TrimSpace(finalOutput))
 	return b.String()
@@ -1505,7 +1665,7 @@ func prependToolNarratives(lines []string, finalOutput string) string {
 
 // handleChatSync 非流式对话处理（回退方案）
 func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
-	if recorder, ok := h.agent.(activeRouteRecorder); ok {
+	if recorder := h.routeRecorder(); recorder != nil {
 		recorder.RecordRecentChatTarget("telegram", msg.Chat.ID, msg.ID)
 	}
 	// 启动 typing indicator
@@ -1513,13 +1673,17 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text
 	defer typingCancel()
 	go h.adapter.SendTypingLoop(typingCtx, msg.Chat.ID)
 
-	response, err := h.agent.ChatWithSession(ctx, sessionID, text)
+	chat := h.chatService()
+	if chat == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Chat runtime unavailable")
+	}
+	response, err := chat.ChatWithSession(ctx, sessionID, text)
 	if err != nil {
 		// If session is broken, try with a fresh session
 		if strings.Contains(err.Error(), "session not found") {
 			h.resetSession(msg.Chat.ID)
 			sessionID = h.getSessionID(msg.Chat.ID)
-			response, err = h.agent.ChatWithSession(ctx, sessionID, text)
+			response, err = chat.ChatWithSession(ctx, sessionID, text)
 		}
 		if err != nil {
 			if isTaskTimeoutError(err) {
@@ -1543,12 +1707,15 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text
 func (h *Handler) handleModel(ctx context.Context, msg *gateway.Message) error {
 	if msg.Args == "" {
 		// Show current model
-		cfg := h.agent.Config().Get()
+		cfg := h.configSnapshot()
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Current model: %s (provider: %s)", cfg.Model, cfg.Provider))
 	}
 
 	// Set model
-	if err := h.agent.SwitchModel(msg.Args); err != nil {
+	if h.state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Model switching unavailable")
+	}
+	if err := h.state.SwitchModel(msg.Args); err != nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to switch model: %s", err.Error()))
 	}
 
@@ -1557,7 +1724,10 @@ func (h *Handler) handleModel(ctx context.Context, msg *gateway.Message) error {
 
 // handleSoul shows the current SOUL info.
 func (h *Handler) handleSoul(ctx context.Context, msg *gateway.Message) error {
-	s := h.agent.Soul()
+	if h.state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "No SOUL configured.")
+	}
+	s := h.state.Soul()
 	if s == nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "No SOUL configured.")
 	}
@@ -1572,7 +1742,7 @@ func (h *Handler) handleSoul(ctx context.Context, msg *gateway.Message) error {
 
 // handleTools lists available tools.
 func (h *Handler) handleTools(ctx context.Context, msg *gateway.Message) error {
-	tools := h.agent.Tools()
+	tools := h.tools()
 	allTools := tools.List()
 
 	if len(allTools) == 0 {
@@ -1607,7 +1777,11 @@ func (h *Handler) handleReset(ctx context.Context, msg *gateway.Message) error {
 func (h *Handler) handleHistory(ctx context.Context, msg *gateway.Message) error {
 	sessionID := h.getSessionID(msg.Chat.ID)
 
-	sess, ok := h.agent.Sessions().Get(sessionID)
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "No conversation history.")
+	}
+	sess, ok := sessions.Get(sessionID)
 	if !ok {
 		return h.adapter.Send(ctx, msg.Chat.ID, "No conversation history.")
 	}
@@ -1661,7 +1835,11 @@ func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error
 		return h.adapter.Send(ctx, msg.Chat.ID, "No active session. Send a message to start one!")
 	}
 
-	sess, ok := h.agent.Sessions().Get(sessionID)
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", sessionID[:8]))
+	}
+	sess, ok := sessions.Get(sessionID)
 	if !ok {
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", sessionID[:8]))
 	}
@@ -1679,7 +1857,7 @@ func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error
 
 // handleSkills lists loaded skills.
 func (h *Handler) handleSkills(ctx context.Context, msg *gateway.Message) error {
-	skills := h.agent.Skills()
+	skills := h.skillsList()
 	if len(skills) == 0 {
 		return h.adapter.Send(ctx, msg.Chat.ID, "No skills loaded.")
 	}
@@ -1705,7 +1883,7 @@ func (h *Handler) handleSkills(ctx context.Context, msg *gateway.Message) error 
 
 // handleCron manages scheduled tasks.
 func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
-	engine := h.agent.CronEngine()
+	engine := h.cronEngine()
 	args := strings.TrimSpace(msg.Args)
 
 	if args == "" || args == "list" {
@@ -1749,7 +1927,11 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Missing prompt/command for cron job.")
 		}
 
-		resp, err := h.agent.Tools().Call("cron_add", map[string]any{
+		tools := h.tools()
+		if tools == nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Cron tools unavailable")
+		}
+		resp, err := tools.Call("cron_add", map[string]any{
 			"id":                  id,
 			"schedule":            scheduleText,
 			"mode":                "agent",
@@ -1776,7 +1958,11 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		if len(parts) < 2 {
 			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron remove <id>")
 		}
-		if _, err := h.agent.Tools().Call("cron_remove", map[string]any{"id": parts[1]}); err != nil {
+		tools := h.tools()
+		if tools == nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Cron tools unavailable")
+		}
+		if _, err := tools.Call("cron_remove", map[string]any{"id": parts[1]}); err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
 		}
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Job `%s` removed", parts[1]))
@@ -1785,7 +1971,11 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		if len(parts) < 2 {
 			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron pause <id>")
 		}
-		if _, err := h.agent.Tools().Call("cron_pause", map[string]any{"id": parts[1]}); err != nil {
+		tools := h.tools()
+		if tools == nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Cron tools unavailable")
+		}
+		if _, err := tools.Call("cron_pause", map[string]any{"id": parts[1]}); err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
 		}
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⏸ Job `%s` paused", parts[1]))
@@ -1794,7 +1984,11 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		if len(parts) < 2 {
 			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron resume <id>")
 		}
-		if _, err := h.agent.Tools().Call("cron_resume", map[string]any{"id": parts[1]}); err != nil {
+		tools := h.tools()
+		if tools == nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Cron tools unavailable")
+		}
+		if _, err := tools.Call("cron_resume", map[string]any{"id": parts[1]}); err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
 		}
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("▶️ Job `%s` resumed", parts[1]))
@@ -1806,7 +2000,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 
 // handleMetrics shows usage metrics.
 func (h *Handler) handleMetrics(ctx context.Context, msg *gateway.Message) error {
-	m := h.agent.Metrics()
+	m := h.metricsCollector()
 	snapshot := m.Snapshot()
 
 	info := fmt.Sprintf("📊 *Metrics:*\n\n• Total requests: %d\n• Tool calls: %d\n• Errors: %d\n• Uptime: %s",
@@ -1828,7 +2022,7 @@ func (h *Handler) handleHealth(ctx context.Context, msg *gateway.Message) error 
 	sb.WriteString("• Agent: ✅ Running\n")
 
 	// Cron 引擎
-	cronEngine := h.agent.CronEngine()
+	cronEngine := h.cronEngine()
 	if cronEngine.IsRunning() {
 		sb.WriteString(fmt.Sprintf("• Cron Engine: ✅ Running (%d jobs)\n", cronEngine.JobCount()))
 	} else {
@@ -1836,20 +2030,20 @@ func (h *Handler) handleHealth(ctx context.Context, msg *gateway.Message) error 
 	}
 
 	// Skills
-	skills := h.agent.Skills()
+	skills := h.skillsList()
 	sb.WriteString(fmt.Sprintf("• Skills: ✅ %d loaded\n", len(skills)))
 
 	// Sessions
 	sb.WriteString("• Sessions: ✅ Active\n")
 
 	// Memory
-	mem := h.agent.Memory()
+	mem := h.memoryStore()
 	if mem != nil {
 		sb.WriteString("• Memory: ✅ Active\n")
 	}
 
 	// Metrics
-	m := h.agent.Metrics()
+	m := h.metricsCollector()
 	snapshot := m.Snapshot()
 	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
 
@@ -1863,7 +2057,11 @@ func (h *Handler) handleNew(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
 
 	// 创建新会话
-	newSess := h.agent.Sessions().New()
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, chatID, "❌ Session manager unavailable")
+	}
+	newSess := sessions.New()
 
 	h.mu.Lock()
 	oldSessionID, hadOld := h.sessions[chatID]
@@ -1901,15 +2099,23 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	sb.WriteString(fmt.Sprintf("• Version: v%s\n", "0.55.0"))
 
 	// 模型
-	cfg := h.agent.Config().Get()
+	cfg := h.configSnapshot()
 	sb.WriteString(fmt.Sprintf("• Model: %s\n", cfg.Model))
 
 	// 运行时间
-	uptime := time.Since(h.agent.Metrics().StartTime)
+	metricsVal := h.metricsCollector()
+	if metricsVal == nil {
+		return h.adapter.Send(ctx, chatID, "❌ Metrics unavailable")
+	}
+	uptime := time.Since(metricsVal.StartTime)
 	sb.WriteString(fmt.Sprintf("• Uptime: %s\n", formatDuration(uptime)))
 
 	// 会话历史
-	sess, ok := h.agent.Sessions().Get(sessionID)
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, chatID, "❌ Session manager unavailable")
+	}
+	sess, ok := sessions.Get(sessionID)
 	msgCount := 0
 	if ok && sess != nil {
 		msgCount = sess.MessageCount()
@@ -1917,7 +2123,7 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	sb.WriteString(fmt.Sprintf("• Session messages: %d\n", msgCount))
 
 	// 指标
-	m := h.agent.Metrics()
+	m := metricsVal
 	snapshot := m.Snapshot()
 	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
 

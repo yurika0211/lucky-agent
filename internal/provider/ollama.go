@@ -18,11 +18,11 @@ type OllamaProvider struct {
 }
 
 func NewOllamaProvider(cfg Config) Provider {
-	if cfg.APIBase == "" {
-		cfg.APIBase = "http://localhost:11434"
+	if cfg.LlmProvider.BaseURL == "" {
+		cfg.LlmProvider.BaseURL = "http://localhost:11434"
 	}
-	if cfg.Model == "" {
-		cfg.Model = "llama3"
+	if cfg.LlmProvider.Model == "" {
+		cfg.LlmProvider.Model = "llama3"
 	}
 	return &OllamaProvider{cfg: cfg}
 }
@@ -32,9 +32,9 @@ func (p *OllamaProvider) Name() string { return "ollama" }
 func (p *OllamaProvider) Validate() error {
 	// Ollama 本地运行，不需要 API key
 	// 尝试连接验证
-	resp, err := http.Get(p.cfg.APIBase + "/api/tags")
+	resp, err := http.Get(p.cfg.LlmProvider.BaseURL + "/api/tags")
 	if err != nil {
-		return fmt.Errorf("ollama: cannot connect to %s: %w", p.cfg.APIBase, err)
+		return fmt.Errorf("ollama: cannot connect to %s: %w", p.cfg.LlmProvider.BaseURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -75,14 +75,14 @@ func (p *OllamaProvider) Chat(ctx context.Context, messages []Message) (*Respons
 	apiMsgs := toOllamaMessages(messages)
 
 	reqBody := ollamaChatRequest{
-		Model:    p.cfg.Model,
+		Model:    p.cfg.LlmProvider.Model,
 		Messages: apiMsgs,
 		Stream:   false,
 	}
-	if p.cfg.Temperature > 0 || p.cfg.MaxTokens > 0 {
+	if p.cfg.LlmProvider.Temperature > 0 || p.cfg.Limits.MaxTokens > 0 {
 		reqBody.Options = &ollamaOptions{
-			Temperature: p.cfg.Temperature,
-			NumPredict:  p.cfg.MaxTokens,
+			Temperature: p.cfg.LlmProvider.Temperature,
+			NumPredict:  p.cfg.Limits.MaxTokens,
 		}
 	}
 
@@ -91,7 +91,7 @@ func (p *OllamaProvider) Chat(ctx context.Context, messages []Message) (*Respons
 		return nil, fmt.Errorf("ollama: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", p.cfg.APIBase+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", p.cfg.LlmProvider.BaseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("ollama: create request: %w", err)
 	}
@@ -132,14 +132,14 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, messages []Message) (<-
 	apiMsgs := toOllamaMessages(messages)
 
 	reqBody := ollamaChatRequest{
-		Model:    p.cfg.Model,
+		Model:    p.cfg.LlmProvider.Model,
 		Messages: apiMsgs,
 		Stream:   true,
 	}
-	if p.cfg.Temperature > 0 || p.cfg.MaxTokens > 0 {
+	if p.cfg.LlmProvider.Temperature > 0 || p.cfg.Limits.MaxTokens > 0 {
 		reqBody.Options = &ollamaOptions{
-			Temperature: p.cfg.Temperature,
-			NumPredict:  p.cfg.MaxTokens,
+			Temperature: p.cfg.LlmProvider.Temperature,
+			NumPredict:  p.cfg.Limits.MaxTokens,
 		}
 	}
 
@@ -148,7 +148,7 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, messages []Message) (<-
 		return nil, fmt.Errorf("ollama: marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", p.cfg.APIBase+"/api/chat", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", p.cfg.LlmProvider.BaseURL+"/api/chat", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("ollama: create request: %w", err)
 	}

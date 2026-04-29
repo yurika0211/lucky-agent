@@ -568,7 +568,10 @@ func extractJSONCodeFence(md string) string {
 	}
 	start += len("```json")
 	rest := md[start:]
-	end := strings.Index(rest, "```")
+	end := strings.LastIndex(rest, "\n```")
+	if end == -1 {
+		end = strings.LastIndex(rest, "```")
+	}
 	if end == -1 {
 		return strings.TrimSpace(rest)
 	}

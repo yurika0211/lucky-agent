@@ -12,10 +12,11 @@ import (
 
 // Config 代表 LuckyHarness 的运行时配置
 type Config struct {
-	Provider     string            `json:"provider"`
-	APIKey       string            `json:"api_key"`
-	APIBase      string            `json:"api_base,omitempty"`
-	Model        string            `json:"model"`
+	LlmProvider  LlmProviderConfig `json:"llm_provider,omitempty"`
+	Provider     string            `json:"-"`
+	APIKey       string            `json:"-"`
+	APIBase      string            `json:"-"`
+	Model        string            `json:"-"`
 	SoulPath     string            `json:"soul_path,omitempty"`
 	MaxTokens    int               `json:"max_tokens"`
 	Temperature  float64           `json:"temperature"`
@@ -66,6 +67,13 @@ type Config struct {
 
 	// v0.64.0: Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
+}
+
+type LlmProviderConfig struct {
+	Name    string `json:"name,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 type EmbeddingConfig struct {
@@ -347,6 +355,10 @@ type FallbackEntry struct {
 func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
+		LlmProvider: LlmProviderConfig{
+			Name:  "openai",
+			Model: "gpt-4o",
+		},
 		Provider:     "openai",
 		Model:        "gpt-4o",
 		SoulPath:     filepath.Join(home, ".luckyharness", "SOUL.md"),
@@ -451,12 +463,18 @@ func parseConfigData(data []byte) (*Config, error) {
 func normalizeConfig(cfg *Config) {
 	def := DefaultConfig()
 
-	if cfg.Provider == "" {
-		cfg.Provider = def.Provider
+	if strings.TrimSpace(cfg.LlmProvider.Name) == "" {
+		cfg.LlmProvider.Name = def.LlmProvider.Name
 	}
-	if cfg.Model == "" {
-		cfg.Model = def.Model
+	if strings.TrimSpace(cfg.LlmProvider.Model) == "" {
+		cfg.LlmProvider.Model = def.LlmProvider.Model
 	}
+
+	cfg.Provider = strings.TrimSpace(cfg.LlmProvider.Name)
+	cfg.APIKey = strings.TrimSpace(cfg.LlmProvider.APIKey)
+	cfg.APIBase = strings.TrimSpace(cfg.LlmProvider.BaseURL)
+	cfg.Model = strings.TrimSpace(cfg.LlmProvider.Model)
+
 	if cfg.SoulPath == "" {
 		cfg.SoulPath = def.SoulPath
 	}
@@ -688,7 +706,7 @@ func (m *Manager) Save() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := os.MkdirAll(m.homeDir, 0700); err != nil {
+	if err := os.MkdirAll(m.homeDir, 0o700); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
@@ -701,7 +719,7 @@ func (m *Manager) Save() error {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 
-	if err := os.WriteFile(m.cfgPath, data, 0600); err != nil {
+	if err := os.WriteFile(m.cfgPath, data, 0o600); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 
@@ -722,12 +740,16 @@ func (m *Manager) Set(key, value string) error {
 
 	switch key {
 	case "provider":
+		m.config.LlmProvider.Name = value
 		m.config.Provider = value
 	case "api_key":
+		m.config.LlmProvider.APIKey = value
 		m.config.APIKey = value
 	case "api_base":
+		m.config.LlmProvider.BaseURL = value
 		m.config.APIBase = value
 	case "model":
+		m.config.LlmProvider.Model = value
 		m.config.Model = value
 	case "embedding.model":
 		m.config.Embedding.Model = value
@@ -1000,7 +1022,7 @@ func (m *Manager) InitHome() error {
 	}
 
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0700); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return fmt.Errorf("create %s: %w", dir, err)
 		}
 	}
@@ -1009,7 +1031,7 @@ func (m *Manager) InitHome() error {
 	soulPath := filepath.Join(m.homeDir, "SOUL.md")
 	if _, err := os.Stat(soulPath); os.IsNotExist(err) {
 		defaultSoul := DefaultSoul()
-		if err := os.WriteFile(soulPath, []byte(defaultSoul), 0644); err != nil {
+		if err := os.WriteFile(soulPath, []byte(defaultSoul), 0o644); err != nil {
 			return fmt.Errorf("write SOUL.md: %w", err)
 		}
 	}

@@ -5,7 +5,9 @@ import (
 	"time"
 )
 
-// FormatDurationCompact formats duration in d/h/m/s for status text.
+/*
+FormatDurationCompact 将时长格式化为适合状态展示的 d/h/m/s 紧凑形式。
+*/
 func FormatDurationCompact(d time.Duration) string {
 	days := int(d.Hours() / 24)
 	hours := int(d.Hours()) % 24

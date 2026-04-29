@@ -10,12 +10,16 @@ var (
 	whitespacePattern = regexp.MustCompile(`\s+`)
 )
 
-// StripHTMLTags removes HTML tags with a lightweight regex.
+/*
+StripHTMLTags 使用轻量级正则去除字符串中的 HTML 标签。
+*/
 func StripHTMLTags(s string) string {
 	return htmlTagPattern.ReplaceAllString(s, "")
 }
 
-// NormalizeWhitespace collapses repeated whitespace into one space and trims edges.
+/*
+NormalizeWhitespace 会将连续空白折叠为单个空格，并去掉首尾空白。
+*/
 func NormalizeWhitespace(s string) string {
 	s = whitespacePattern.ReplaceAllString(s, " ")
 	return strings.TrimSpace(s)

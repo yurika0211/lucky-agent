@@ -54,6 +54,9 @@ func TestSplitLinesBytes(t *testing.T) {
 	}
 }
 
+/*
+sameStrings 判断两个字符串切片是否逐项完全相同。
+*/
 func sameStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

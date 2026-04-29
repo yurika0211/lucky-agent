@@ -107,6 +107,9 @@ func TestScorePerTokenTokensAtMostOne(t *testing.T) {
 	}
 }
 
+/*
+almostEqual 判断两个浮点数在给定误差范围内是否近似相等。
+*/
 func almostEqual(a, b, eps float64) bool {
 	if a > b {
 		return a-b <= eps

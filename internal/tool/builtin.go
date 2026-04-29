@@ -32,6 +32,7 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig) {
 	r.Register(CurrentTimeTool())
 	r.Register(RememberTool())
 	r.Register(RecallTool())
+	r.Register(RAGSearchTool())
 }
 
 // ShellTool 执行 shell 命令
@@ -1167,6 +1168,35 @@ func RecallTool() *Tool {
 		},
 		Handler: func(args map[string]any) (string, error) {
 			// 实际处理在 agent.handleMemoryTool 中
+			return "", nil
+		},
+		ParallelSafe: true,
+	}
+}
+
+// RAGSearchTool searches the local indexed knowledge base.
+func RAGSearchTool() *Tool {
+	return &Tool{
+		Name:        "rag_search",
+		Description: "Search the local RAG knowledge base for indexed documents and return the most relevant passages.",
+		Category:    CatBuiltin,
+		Source:      "builtin",
+		Permission:  PermAuto,
+		Parameters: map[string]Param{
+			"query": {
+				Type:        "string",
+				Description: "Search query for the local indexed knowledge base.",
+				Required:    true,
+			},
+			"top_k": {
+				Type:        "number",
+				Description: "Maximum number of matches to return (default 5).",
+				Required:    false,
+				Default:     5,
+			},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			// 实际处理在 agent.handleKnowledgeTool 中
 			return "", nil
 		},
 		ParallelSafe: true,

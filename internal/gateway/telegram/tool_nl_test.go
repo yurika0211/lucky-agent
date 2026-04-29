@@ -69,9 +69,4 @@ func TestHumanizeProgressNarrative(t *testing.T) {
 		got := humanizeToolResultProgress(3, "web_search", "ok")
 		assert.Contains(t, got, "搜索结果")
 	})
-
-	t.Run("final conclusion wrapper", func(t *testing.T) {
-		got := wrapFinalConclusion("最终答案")
-		assert.Equal(t, "我整理好啦，下面这部分你可以直接看：\n最终答案", got)
-	})
 }

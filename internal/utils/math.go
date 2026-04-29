@@ -1,6 +1,8 @@
 package utils
 
-// MinInt returns the smaller one.
+/*
+MinInt 返回两个整数中较小的那个值。
+*/
 func MinInt(a, b int) int {
 	if a < b {
 		return a
@@ -8,7 +10,9 @@ func MinInt(a, b int) int {
 	return b
 }
 
-// MaxInt returns the larger one.
+/*
+MaxInt 返回两个整数中较大的那个值。
+*/
 func MaxInt(a, b int) int {
 	if a > b {
 		return a

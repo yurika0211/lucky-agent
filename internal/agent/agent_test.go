@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	msggateway "github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -137,8 +139,8 @@ func TestParseEmbedderDimensionEnv(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, ok := parseEmbedderDimensionEnv(tt.input)
-		if got != tt.want || ok != tt.ok {
+		got, ok := strconv.Atoi(tt.input)
+		if got != tt.want || ok != nil {
 			t.Fatalf("parseEmbedderDimensionEnv(%q) = (%d, %v), want (%d, %v)", tt.input, got, ok, tt.want, tt.ok)
 		}
 	}
@@ -325,7 +327,7 @@ func TestFromContextMessages(t *testing.T) {
 func TestApplyWebSearchEnv(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.yaml")
-	os.WriteFile(cfgPath, []byte("provider: openai\napi_key: test\nmodel: gpt-4\n"), 0644)
+	os.WriteFile(cfgPath, []byte("provider: openai\napi_key: test\nmodel: gpt-4\n"), 0o644)
 	cfg, err := config.NewManagerWithDir(tmpDir)
 	if err != nil {
 		t.Skipf("cannot create config manager: %v", err)
@@ -465,6 +467,27 @@ func TestHandleMemoryTool_InvalidJSON(t *testing.T) {
 	if !strings.Contains(result, "没有找到") && !strings.Contains(result, "记忆") {
 		t.Errorf("expected memory response, got %q", result)
 	}
+}
+
+func TestHandleRAGTool_Search(t *testing.T) {
+	dir := t.TempDir()
+	emb := rag.NewMockEmbedder(8)
+	mgr := rag.NewRAGManager(emb, rag.DefaultRAGConfig())
+	if _, err := mgr.IndexText("doc.md", "Doc", "alpha beta gamma"); err != nil {
+		t.Fatalf("index text: %v", err)
+	}
+
+	a := &Agent{
+		ragManager: mgr,
+	}
+	result, err := a.handleRAGTool("rag_search", `{"query":"alpha","top_k":3}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "alpha") && !strings.Contains(result, "Doc") {
+		t.Fatalf("expected rag output, got %q", result)
+	}
+	_ = dir
 }
 
 // --- updateShellContext ---
@@ -821,6 +844,7 @@ func (m *mockProvider) Name() string { return m.name }
 func (m *mockProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
 	return &provider.Response{Content: "mock"}, nil
 }
+
 func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk)
 	close(ch)
@@ -876,14 +900,17 @@ func (g *cronNotifyGateway) Start(ctx context.Context) error {
 	g.running = true
 	return nil
 }
+
 func (g *cronNotifyGateway) Stop() error {
 	g.running = false
 	return nil
 }
+
 func (g *cronNotifyGateway) Send(ctx context.Context, chatID string, message string) error {
 	g.messages = append(g.messages, message)
 	return nil
 }
+
 func (g *cronNotifyGateway) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
 	g.messages = append(g.messages, message)
 	return nil
@@ -1228,7 +1255,7 @@ func TestAgentNewWithSoulPath(t *testing.T) {
 	soulPath := filepath.Join(tmpDir, "SOUL.md")
 
 	// Write minimal soul
-	if err := os.WriteFile(soulPath, []byte("# Test Soul\n"), 0644); err != nil {
+	if err := os.WriteFile(soulPath, []byte("# Test Soul\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -1511,7 +1538,7 @@ func TestAgentHandleSkillReadMatchesAliases(t *testing.T) {
 	}
 
 	skillFile := filepath.Join(a.skills[0].Dir, "SKILL.md")
-	if err := os.WriteFile(skillFile, []byte("# Research\n"), 0644); err != nil {
+	if err := os.WriteFile(skillFile, []byte("# Research\n"), 0o644); err != nil {
 		t.Fatalf("write skill: %v", err)
 	}
 

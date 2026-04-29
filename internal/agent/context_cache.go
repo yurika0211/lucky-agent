@@ -10,6 +10,9 @@ import (
 	"github.com/yurika0211/luckyharness/internal/provider"
 )
 
+/*
+contextCacheEntry 表示一次上下文构建结果的缓存条目。
+*/
 type contextCacheEntry struct {
 	messages     []provider.Message
 	storedAt     time.Time
@@ -17,6 +20,9 @@ type contextCacheEntry struct {
 	bucketTokens map[string]int
 }
 
+/*
+contextMessageCache 是上下文消息构建结果的短时缓存。
+*/
 type contextMessageCache struct {
 	mu         sync.RWMutex
 	maxEntries int
@@ -25,6 +31,9 @@ type contextMessageCache struct {
 	order      []uint64
 }
 
+/*
+newContextMessageCache 创建一个新的上下文消息缓存。
+*/
 func newContextMessageCache(maxEntries int) *contextMessageCache {
 	if maxEntries <= 0 {
 		maxEntries = 64
@@ -37,6 +46,9 @@ func newContextMessageCache(maxEntries int) *contextMessageCache {
 	}
 }
 
+/*
+Get 按键读取缓存中的上下文消息结果。
+*/
 func (c *contextMessageCache) Get(key uint64) ([]provider.Message, contextCacheEntry, bool) {
 	if c == nil {
 		return nil, contextCacheEntry{}, false
@@ -61,6 +73,9 @@ func (c *contextMessageCache) Get(key uint64) ([]provider.Message, contextCacheE
 	return out, entry, true
 }
 
+/*
+Set 写入一条上下文缓存记录，并在必要时执行淘汰。
+*/
 func (c *contextMessageCache) Set(key uint64, entry contextCacheEntry) {
 	if c == nil {
 		return
@@ -88,6 +103,9 @@ func (c *contextMessageCache) Set(key uint64, entry contextCacheEntry) {
 	delete(c.entries, evictKey)
 }
 
+/*
+makeContextCacheKey 为任意可序列化负载生成稳定的缓存键。
+*/
 func makeContextCacheKey(payload any) uint64 {
 	data, _ := json.Marshal(payload)
 	h := fnv.New64a()

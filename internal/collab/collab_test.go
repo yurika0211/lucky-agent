@@ -3,7 +3,6 @@ package collab
 import (
 	"context"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,8 +45,8 @@ func TestMessageValidate(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "valid message",
-			msg:  NewMessage(MsgTaskAssign, "agent-1", "agent-2", nil),
+			name:    "valid message",
+			msg:     NewMessage(MsgTaskAssign, "agent-1", "agent-2", nil),
 			wantErr: false,
 		},
 		{
@@ -102,9 +101,9 @@ func TestRegistryRegister(t *testing.T) {
 	r := NewRegistry()
 
 	profile := &AgentProfile{
-		ID:          "agent-1",
-		Name:        "Test Agent",
-		Description: "A test agent",
+		ID:           "agent-1",
+		Name:         "Test Agent",
+		Description:  "A test agent",
 		Capabilities: []string{"analysis", "coding"},
 	}
 
@@ -447,18 +446,18 @@ func TestModeConfigValidate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "invalid mode",
-			config: ModeConfig{Mode: CollabMode("invalid")},
+			name:    "invalid mode",
+			config:  ModeConfig{Mode: CollabMode("invalid")},
 			wantErr: true,
 		},
 		{
-			name: "invalid debate rounds",
-			config: ModeConfig{Mode: ModeDebate, DebateRounds: 0},
+			name:    "invalid debate rounds",
+			config:  ModeConfig{Mode: ModeDebate, DebateRounds: 0},
 			wantErr: true,
 		},
 		{
-			name: "invalid max concurrent",
-			config: ModeConfig{Mode: ModeParallel, MaxConcurrent: 0},
+			name:    "invalid max concurrent",
+			config:  ModeConfig{Mode: ModeParallel, MaxConcurrent: 0},
 			wantErr: true,
 		},
 	}

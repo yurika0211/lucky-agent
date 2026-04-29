@@ -16,7 +16,12 @@ var (
 
 const ToolProtocolFilteredFallback = "已完成处理。内部工具调用日志已自动隐藏。"
 
-// SanitizeToolProtocolOutput removes leaked tool protocol text from assistant-visible content.
+/*
+SanitizeToolProtocolOutput 会从面向用户的输出中移除泄露的工具协议文本。
+
+它主要用于清理 tool call JSON、协议标签、内部通道提示以及协议残片，
+避免这些中间信息直接暴露给最终用户。
+*/
 func SanitizeToolProtocolOutput(input string) string {
 	raw := strings.TrimSpace(input)
 	if raw == "" {
@@ -76,6 +81,11 @@ func SanitizeToolProtocolOutput(input string) string {
 	return out
 }
 
+/*
+isLikelyProtocolFragment 判断一行文本是否像工具协议残片。
+
+它主要用于识别协议收尾噪声、纯标点碎片、工具名残片以及 to= 形式的内部标记。
+*/
 func isLikelyProtocolFragment(line string) bool {
 	lower := strings.ToLower(strings.TrimSpace(line))
 	if lower == "" {
@@ -96,6 +106,9 @@ func isLikelyProtocolFragment(line string) bool {
 	return false
 }
 
+/*
+collapseBlankLines 折叠连续空行，避免清洗后的文本出现大段空白。
+*/
 func collapseBlankLines(s string) string {
 	lines := strings.Split(s, "\n")
 	out := make([]string, 0, len(lines))

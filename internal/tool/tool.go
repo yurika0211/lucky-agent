@@ -12,8 +12,8 @@ type PermissionLevel int
 
 const (
 	PermAuto    PermissionLevel = iota // 自动批准（只读/安全操作）
-	PermApprove                         // 需要用户批准（写操作/网络请求）
-	PermDeny                            // 禁止使用
+	PermApprove                        // 需要用户批准（写操作/网络请求）
+	PermDeny                           // 禁止使用
 )
 
 func (p PermissionLevel) String() string {
@@ -33,28 +33,31 @@ func (p PermissionLevel) String() string {
 type Category string
 
 const (
-	CatBuiltin   Category = "builtin"   // 内置工具
-	CatSkill     Category = "skill"     // Skill 插件工具
-	CatMCP       Category = "mcp"      // MCP Server 工具
-	CatDelegate  Category = "delegate" // 子代理委派
+	CatBuiltin  Category = "builtin"  // 内置工具
+	CatSkill    Category = "skill"    // Skill 插件工具
+	CatMCP      Category = "mcp"      // MCP Server 工具
+	CatDelegate Category = "delegate" // 子代理委派
 )
 
 // Tool 代表一个可调用的工具
 type Tool struct {
-	Name         string
-	Description   string
-	Parameters   map[string]Param
-	Handler      func(args map[string]any) (string, error)
-	Permission   PermissionLevel // 权限级别
-	Category     Category        // 工具分类
-	Source       string          // 来源（skill名/mcp server名/builtin）
-	Enabled      bool            // 是否启用
+	Name        string
+	Description string
+	Parameters  map[string]Param
+	Handler     func(args map[string]any) (string, error)
+	Permission  PermissionLevel // 权限级别
+	Category    Category        // 工具分类
+	Source      string          // 来源（skill名/mcp server名/builtin）
+	Enabled     bool            // 是否启用
 	// ShellAware 标记该工具需要 shell 上下文注入（cwd + env）
 	ShellAware bool
 	// ParallelSafe 标记该工具可安全并发执行（无状态、无副作用冲突）
 	// 如 web_search, web_fetch, file_read, current_time, recall 等
 	// shell, file_write 等有状态依赖的工具不应标记
 	ParallelSafe bool
+	// HiddenFromModel 标记该工具不应暴露给大模型的工具菜单。
+	// 适用于内部脚本入口、低层 skill 动作等。
+	HiddenFromModel bool
 }
 
 // Param 代表工具参数
@@ -68,9 +71,9 @@ type Param struct {
 // ToOpenAIFormat 转换为 OpenAI function calling 格式
 func (t *Tool) ToOpenAIFormat() map[string]any {
 	params := map[string]any{
-		"type": "object",
+		"type":       "object",
 		"properties": map[string]any{},
-		"required":    []string{},
+		"required":   []string{},
 	}
 
 	props := make(map[string]any)
@@ -210,6 +213,22 @@ func (r *Registry) ListEnabled() []*Tool {
 	var tools []*Tool
 	for _, t := range r.tools {
 		if t.Enabled {
+			tools = append(tools, t)
+		}
+	}
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
+	return tools
+}
+
+// ListModelVisible returns enabled tools that should be exposed to the model.
+func (r *Registry) ListModelVisible() []*Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var tools []*Tool
+	for _, t := range r.tools {
+		if t.Enabled && !t.HiddenFromModel {
 			tools = append(tools, t)
 		}
 	}
@@ -437,19 +456,19 @@ func (e ErrToolDenied) Error() string {
 
 // OutputCompressConfig 工具输出压缩配置
 type OutputCompressConfig struct {
-	MaxChars     int    // 最大字符数（默认 2048）
+	MaxChars       int  // 最大字符数（默认 2048）
 	EnableTruncate bool // 是否启用截断
-	EnableDedup  bool   // 是否启用去重
-	EnableSummary bool  // 是否启用摘要（需要 LLM 支持）
+	EnableDedup    bool // 是否启用去重
+	EnableSummary  bool // 是否启用摘要（需要 LLM 支持）
 }
 
 // DefaultOutputCompressConfig 返回默认压缩配置
 func DefaultOutputCompressConfig() OutputCompressConfig {
 	return OutputCompressConfig{
-		MaxChars:     2048, // 2KB
+		MaxChars:       2048, // 2KB
 		EnableTruncate: true,
-		EnableDedup:  true,
-		EnableSummary: false, // 默认不启用摘要（需要额外 LLM 调用）
+		EnableDedup:    true,
+		EnableSummary:  false, // 默认不启用摘要（需要额外 LLM 调用）
 	}
 }
 

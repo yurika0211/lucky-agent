@@ -22,13 +22,13 @@ func NewSkillLoader(skillsDir string) *SkillLoader {
 
 // SkillInfo Skill 元信息
 type SkillInfo struct {
-	Name         string
-	Aliases      []string
-	Description  string
-	Summary      string // v0.36.0: SKILL.md 精简摘要，用于注入 system prompt
-	Dir          string
-	Tools        []SkillToolDef
-	Available    bool
+	Name        string
+	Aliases     []string
+	Description string
+	Summary     string // v0.36.0: SKILL.md 精简摘要，用于注入 system prompt
+	Dir         string
+	Tools       []SkillToolDef
+	Available   bool
 }
 
 // SkillToolDef Skill 中定义的工具
@@ -417,13 +417,14 @@ func RegisterSkillTools(r *Registry, skills []*SkillInfo, handler func(toolName 
 	for _, skill := range skills {
 		for _, toolDef := range skill.Tools {
 			tool := &Tool{
-				Name:        fmt.Sprintf("skill_%s_%s", skill.Name, toolDef.Name),
-				Description: toolDef.Description,
-				Parameters:  toolDef.Parameters,
-				Category:    CatSkill,
-				Source:      skill.Name,
-				Permission:  PermApprove, // Skill 工具默认需要审批
-				Enabled:     true,
+				Name:            fmt.Sprintf("skill_%s_%s", skill.Name, toolDef.Name),
+				Description:     toolDef.Description,
+				Parameters:      toolDef.Parameters,
+				Category:        CatSkill,
+				Source:          skill.Name,
+				Permission:      PermApprove, // Skill 工具默认需要审批
+				Enabled:         true,
+				HiddenFromModel: toolDef.Name != "run",
 			}
 			if handler != nil {
 				tool.Handler = handler(toolDef.Name, skill.Dir)

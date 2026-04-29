@@ -120,7 +120,7 @@ func wrapFinalConclusion(finalOutput string) string {
 	if finalOutput == "" {
 		return "我这轮暂时还没整理出能直接递给你的结论呀。"
 	}
-	return "我整理好啦，下面这部分你可以直接看：\n" + finalOutput
+	return finalOutput
 }
 
 func humanizeToolCall(name, args string) string {

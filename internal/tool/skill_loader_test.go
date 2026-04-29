@@ -134,6 +134,9 @@ func TestRegisterSkillTools(t *testing.T) {
 	if tool.Source != "web-search" {
 		t.Errorf("expected source=web-search, got %s", tool.Source)
 	}
+	if !tool.HiddenFromModel {
+		t.Error("expected non-run skill tool to be hidden from model")
+	}
 }
 
 func TestRegisterSkillToolsWithHandler(t *testing.T) {
@@ -163,6 +166,13 @@ func TestRegisterSkillToolsWithHandler(t *testing.T) {
 	}
 	if result != "handled: echo" {
 		t.Errorf("expected 'handled: echo', got %s", result)
+	}
+	tool, ok := r.Get("skill_test_echo")
+	if !ok {
+		t.Fatal("expected registered tool")
+	}
+	if !tool.HiddenFromModel {
+		t.Error("expected non-run skill tool to be hidden from model")
 	}
 }
 

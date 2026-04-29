@@ -1,6 +1,8 @@
 package session
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/yurika0211/luckyharness/internal/provider"
@@ -175,6 +177,46 @@ func TestManagerNewWithTitle(t *testing.T) {
 	s := m.NewWithTitle("My Session")
 	if s.Title != "My Session" {
 		t.Errorf("expected 'My Session', got '%s'", s.Title)
+	}
+}
+
+func TestLoadMarkdownSessionWithEmbeddedCodeFenceText(t *testing.T) {
+	dir := t.TempDir()
+	content := "# LuckyHarness Session\n\n" +
+		"自动生成，请勿手动编辑 JSON 块。\n\n" +
+		"```json\n" +
+		"{\n" +
+		"  \"id\": \"test-md-session\",\n" +
+		"  \"title\": \"demo\",\n" +
+		"  \"messages\": [\n" +
+		"    {\n" +
+		"      \"role\": \"assistant\",\n" +
+		"      \"content\": \"Assistant: ```tool\\n{\\\"name\\\":\\\"cron_list\\\"}\\n```\"\n" +
+		"    }\n" +
+		"  ],\n" +
+		"  \"created_at\": \"2026-04-30T00:00:00Z\",\n" +
+		"  \"updated_at\": \"2026-04-30T00:00:00Z\",\n" +
+		"  \"shell_context\": {\n" +
+		"    \"cwd\": \"\",\n" +
+		"    \"env\": null\n" +
+		"  }\n" +
+		"}\n" +
+		"```\n"
+	if err := os.WriteFile(filepath.Join(dir, "test-md-session.md"), []byte(content), 0600); err != nil {
+		t.Fatalf("write session md: %v", err)
+	}
+
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	sess, ok := mgr.Get("test-md-session")
+	if !ok {
+		t.Fatal("expected session to load")
+	}
+	msgs := sess.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
 	}
 }
 

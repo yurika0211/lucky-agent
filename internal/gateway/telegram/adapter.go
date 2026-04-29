@@ -946,10 +946,13 @@ func (a *Adapter) isReplyToBot(tgMsg *tgbotapi.Message) bool {
 
 // escapeMarkdownV2 转义 Telegram MarkdownV2 特殊字符
 func escapeMarkdownV2(text string) string {
+	const spoilerToken = "__TG_SPOILER__"
+	text = strings.ReplaceAll(text, "||", spoilerToken)
 	special := []string{"_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"}
 	for _, ch := range special {
 		text = strings.ReplaceAll(text, ch, "\\"+ch)
 	}
+	text = strings.ReplaceAll(text, spoilerToken, "||")
 	return text
 }
 

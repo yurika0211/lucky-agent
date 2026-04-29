@@ -15,6 +15,9 @@ import (
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
+/*
+contextBuildOptions 定义上下文构建时的行为开关。
+*/
 type contextBuildOptions struct {
 	IncludeRAG     bool
 	IncludeHistory bool
@@ -22,6 +25,9 @@ type contextBuildOptions struct {
 	HistoryMiddle  int
 }
 
+/*
+defaultContextBuildOptions 返回默认的上下文构建选项。
+*/
 func defaultContextBuildOptions() contextBuildOptions {
 	return contextBuildOptions{
 		IncludeRAG:     true,
@@ -31,6 +37,9 @@ func defaultContextBuildOptions() contextBuildOptions {
 	}
 }
 
+/*
+contextBudget 描述不同上下文类别的 token 预算。
+*/
 type contextBudget struct {
 	System     int
 	Memory     int
@@ -39,6 +48,9 @@ type contextBudget struct {
 	ToolResult int
 }
 
+/*
+contextPlanner 负责根据预算组装系统提示、记忆、RAG 与历史消息。
+*/
 type contextPlanner struct {
 	agent   *Agent
 	est     *contextx.TokenEstimator
@@ -46,6 +58,9 @@ type contextPlanner struct {
 	options contextBuildOptions
 }
 
+/*
+newContextPlanner 创建一个新的上下文规划器。
+*/
 func newContextPlanner(a *Agent, options contextBuildOptions) *contextPlanner {
 	cfg := contextx.DefaultWindowConfig()
 	if a != nil && a.contextWin != nil {
@@ -91,6 +106,9 @@ func newContextPlanner(a *Agent, options contextBuildOptions) *contextPlanner {
 	}
 }
 
+/*
+Build 根据当前请求、会话和预算生成最终上下文消息序列。
+*/
 func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userInput string) []provider.Message {
 	if key, ok := p.cacheKey(sess, userInput); ok && p.agent != nil && p.agent.contextCache != nil {
 		if cached, entry, hit := p.agent.contextCache.Get(key); hit {
@@ -151,12 +169,18 @@ func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userI
 	return messages
 }
 
+/*
+contextReport 汇总一次上下文构建的 token 与消息分布。
+*/
 type contextReport struct {
 	totalTokens  int
 	bucketTokens map[string]int
 	bucketCounts map[string]int
 }
 
+/*
+buildContextReport 统计上下文中各类别消息的 token 占用情况。
+*/
 func (p *contextPlanner) buildContextReport(messages []provider.Message) contextReport {
 	report := contextReport{
 		bucketTokens: map[string]int{
@@ -187,6 +211,9 @@ func (p *contextPlanner) buildContextReport(messages []provider.Message) context
 	return report
 }
 
+/*
+logContextReport 在开启调试时输出上下文规划报告。
+*/
 func (p *contextPlanner) logContextReport(mode string, key uint64, entry contextCacheEntry) {
 	if p.agent == nil || p.agent.cfg == nil {
 		return
@@ -209,6 +236,9 @@ func (p *contextPlanner) logContextReport(mode string, key uint64, entry context
 	)
 }
 
+/*
+classifyContextBucket 将消息归类到上下文统计桶中。
+*/
 func classifyContextBucket(msg provider.Message) string {
 	if msg.Role == "user" {
 		return "user"
@@ -236,6 +266,9 @@ func classifyContextBucket(msg provider.Message) string {
 	}
 }
 
+/*
+cacheKey 为一次上下文构建请求生成缓存键。
+*/
 func (p *contextPlanner) cacheKey(sess *session.Session, userInput string) (uint64, bool) {
 	if p.agent == nil {
 		return 0, false
@@ -277,6 +310,9 @@ func (p *contextPlanner) cacheKey(sess *session.Session, userInput string) (uint
 	return makeContextCacheKey(payload), true
 }
 
+/*
+resolveTokenEstimator 解析可用的 token 估算器。
+*/
 func resolveTokenEstimator(a *Agent, maxTokens int) *contextx.TokenEstimator {
 	if a != nil && a.contextEst != nil {
 		a.contextEst.SetModelContextWindow(maxTokens)
@@ -285,11 +321,14 @@ func resolveTokenEstimator(a *Agent, maxTokens int) *contextx.TokenEstimator {
 	return contextx.NewTokenEstimator(maxTokens)
 }
 
+/*
+buildToolCatalog 构造供非 function-calling 模型参考的工具目录文本。
+*/
 func (p *contextPlanner) buildToolCatalog() string {
 	if p.agent == nil || p.agent.tools == nil {
 		return ""
 	}
-	tools := p.agent.Tools().ListEnabled()
+	tools := p.agent.Tools().ListModelVisible()
 	if len(tools) == 0 {
 		return ""
 	}
@@ -305,6 +344,9 @@ func (p *contextPlanner) buildToolCatalog() string {
 	return p.fitTextToBudget(b.String(), utils.MaxInt(96, p.budget.System/4))
 }
 
+/*
+buildMemoryMessages 构造与当前查询相关的记忆上下文消息。
+*/
 func (p *contextPlanner) buildMemoryMessages(query string) []provider.Message {
 	var messages []provider.Message
 
@@ -324,6 +366,9 @@ func (p *contextPlanner) buildMemoryMessages(query string) []provider.Message {
 	return messages
 }
 
+/*
+buildCoreMemoryMessage 构造长期核心记忆消息。
+*/
 func (p *contextPlanner) buildCoreMemoryMessage(query string) provider.Message {
 	if p.agent == nil || p.agent.memory == nil {
 		return provider.Message{}
@@ -349,6 +394,9 @@ func (p *contextPlanner) buildCoreMemoryMessage(query string) provider.Message {
 	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(96, p.budget.Memory/3))}
 }
 
+/*
+buildRelevantMemoryMessage 构造与当前问题相关的普通记忆消息。
+*/
 func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Message {
 	if p.agent == nil || p.agent.memory == nil {
 		return provider.Message{}
@@ -370,6 +418,9 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(96, p.budget.Memory/2))}
 }
 
+/*
+buildMidtermSummaryMessage 构造中期会话摘要消息。
+*/
 func (p *contextPlanner) buildMidtermSummaryMessage(query string) provider.Message {
 	if p.agent == nil || p.agent.midTerm == nil || strings.TrimSpace(query) == "" {
 		return provider.Message{}
@@ -391,6 +442,9 @@ func (p *contextPlanner) buildMidtermSummaryMessage(query string) provider.Messa
 	return provider.Message{Role: "system", Content: p.fitTextToBudget(b.String(), utils.MaxInt(96, p.budget.Memory/3))}
 }
 
+/*
+buildShortTermSummaryMessage 构造短期会话摘要消息。
+*/
 func (p *contextPlanner) buildShortTermSummaryMessage() provider.Message {
 	if p.agent == nil || p.agent.shortTerm == nil {
 		return provider.Message{}
@@ -403,6 +457,9 @@ func (p *contextPlanner) buildShortTermSummaryMessage() provider.Message {
 	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(96, p.budget.Memory/3))}
 }
 
+/*
+buildRAGMessage 构造检索增强知识消息。
+*/
 func (p *contextPlanner) buildRAGMessage(ctx context.Context, query string) provider.Message {
 	if p.agent == nil || p.agent.ragManager == nil || strings.TrimSpace(query) == "" {
 		return provider.Message{}
@@ -418,6 +475,9 @@ func (p *contextPlanner) buildRAGMessage(ctx context.Context, query string) prov
 	return provider.Message{Role: "system", Content: p.fitTextToBudget(ragCtx, p.budget.RAG)}
 }
 
+/*
+buildHistoryMessages 从会话历史中挑选适量消息纳入上下文。
+*/
 func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.Message {
 	all := sess.GetMessages()
 	if len(all) == 0 {
@@ -475,6 +535,9 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.
 	return messages
 }
 
+/*
+compactHistoryMessage 对历史消息做必要的压缩与清洗。
+*/
 func (p *contextPlanner) compactHistoryMessage(msg provider.Message) provider.Message {
 	if msg.Role == "tool" {
 		msg.Content = compactToolResultForContext(msg.Name, msg.Content)
@@ -486,6 +549,9 @@ func (p *contextPlanner) compactHistoryMessage(msg provider.Message) provider.Me
 	return msg
 }
 
+/*
+fitTextToBudget 将文本裁剪到指定 token 预算内。
+*/
 func (p *contextPlanner) fitTextToBudget(text string, tokenBudget int) string {
 	text = strings.TrimSpace(text)
 	if text == "" || tokenBudget <= 0 {
@@ -516,6 +582,9 @@ func (p *contextPlanner) fitTextToBudget(text string, tokenBudget int) string {
 	return best
 }
 
+/*
+summarizeConversationRange 将一段对话消息压缩为适合上下文注入的摘要文本。
+*/
 func summarizeConversationRange(messages []provider.Message, header string, est *contextx.TokenEstimator, tokenBudget int) string {
 	if len(messages) == 0 || tokenBudget <= 0 {
 		return ""
@@ -584,6 +653,9 @@ func summarizeConversationRange(messages []provider.Message, header string, est 
 	return ""
 }
 
+/*
+toContextMessage 将 provider 消息包装成 contextx 消息。
+*/
 func toContextMessage(msg provider.Message) contextx.Message {
 	return contextx.Message{
 		Role:      msg.Role,
@@ -593,6 +665,9 @@ func toContextMessage(msg provider.Message) contextx.Message {
 	}
 }
 
+/*
+summarizeToolResult 对工具结果做短摘要，便于纳入上下文窗口。
+*/
 func summarizeToolResult(toolName, result string) string {
 	result = strings.TrimSpace(result)
 	if result == "" {
@@ -622,6 +697,9 @@ func summarizeToolResult(toolName, result string) string {
 	}
 }
 
+/*
+extractLineAfterPrefix 提取给定前缀后面的首行文本。
+*/
 func extractLineAfterPrefix(text, prefix string) string {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -632,6 +710,9 @@ func extractLineAfterPrefix(text, prefix string) string {
 	return ""
 }
 
+/*
+aOrEmpty 将空字符串标准化为空值，其余值原样返回。
+*/
 func aOrEmpty(s string) string {
 	return strings.TrimSpace(s)
 }

@@ -3,6 +3,8 @@ package memory
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -448,8 +450,8 @@ func TestStats(t *testing.T) {
 
 func TestTierString(t *testing.T) {
 	tests := []struct {
-		tier    Tier
-		expect  string
+		tier   Tier
+		expect string
 	}{
 		{TierShort, "short"},
 		{TierMedium, "medium"},
@@ -468,9 +470,9 @@ func TestEntryWeight(t *testing.T) {
 
 	// 新创建的高重要性长期记忆
 	e1 := &Entry{
-		Tier:       TierLong,
+		Tier:        TierLong,
 		Importance:  0.9,
-		CreatedAt:  now,
+		CreatedAt:   now,
 		AccessCount: 0,
 	}
 	w1 := e1.Weight(now)
@@ -480,9 +482,9 @@ func TestEntryWeight(t *testing.T) {
 
 	// 很旧的低重要性短期记忆
 	e2 := &Entry{
-		Tier:       TierShort,
+		Tier:        TierShort,
 		Importance:  0.1,
-		CreatedAt:  now.Add(-10 * time.Hour),
+		CreatedAt:   now.Add(-10 * time.Hour),
 		AccessCount: 0,
 	}
 	w2 := e2.Weight(now)
@@ -492,9 +494,9 @@ func TestEntryWeight(t *testing.T) {
 
 	// 高访问次数加成
 	e3 := &Entry{
-		Tier:       TierMedium,
+		Tier:        TierMedium,
 		Importance:  0.5,
-		CreatedAt:  now,
+		CreatedAt:   now,
 		AccessCount: 10,
 	}
 	w3 := e3.Weight(now)
@@ -570,6 +572,41 @@ func TestPersistenceWithNewFields(t *testing.T) {
 	}
 }
 
+func TestLoadMarkdownWithEmbeddedCodeFenceText(t *testing.T) {
+	dir := t.TempDir()
+	content := "# LuckyHarness Memory\n\n" +
+		"自动生成，请勿手动编辑 JSON 块。\n\n" +
+		"```json\n" +
+		"[\n" +
+		"  {\n" +
+		"    \"id\": \"mem_1_1\",\n" +
+		"    \"content\": \"Assistant: ```tool\\n{\\\"name\\\":\\\"cron_list\\\"}\\n```\",\n" +
+		"    \"category\": \"conversation\",\n" +
+		"    \"tier\": 1,\n" +
+		"    \"importance\": 0.2,\n" +
+		"    \"access_count\": 0,\n" +
+		"    \"created_at\": \"2026-04-30T00:00:00Z\",\n" +
+		"    \"accessed_at\": \"2026-04-30T00:00:00Z\"\n" +
+		"  }\n" +
+		"]\n" +
+		"```\n"
+	if err := os.WriteFile(filepath.Join(dir, "memory.md"), []byte(content), 0600); err != nil {
+		t.Fatalf("write memory.md: %v", err)
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if s.Count() != 1 {
+		t.Fatalf("expected 1 entry, got %d", s.Count())
+	}
+	got := s.Recent(1)
+	if len(got) != 1 || !strings.Contains(got[0].Content, "cron_list") {
+		t.Fatalf("unexpected content: %#v", got)
+	}
+}
+
 // --- v0.42.0 新测试：去重、TTL、过期清理 ---
 
 func TestDedup(t *testing.T) {
@@ -606,12 +643,12 @@ func TestDedupExisting(t *testing.T) {
 	s.mu.Lock()
 	for i := 0; i < 10; i++ {
 		entry := &Entry{
-			ID:        fmt.Sprintf("mem_dup_%d", i),
-			Content:   "same content",
-			Category:  "test",
-			Tier:      TierMedium,
+			ID:         fmt.Sprintf("mem_dup_%d", i),
+			Content:    "same content",
+			Category:   "test",
+			Tier:       TierMedium,
 			Importance: 0.5,
-			CreatedAt: time.Now(),
+			CreatedAt:  time.Now(),
 			AccessedAt: time.Now(),
 		}
 		s.entries[entry.ID] = entry

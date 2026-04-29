@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+const (
+	maxSleepInterval = 5 * time.Minute
+	maxRunHistory    = 20
+)
+
 // JobStatus 任务状态
 type JobStatus int
 
@@ -36,19 +41,30 @@ func (s JobStatus) String() string {
 
 // Job 定时任务
 type Job struct {
-	ID          string
-	Name        string
-	Description string
-	Schedule    Schedule
-	Task        func() error
-	Status      JobStatus
-	LastRun     time.Time
-	NextRun     time.Time
-	RunCount    int
-	ErrorCount  int
-	LastError   string
-	CreatedAt   time.Time
-	Metadata    map[string]string // v0.44.0: 自定义元数据（如 chatID, triggerType 等）
+	ID             string
+	Name           string
+	Description    string
+	Schedule       Schedule
+	Task           func() error
+	Status         JobStatus
+	LastRun        time.Time
+	NextRun        time.Time
+	RunCount       int
+	ErrorCount     int
+	LastError      string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
+	RunHistory     []RunRecord
+	DeleteAfterRun bool
+	Metadata       map[string]string // v0.44.0: 自定义元数据（如 chatID, triggerType 等）
+}
+
+// RunRecord 单次执行记录
+type RunRecord struct {
+	RunAt    time.Time
+	Status   string
+	Duration time.Duration
+	Error    string
 }
 
 // Schedule 调度策略
@@ -165,13 +181,43 @@ func (s OnceSchedule) String() string {
 	return fmt.Sprintf("once at %s", s.At.Format(time.RFC3339))
 }
 
+// DescribeSchedule returns a stable human-readable summary of a schedule.
+// Structured persistence should use serializeSchedule; this string is for
+// display and legacy migration only.
+func DescribeSchedule(schedule Schedule) string {
+	if schedule == nil {
+		return ""
+	}
+	switch s := schedule.(type) {
+	case CronSchedule:
+		return cronExprDisplay(s)
+	case *CronSchedule:
+		return cronExprDisplay(*s)
+	case DailySchedule:
+		return fmt.Sprintf("每天%02d:%02d", s.Hour, s.Minute)
+	case *DailySchedule:
+		return fmt.Sprintf("每天%02d:%02d", s.Hour, s.Minute)
+	case IntervalSchedule:
+		return intervalDisplay(s.Interval)
+	case *IntervalSchedule:
+		return intervalDisplay(s.Interval)
+	case OnceSchedule:
+		return s.At.Format("2006-01-02 15:04")
+	case *OnceSchedule:
+		return s.At.Format("2006-01-02 15:04")
+	default:
+		return schedule.String()
+	}
+}
+
 // Engine Cron 调度引擎
 type Engine struct {
-	mu       sync.RWMutex
-	jobs     map[string]*Job
-	stopCh   chan struct{}
-	running  bool
-	onEvent  func(event Event)
+	mu      sync.RWMutex
+	jobs    map[string]*Job
+	stopCh  chan struct{}
+	wakeCh  chan struct{}
+	running bool
+	onEvent func(event Event)
 }
 
 // Event 调度事件
@@ -255,10 +301,12 @@ func (e *Engine) AddJobWithMeta(id, name, description string, schedule Schedule,
 		Status:      StatusIdle,
 		NextRun:     schedule.Next(now),
 		CreatedAt:   now,
+		UpdatedAt:   now,
 		Metadata:    metadata,
 	}
 
 	e.jobs[id] = job
+	e.notifyWakeLocked()
 	e.mu.Unlock()
 
 	e.emit(Event{Type: EventJobAdded, JobID: id, JobName: name, Time: now})
@@ -275,6 +323,7 @@ func (e *Engine) RemoveJob(id string) error {
 	}
 
 	delete(e.jobs, id)
+	e.notifyWakeLocked()
 	e.mu.Unlock()
 
 	e.emit(Event{Type: EventJobRemoved, JobID: id, JobName: job.Name, Time: time.Now()})
@@ -292,6 +341,8 @@ func (e *Engine) PauseJob(id string) error {
 	}
 
 	job.Status = StatusPaused
+	job.UpdatedAt = time.Now()
+	e.notifyWakeLocked()
 	return nil
 }
 
@@ -307,6 +358,8 @@ func (e *Engine) ResumeJob(id string) error {
 
 	job.Status = StatusIdle
 	job.NextRun = job.Schedule.Next(time.Now())
+	job.UpdatedAt = time.Now()
+	e.notifyWakeLocked()
 	return nil
 }
 
@@ -346,6 +399,7 @@ func (e *Engine) Start() {
 	}
 	e.running = true
 	e.stopCh = make(chan struct{})
+	e.wakeCh = make(chan struct{}, 1)
 	e.mu.Unlock()
 
 	e.emit(Event{Type: EventEngineStarted, Time: time.Now()})
@@ -384,14 +438,33 @@ func (e *Engine) JobCount() int {
 
 // run 调度循环
 func (e *Engine) run() {
-	ticker := time.NewTicker(1 * time.Minute)
-	defer ticker.Stop()
-
 	for {
+		nextWake := e.nextWake()
+		delay := maxSleepInterval
+		if !nextWake.IsZero() {
+			delay = time.Until(nextWake)
+			if delay < 0 {
+				delay = 0
+			}
+			if delay > maxSleepInterval {
+				delay = maxSleepInterval
+			}
+		}
+
+		timer := time.NewTimer(delay)
 		select {
 		case <-e.stopCh:
+			timer.Stop()
 			return
-		case now := <-ticker.C:
+		case <-e.wakeCh:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			continue
+		case now := <-timer.C:
 			e.tick(now)
 		}
 	}
@@ -432,25 +505,58 @@ func (e *Engine) executeJob(jobID string, now time.Time) {
 	}
 	job.Status = StatusRunning
 	job.LastRun = now
+	job.UpdatedAt = now
 	jobName := job.Name
 	jobMeta := job.Metadata
+	task := job.Task
 	e.mu.Unlock()
 
 	e.emit(Event{Type: EventJobStarted, JobID: jobID, JobName: jobName, Time: now, Metadata: jobMeta})
 
 	// 执行任务
-	err := job.Task()
+	startedAt := time.Now()
+	err := task()
+	finishedAt := time.Now()
 
 	e.mu.Lock()
+	job, exists = e.jobs[jobID]
+	if !exists {
+		e.mu.Unlock()
+		return
+	}
 	job.RunCount++
+	record := RunRecord{
+		RunAt:    now,
+		Duration: finishedAt.Sub(startedAt),
+	}
 	if err != nil {
 		job.Status = StatusFailed
 		job.ErrorCount++
 		job.LastError = err.Error()
+		record.Status = "error"
+		record.Error = err.Error()
 	} else {
-		job.Status = StatusIdle
+		if job.NextRun.IsZero() && job.DeleteAfterRun {
+			job.Status = StatusDone
+		} else {
+			job.Status = StatusIdle
+		}
+		job.LastError = ""
+		record.Status = "ok"
 	}
-	job.NextRun = job.Schedule.Next(time.Now())
+	job.NextRun = job.Schedule.Next(finishedAt)
+	if job.NextRun.IsZero() && err == nil {
+		job.Status = StatusDone
+	}
+	job.RunHistory = append(job.RunHistory, record)
+	if len(job.RunHistory) > maxRunHistory {
+		job.RunHistory = append([]RunRecord(nil), job.RunHistory[len(job.RunHistory)-maxRunHistory:]...)
+	}
+	job.UpdatedAt = finishedAt
+	if job.DeleteAfterRun && job.NextRun.IsZero() {
+		delete(e.jobs, jobID)
+	}
+	e.notifyWakeLocked()
 	e.mu.Unlock()
 
 	// 在锁外发送事件
@@ -459,6 +565,91 @@ func (e *Engine) executeJob(jobID string, now time.Time) {
 	} else {
 		e.emit(Event{Type: EventJobCompleted, JobID: jobID, JobName: jobName, Time: time.Now(), Metadata: jobMeta})
 	}
+}
+
+func (e *Engine) nextWake() time.Time {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	var next time.Time
+	for _, job := range e.jobs {
+		if job.Status == StatusPaused || job.Status == StatusRunning || job.NextRun.IsZero() {
+			continue
+		}
+		if next.IsZero() || job.NextRun.Before(next) {
+			next = job.NextRun
+		}
+	}
+	return next
+}
+
+func (e *Engine) notifyWakeLocked() {
+	if !e.running || e.wakeCh == nil {
+		return
+	}
+	select {
+	case e.wakeCh <- struct{}{}:
+	default:
+	}
+}
+
+// RestoreJobState applies persisted runtime state to an already-registered job.
+func (e *Engine) RestoreJobState(id string, state RestoredJobState) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	job, exists := e.jobs[id]
+	if !exists {
+		return fmt.Errorf("job %s not found", id)
+	}
+
+	if state.CreatedAt != nil {
+		job.CreatedAt = *state.CreatedAt
+	}
+	if state.UpdatedAt != nil {
+		job.UpdatedAt = *state.UpdatedAt
+	}
+	if state.LastRun != nil {
+		job.LastRun = *state.LastRun
+	}
+	if state.NextRun != nil {
+		job.NextRun = *state.NextRun
+	}
+	job.RunCount = state.RunCount
+	job.ErrorCount = state.ErrorCount
+	job.LastError = state.LastError
+	job.RunHistory = append([]RunRecord(nil), state.RunHistory...)
+	job.DeleteAfterRun = state.DeleteAfterRun
+
+	switch {
+	case state.Paused:
+		job.Status = StatusPaused
+	case state.Status == StatusRunning.String():
+		job.Status = StatusIdle
+	case state.Status == StatusFailed.String():
+		job.Status = StatusFailed
+	case state.Status == StatusDone.String():
+		job.Status = StatusDone
+	default:
+		job.Status = StatusIdle
+	}
+
+	e.notifyWakeLocked()
+	return nil
+}
+
+type RestoredJobState struct {
+	Status         string
+	Paused         bool
+	LastRun        *time.Time
+	NextRun        *time.Time
+	RunCount       int
+	ErrorCount     int
+	LastError      string
+	CreatedAt      *time.Time
+	UpdatedAt      *time.Time
+	RunHistory     []RunRecord
+	DeleteAfterRun bool
 }
 
 // emit 发送事件

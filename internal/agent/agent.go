@@ -34,6 +34,9 @@ import (
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
+/*
+embedderRuntimeConfig 描述运行时解析后的嵌入模型配置。
+*/
 type embedderRuntimeConfig struct {
 	APIKey    string
 	Model     string
@@ -45,33 +48,33 @@ type embedderRuntimeConfig struct {
 type Agent struct {
 	cfg                *config.Manager
 	soul               *soul.Soul
-	tmplMgr            *soul.TemplateManager  // v0.19.0: SOUL 模板管理器
+	tmplMgr            *soul.TemplateManager  // SOUL 模板管理器
 	provider           provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
 	registry           *provider.Registry     // provider 注册表
 	catalog            *provider.ModelCatalog // 模型目录
 	tokenStore         *provider.TokenStore   // token 存储
 	memory             *memory.Store
-	shortTerm          *memory.ShortTermBuffer // v0.43.0: 短期记忆滑动窗口
-	midTerm            *memory.MidTermStore    // v0.43.0: 中期会话摘要存储
+	shortTerm          *memory.ShortTermBuffer // 短期记忆滑动窗口
+	midTerm            *memory.MidTermStore    // 中期会话摘要存储
 	sessions           *session.Manager
 	tools              *tool.Registry
 	gateway            *tool.Gateway           // 统一工具网关
-	msgGateway         *gateway.GatewayManager // v0.6.0: 消息平台网关
+	msgGateway         *gateway.GatewayManager // 消息平台网关
 	mcpClient          *tool.MCPClient         // MCP 客户端
 	delegate           *tool.DelegateManager   // 子代理委派管理器
 	contextWin         *contextx.ContextWindow // 上下文窗口管理器
 	contextEst         *contextx.TokenEstimator
 	ragManager         *rag.RAGManager         // RAG 知识库管理器
 	ragPersist         *rag.Persistence        // RAG 持久化
-	streamIndexer      *rag.StreamIndexer      // v0.23.0: 流式索引器
-	embedderReg        *embedder.Registry      // v0.21.0: 嵌入模型注册表
-	collabReg          *collab.Registry        // v0.22.0: Agent 协作注册表
-	collabMgr          *collab.DelegateManager // v0.22.0: 协作任务管理器
-	skills             []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
-	metrics            *metrics.Metrics        // v0.36.0: 指标收集器
-	cronEngine         *cron.Engine            // v0.36.0: 定时任务引擎
+	streamIndexer      *rag.StreamIndexer      // 流式索引器
+	embedderReg        *embedder.Registry      // 嵌入模型注册表
+	collabReg          *collab.Registry        // Agent 协作注册表
+	collabMgr          *collab.DelegateManager // 协作任务管理器
+	skills             []*tool.SkillInfo       // 已加载的 skill 列表
+	metrics            *metrics.Metrics        // 指标收集器
+	cronEngine         *cron.Engine            // 定时任务引擎
 	cronStore          *cron.Store
-	autonomy           *autonomy.AutonomyKit // v0.38.0: 自主工作套件
+	autonomy           *autonomy.AutonomyKit // 自主工作套件
 	heartbeatSvc       *appheartbeat.Service
 	heartbeatMu        sync.Mutex
 	heartbeatSessionID string
@@ -83,52 +86,30 @@ type Agent struct {
 	activeAPIBase      string
 }
 
+/*
+resolveEmbedderRuntimeConfig 从环境变量和主配置中解析嵌入模型运行时配置。
+
+返回值中的布尔值表示是否解析到了任何有效配置项。
+*/
 func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool) {
 	cfg := embedderRuntimeConfig{
-		APIKey:  strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_KEY")),
-		Model:   strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_NAME")),
-		BaseURL: strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_URL")),
+		APIKey:  os.Getenv("EMBEDDING_MODEL_KEY"),
+		Model:   os.Getenv("EMBEDDING_MODEL_NAME"),
+		BaseURL: os.Getenv("EMBEDDING_MODEL_URL"),
 	}
-	if dim, ok := parseEmbedderDimensionEnv(os.Getenv("EMBEDDING_MODEL_DIMENSION")); ok {
-		cfg.Dimension = dim
-	}
-
-	if c != nil {
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(c.Embedding.APIKey)
-		}
-		if cfg.Model == "" {
-			cfg.Model = strings.TrimSpace(c.Embedding.Model)
-		}
-		if cfg.BaseURL == "" {
-			cfg.BaseURL = strings.TrimSpace(c.Embedding.APIBase)
-		}
-		if cfg.Dimension <= 0 {
-			cfg.Dimension = c.Embedding.Dimension
-		}
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(c.APIKey)
-		}
-		if cfg.BaseURL == "" {
-			cfg.BaseURL = strings.TrimSpace(c.APIBase)
+	if dim := os.Getenv("EMBEDDING_MODEL_DIMENSION"); dim != "" {
+		dim = strings.TrimSpace(dim)
+		if d, err := strconv.Atoi(dim); err == nil && d > 0 {
+			cfg.Dimension = d
 		}
 	}
 
 	return cfg, cfg.APIKey != "" || cfg.BaseURL != "" || cfg.Model != "" || cfg.Dimension > 0
 }
 
-func parseEmbedderDimensionEnv(raw string) (int, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, false
-	}
-	dim, err := strconv.Atoi(raw)
-	if err != nil || dim <= 0 {
-		return 0, false
-	}
-	return dim, true
-}
-
+/*
+toProviderConfig 将全局配置转换为 provider 层可消费的配置对象。
+*/
 func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) provider.Config {
 	model := c.Model
 	if strings.TrimSpace(modelOverride) != "" {
@@ -139,12 +120,13 @@ func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) p
 		apiBase = strings.TrimSpace(apiBaseOverride)
 	}
 	return provider.Config{
-		Name:         c.Provider,
-		APIKey:       c.APIKey,
-		APIBase:      apiBase,
-		Model:        model,
-		MaxTokens:    c.MaxTokens,
-		Temperature:  c.Temperature,
+		LlmProvider: provider.LlmProvider{
+			Name:        c.Provider,
+			APIKey:      c.APIKey,
+			BaseURL:     apiBase,
+			Model:       model,
+			Temperature: c.Temperature,
+		},
 		ExtraHeaders: c.ExtraHeaders,
 		Limits:       c.Limits,
 		Retry:        c.Retry,
@@ -169,6 +151,9 @@ func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) p
 	}
 }
 
+/*
+wrapProviderWithMiddleware 按当前配置为 provider 叠加中间件链。
+*/
 func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.Provider {
 	if p == nil || c == nil {
 		return p
@@ -217,6 +202,9 @@ func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.
 	return middleware.NewMiddlewareProvider(p, chain)
 }
 
+/*
+maybeRouteModel 根据输入内容与估算 token 数决定是否切换到更合适的模型。
+*/
 func (a *Agent) maybeRouteModel(userInput string) {
 	if a == nil || a.cfg == nil || a.registry == nil {
 		return
@@ -501,11 +489,12 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// 注册自主工作工具
 	autonomyTools := autonomy.NewToolDefinitions(autonomyKit)
 	tools.Register(&tool.Tool{
-		Name:        "autonomy_queue_add",
-		Description: "Add a task to the autonomy task queue. Tasks are picked up by workers automatically.",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermAuto,
+		Name:            "autonomy_queue_add",
+		Description:     "Add a task to the autonomy task queue. Tasks are picked up by workers automatically.",
+		Category:        tool.CatDelegate,
+		Source:          "builtin",
+		Permission:      tool.PermAuto,
+		HiddenFromModel: true,
 		Parameters: map[string]tool.Param{
 			"title":       {Type: "string", Description: "Task title", Required: true},
 			"description": {Type: "string", Description: "Detailed task description", Required: false},
@@ -515,22 +504,24 @@ func New(cfg *config.Manager) (*Agent, error) {
 		Handler: autonomyTools.HandleQueueAdd,
 	})
 	tools.Register(&tool.Tool{
-		Name:        "autonomy_queue_list",
-		Description: "List tasks in the autonomy queue. Optionally filter by state.",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermAuto,
+		Name:            "autonomy_queue_list",
+		Description:     "List tasks in the autonomy queue. Optionally filter by state.",
+		Category:        tool.CatDelegate,
+		Source:          "builtin",
+		Permission:      tool.PermAuto,
+		HiddenFromModel: true,
 		Parameters: map[string]tool.Param{
 			"state": {Type: "string", Description: "Filter by state: ready, in_progress, blocked, done", Required: false},
 		},
 		Handler: autonomyTools.HandleQueueList,
 	})
 	tools.Register(&tool.Tool{
-		Name:        "autonomy_queue_update",
-		Description: "Update a task's state in the autonomy queue.",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermAuto,
+		Name:            "autonomy_queue_update",
+		Description:     "Update a task's state in the autonomy queue.",
+		Category:        tool.CatDelegate,
+		Source:          "builtin",
+		Permission:      tool.PermAuto,
+		HiddenFromModel: true,
 		Parameters: map[string]tool.Param{
 			"task_id": {Type: "string", Description: "Task ID to update", Required: true},
 			"action":  {Type: "string", Description: "Action: complete, fail, block, unblock", Required: true},
@@ -542,42 +533,46 @@ func New(cfg *config.Manager) (*Agent, error) {
 		Handler: autonomyTools.HandleQueueUpdate,
 	})
 	tools.Register(&tool.Tool{
-		Name:        "autonomy_worker_spawn",
-		Description: "Spawn a worker to execute a specific task from the queue.",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermApprove,
+		Name:            "autonomy_worker_spawn",
+		Description:     "Spawn a worker to execute a specific task from the queue.",
+		Category:        tool.CatDelegate,
+		Source:          "builtin",
+		Permission:      tool.PermApprove,
+		HiddenFromModel: true,
 		Parameters: map[string]tool.Param{
 			"task_id": {Type: "string", Description: "Task ID to execute", Required: true},
 		},
 		Handler: autonomyTools.HandleWorkerSpawn,
 	})
 	tools.Register(&tool.Tool{
-		Name:        "autonomy_worker_list",
-		Description: "List active workers and their status.",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermAuto,
-		Parameters:  map[string]tool.Param{},
-		Handler:     autonomyTools.HandleWorkerList,
+		Name:            "autonomy_worker_list",
+		Description:     "List active workers and their status.",
+		Category:        tool.CatDelegate,
+		Source:          "builtin",
+		Permission:      tool.PermAuto,
+		HiddenFromModel: true,
+		Parameters:      map[string]tool.Param{},
+		Handler:         autonomyTools.HandleWorkerList,
 	})
 	tools.Register(&tool.Tool{
-		Name:        "autonomy_heartbeat_trigger",
-		Description: "Manually trigger a heartbeat cycle to check for work and dispatch tasks.",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermAuto,
-		Parameters:  map[string]tool.Param{},
-		Handler:     autonomyTools.HandleHeartbeatTrigger,
+		Name:            "autonomy_heartbeat_trigger",
+		Description:     "Manually trigger a heartbeat cycle to check for work and dispatch tasks.",
+		Category:        tool.CatDelegate,
+		Source:          "builtin",
+		Permission:      tool.PermAuto,
+		HiddenFromModel: true,
+		Parameters:      map[string]tool.Param{},
+		Handler:         autonomyTools.HandleHeartbeatTrigger,
 	})
 	tools.Register(&tool.Tool{
-		Name:        "autonomy_status",
-		Description: "Get the overall status of the autonomy system (queue, workers, heartbeat).",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermAuto,
-		Parameters:  map[string]tool.Param{},
-		Handler:     autonomyTools.HandleStatus,
+		Name:            "autonomy_status",
+		Description:     "Get the overall status of the autonomy system (queue, workers, heartbeat).",
+		Category:        tool.CatDelegate,
+		Source:          "builtin",
+		Permission:      tool.PermAuto,
+		HiddenFromModel: true,
+		Parameters:      map[string]tool.Param{},
+		Handler:         autonomyTools.HandleStatus,
 	})
 
 	a := &Agent{
@@ -661,6 +656,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 }
 
 // Chat 执行一次对话
+/*
+Chat 在新会话中执行一次完整对话。
+*/
 func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 	sess := a.sessions.New()
 	return a.chatWithSession(ctx, sess, userInput)
@@ -714,6 +712,9 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 }
 
 // chatWithSession 是 Chat/ChatWithSession 的共享实现。
+/*
+chatWithSession 是 Chat 与 ChatWithSession 共用的内部实现。
+*/
 func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
 	a.maybeRouteModel(userInput)
 
@@ -771,6 +772,9 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 }
 
 // chatStreamSimple 是不使用工具的简单流式聊天（作为 RunLoop 的回退）。
+/*
+chatStreamSimple 使用不带工具调用的简单流式聊天作为回退路径。
+*/
 func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, userInput string) (string, error) {
 	a.maybeRouteModel(userInput)
 	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
@@ -831,12 +835,18 @@ func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provid
 	return a.provider.ChatStream(ctx, messages)
 }
 
+/*
+buildContextMessages 为一次请求构造送入模型的完整上下文消息序列。
+*/
 func (a *Agent) buildContextMessages(ctx context.Context, sess *session.Session, userInput string, opts contextBuildOptions) []provider.Message {
 	planner := newContextPlanner(a, opts)
 	return planner.Build(ctx, sess, userInput)
 }
 
 // ChatEvent 是流式对话事件，包含思考过程和内容
+/*
+ChatEvent 描述面向上层流式 UI 的聊天事件。
+*/
 type ChatEvent struct {
 	Type    ChatEventType
 	Content string
@@ -872,6 +882,9 @@ const (
 const DefaultStreamMode = StreamModeNative
 
 // getStreamMode 获取当前流式模式配置
+/*
+getStreamMode 返回当前 Agent 使用的流式输出模式。
+*/
 func (a *Agent) getStreamMode() StreamMode {
 	if a.cfg == nil {
 		return DefaultStreamMode
@@ -884,6 +897,9 @@ func (a *Agent) getStreamMode() StreamMode {
 	return mode
 }
 
+/*
+streamConvergenceState 保存流式对话在多轮推理中的收敛与去重状态。
+*/
 type streamConvergenceState struct {
 	emptyResponseRetries     int
 	lengthRecoveryCount      int
@@ -901,6 +917,9 @@ type streamConvergenceState struct {
 	duplicateFetchLimit      int
 }
 
+/*
+hasContinuation 判断当前是否存在待续写的累计回复内容。
+*/
 func (s *streamConvergenceState) hasContinuation() bool {
 	if s == nil {
 		return false
@@ -908,10 +927,16 @@ func (s *streamConvergenceState) hasContinuation() bool {
 	return strings.TrimSpace(s.continuedResponse.String()) != ""
 }
 
+/*
+toolCallSig 生成工具调用签名，用于重复检测。
+*/
 func (s *streamConvergenceState) toolCallSig(name, arguments string) string {
 	return toolCallSignature(name, arguments)
 }
 
+/*
+trackToolCallPattern 跟踪工具调用模式，并判断是否进入重复循环。
+*/
 func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolCall, assistantContent string) (bool, []string) {
 	if s.toolCallRepeatCount == nil {
 		s.toolCallRepeatCount = make(map[string]int)
@@ -952,6 +977,9 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 	return false, nil
 }
 
+/*
+rememberToolCallResult 记录一次工具调用的结果，供循环保护和摘要使用。
+*/
 func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result string) {
 	if s.toolCallLastResult == nil {
 		s.toolCallLastResult = make(map[string]string)
@@ -965,6 +993,9 @@ func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result 
 	}
 }
 
+/*
+repeatedToolLoopMessage 构造“重复工具调用已中止”的用户可见提示文本。
+*/
 func (s *streamConvergenceState) repeatedToolLoopMessage(repeatedSigs []string) string {
 	var b strings.Builder
 	b.WriteString("Detected repeated tool-call loop and stopped early to avoid timeout.\n")
@@ -1041,6 +1072,9 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 
 // streamNative 真流式：直接使用 provider 的 ChatStream，逐 chunk 推送
 // tool_calls 通过流式增量拼接处理
+/*
+streamNative 使用 provider 原生流式接口执行一轮或多轮对话。
+*/
 func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int, state *streamConvergenceState) {
 	if state == nil {
 		state = &streamConvergenceState{}
@@ -1326,6 +1360,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 }
 
 // streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
+/*
+streamSimulated 先获取完整响应，再按块模拟流式输出。
+*/
 func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int, state *streamConvergenceState) {
 	if state == nil {
 		state = &streamConvergenceState{}
@@ -1600,6 +1637,9 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, u
 }
 
 // streamToolCallAcc 流式 tool_calls 增量累积器
+/*
+streamToolCallAcc 用于在原生流式模式下累积单个工具调用的增量字段。
+*/
 type streamToolCallAcc struct {
 	id        string
 	name      string
@@ -1674,7 +1714,7 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 		}
 	}
 
-	// v0.43.0: 短期记忆 — 使用 ShortTermBuffer 的滑动窗口 + 摘要
+	//  短期记忆 — 使用 ShortTermBuffer 的滑动窗口 + 摘要
 	if a.shortTerm != nil {
 		shortCtx := a.shortTerm.GetContext()
 		if len(shortCtx) > 0 {
@@ -1720,6 +1760,9 @@ func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
 }
 
 // inferCategory 从用户输入推断记忆分类
+/*
+inferCategory 根据用户输入粗略推断记忆分类。
+*/
 func inferCategory(input string) string {
 	lower := strings.ToLower(input)
 
@@ -1759,6 +1802,9 @@ func inferCategory(input string) string {
 }
 
 // inferImportance 根据内容推断重要性
+/*
+inferImportance 根据输入内容估算记忆的重要性权重。
+*/
 func inferImportance(input string) float64 {
 	lower := strings.ToLower(input)
 
@@ -1937,6 +1983,73 @@ func (a *Agent) handleMemoryTool(name, arguments string) (string, error) {
 	}
 }
 
+// handleRAGTool handles LLM-triggered RAG tools.
+func (a *Agent) handleRAGTool(name, arguments string) (string, error) {
+	if a.ragManager == nil {
+		return "", fmt.Errorf("rag manager not initialized")
+	}
+
+	var args map[string]any
+	if arguments != "" {
+		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+			args = map[string]any{"raw": arguments}
+		}
+	}
+
+	switch name {
+	case "rag_search":
+		query, _ := args["query"].(string)
+		if strings.TrimSpace(query) == "" {
+			return "", fmt.Errorf("query is required")
+		}
+
+		topK := 5
+		if raw, ok := args["top_k"]; ok {
+			switch v := raw.(type) {
+			case float64:
+				if int(v) > 0 {
+					topK = int(v)
+				}
+			case int:
+				if v > 0 {
+					topK = v
+				}
+			}
+		}
+
+		prev := a.ragManager.RetrieverConfig()
+		cfg := prev
+		cfg.TopK = topK
+		a.ragManager.UpdateRetrieverConfig(cfg)
+		defer a.ragManager.UpdateRetrieverConfig(prev)
+
+		results, err := a.ragManager.Search(context.Background(), query)
+		if err != nil {
+			return "", err
+		}
+		if len(results) == 0 {
+			return fmt.Sprintf("没有找到关于「%s」的 RAG 结果", query), nil
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("找到 %d 条关于「%s」的知识片段：\n", len(results), query))
+		for i, r := range results {
+			title := strings.TrimSpace(r.DocTitle)
+			if title == "" {
+				title = strings.TrimSpace(r.DocSource)
+			}
+			if title == "" {
+				title = "(unknown source)"
+			}
+			content := utils.Truncate(strings.TrimSpace(r.Content), 160)
+			sb.WriteString(fmt.Sprintf("%d. [%0.2f] %s — %s\n", i+1, r.Score, title, content))
+		}
+		return strings.TrimSpace(sb.String()), nil
+	}
+
+	return "", fmt.Errorf("unknown rag tool: %s", name)
+}
+
 // Soul 返回当前 SOUL
 func (a *Agent) Soul() *soul.Soul {
 	return a.soul
@@ -1976,10 +2089,12 @@ func (a *Agent) SwitchModel(modelID string) error {
 
 	cfg := a.cfg.Get()
 	pCfg := provider.Config{
-		Name:    providerName,
-		APIKey:  cfg.APIKey,
-		APIBase: cfg.APIBase,
-		Model:   modelID,
+		LlmProvider: provider.LlmProvider{
+			Name:    providerName,
+			APIKey:  cfg.APIKey,
+			BaseURL: cfg.APIBase,
+			Model:   modelID,
+		},
 	}
 
 	p, err := a.registry.Resolve(pCfg)
@@ -2034,10 +2149,16 @@ func (a *Agent) StartAutonomy(ctx context.Context) error {
 }
 
 // agentExecutorAdapter bridges Agent to autonomy.AgentExecutor interface
+/*
+agentExecutorAdapter 将 Agent 适配为 autonomy 所需的执行器接口。
+*/
 type agentExecutorAdapter struct {
 	agent *Agent
 }
 
+/*
+RunLoopWithSession 按 autonomy 接口要求在指定会话中执行一轮 Agent Loop。
+*/
 func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID string, userInput string, cfg autonomy.LoopConfig) (*autonomy.LoopResult, error) {
 	// Look up session by ID
 	sess, ok := a.agent.sessions.Get(sessionID)
@@ -2064,6 +2185,9 @@ func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID
 	}, nil
 }
 
+/*
+NewSession 创建 autonomy 使用的新会话并返回其 ID。
+*/
 func (a *agentExecutorAdapter) NewSession(title string) string {
 	sess := a.agent.sessions.NewWithTitle(title)
 	return sess.ID
@@ -2157,6 +2281,9 @@ func (a *Agent) handleSkillRead() func(args map[string]any) (string, error) {
 	}
 }
 
+/*
+skillMatchesName 判断用户提供的名称是否匹配某个技能。
+*/
 func skillMatchesName(s *tool.SkillInfo, name string) bool {
 	if strings.EqualFold(s.Name, name) {
 		return true
@@ -2176,6 +2303,9 @@ func skillMatchesName(s *tool.SkillInfo, name string) bool {
 	return false
 }
 
+/*
+normalizeSkillLookup 将技能名归一化为便于匹配的形式。
+*/
 func normalizeSkillLookup(name string) string {
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" {
@@ -2333,6 +2463,9 @@ func (a *Agent) buildRAGContext(ctx context.Context, messages []provider.Message
 var _ = time.Second
 
 // toContextMessages 将 provider.Message 转换为 contextx.Message
+/*
+toContextMessages 将 provider 消息转换为带优先级的上下文消息。
+*/
 func (a *Agent) toContextMessages(messages []provider.Message) []contextx.Message {
 	result := make([]contextx.Message, len(messages))
 	for i, msg := range messages {
@@ -2385,6 +2518,9 @@ func (a *Agent) toContextMessages(messages []provider.Message) []contextx.Messag
 }
 
 // fromContextMessages 将 contextx.Message 转换回 provider.Message
+/*
+fromContextMessages 将上下文消息转换回 provider 消息格式。
+*/
 func (a *Agent) fromContextMessages(messages []contextx.Message) []provider.Message {
 	result := make([]provider.Message, len(messages))
 	for i, msg := range messages {
@@ -2397,6 +2533,9 @@ func (a *Agent) fromContextMessages(messages []contextx.Message) []provider.Mess
 }
 
 // applyWebSearchEnv 从环境变量覆盖 web_search 配置
+/*
+applyWebSearchEnv 使用环境变量补全 web_search 相关配置。
+*/
 func applyWebSearchEnv(cfg *config.Manager) {
 	cur := cfg.Get()
 	provider := strings.ToLower(strings.TrimSpace(cur.WebSearch.Provider))

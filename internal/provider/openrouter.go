@@ -14,11 +14,11 @@ type OpenRouterProvider struct {
 }
 
 func NewOpenRouterProvider(cfg Config) Provider {
-	if cfg.APIBase == "" {
-		cfg.APIBase = "https://openrouter.ai/api/v1"
+	if cfg.LlmProvider.BaseURL == "" {
+		cfg.LlmProvider.BaseURL = "https://openrouter.ai/api/v1"
 	}
-	if cfg.Model == "" {
-		cfg.Model = "openai/gpt-4o"
+	if cfg.LlmProvider.Model == "" {
+		cfg.LlmProvider.Model = "openai/gpt-4o"
 	}
 	return &OpenRouterProvider{cfg: cfg}
 }
@@ -26,7 +26,7 @@ func NewOpenRouterProvider(cfg Config) Provider {
 func (p *OpenRouterProvider) Name() string { return "openrouter" }
 
 func (p *OpenRouterProvider) Validate() error {
-	if p.cfg.APIKey == "" {
+	if p.cfg.LlmProvider.APIKey == "" {
 		return fmt.Errorf("openrouter: api_key is required")
 	}
 	return nil
@@ -53,6 +53,6 @@ func (p *OpenRouterProvider) ChatStreamWithOptions(ctx context.Context, messages
 
 // Ensure OpenRouterProvider implements Provider and FunctionCallingProvider
 var (
-	_ Provider              = (*OpenRouterProvider)(nil)
+	_ Provider                = (*OpenRouterProvider)(nil)
 	_ FunctionCallingProvider = (*OpenRouterProvider)(nil)
 )
