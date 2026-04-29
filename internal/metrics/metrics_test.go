@@ -116,20 +116,6 @@ func TestRecordRAGOps(t *testing.T) {
 	}
 }
 
-func TestRecordPluginOps(t *testing.T) {
-	m := NewMetrics()
-	m.RecordPluginInstall()
-	m.RecordPluginCall()
-	m.RecordPluginCall()
-
-	if m.PluginInstalls.Load() != 1 {
-		t.Errorf("expected 1 plugin install, got %d", m.PluginInstalls.Load())
-	}
-	if m.PluginCalls.Load() != 2 {
-		t.Errorf("expected 2 plugin calls, got %d", m.PluginCalls.Load())
-	}
-}
-
 func TestSnapshot(t *testing.T) {
 	m := NewMetrics()
 	m.RecordChatRequest()
@@ -137,7 +123,6 @@ func TestSnapshot(t *testing.T) {
 	m.RecordSessionOpen()
 	m.RecordMemoryStore()
 	m.RecordRAGIndex()
-	m.RecordPluginInstall()
 
 	snap := m.Snapshot()
 	if snap.TotalRequests != 1 {

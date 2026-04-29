@@ -14,36 +14,32 @@ type Metrics struct {
 	mu sync.RWMutex // 保护 ProviderCalls/ProviderErrors/ProviderLatency map
 
 	// 请求计数
-	TotalRequests   atomic.Int64
-	ChatRequests    atomic.Int64
-	ErrorRequests   atomic.Int64
-	ToolCalls      atomic.Int64
-	FunctionCalls  atomic.Int64
+	TotalRequests atomic.Int64
+	ChatRequests  atomic.Int64
+	ErrorRequests atomic.Int64
+	ToolCalls     atomic.Int64
+	FunctionCalls atomic.Int64
 
 	// Provider 调用统计
-	ProviderCalls   map[string]*atomic.Int64 // provider -> count
-	ProviderErrors  map[string]*atomic.Int64 // provider -> error count
+	ProviderCalls   map[string]*atomic.Int64     // provider -> count
+	ProviderErrors  map[string]*atomic.Int64     // provider -> error count
 	ProviderLatency map[string]*LatencyHistogram // provider -> latency
 
 	// 会话统计
-	ActiveSessions  atomic.Int64
-	TotalSessions   atomic.Int64
+	ActiveSessions atomic.Int64
+	TotalSessions  atomic.Int64
 
 	// 记忆统计
-	MemoryStores    atomic.Int64
-	MemoryRecalls   atomic.Int64
+	MemoryStores  atomic.Int64
+	MemoryRecalls atomic.Int64
 
 	// RAG 统计
-	RAGIndexOps     atomic.Int64
-	RAGSearchOps    atomic.Int64
-
-	// 插件统计
-	PluginInstalls  atomic.Int64
-	PluginCalls     atomic.Int64
+	RAGIndexOps  atomic.Int64
+	RAGSearchOps atomic.Int64
 
 	// 系统统计
-	StartTime       time.Time
-	Uptime          time.Duration
+	StartTime time.Time
+	Uptime    time.Duration
 }
 
 // LatencyHistogram 简易延迟直方图
@@ -184,37 +180,25 @@ func (m *Metrics) RecordRAGSearch() {
 	m.RAGSearchOps.Add(1)
 }
 
-// RecordPluginInstall 记录插件安装
-func (m *Metrics) RecordPluginInstall() {
-	m.PluginInstalls.Add(1)
-}
-
-// RecordPluginCall 记录插件调用
-func (m *Metrics) RecordPluginCall() {
-	m.PluginCalls.Add(1)
-}
-
 // Snapshot 获取当前指标快照
 func (m *Metrics) Snapshot() *MetricsSnapshot {
 	m.Uptime = time.Since(m.StartTime)
 
 	snap := &MetricsSnapshot{
-		TotalRequests:   m.TotalRequests.Load(),
-		ChatRequests:    m.ChatRequests.Load(),
-		ErrorRequests:   m.ErrorRequests.Load(),
-		ToolCalls:       m.ToolCalls.Load(),
-		FunctionCalls:   m.FunctionCalls.Load(),
-		ActiveSessions:  m.ActiveSessions.Load(),
-		TotalSessions:   m.TotalSessions.Load(),
-		MemoryStores:    m.MemoryStores.Load(),
-		MemoryRecalls:   m.MemoryRecalls.Load(),
-		RAGIndexOps:     m.RAGIndexOps.Load(),
-		RAGSearchOps:    m.RAGSearchOps.Load(),
-		PluginInstalls:  m.PluginInstalls.Load(),
-		PluginCalls:     m.PluginCalls.Load(),
-		StartTime:       m.StartTime,
-		Uptime:          m.Uptime.String(),
-		Providers:       make(map[string]ProviderStats),
+		TotalRequests:  m.TotalRequests.Load(),
+		ChatRequests:   m.ChatRequests.Load(),
+		ErrorRequests:  m.ErrorRequests.Load(),
+		ToolCalls:      m.ToolCalls.Load(),
+		FunctionCalls:  m.FunctionCalls.Load(),
+		ActiveSessions: m.ActiveSessions.Load(),
+		TotalSessions:  m.TotalSessions.Load(),
+		MemoryStores:   m.MemoryStores.Load(),
+		MemoryRecalls:  m.MemoryRecalls.Load(),
+		RAGIndexOps:    m.RAGIndexOps.Load(),
+		RAGSearchOps:   m.RAGSearchOps.Load(),
+		StartTime:      m.StartTime,
+		Uptime:         m.Uptime.String(),
+		Providers:      make(map[string]ProviderStats),
 	}
 
 	m.mu.RLock()
@@ -252,10 +236,8 @@ type MetricsSnapshot struct {
 	TotalSessions  int64                    `json:"total_sessions"`
 	MemoryStores   int64                    `json:"memory_stores"`
 	MemoryRecalls  int64                    `json:"memory_recalls"`
-	RAGIndexOps   int64                    `json:"rag_index_ops"`
-	RAGSearchOps  int64                    `json:"rag_search_ops"`
-	PluginInstalls int64                    `json:"plugin_installs"`
-	PluginCalls    int64                    `json:"plugin_calls"`
+	RAGIndexOps    int64                    `json:"rag_index_ops"`
+	RAGSearchOps   int64                    `json:"rag_search_ops"`
 	StartTime      time.Time                `json:"start_time"`
 	Uptime         string                   `json:"uptime"`
 	Providers      map[string]ProviderStats `json:"providers"`
@@ -284,8 +266,6 @@ func (m *Metrics) ExportPrometheus() string {
 	out += promLine("lh_memory_recalls_total", snap.MemoryRecalls)
 	out += promLine("lh_rag_index_ops_total", snap.RAGIndexOps)
 	out += promLine("lh_rag_search_ops_total", snap.RAGSearchOps)
-	out += promLine("lh_plugin_installs_total", snap.PluginInstalls)
-	out += promLine("lh_plugin_calls_total", snap.PluginCalls)
 
 	for name, stats := range snap.Providers {
 		out += promLabelLine("lh_provider_calls_total", name, stats.Calls)
