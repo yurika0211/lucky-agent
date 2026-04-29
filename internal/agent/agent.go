@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/autonomy"
@@ -19,6 +20,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	appheartbeat "github.com/yurika0211/luckyharness/internal/heartbeat"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/middleware"
@@ -41,40 +43,44 @@ type embedderRuntimeConfig struct {
 
 // Agent 是 LuckyHarness 的核心 Agent
 type Agent struct {
-	cfg            *config.Manager
-	soul           *soul.Soul
-	tmplMgr        *soul.TemplateManager  // v0.19.0: SOUL 模板管理器
-	provider       provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
-	registry       *provider.Registry     // provider 注册表
-	catalog        *provider.ModelCatalog // 模型目录
-	tokenStore     *provider.TokenStore   // token 存储
-	memory         *memory.Store
-	shortTerm      *memory.ShortTermBuffer // v0.43.0: 短期记忆滑动窗口
-	midTerm        *memory.MidTermStore    // v0.43.0: 中期会话摘要存储
-	sessions       *session.Manager
-	tools          *tool.Registry
-	gateway        *tool.Gateway           // 统一工具网关
-	msgGateway     *gateway.GatewayManager // v0.6.0: 消息平台网关
-	mcpClient      *tool.MCPClient         // MCP 客户端
-	delegate       *tool.DelegateManager   // 子代理委派管理器
-	contextWin     *contextx.ContextWindow // 上下文窗口管理器
-	contextEst     *contextx.TokenEstimator
-	ragManager     *rag.RAGManager         // RAG 知识库管理器
-	ragPersist     *rag.Persistence        // RAG 持久化
-	streamIndexer  *rag.StreamIndexer      // v0.23.0: 流式索引器
-	embedderReg    *embedder.Registry      // v0.21.0: 嵌入模型注册表
-	collabReg      *collab.Registry        // v0.22.0: Agent 协作注册表
-	collabMgr      *collab.DelegateManager // v0.22.0: 协作任务管理器
-	skills         []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
-	metrics        *metrics.Metrics        // v0.36.0: 指标收集器
-	cronEngine     *cron.Engine            // v0.36.0: 定时任务引擎
-	cronStore      *cron.Store
-	autonomy       *autonomy.AutonomyKit // v0.38.0: 自主工作套件
-	contextCache   *contextMessageCache
-	mediaProcessor *multimodal.Processor
-	chatCount      int // 对话计数，用于触发自动摘要
-	activeModel    string
-	activeAPIBase  string
+	cfg                *config.Manager
+	soul               *soul.Soul
+	tmplMgr            *soul.TemplateManager  // v0.19.0: SOUL 模板管理器
+	provider           provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	registry           *provider.Registry     // provider 注册表
+	catalog            *provider.ModelCatalog // 模型目录
+	tokenStore         *provider.TokenStore   // token 存储
+	memory             *memory.Store
+	shortTerm          *memory.ShortTermBuffer // v0.43.0: 短期记忆滑动窗口
+	midTerm            *memory.MidTermStore    // v0.43.0: 中期会话摘要存储
+	sessions           *session.Manager
+	tools              *tool.Registry
+	gateway            *tool.Gateway           // 统一工具网关
+	msgGateway         *gateway.GatewayManager // v0.6.0: 消息平台网关
+	mcpClient          *tool.MCPClient         // MCP 客户端
+	delegate           *tool.DelegateManager   // 子代理委派管理器
+	contextWin         *contextx.ContextWindow // 上下文窗口管理器
+	contextEst         *contextx.TokenEstimator
+	ragManager         *rag.RAGManager         // RAG 知识库管理器
+	ragPersist         *rag.Persistence        // RAG 持久化
+	streamIndexer      *rag.StreamIndexer      // v0.23.0: 流式索引器
+	embedderReg        *embedder.Registry      // v0.21.0: 嵌入模型注册表
+	collabReg          *collab.Registry        // v0.22.0: Agent 协作注册表
+	collabMgr          *collab.DelegateManager // v0.22.0: 协作任务管理器
+	skills             []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
+	metrics            *metrics.Metrics        // v0.36.0: 指标收集器
+	cronEngine         *cron.Engine            // v0.36.0: 定时任务引擎
+	cronStore          *cron.Store
+	autonomy           *autonomy.AutonomyKit // v0.38.0: 自主工作套件
+	heartbeatSvc       *appheartbeat.Service
+	heartbeatMu        sync.Mutex
+	heartbeatSessionID string
+	recentTarget       recentChatTarget
+	contextCache       *contextMessageCache
+	mediaProcessor     *multimodal.Processor
+	chatCount          int // 对话计数，用于触发自动摘要
+	activeModel        string
+	activeAPIBase      string
 }
 
 func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool) {
@@ -610,6 +616,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	}
 
 	a.registerCronTools()
+	a.registerHeartbeatTools()
 
 	// v0.35.0: 自动加载 skills 目录
 	skillsDir := cfg.HomeDir() + "/skills"
@@ -625,6 +632,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 		fmt.Printf("[cron] restore failed: %v\n", restoreErr)
 	} else if restored > 0 {
 		fmt.Printf("[cron] restored %d jobs\n", restored)
+	}
+	if err := a.initHeartbeatService(); err != nil {
+		fmt.Printf("[heartbeat] init failed: %v\n", err)
 	}
 
 	// v0.38.0: 设置 delegate 的 Agent 执行器，让 delegate_task 真正走 Agent Loop
@@ -779,7 +789,7 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 		}
 	}
 
-	response := result.String()
+	response := utils.SanitizeToolProtocolOutput(result.String())
 	sess.AddMessage("assistant", response)
 
 	// 保存会话
@@ -1557,6 +1567,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 
 // finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引
 func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, userInput, response string) {
+	response = utils.SanitizeToolProtocolOutput(response)
 	sess.AddMessage("user", userInput)
 	sess.AddMessage("assistant", response)
 	_ = sess.Save()
@@ -1691,6 +1702,7 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 // - 助手回复：截断到 150 字，不存完整回复
 // - 重要性：根据内容长度和类型动态调整
 func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
+	assistantResponse = utils.SanitizeToolProtocolOutput(assistantResponse)
 	// v0.43.0: 写入 ShortTermBuffer（滑动窗口 + 摘要压缩）
 	if a.shortTerm != nil {
 		a.shortTerm.Add("user", userInput)
@@ -2276,6 +2288,11 @@ func (a *Agent) Close() error {
 	}
 	if a.cronEngine != nil {
 		a.cronEngine.Stop()
+	}
+	if a.heartbeatSvc != nil {
+		if err := a.heartbeatSvc.Stop(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("stop heartbeat: %w", err)
+		}
 	}
 
 	// SQLite 后端自动持久化，只需关闭连接

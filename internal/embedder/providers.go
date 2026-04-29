@@ -120,6 +120,10 @@ type embeddingResponse struct {
 	Usage  embeddingUsage  `json:"usage"`
 }
 
+type embeddingErrorEnvelope struct {
+	Error any `json:"error"`
+}
+
 const (
 	defaultEmbeddingTimeout = 15 * time.Second
 	defaultEmbeddingRetries = 3
@@ -253,7 +257,7 @@ func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		return nil, readEmbeddingStatusError(resp)
 	}
 
 	var respBody embeddingResponse
@@ -378,6 +382,23 @@ func drainAndClose(resp *http.Response) {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	_ = resp.Body.Close()
+}
+
+func readEmbeddingStatusError(resp *http.Response) error {
+	if resp == nil {
+		return fmt.Errorf("unexpected nil response")
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	snippet := strings.TrimSpace(string(body))
+	if snippet == "" {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var env embeddingErrorEnvelope
+	if err := jsonAPI.Unmarshal(body, &env); err == nil && env.Error != nil {
+		return fmt.Errorf("unexpected status code: %d: %v", resp.StatusCode, env.Error)
+	}
+	return fmt.Errorf("unexpected status code: %d: %s", resp.StatusCode, snippet)
 }
 
 // OllamaEmbedder calls Ollama's embedding API.

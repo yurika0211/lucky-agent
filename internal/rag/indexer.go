@@ -90,6 +90,7 @@ func (idx *Indexer) IndexFile(path string) (*Document, error) {
 // IndexText indexes raw text content with a given source path and title.
 func (idx *Indexer) IndexText(source, title, content string) (*Document, error) {
 	docID := docID(source)
+	createdChunkIDs := make([]string, 0, 16)
 
 	// Remove old chunks if re-indexing
 	idx.mu.Lock()
@@ -126,10 +127,12 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 		batch := rawChunks[start:end]
 		vecs, err := idx.embedder.EmbedBatch(context.Background(), batch)
 		if err != nil {
+			idx.rollbackChunks(createdChunkIDs)
 			chunkID := fmt.Sprintf("%s#%d", docID, start)
 			return nil, fmt.Errorf("embed chunk %s: %w", chunkID, err)
 		}
 		if len(vecs) != len(batch) {
+			idx.rollbackChunks(createdChunkIDs)
 			chunkID := fmt.Sprintf("%s#%d", docID, start)
 			return nil, fmt.Errorf("embed chunk %s: returned %d vectors for %d texts", chunkID, len(vecs), len(batch))
 		}
@@ -145,6 +148,7 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 			}
 
 			if err := idx.store.Upsert(chunkID, vecs[offset], metadata); err != nil {
+				idx.rollbackChunks(createdChunkIDs)
 				return nil, fmt.Errorf("store chunk %s: %w", chunkID, err)
 			}
 
@@ -158,6 +162,7 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 			idx.chunks[chunkID] = chunk
 			doc.Chunks = append(doc.Chunks, chunkID)
 			idx.mu.Unlock()
+			createdChunkIDs = append(createdChunkIDs, chunkID)
 		}
 	}
 
@@ -172,12 +177,24 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 	// v0.20.0: Persist to SQLite if available
 	if idx.sqlite != nil {
 		if err := idx.sqlite.SaveDocument(doc, idx.chunks); err != nil {
-			// Log but don't fail the indexing
-			_ = err
+			idx.rollbackChunks(createdChunkIDs)
+			return nil, fmt.Errorf("save document %s: %w", doc.ID, err)
 		}
 	}
 
 	return doc, nil
+}
+
+func (idx *Indexer) rollbackChunks(chunkIDs []string) {
+	if len(chunkIDs) == 0 {
+		return
+	}
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	for _, id := range chunkIDs {
+		idx.store.Delete(id)
+		delete(idx.chunks, id)
+	}
 }
 
 func embeddingBatchSizeFromEnv() int {

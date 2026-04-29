@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // Session 代表一次对话会话
@@ -105,6 +106,10 @@ func NewSession(id, dir string) *Session {
 func (s *Session) AddProviderMessage(msg provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	if msg.Role == "assistant" {
+		msg.Content = utils.SanitizeToolProtocolOutput(msg.Content)
+	}
 
 	// 确保消息已加载
 	if !s.messagesLoaded {
@@ -216,7 +221,7 @@ func (s *Session) MessageCount() int {
 	return s.messageCount
 }
 
-// Save 保存会话到磁盘 (JSON 格式)
+// Save 保存会话到磁盘 (Markdown + JSON code fence)
 func (s *Session) Save() error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -239,11 +244,18 @@ func (s *Session) Save() error {
 		return fmt.Errorf("marshal session: %w", err)
 	}
 
-	path := filepath.Join(s.dir, s.ID+".json")
-	return os.WriteFile(path, jsonData, 0600)
+	var b strings.Builder
+	b.WriteString("# LuckyHarness Session\n\n")
+	b.WriteString("自动生成，请勿手动编辑 JSON 块。\n\n")
+	b.WriteString("```json\n")
+	b.Write(jsonData)
+	b.WriteString("\n```\n")
+
+	path := filepath.Join(s.dir, s.ID+".md")
+	return os.WriteFile(path, []byte(b.String()), 0600)
 }
 
-// sessionData 是 JSON 序列化格式
+// sessionData 是内部序列化格式
 type sessionData struct {
 	ID           string             `json:"id"`
 	Title        string             `json:"title"`
@@ -310,7 +322,7 @@ func (m *Manager) loadFromDisk() error {
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
 		}
 
@@ -320,8 +332,9 @@ func (m *Manager) loadFromDisk() error {
 			continue // 跳过无法读取的文件
 		}
 
+		raw := extractJSONCodeFence(string(data))
 		var sd sessionData
-		if err := json.Unmarshal(data, &sd); err != nil {
+		if err := json.Unmarshal([]byte(raw), &sd); err != nil {
 			continue // 跳过无法解析的文件
 		}
 
@@ -351,7 +364,7 @@ func (s *Session) loadMessages() error {
 		return nil
 	}
 
-	path := filepath.Join(s.dir, s.ID+".json")
+	path := filepath.Join(s.dir, s.ID+".md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// 文件不存在时用空消息
@@ -360,8 +373,9 @@ func (s *Session) loadMessages() error {
 		return nil
 	}
 
+	raw := extractJSONCodeFence(string(data))
 	var sd sessionData
-	if err := json.Unmarshal(data, &sd); err != nil {
+	if err := json.Unmarshal([]byte(raw), &sd); err != nil {
 		s.Messages = make([]provider.Message, 0)
 		s.messagesLoaded = true
 		return nil
@@ -498,7 +512,7 @@ func (m *Manager) Delete(id string) error {
 	}
 
 	// 删除磁盘文件
-	path := filepath.Join(s.dir, s.ID+".json")
+	path := filepath.Join(s.dir, s.ID+".md")
 	os.Remove(path) // 忽略错误，文件可能不存在
 
 	delete(m.sessions, id)
@@ -527,4 +541,36 @@ func (m *Manager) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.sessions)
+}
+
+// Dir returns the backing session directory.
+func (m *Manager) Dir() string {
+	if m == nil {
+		return ""
+	}
+	return m.dir
+}
+
+// Upsert registers a session object with the manager.
+func (m *Manager) Upsert(s *Session) {
+	if m == nil || s == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions[s.ID] = s
+}
+
+func extractJSONCodeFence(md string) string {
+	start := strings.Index(md, "```json")
+	if start == -1 {
+		return md
+	}
+	start += len("```json")
+	rest := md[start:]
+	end := strings.Index(rest, "```")
+	if end == -1 {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(rest[:end])
 }

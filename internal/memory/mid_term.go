@@ -343,7 +343,7 @@ type midtermData struct {
 }
 
 func (s *MidTermStore) persist() error {
-	path := filepath.Join(s.dir, "midterm.json")
+	path := filepath.Join(s.dir, "midterm.md")
 
 	data := midtermData{
 		Summaries: make([]*SessionSummary, 0, len(s.summaries)),
@@ -357,17 +357,27 @@ func (s *MidTermStore) persist() error {
 		return fmt.Errorf("marshal midterm: %w", err)
 	}
 
-	return os.WriteFile(path, jsonData, 0600)
+	var b strings.Builder
+	b.WriteString("# LuckyHarness Midterm Memory\n\n")
+	b.WriteString("自动生成，请勿手动编辑 JSON 块。\n\n")
+	b.WriteString("```json\n")
+	b.Write(jsonData)
+	b.WriteString("\n```\n")
+	return os.WriteFile(path, []byte(b.String()), 0600)
 }
 
 func (s *MidTermStore) load() error {
-	path := filepath.Join(s.dir, "midterm.json")
+	path := filepath.Join(s.dir, "midterm.md")
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil // 文件不存在是正常的
 		}
 		return fmt.Errorf("read midterm: %w", err)
+	}
+
+	if strings.Contains(string(raw), "```json") {
+		raw = []byte(extractJSONCodeFence(string(raw)))
 	}
 
 	var data midtermData

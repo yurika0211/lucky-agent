@@ -133,6 +133,19 @@ func TestSessionSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestAssistantMessageSanitizesToolProtocolLeakage(t *testing.T) {
+	s := NewSession("test-sanitize", t.TempDir())
+	s.AddMessage("assistant", "to=cron_list\n{\"name\":\"cron_list\",\"arguments\":{}}\n仍然没有已配置的定时任务。")
+
+	msgs := s.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Content != "仍然没有已配置的定时任务。" {
+		t.Fatalf("unexpected sanitized content: %q", msgs[0].Content)
+	}
+}
+
 func TestManagerNew(t *testing.T) {
 	m, err := NewManager(t.TempDir())
 	if err != nil {

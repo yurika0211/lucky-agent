@@ -56,6 +56,7 @@ func (h *Handler) resetSession(chatID string) string {
 
 // HandleMessage processes an incoming gateway message.
 func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error {
+	h.agent.RecordRecentChatTarget("onebot", msg.Chat.ID, msg.ID)
 	if msg.IsCommand {
 		return h.handleCommand(ctx, msg)
 	}

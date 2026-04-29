@@ -20,6 +20,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/telemetry"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/utils"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -249,6 +250,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		State: StateReason,
 	}
 	finalize := func(response string) {
+		response = utils.SanitizeToolProtocolOutput(response)
 		result.Response = response
 		result.State = StateDone
 
@@ -757,6 +759,7 @@ func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message
 // indexConversationTurn 将一轮对话索引进 RAG（异步执行）
 func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 	go func() {
+		assistantResponse = utils.SanitizeToolProtocolOutput(assistantResponse)
 		// 组合对话内容作为索引文本
 		content := "User: " + userInput + "\nAssistant: " + assistantResponse
 		title := userInput

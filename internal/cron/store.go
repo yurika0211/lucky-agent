@@ -88,19 +88,33 @@ func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() 
 	if s == nil || engine == nil {
 		return 0, nil
 	}
+	usedLegacyJSON := false
 	data, err := os.ReadFile(s.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return 0, nil
+			if legacyPath, ok := s.legacyJSONPath(); ok {
+				legacyData, legacyErr := os.ReadFile(legacyPath)
+				if legacyErr != nil {
+					if os.IsNotExist(legacyErr) {
+						return 0, nil
+					}
+					return 0, fmt.Errorf("read legacy cron store: %w", legacyErr)
+				}
+				data = legacyData
+				usedLegacyJSON = true
+			} else {
+				return 0, nil
+			}
+		} else {
+			return 0, fmt.Errorf("read cron store: %w", err)
 		}
-		return 0, fmt.Errorf("read cron store: %w", err)
 	}
 
 	var (
 		state PersistedState
 		err2  error
 	)
-	if isMarkdownStorePath(s.path) {
+	if isMarkdownStorePath(s.path) && !usedLegacyJSON {
 		state, err2 = parseMarkdownState(string(data))
 		if err2 != nil {
 			return 0, fmt.Errorf("parse mission store: %w", err2)
@@ -148,6 +162,13 @@ func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() 
 		engine.Start()
 	}
 	return restored, nil
+}
+
+func (s *Store) legacyJSONPath() (string, bool) {
+	if s == nil || !isMarkdownStorePath(s.path) {
+		return "", false
+	}
+	return filepath.Join(filepath.Dir(s.path), "cron_jobs.json"), true
 }
 
 func copyMetadata(src map[string]string) map[string]string {

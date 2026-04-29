@@ -715,14 +715,19 @@ func (s *Store) generateID() string {
 }
 
 func (s *Store) load() error {
-	path := filepath.Join(s.dir, "memory.json")
+	path := filepath.Join(s.dir, "memory.md")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// 尝试迁移旧格式
 			return s.migrateOldFormat()
+		} else {
+			return fmt.Errorf("load memory: %w", err)
 		}
-		return fmt.Errorf("load memory: %w", err)
+	}
+
+	if strings.Contains(string(data), "```json") {
+		data = []byte(extractJSONCodeFence(string(data)))
 	}
 
 	var entries []*Entry
@@ -779,7 +784,7 @@ func (s *Store) migrateOldFormat() error {
 }
 
 func (s *Store) persist() error {
-	path := filepath.Join(s.dir, "memory.json")
+	path := filepath.Join(s.dir, "memory.md")
 
 	entries := make([]*Entry, 0, len(s.entries))
 	for _, e := range s.entries {
@@ -791,7 +796,28 @@ func (s *Store) persist() error {
 		return fmt.Errorf("marshal memory: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0600)
+	var b strings.Builder
+	b.WriteString("# LuckyHarness Memory\n\n")
+	b.WriteString("自动生成，请勿手动编辑 JSON 块。\n\n")
+	b.WriteString("```json\n")
+	b.Write(data)
+	b.WriteString("\n```\n")
+
+	return os.WriteFile(path, []byte(b.String()), 0600)
+}
+
+func extractJSONCodeFence(md string) string {
+	start := strings.Index(md, "```json")
+	if start == -1 {
+		return md
+	}
+	start += len("```json")
+	rest := md[start:]
+	end := strings.Index(rest, "```")
+	if end == -1 {
+		return strings.TrimSpace(rest)
+	}
+	return strings.TrimSpace(rest[:end])
 }
 
 func max(a, b float64) float64 {

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/cron"
+	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
@@ -59,6 +60,9 @@ func (a *Agent) restoreCronJobs() (int, error) {
 		}
 		for k, v := range job.Metadata {
 			metadata[k] = v
+		}
+		if strings.TrimSpace(metadata["session_id"]) == "" {
+			metadata["session_id"] = "cron-" + job.ID
 		}
 		return a.buildCronTask(job.ID, mode, command, metadata), metadata, nil
 	})
@@ -186,6 +190,7 @@ func (a *Agent) handleCronAdd(args map[string]any) (string, error) {
 		"mode":          string(mode),
 		"command":       command,
 		"schedule_text": scheduleText,
+		"session_id":    "cron-" + id,
 	}
 	if platform, ok := args["platform"].(string); ok && strings.TrimSpace(platform) != "" {
 		meta["platform"] = strings.TrimSpace(platform)
@@ -354,7 +359,18 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, meta
 			}
 			runCfg.AutoApprove = true
 
-			sess := a.Sessions().NewWithTitle("cron-" + id)
+			sessionID := strings.TrimSpace(metadata["session_id"])
+			var sess *session.Session
+			if sessionID != "" {
+				if existing, ok := a.Sessions().Get(sessionID); ok {
+					sess = existing
+				}
+			}
+			if sess == nil {
+				sess = session.NewSession(sessionID, a.Sessions().Dir())
+				sess.Title = "cron-" + id
+				a.Sessions().Upsert(sess)
+			}
 			result, err := a.RunLoopWithSession(context.Background(), sess, command, runCfg)
 			if err != nil {
 				a.sendCronNotification(metadata, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", id, err.Error()))

@@ -2,10 +2,18 @@ package rag
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"sort"
+	"sync"
+	"time"
+
+	"github.com/yurika0211/luckyharness/internal/logger"
 )
+
+var ragRetrievalLogMu sync.Mutex
 
 // RetrievalResult is a result from the RAG retriever.
 type RetrievalResult struct {
@@ -68,9 +76,33 @@ func NewRetrieverWithBackend(store VectorStoreBackend, indexer *Indexer, embedde
 
 // Search queries the knowledge base and returns relevant chunks.
 func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult, error) {
+	start := time.Now()
+
 	// Embed the query
 	queryVec, err := r.embedder.Embed(ctx, query)
 	if err != nil {
+		durationMs := time.Since(start).Milliseconds()
+		logger.Warn("rag retrieval failed",
+			"query_preview", summarizeQueryForLog(query),
+			"query_len", len(query),
+			"top_k", r.config.TopK,
+			"min_score", r.config.MinScore,
+			"use_mmr", r.config.UseMMR,
+			"filter_source", r.config.FilterSource,
+			"duration_ms", durationMs,
+			"error", err,
+		)
+		appendRAGRetrievalFileLog(map[string]any{
+			"status":        "failed",
+			"query_preview": summarizeQueryForLog(query),
+			"query_len":     len(query),
+			"top_k":         r.config.TopK,
+			"min_score":     r.config.MinScore,
+			"use_mmr":       r.config.UseMMR,
+			"filter_source": r.config.FilterSource,
+			"duration_ms":   durationMs,
+			"error":         err.Error(),
+		})
 		return nil, fmt.Errorf("embed query: %w", err)
 	}
 
@@ -116,6 +148,16 @@ func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult
 			content = chunk.Content
 			docTitle = chunk.Metadata["title"]
 			docSource = chunk.Metadata["source"]
+		} else {
+			// Fallback to vector metadata when chunk cache is unavailable.
+			docTitle = sr.Metadata["title"]
+			docSource = sr.Metadata["source"]
+		}
+		if docTitle == "" {
+			docTitle = docSource
+		}
+		if content == "" {
+			content = "(chunk content unavailable; reindex may be required)"
 		}
 		out[i] = RetrievalResult{
 			ChunkID:   sr.ID,
@@ -127,7 +169,71 @@ func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult
 		}
 	}
 
+	durationMs := time.Since(start).Milliseconds()
+	logger.Info("rag retrieval completed",
+		"query_preview", summarizeQueryForLog(query),
+		"query_len", len(query),
+		"candidates", len(results),
+		"matched", len(filtered),
+		"returned", len(out),
+		"top_k", r.config.TopK,
+		"min_score", r.config.MinScore,
+		"use_mmr", r.config.UseMMR,
+		"filter_source", r.config.FilterSource,
+		"duration_ms", durationMs,
+	)
+	appendRAGRetrievalFileLog(map[string]any{
+		"status":        "completed",
+		"query_preview": summarizeQueryForLog(query),
+		"query_len":     len(query),
+		"candidates":    len(results),
+		"matched":       len(filtered),
+		"returned":      len(out),
+		"top_k":         r.config.TopK,
+		"min_score":     r.config.MinScore,
+		"use_mmr":       r.config.UseMMR,
+		"filter_source": r.config.FilterSource,
+		"duration_ms":   durationMs,
+	})
+
 	return out, nil
+}
+
+func summarizeQueryForLog(query string) string {
+	const maxLen = 120
+	if len(query) <= maxLen {
+		return query
+	}
+	return query[:maxLen] + "..."
+}
+
+func appendRAGRetrievalFileLog(fields map[string]any) {
+	logPath := os.Getenv("LH_RAG_RETRIEVAL_LOG")
+	if logPath == "" {
+		return
+	}
+
+	fields["timestamp"] = time.Now().Format(time.RFC3339Nano)
+	data, err := json.Marshal(fields)
+	if err != nil {
+		logger.Warn("rag retrieval file log marshal failed", "error", err)
+		return
+	}
+	data = append(data, '\n')
+
+	ragRetrievalLogMu.Lock()
+	defer ragRetrievalLogMu.Unlock()
+
+	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		logger.Warn("rag retrieval file log open failed", "path", logPath, "error", err)
+		return
+	}
+	defer f.Close()
+
+	if _, err := f.Write(data); err != nil {
+		logger.Warn("rag retrieval file log write failed", "path", logPath, "error", err)
+	}
 }
 
 // mmrRerank applies Maximal Marginal Relevance to diversify results.

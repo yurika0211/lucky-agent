@@ -45,6 +45,10 @@ type agentProvider interface {
 	Memory() *memory.Store
 }
 
+type activeRouteRecorder interface {
+	RecordRecentChatTarget(platform, chatID, replyToMsgID string)
+}
+
 // agentConfigProvider 定义 Handler 需要从 config 获得的能力接口。
 type agentConfigProvider interface {
 	Get() agentConfigSnapshot
@@ -769,6 +773,9 @@ func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
 // handleChat sends a message to the agent and returns the response.
 // Uses streaming output with thinking/tool-call visualization when available.
 func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text string) error {
+	if recorder, ok := h.agent.(activeRouteRecorder); ok {
+		recorder.RecordRecentChatTarget("telegram", msg.Chat.ID, msg.ID)
+	}
 	if strings.TrimSpace(text) == "" {
 		return h.adapter.Send(ctx, msg.Chat.ID, "Please provide a message. Usage: /chat <message>")
 	}
@@ -1498,6 +1505,9 @@ func prependToolNarratives(lines []string, finalOutput string) string {
 
 // handleChatSync 非流式对话处理（回退方案）
 func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
+	if recorder, ok := h.agent.(activeRouteRecorder); ok {
+		recorder.RecordRecentChatTarget("telegram", msg.Chat.ID, msg.ID)
+	}
 	// 启动 typing indicator
 	typingCtx, typingCancel := context.WithCancel(context.Background())
 	defer typingCancel()
@@ -1702,7 +1712,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		// List all cron jobs
 		jobs := engine.ListJobs()
 		if len(jobs) == 0 {
-			return h.adapter.Send(ctx, msg.Chat.ID, "⏰ No scheduled tasks. Use /cron add <name> <interval|cron> <prompt>")
+			return h.adapter.Send(ctx, msg.Chat.ID, "⏰ No scheduled tasks. Use /cron add <id> <schedule> <prompt>\nExample: /cron add drink-water 每两个小时 提醒我喝水")
 		}
 
 		var sb strings.Builder
@@ -1730,52 +1740,43 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 	switch parts[0] {
 	case "add":
 		if len(parts) < 4 {
-			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron add <id> <name> <interval_seconds> <prompt>")
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron add <id> <schedule> <prompt>\nExample: /cron add drink-water 每两个小时 提醒我喝水")
 		}
 		id := parts[1]
-		name := parts[2]
-		var intervalSec int
-		if _, err := fmt.Sscanf(parts[3], "%d", &intervalSec); err != nil || intervalSec <= 0 {
-			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Invalid interval. Must be positive integer (seconds).")
-		}
-		prompt := strings.Join(parts[4:], " ")
-		if prompt == "" {
-			prompt = name
+		scheduleText := parts[2]
+		command := strings.Join(parts[3:], " ")
+		if strings.TrimSpace(command) == "" {
+			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Missing prompt/command for cron job.")
 		}
 
-		err := engine.AddJobWithMeta(id, name, prompt, cron.IntervalSchedule{Interval: time.Duration(intervalSec) * time.Second}, func() error {
-			// 执行时调用 agent chat，并把结果发回创建任务的聊天
-			chatCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-			defer cancel()
-
-			response, err := h.agent.Chat(chatCtx, prompt)
-			if err != nil {
-				// 执行失败，通知聊天
-				_ = h.adapter.Send(context.Background(), msg.Chat.ID,
-					fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", name, utils.TruncateKeepLength(err.Error(), 200)))
-				return err
-			}
-
-			// 执行成功，把 agent 回复发到聊天
-			if response != "" {
-				resultMsg := fmt.Sprintf("⏰ 定时任务 [%s] 执行结果:\n\n%s", name, response)
-				_ = h.adapter.Send(context.Background(), msg.Chat.ID, resultMsg)
-			}
-			return nil
-		}, map[string]string{
-			"chatID":      msg.Chat.ID,
-			"triggerType": "cron",
+		resp, err := h.agent.Tools().Call("cron_add", map[string]any{
+			"id":                  id,
+			"schedule":            scheduleText,
+			"mode":                "agent",
+			"command":             command,
+			"platform":            "telegram",
+			"chat_id":             msg.Chat.ID,
+			"reply_to_message_id": msg.ID,
 		})
 		if err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to add job: %s", err.Error()))
 		}
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Job `%s` added: %s (every %ds)", id, name, intervalSec))
+
+		var out struct {
+			ID       string `json:"id"`
+			Schedule string `json:"schedule"`
+			Message  string `json:"message"`
+		}
+		if json.Unmarshal([]byte(resp), &out) == nil && strings.TrimSpace(out.ID) != "" {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Job `%s` added.\nSchedule: %s", out.ID, out.Schedule))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, "✅ Cron job added.")
 
 	case "remove":
 		if len(parts) < 2 {
 			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron remove <id>")
 		}
-		if err := engine.RemoveJob(parts[1]); err != nil {
+		if _, err := h.agent.Tools().Call("cron_remove", map[string]any{"id": parts[1]}); err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
 		}
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Job `%s` removed", parts[1]))
@@ -1784,7 +1785,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		if len(parts) < 2 {
 			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron pause <id>")
 		}
-		if err := engine.PauseJob(parts[1]); err != nil {
+		if _, err := h.agent.Tools().Call("cron_pause", map[string]any{"id": parts[1]}); err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
 		}
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⏸ Job `%s` paused", parts[1]))
@@ -1793,7 +1794,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		if len(parts) < 2 {
 			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron resume <id>")
 		}
-		if err := engine.ResumeJob(parts[1]); err != nil {
+		if _, err := h.agent.Tools().Call("cron_resume", map[string]any{"id": parts[1]}); err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
 		}
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("▶️ Job `%s` resumed", parts[1]))

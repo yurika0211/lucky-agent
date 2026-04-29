@@ -231,3 +231,29 @@ func TestOpenAIEmbedder_EmbedBatch_RetriesOnEOF(t *testing.T) {
 		t.Fatalf("unexpected vectors: %#v", vecs)
 	}
 }
+
+func TestOpenAIEmbedder_EmbedBatch_IncludesErrorBodyOn403(t *testing.T) {
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"quota exceeded","type":"forbidden"}}`)),
+			}, nil
+		}),
+	}
+
+	t.Setenv("EMBEDDING_MODEL_NAME", "text-embedding-ada-002")
+	t.Setenv("EMBEDDING_MODEL_KEY", "test-key")
+	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
+
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb.client = client
+	_, err := emb.EmbedBatch(context.Background(), []string{"hello"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "403") || !strings.Contains(err.Error(), "quota exceeded") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
