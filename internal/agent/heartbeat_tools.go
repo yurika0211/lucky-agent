@@ -11,7 +11,6 @@ import (
 
 	appheartbeat "github.com/yurika0211/luckyharness/internal/heartbeat"
 	"github.com/yurika0211/luckyharness/internal/session"
-	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
 /*
@@ -60,34 +59,6 @@ func (a *Agent) initHeartbeatService() error {
 	}
 	a.heartbeatSvc = svc
 	return svc.Start()
-}
-
-/*
-registerHeartbeatTools 注册 heartbeat 相关内置工具。
-*/
-func (a *Agent) registerHeartbeatTools() {
-	if a == nil || a.tools == nil {
-		return
-	}
-
-	a.tools.Register(&tool.Tool{
-		Name:        "heartbeat_trigger",
-		Description: "Manually trigger HEARTBEAT.md evaluation and execute any active periodic tasks.",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermAuto,
-		Parameters:  map[string]tool.Param{},
-		Handler:     a.handleHeartbeatTrigger,
-	})
-	a.tools.Register(&tool.Tool{
-		Name:        "heartbeat_status",
-		Description: "Return HEARTBEAT.md runtime status and the latest routed external chat target.",
-		Category:    tool.CatDelegate,
-		Source:      "builtin",
-		Permission:  tool.PermAuto,
-		Parameters:  map[string]tool.Param{},
-		Handler:     a.handleHeartbeatStatus,
-	})
 }
 
 func (a *Agent) RecordRecentChatTarget(platform, chatID, replyToMsgID string) {

@@ -17,7 +17,6 @@ import (
 	msggateway "github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -351,7 +350,7 @@ func TestApplyWebSearchEnv(t *testing.T) {
 	}
 }
 
-// --- handleMemoryTool ---
+// --- updateShellContext ---
 
 func newTestAgentWithMemory(t *testing.T) *Agent {
 	t.Helper()
@@ -364,133 +363,6 @@ func newTestAgentWithMemory(t *testing.T) *Agent {
 		memory: memStore,
 	}
 }
-
-func TestHandleMemoryTool_Remember(t *testing.T) {
-	a := newTestAgentWithMemory(t)
-
-	result, err := a.handleMemoryTool("remember", `{"content": "用户喜欢Python", "category": "preference"}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "已保存") {
-		t.Errorf("expected save confirmation, got %q", result)
-	}
-	if !strings.Contains(result, "preference") {
-		t.Errorf("expected category in result, got %q", result)
-	}
-}
-
-func TestHandleMemoryTool_RememberLongTerm(t *testing.T) {
-	a := newTestAgentWithMemory(t)
-
-	result, err := a.handleMemoryTool("remember", `{"content": "重要密码", "category": "security", "long_term": true}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "长期记忆") {
-		t.Errorf("expected long-term confirmation, got %q", result)
-	}
-}
-
-func TestHandleMemoryTool_RememberNoContent(t *testing.T) {
-	a := newTestAgentWithMemory(t)
-
-	_, err := a.handleMemoryTool("remember", `{"category": "test"}`)
-	if err == nil {
-		t.Error("expected error for missing content")
-	}
-}
-
-func TestHandleMemoryTool_RecallWithQuery(t *testing.T) {
-	a := newTestAgentWithMemory(t)
-
-	// Save some memories first
-	a.memory.Save("用户喜欢Python", "preference")
-	a.memory.Save("项目使用Go语言", "project")
-
-	result, err := a.handleMemoryTool("recall", `{"query": "Python"}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "Python") {
-		t.Errorf("expected Python in results, got %q", result)
-	}
-}
-
-func TestHandleMemoryTool_RecallNoQuery(t *testing.T) {
-	a := newTestAgentWithMemory(t)
-
-	a.memory.Save("test memory", "test")
-
-	result, err := a.handleMemoryTool("recall", `{}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "最近的记忆") {
-		t.Errorf("expected recent memory header, got %q", result)
-	}
-}
-
-func TestHandleMemoryTool_RecallEmpty(t *testing.T) {
-	a := newTestAgentWithMemory(t)
-
-	result, err := a.handleMemoryTool("recall", `{"query": "nonexistent"}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "没有找到") {
-		t.Errorf("expected not found message, got %q", result)
-	}
-}
-
-func TestHandleMemoryTool_UnknownTool(t *testing.T) {
-	a := newTestAgentWithMemory(t)
-
-	_, err := a.handleMemoryTool("forget", `{}`)
-	if err == nil {
-		t.Error("expected error for unknown tool")
-	}
-	if !strings.Contains(err.Error(), "unknown memory tool") {
-		t.Errorf("expected unknown tool error, got %v", err)
-	}
-}
-
-func TestHandleMemoryTool_InvalidJSON(t *testing.T) {
-	a := newTestAgentWithMemory(t)
-
-	// Invalid JSON should be handled gracefully (treated as raw args)
-	result, err := a.handleMemoryTool("recall", "not json")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	// Should still work (no query → recent memories)
-	if !strings.Contains(result, "没有找到") && !strings.Contains(result, "记忆") {
-		t.Errorf("expected memory response, got %q", result)
-	}
-}
-
-func TestHandleRAGTool_Search(t *testing.T) {
-	dir := t.TempDir()
-	emb := rag.NewMockEmbedder(8)
-	mgr := rag.NewRAGManager(emb, rag.DefaultRAGConfig())
-	if _, err := mgr.IndexText("doc.md", "Doc", "alpha beta gamma"); err != nil {
-		t.Fatalf("index text: %v", err)
-	}
-
-	a := &Agent{
-		ragManager: mgr,
-	}
-	result, err := a.handleRAGTool("rag_search", `{"query":"alpha","top_k":3}`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(result, "alpha") && !strings.Contains(result, "Doc") {
-		t.Fatalf("expected rag output, got %q", result)
-	}
-	_ = dir
-}
-
-// --- updateShellContext ---
 
 func newTestSession(t *testing.T) *session.Session {
 	t.Helper()
@@ -808,6 +680,7 @@ func TestAgent_SwitchModel(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("autonomy.enabled", "true")
 	cfg.Set("max_tokens", "4096")
 
 	a, err := New(cfg)
@@ -925,6 +798,7 @@ func TestAgent_Tools(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("autonomy.enabled", "true")
 
 	a, err := New(cfg)
 	if err != nil {
@@ -1438,6 +1312,7 @@ func TestAgentStartAutonomy(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("autonomy.enabled", "true")
 
 	a, err := New(cfg)
 	if err != nil {
@@ -1501,11 +1376,7 @@ func TestAgentHandleSkillRead(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	// Get the handler function
-	handler := a.handleSkillRead()
-	if handler == nil {
-		t.Fatal("handleSkillRead() returned nil")
-	}
+	handler := tool.NewSkillToolService(a.skills).HandleRead
 
 	// Call handler with empty args should return skill list (no error)
 	result, err := handler(map[string]any{})
@@ -1516,7 +1387,6 @@ func TestAgentHandleSkillRead(t *testing.T) {
 		t.Error("handleSkillRead handler should return skill list")
 	}
 
-	// Call handler with non-existent skill name
 	result2, err := handler(map[string]any{"name": "nonexistent"})
 	if err != nil {
 		t.Errorf("handleSkillRead handler error = %v", err)
@@ -1542,7 +1412,7 @@ func TestAgentHandleSkillReadMatchesAliases(t *testing.T) {
 		t.Fatalf("write skill: %v", err)
 	}
 
-	handler := a.handleSkillRead()
+	handler := tool.NewSkillToolService(a.skills).HandleRead
 	result, err := handler(map[string]any{"name": "research orchestrator"})
 	if err != nil {
 		t.Fatalf("handleSkillRead error = %v", err)
@@ -1749,6 +1619,7 @@ func TestRunLoopWithSessionLazyStartsAutonomy(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("autonomy.enabled", "true")
 
 	a, err := New(cfg)
 	if err != nil {
@@ -1919,6 +1790,52 @@ func TestCronToolsLifecycle(t *testing.T) {
 	}
 	if _, ok := a.CronEngine().GetJob("job1"); ok {
 		t.Fatal("expected job1 to be removed")
+	}
+}
+
+func TestCronUnifiedToolLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	addResp, err := a.Tools().Call("cron", map[string]any{
+		"action":   "add",
+		"id":       "job2",
+		"schedule": "每小时",
+		"mode":     "shell",
+		"command":  "echo hello-unified-cron",
+	})
+	if err != nil {
+		t.Fatalf("cron(add) error = %v", err)
+	}
+	if !strings.Contains(addResp, `"id":"job2"`) {
+		t.Fatalf("unexpected cron(add) response: %s", addResp)
+	}
+
+	statusResp, err := a.Tools().Call("cron", map[string]any{"action": "status"})
+	if err != nil {
+		t.Fatalf("cron(status) error = %v", err)
+	}
+	if !strings.Contains(statusResp, `"job_count"`) {
+		t.Fatalf("unexpected cron(status) response: %s", statusResp)
+	}
+
+	if _, err := a.Tools().Call("cron", map[string]any{"action": "pause", "id": "job2"}); err != nil {
+		t.Fatalf("cron(pause) error = %v", err)
+	}
+	if _, err := a.Tools().Call("cron", map[string]any{"action": "resume", "id": "job2"}); err != nil {
+		t.Fatalf("cron(resume) error = %v", err)
+	}
+	if _, err := a.Tools().Call("cron", map[string]any{"action": "remove", "id": "job2"}); err != nil {
+		t.Fatalf("cron(remove) error = %v", err)
 	}
 }
 

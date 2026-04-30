@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -42,6 +41,47 @@ type embedderRuntimeConfig struct {
 	Model     string
 	BaseURL   string
 	Dimension int
+}
+
+type soulRuntime struct {
+	soul    *soul.Soul
+	tmplMgr *soul.TemplateManager
+}
+
+type providerRuntime struct {
+	provider   provider.Provider
+	registry   *provider.Registry
+	catalog    *provider.ModelCatalog
+	tokenStore *provider.TokenStore
+}
+
+type memoryRuntime struct {
+	store    *memory.Store
+	short    *memory.ShortTermBuffer
+	mid      *memory.MidTermStore
+	sessions *session.Manager
+}
+
+type ragRuntime struct {
+	manager       *rag.RAGManager
+	persist       *rag.Persistence
+	streamIndexer *rag.StreamIndexer
+	embedderReg   *embedder.Registry
+}
+
+type supportRuntime struct {
+	tools          *tool.Registry
+	toolGateway    *tool.Gateway
+	searchCfg      *tool.WebSearchConfig
+	toolServices   *tool.Services
+	delegateMgr    *tool.DelegateManager
+	mcpClient      *tool.MCPClient
+	contextWin     *contextx.ContextWindow
+	contextEst     *contextx.TokenEstimator
+	metrics        *metrics.Metrics
+	mediaProcessor *multimodal.Processor
+	cronEngine     *cron.Engine
+	autonomyKit    *autonomy.AutonomyKit
 }
 
 // Agent 是 LuckyHarness 的核心 Agent
@@ -240,55 +280,39 @@ func (a *Agent) maybeRouteModel(userInput string) {
 	}
 }
 
-// New 创建 Agent
-func New(cfg *config.Manager) (*Agent, error) {
-	// v0.37.0: 从环境变量覆盖 web_search 配置
-	applyWebSearchEnv(cfg)
-
-	c := cfg.Get()
-
-	// 加载 SOUL
-	var s *soul.Soul
-	soulPath := c.SoulPath
-	if soulPath != "" {
-		loaded, err := soul.Load(soulPath)
-		if err != nil {
-			s = soul.Default()
-		} else {
-			s = loaded
+func initSoulRuntime(c *config.Config) soulRuntime {
+	var loadedSoul *soul.Soul
+	if c != nil && strings.TrimSpace(c.SoulPath) != "" {
+		if loaded, err := soul.Load(c.SoulPath); err == nil {
+			loadedSoul = loaded
 		}
-	} else {
-		s = soul.Default()
 	}
+	if loadedSoul == nil {
+		loadedSoul = soul.Default()
+	}
+	return soulRuntime{
+		soul:    loadedSoul,
+		tmplMgr: soul.NewTemplateManager(),
+	}
+}
 
-	// v0.19.0: 创建 SOUL 模板管理器
-	tmplMgr := soul.NewTemplateManager()
-
-	// 创建 Provider 注册表
+func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime, error) {
 	registry := provider.NewRegistry()
-
-	// 创建模型目录
 	catalog := provider.NewModelCatalog()
-
-	// 创建 Token 存储
 	tokenStore, err := provider.NewTokenStore(cfg.HomeDir() + "/tokens")
 	if err != nil {
-		tokenStore = nil // 非关键错误
+		tokenStore = nil
 	}
 
-	// 解析 Provider（支持降级链）
 	var p provider.Provider
 	if len(c.Fallbacks) > 0 {
-		// 使用降级链模式
 		fallbackConfigs := make([]provider.FallbackConfig, 0, len(c.Fallbacks)+1)
-		// 第一个是主 provider
 		fallbackConfigs = append(fallbackConfigs, provider.FallbackConfig{
 			Name:    c.Provider,
 			APIKey:  c.APIKey,
 			APIBase: c.APIBase,
 			Model:   c.Model,
 		})
-		// 后续是降级 provider
 		for _, fb := range c.Fallbacks {
 			fallbackConfigs = append(fallbackConfigs, provider.FallbackConfig{
 				Name:    fb.Provider,
@@ -299,85 +323,61 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 		chain, err := provider.NewFallbackChain(fallbackConfigs, registry)
 		if err != nil {
-			return nil, fmt.Errorf("create fallback chain: %w", err)
+			return providerRuntime{}, fmt.Errorf("create fallback chain: %w", err)
 		}
 		p = chain
 	} else {
-		// 单 provider 模式
 		pCfg := toProviderConfig(c, "", "")
 		p, err = registry.Resolve(pCfg)
 		if err != nil {
-			return nil, fmt.Errorf("resolve provider: %w", err)
+			return providerRuntime{}, fmt.Errorf("resolve provider: %w", err)
 		}
 	}
 	p = wrapProviderWithMiddleware(p, c)
 
-	// 创建记忆存储
+	return providerRuntime{
+		provider:   p,
+		registry:   registry,
+		catalog:    catalog,
+		tokenStore: tokenStore,
+	}, nil
+}
+
+func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, error) {
 	mem, err := memory.NewStore(cfg.HomeDir() + "/memory")
 	if err != nil {
-		return nil, fmt.Errorf("init memory: %w", err)
+		return memoryRuntime{}, fmt.Errorf("init memory: %w", err)
 	}
 
-	// v0.43.0: 创建短期记忆滑动窗口
 	shortTermMaxTurns := c.Memory.ShortTermMaxTurns
 	if shortTermMaxTurns <= 0 {
 		shortTermMaxTurns = 10
 	}
 	shortTerm := memory.NewShortTermBuffer(shortTermMaxTurns)
 
-	// v0.43.0: 创建中期会话摘要存储
 	midTermMaxSummaries := c.Memory.MidTermMaxSummaries
 	if midTermMaxSummaries <= 0 {
 		midTermMaxSummaries = 100
 	}
 	midTerm, err := memory.NewMidTermStore(cfg.HomeDir()+"/memory/midterm", midTermMaxSummaries)
 	if err != nil {
-		return nil, fmt.Errorf("init midterm store: %w", err)
+		return memoryRuntime{}, fmt.Errorf("init midterm store: %w", err)
 	}
 
-	// 创建会话管理器
 	sessions, err := session.NewManager(cfg.HomeDir() + "/sessions")
 	if err != nil {
-		return nil, fmt.Errorf("init sessions: %w", err)
+		return memoryRuntime{}, fmt.Errorf("init sessions: %w", err)
 	}
 
-	// 创建工具注册表并注册内置工具（带搜索配置）
-	tools := tool.NewRegistry()
-	searchCfg := &tool.WebSearchConfig{
-		Provider:   c.WebSearch.Provider,
-		APIKey:     c.WebSearch.APIKey,
-		BaseURL:    c.WebSearch.BaseURL,
-		MaxResults: c.WebSearch.MaxResults,
-		Proxy:      c.WebSearch.Proxy,
-	}
-	tool.RegisterBuiltinToolsWithConfig(tools, searchCfg)
+	return memoryRuntime{
+		store:    mem,
+		short:    shortTerm,
+		mid:      midTerm,
+		sessions: sessions,
+	}, nil
+}
 
-	// 创建子代理委派管理器
-	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
-	tools.Register(tool.DelegateTaskTool(delegateMgr))
-	tools.Register(tool.TaskStatusTool(delegateMgr))
-	tools.Register(tool.ListTasksTool(delegateMgr))
-
-	// 创建 MCP 客户端
-	mcpClient := tool.NewMCPClient()
-
-	// 创建统一工具网关
-	toolGateway := tool.NewGateway(tools)
-
-	// 创建上下文窗口管理器
-	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
-		MaxTokens:            c.MaxTokens,
-		ReservedTokens:       c.MaxTokens / 4, // 为回复预留 1/4
-		Strategy:             contextx.TrimLowPriority,
-		SlidingWindowSize:    10,
-		MaxConversationTurns: 50,
-		MemoryBudget:         800,
-		SummarizeThreshold:   0.8,
-	})
-	contextEst := contextx.NewTokenEstimator(c.MaxTokens)
-
-	// 创建 RAG 知识库管理器
-	// v0.21.0: 使用 Embedder Registry 管理嵌入模型
+func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	embedderReg := embedder.NewRegistry()
 	mockEmb := embedder.NewMockEmbedder(128)
 	embedderReg.Register("mock-128", mockEmb)
@@ -394,33 +394,26 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 	}
 
-	// 使用 active embedder (带缓存)
 	activeEmb := embedder.NewCachedEmbedder(embedderReg.Active(), 512)
-
 	ragConfig := rag.DefaultRAGConfig()
 
 	var ragManager *rag.RAGManager
 	var ragPersist *rag.Persistence
 
-	// 尝试使用 SQLite 后端
 	ragDBPath := cfg.HomeDir() + "/rag/luckyharness.db"
 	ragMgr, err := rag.NewRAGManagerWithSQLite(activeEmb, ragConfig, ragDBPath)
 	if err != nil {
-		// SQLite 不可用时降级到内存 + JSON 持久化
 		ragManager = rag.NewRAGManager(activeEmb, ragConfig)
 		ragPersist = rag.NewPersistence(cfg.HomeDir() + "/rag")
 		if ragPersist.Exists() {
 			if docCount, loadErr := ragPersist.Load(ragManager); loadErr == nil && docCount > 0 {
-				// loaded successfully
+				_ = docCount
 			}
 		}
 	} else {
 		ragManager = ragMgr
-		// SQLite 后端自动持久化，不需要 JSON 持久化
-		// 但保留 ragPersist 用于迁移旧数据
 		ragPersist = rag.NewPersistence(cfg.HomeDir() + "/rag")
 		if ragPersist.Exists() {
-			// 迁移旧 JSON 数据到 SQLite
 			tempMgr := rag.NewRAGManager(activeEmb, ragConfig)
 			if docCount, loadErr := ragPersist.Load(tempMgr); loadErr == nil && docCount > 0 {
 				for _, docID := range tempMgr.ListDocuments() {
@@ -432,24 +425,35 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 	}
 
-	// v0.22.0: 创建 Agent 协作注册表和管理器
-	collabReg := collab.NewRegistry()
-	// 注册本地 Agent
-	collabReg.Register(&collab.AgentProfile{
-		ID:           "local-agent",
-		Name:         "Local Agent",
-		Description:  "The primary local agent",
-		Capabilities: []string{"chat", "code", "analysis", "research"},
-		Status:       collab.StatusOnline,
+	return ragRuntime{
+		manager:       ragManager,
+		persist:       ragPersist,
+		streamIndexer: rag.NewStreamIndexer(ragManager, rag.DefaultStreamConfig()),
+		embedderReg:   embedderReg,
+	}, nil
+}
+
+func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGManager) supportRuntime {
+	tools := tool.NewRegistry()
+	searchCfg := &tool.WebSearchConfig{
+		Provider:   c.WebSearch.Provider,
+		APIKey:     c.WebSearch.APIKey,
+		BaseURL:    c.WebSearch.BaseURL,
+		MaxResults: c.WebSearch.MaxResults,
+		Proxy:      c.WebSearch.Proxy,
+	}
+	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
+	toolServices := tool.NewServices(searchCfg, mem, ragMgr, delegateMgr)
+
+	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
+		MaxTokens:            c.MaxTokens,
+		ReservedTokens:       c.MaxTokens / 4,
+		Strategy:             contextx.TrimLowPriority,
+		SlidingWindowSize:    10,
+		MaxConversationTurns: 50,
+		MemoryBudget:         800,
+		SummarizeThreshold:   0.8,
 	})
-	// 创建协作任务管理器（使用默认 handler，实际执行由 Agent Loop 驱动）
-	collabMgr := collab.NewDelegateManager(collabReg, nil)
-
-	// v0.23.0: 创建流式索引器
-	streamIndexer := rag.NewStreamIndexer(ragManager, rag.DefaultStreamConfig())
-
-	// v0.36.0: 创建指标收集器
-	m := metrics.NewMetrics()
 
 	mediaProcessor := multimodal.NewProcessor()
 	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
@@ -468,7 +472,6 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 	}
 
-	// v0.36.0: 创建定时任务引擎
 	cronEngine := cron.NewEngine()
 	cronEngine.SetEventHandler(func(event cron.Event) {
 		switch event.Type {
@@ -481,137 +484,95 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 	})
 
-	// v0.38.0: 创建自主工作套件
-	autonomyCfg := autonomy.DefaultAutonomyConfig()
-	// AgentExecutor will be set after Agent is fully constructed
-	autonomyKit := autonomy.NewAutonomyKit(autonomyCfg, nil)
+	return supportRuntime{
+		tools:          tools,
+		toolGateway:    tool.NewGateway(tools),
+		searchCfg:      searchCfg,
+		toolServices:   toolServices,
+		delegateMgr:    delegateMgr,
+		mcpClient:      tool.NewMCPClient(),
+		contextWin:     contextWin,
+		contextEst:     contextx.NewTokenEstimator(c.MaxTokens),
+		metrics:        metrics.NewMetrics(),
+		mediaProcessor: mediaProcessor,
+		cronEngine:     cronEngine,
+		autonomyKit:    autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), nil),
+	}
+}
 
-	// 注册自主工作工具
-	autonomyTools := autonomy.NewToolDefinitions(autonomyKit)
-	tools.Register(&tool.Tool{
-		Name:            "autonomy_queue_add",
-		Description:     "Add a task to the autonomy task queue. Tasks are picked up by workers automatically.",
-		Category:        tool.CatDelegate,
-		Source:          "builtin",
-		Permission:      tool.PermAuto,
-		HiddenFromModel: true,
-		Parameters: map[string]tool.Param{
-			"title":       {Type: "string", Description: "Task title", Required: true},
-			"description": {Type: "string", Description: "Detailed task description", Required: false},
-			"priority":    {Type: "string", Description: "Priority: low, normal, high, critical", Required: false, Default: "normal"},
-			"tags":        {Type: "array", Description: "Tags for categorization", Required: false},
-		},
-		Handler: autonomyTools.HandleQueueAdd,
-	})
-	tools.Register(&tool.Tool{
-		Name:            "autonomy_queue_list",
-		Description:     "List tasks in the autonomy queue. Optionally filter by state.",
-		Category:        tool.CatDelegate,
-		Source:          "builtin",
-		Permission:      tool.PermAuto,
-		HiddenFromModel: true,
-		Parameters: map[string]tool.Param{
-			"state": {Type: "string", Description: "Filter by state: ready, in_progress, blocked, done", Required: false},
-		},
-		Handler: autonomyTools.HandleQueueList,
-	})
-	tools.Register(&tool.Tool{
-		Name:            "autonomy_queue_update",
-		Description:     "Update a task's state in the autonomy queue.",
-		Category:        tool.CatDelegate,
-		Source:          "builtin",
-		Permission:      tool.PermAuto,
-		HiddenFromModel: true,
-		Parameters: map[string]tool.Param{
-			"task_id": {Type: "string", Description: "Task ID to update", Required: true},
-			"action":  {Type: "string", Description: "Action: complete, fail, block, unblock", Required: true},
-			"result":  {Type: "string", Description: "Result text (for complete action)", Required: false},
-			"error":   {Type: "string", Description: "Error message (for fail action)", Required: false},
-			"reason":  {Type: "string", Description: "Block reason (for block action)", Required: false},
-			"retry":   {Type: "boolean", Description: "Whether to retry on failure (default true)", Required: false},
-		},
-		Handler: autonomyTools.HandleQueueUpdate,
-	})
-	tools.Register(&tool.Tool{
-		Name:            "autonomy_worker_spawn",
-		Description:     "Spawn a worker to execute a specific task from the queue.",
-		Category:        tool.CatDelegate,
-		Source:          "builtin",
-		Permission:      tool.PermApprove,
-		HiddenFromModel: true,
-		Parameters: map[string]tool.Param{
-			"task_id": {Type: "string", Description: "Task ID to execute", Required: true},
-		},
-		Handler: autonomyTools.HandleWorkerSpawn,
-	})
-	tools.Register(&tool.Tool{
-		Name:            "autonomy_worker_list",
-		Description:     "List active workers and their status.",
-		Category:        tool.CatDelegate,
-		Source:          "builtin",
-		Permission:      tool.PermAuto,
-		HiddenFromModel: true,
-		Parameters:      map[string]tool.Param{},
-		Handler:         autonomyTools.HandleWorkerList,
-	})
-	tools.Register(&tool.Tool{
-		Name:            "autonomy_heartbeat_trigger",
-		Description:     "Manually trigger a heartbeat cycle to check for work and dispatch tasks.",
-		Category:        tool.CatDelegate,
-		Source:          "builtin",
-		Permission:      tool.PermAuto,
-		HiddenFromModel: true,
-		Parameters:      map[string]tool.Param{},
-		Handler:         autonomyTools.HandleHeartbeatTrigger,
-	})
-	tools.Register(&tool.Tool{
-		Name:            "autonomy_status",
-		Description:     "Get the overall status of the autonomy system (queue, workers, heartbeat).",
-		Category:        tool.CatDelegate,
-		Source:          "builtin",
-		Permission:      tool.PermAuto,
-		HiddenFromModel: true,
-		Parameters:      map[string]tool.Param{},
-		Handler:         autonomyTools.HandleStatus,
-	})
+// New 创建 Agent
+func New(cfg *config.Manager) (*Agent, error) {
+	applyWebSearchEnv(cfg)
+	c := cfg.Get()
+	soulRT := initSoulRuntime(c)
+	providerRT, err := initProviderRuntime(cfg, c)
+	if err != nil {
+		return nil, err
+	}
+	memoryRT, err := initMemoryRuntime(cfg, c)
+	if err != nil {
+		return nil, err
+	}
+	ragRT, err := initRAGRuntime(cfg, c)
+	if err != nil {
+		return nil, err
+	}
+	supportRT := initSupportRuntime(c, memoryRT.store, ragRT.manager)
 
 	a := &Agent{
 		cfg:            cfg,
-		soul:           s,
-		tmplMgr:        tmplMgr,
-		provider:       p,
-		registry:       registry,
-		catalog:        catalog,
-		tokenStore:     tokenStore,
-		memory:         mem,
-		shortTerm:      shortTerm,
-		midTerm:        midTerm,
-		sessions:       sessions,
-		tools:          tools,
-		gateway:        toolGateway,
+		soul:           soulRT.soul,
+		tmplMgr:        soulRT.tmplMgr,
+		provider:       providerRT.provider,
+		registry:       providerRT.registry,
+		catalog:        providerRT.catalog,
+		tokenStore:     providerRT.tokenStore,
+		memory:         memoryRT.store,
+		shortTerm:      memoryRT.short,
+		midTerm:        memoryRT.mid,
+		sessions:       memoryRT.sessions,
+		tools:          supportRT.tools,
+		gateway:        supportRT.toolGateway,
 		msgGateway:     gateway.NewGatewayManager(),
-		mcpClient:      mcpClient,
-		delegate:       delegateMgr,
-		contextWin:     contextWin,
-		contextEst:     contextEst,
-		ragManager:     ragManager,
-		ragPersist:     ragPersist,
-		streamIndexer:  streamIndexer,
-		embedderReg:    embedderReg,
-		collabReg:      collabReg,
-		collabMgr:      collabMgr,
-		metrics:        m,
-		cronEngine:     cronEngine,
+		mcpClient:      supportRT.mcpClient,
+		delegate:       supportRT.delegateMgr,
+		contextWin:     supportRT.contextWin,
+		contextEst:     supportRT.contextEst,
+		ragManager:     ragRT.manager,
+		ragPersist:     ragRT.persist,
+		streamIndexer:  ragRT.streamIndexer,
+		embedderReg:    ragRT.embedderReg,
+		collabReg:      collab.NewRegistry(),
+		collabMgr:      nil,
+		metrics:        supportRT.metrics,
+		cronEngine:     supportRT.cronEngine,
 		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "mission.md")),
-		autonomy:       autonomyKit,
+		autonomy:       supportRT.autonomyKit,
 		contextCache:   newContextMessageCache(64),
-		mediaProcessor: mediaProcessor,
+		mediaProcessor: supportRT.mediaProcessor,
 		activeModel:    c.Model,
 		activeAPIBase:  c.APIBase,
 	}
 
-	a.registerCronTools()
-	a.registerHeartbeatTools()
+	a.collabReg.Register(&collab.AgentProfile{
+		ID:           "local-agent",
+		Name:         "Local Agent",
+		Description:  "The primary local agent",
+		Capabilities: []string{"chat", "code", "analysis", "research"},
+		Status:       collab.StatusOnline,
+	})
+	a.collabMgr = collab.NewDelegateManager(a.collabReg, nil)
+
+	supportRT.toolServices.Cron = tool.NewCronToolService(
+		supportRT.cronEngine,
+		a.saveCronJobs,
+		func(id, mode, command string, metadata map[string]string) func() error {
+			return a.buildCronTask(id, cronTaskMode(mode), command, metadata)
+		},
+	)
+	supportRT.toolServices.Autonomy = tool.NewAutonomyToolService(supportRT.autonomyKit)
+	supportRT.toolServices.Heartbeat = tool.NewHeartbeatToolService(a.handleHeartbeatTrigger, a.handleHeartbeatStatus)
+	supportRT.toolServices.RegisterCoreTools(supportRT.tools)
 
 	// v0.35.0: 自动加载 skills 目录
 	skillsDir := cfg.HomeDir() + "/skills"
@@ -622,7 +583,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	}
 
 	// v0.36.0: 启动定时任务引擎
-	cronEngine.Start()
+	supportRT.cronEngine.Start()
 	if restored, restoreErr := a.restoreCronJobs(); restoreErr != nil {
 		fmt.Printf("[cron] restore failed: %v\n", restoreErr)
 	} else if restored > 0 {
@@ -633,8 +594,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 	}
 
 	// v0.38.0: 设置 delegate 的 Agent 执行器，让 delegate_task 真正走 Agent Loop
-	delegateMgr.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
-		sess := sessions.NewWithTitle("delegate-task")
+	supportRT.delegateMgr.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
+		sess := memoryRT.sessions.NewWithTitle("delegate-task")
 		prompt := description
 		if contextStr != "" {
 			prompt = fmt.Sprintf("%s\n\nContext: %s", description, contextStr)
@@ -1916,140 +1877,6 @@ func (a *Agent) ExpireMidTermMemory(olderThan time.Duration) int {
 	return a.midTerm.ExpireOldSummaries(olderThan)
 }
 
-// handleMemoryTool 处理 LLM 主动调用的记忆工具
-func (a *Agent) handleMemoryTool(name, arguments string) (string, error) {
-	var args map[string]any
-	if arguments != "" {
-		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-			args = map[string]any{"raw": arguments}
-		}
-	}
-
-	switch name {
-	case "remember":
-		content, _ := args["content"].(string)
-		category, _ := args["category"].(string)
-		if content == "" {
-			return "", fmt.Errorf("content is required")
-		}
-		if category == "" {
-			category = inferCategory(content)
-		}
-		longTerm, _ := args["long_term"].(bool)
-		if longTerm {
-			if err := a.memory.SaveLongTerm(content, category); err != nil {
-				return "", err
-			}
-			return fmt.Sprintf("✅ 已保存为长期记忆 [%s]: %s", category, utils.Truncate(content, 80)), nil
-		}
-		if err := a.memory.Save(content, category); err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("✅ 已保存为中期记忆 [%s]: %s", category, utils.Truncate(content, 80)), nil
-
-	case "recall":
-		query, _ := args["query"].(string)
-		if query == "" {
-			// 无查询词：返回最近记忆
-			recent := a.memory.Recent(5)
-			if len(recent) == 0 {
-				return "没有找到记忆", nil
-			}
-			var sb strings.Builder
-			sb.WriteString("最近的记忆：\n")
-			for _, e := range recent {
-				sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", e.Category, e.Tier.String(), utils.Truncate(e.Content, 80)))
-			}
-			return sb.String(), nil
-		}
-		results := a.memory.Search(query)
-		if len(results) == 0 {
-			return fmt.Sprintf("没有找到关于「%s」的记忆", query), nil
-		}
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("找到 %d 条关于「%s」的记忆：\n", len(results), query))
-		limit := 10
-		if len(results) < limit {
-			limit = len(results)
-		}
-		for i := 0; i < limit; i++ {
-			e := results[i]
-			sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", e.Category, e.Tier.String(), utils.Truncate(e.Content, 80)))
-		}
-		return sb.String(), nil
-
-	default:
-		return "", fmt.Errorf("unknown memory tool: %s", name)
-	}
-}
-
-// handleRAGTool handles LLM-triggered RAG tools.
-func (a *Agent) handleRAGTool(name, arguments string) (string, error) {
-	if a.ragManager == nil {
-		return "", fmt.Errorf("rag manager not initialized")
-	}
-
-	var args map[string]any
-	if arguments != "" {
-		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
-			args = map[string]any{"raw": arguments}
-		}
-	}
-
-	switch name {
-	case "rag_search":
-		query, _ := args["query"].(string)
-		if strings.TrimSpace(query) == "" {
-			return "", fmt.Errorf("query is required")
-		}
-
-		topK := 5
-		if raw, ok := args["top_k"]; ok {
-			switch v := raw.(type) {
-			case float64:
-				if int(v) > 0 {
-					topK = int(v)
-				}
-			case int:
-				if v > 0 {
-					topK = v
-				}
-			}
-		}
-
-		prev := a.ragManager.RetrieverConfig()
-		cfg := prev
-		cfg.TopK = topK
-		a.ragManager.UpdateRetrieverConfig(cfg)
-		defer a.ragManager.UpdateRetrieverConfig(prev)
-
-		results, err := a.ragManager.Search(context.Background(), query)
-		if err != nil {
-			return "", err
-		}
-		if len(results) == 0 {
-			return fmt.Sprintf("没有找到关于「%s」的 RAG 结果", query), nil
-		}
-
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("找到 %d 条关于「%s」的知识片段：\n", len(results), query))
-		for i, r := range results {
-			title := strings.TrimSpace(r.DocTitle)
-			if title == "" {
-				title = strings.TrimSpace(r.DocSource)
-			}
-			if title == "" {
-				title = "(unknown source)"
-			}
-			content := utils.Truncate(strings.TrimSpace(r.Content), 160)
-			sb.WriteString(fmt.Sprintf("%d. [%0.2f] %s — %s\n", i+1, r.Score, title, content))
-		}
-		return strings.TrimSpace(sb.String()), nil
-	}
-
-	return "", fmt.Errorf("unknown rag tool: %s", name)
-}
-
 // Soul 返回当前 SOUL
 func (a *Agent) Soul() *soul.Soul {
 	return a.soul
@@ -2128,6 +1955,17 @@ func (a *Agent) Autonomy() *autonomy.AutonomyKit {
 func (a *Agent) StartAutonomy(ctx context.Context) error {
 	if a.autonomy == nil {
 		return fmt.Errorf("autonomy kit not initialized")
+	}
+	if a.cfg != nil {
+		cfg := a.cfg.Get()
+		raw := strings.TrimSpace(cfg.Extra["autonomy.enabled"])
+		if raw == "" {
+			return nil
+		}
+		enabled, err := strconv.ParseBool(strings.ToLower(raw))
+		if err != nil || !enabled {
+			return nil
+		}
 	}
 
 	// Create executor adapter that bridges Agent to AgentExecutor interface
@@ -2212,24 +2050,7 @@ func (a *Agent) LoadSkills(skillsDir string) (int, error) {
 	}
 
 	a.skills = skills
-	tool.RegisterSkillTools(a.tools, skills, nil)
-
-	// v0.35.0: 注册 skill_read 工具，让 LLM 能读取 SKILL.md 内容
-	a.tools.Register(&tool.Tool{
-		Name:        "skill_read",
-		Description: "读取指定 skill 的 SKILL.md 内容，了解该 skill 的完整使用方法和步骤。当用户请求涉及某个 skill 的能力时，先调用此工具读取 SKILL.md，再按指引操作。",
-		Category:    tool.CatSkill,
-		Permission:  tool.PermAuto,
-		Enabled:     true,
-		Parameters: map[string]tool.Param{
-			"name": {
-				Type:        "string",
-				Description: "Skill 名称（如 web-search, summarize, rewrite 等）",
-				Required:    false,
-			},
-		},
-		Handler: a.handleSkillRead(),
-	})
+	tool.NewSkillToolService(skills).RegisterSkillTools(a.tools)
 
 	return len(skills), nil
 }
@@ -2237,87 +2058,6 @@ func (a *Agent) LoadSkills(skillsDir string) (int, error) {
 // Skills 返回已加载的 skill 列表
 func (a *Agent) Skills() []*tool.SkillInfo {
 	return a.skills
-}
-
-// handleSkillRead 返回 skill_read 工具的 handler
-func (a *Agent) handleSkillRead() func(args map[string]any) (string, error) {
-	return func(args map[string]any) (string, error) {
-		name, _ := args["name"].(string)
-		if name == "" {
-			// 没指定名称，返回所有 skill 列表
-			var b strings.Builder
-			b.WriteString("Available skills:\n")
-			for _, s := range a.skills {
-				b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
-			}
-			return b.String(), nil
-		}
-
-		// 查找匹配的 skill
-		for _, s := range a.skills {
-			if skillMatchesName(s, name) {
-				skillFile := filepath.Join(s.Dir, "SKILL.md")
-				data, err := os.ReadFile(skillFile)
-				if err != nil {
-					return "", fmt.Errorf("read SKILL.md for %s: %w", name, err)
-				}
-				return string(data), nil
-			}
-		}
-
-		// 模糊匹配
-		var candidates []string
-		lowerName := strings.ToLower(name)
-		for _, s := range a.skills {
-			if strings.Contains(strings.ToLower(s.Name), lowerName) {
-				candidates = append(candidates, s.Name)
-			}
-		}
-		if len(candidates) > 0 {
-			return fmt.Sprintf("Skill '%s' not found. Did you mean: %s?", name, strings.Join(candidates, ", ")), nil
-		}
-
-		return fmt.Sprintf("Skill '%s' not found. Use skill_read without name to list all skills.", name), nil
-	}
-}
-
-/*
-skillMatchesName 判断用户提供的名称是否匹配某个技能。
-*/
-func skillMatchesName(s *tool.SkillInfo, name string) bool {
-	if strings.EqualFold(s.Name, name) {
-		return true
-	}
-	target := normalizeSkillLookup(name)
-	if target == "" {
-		return false
-	}
-	if normalizeSkillLookup(s.Name) == target {
-		return true
-	}
-	for _, alias := range s.Aliases {
-		if strings.EqualFold(alias, name) || normalizeSkillLookup(alias) == target {
-			return true
-		}
-	}
-	return false
-}
-
-/*
-normalizeSkillLookup 将技能名归一化为便于匹配的形式。
-*/
-func normalizeSkillLookup(name string) string {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if name == "" {
-		return ""
-	}
-	name = strings.ReplaceAll(name, "_", "-")
-	name = strings.Join(strings.Fields(name), "-")
-	name = strings.Trim(name, "-")
-	name = strings.Join(strings.FieldsFunc(name, func(r rune) bool {
-		return r == '-'
-	}), "-")
-	return name
 }
 
 // ConnectMCPServer 连接 MCP Server

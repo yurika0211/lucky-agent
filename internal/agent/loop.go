@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -288,6 +289,10 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			a.indexConversationTurn(userInput, response)
 		}
 
+		if saveErr := a.saveFinalAnswerDocument(sessionID, userInput, response); saveErr != nil {
+			logger.Warn("save final answer document failed", "session_id", sessionID, "error", saveErr)
+		}
+
 		// v0.24.1: 保存会话到磁盘
 		if sess != nil {
 			if saveErr := sess.Save(); saveErr != nil {
@@ -295,17 +300,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			}
 		}
 	}
-	toolCallRepeatCount := make(map[string]int)
-	toolCallLastResult := make(map[string]string)
-	toolURLRepeatCount := make(map[string]int)
-	toolURLLastResult := make(map[string]string)
-	consecutiveToolOnlyIters := 0
-	emptyResponseRetries := 0
-	lengthRecoveryCount := 0
-	successfulSearchEvidenceCount := 0
-	detailedSearchEvidenceInContext := 0
-	forceSearchSynthesis := false
-	var continuedResponse strings.Builder
+	loopState := newLoopRuntimeState()
 
 	// 构建初始消息
 	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
@@ -346,7 +341,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		var resp *provider.Response
 		var err error
 		iterCallOpts := callOpts
-		if forceSearchSynthesis {
+		if loopState.forceSearchSynthesis {
 			iterCallOpts.Tools = nil
 			iterCallOpts.ToolChoice = "none"
 		}
@@ -367,265 +362,28 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 		// 检查是否有工具调用
 		if len(resp.ToolCalls) > 0 {
-			logger.Info("agent loop tool call batch",
-				"session_id", sessionID,
-				"iteration", i+1,
-				"count", len(resp.ToolCalls),
-			)
-			emptyResponseRetries = 0
-			lengthRecoveryCount = 0
-			result.State = StateAct
-			if strings.TrimSpace(resp.Content) == "" {
-				consecutiveToolOnlyIters++
-			} else {
-				consecutiveToolOnlyIters = 0
-			}
-
-			// 防止模型陷入重复工具调用死循环（尤其是 skill_read 反复触发）。
-			repeatedSigs := make([]string, 0, len(resp.ToolCalls))
-			allRepeated := true
-			for _, tc := range resp.ToolCalls {
-				sig := toolCallSignature(tc.Name, tc.Arguments)
-				repeatedSigs = append(repeatedSigs, sig)
-				toolCallRepeatCount[sig]++
-				if key := normalizedToolTarget(tc.Name, tc.Arguments); key != "" {
-					toolURLRepeatCount[key]++
-				}
-				if toolCallRepeatCount[sig] < loopCfg.RepeatToolCallLimit {
-					allRepeated = false
-				}
-			}
-			if (allRepeated && strings.TrimSpace(resp.Content) == "") || consecutiveToolOnlyIters >= loopCfg.ToolOnlyIterationLimit {
-				if !forceSearchSynthesis && successfulSearchEvidenceCount > 0 {
-					forceSearchSynthesis = true
-					messages = append(messages, provider.Message{
-						Role:    "user",
-						Content: searchSynthesisPrompt,
-					})
-					continue
-				}
-				var b strings.Builder
-				b.WriteString("Detected repeated tool-call loop and stopped early to avoid timeout.\n")
-				b.WriteString("Latest tool outputs:\n")
-				for _, sig := range repeatedSigs {
-					parts := strings.SplitN(sig, "|", 2)
-					name := parts[0]
-					out := strings.TrimSpace(toolCallLastResult[sig])
-					if out == "" {
-						out = "(no cached output)"
-					}
-					if len(out) > 240 {
-						out = out[:240] + "...(truncated)"
-					}
-					b.WriteString(fmt.Sprintf("- %s: %s\n", name, out))
-				}
-				finalize(strings.TrimSpace(b.String()))
+			var finalized bool
+			var finalResponse string
+			messages, finalized, finalResponse = a.processToolCallBatch(resp, loopCfg, result, sess, messages, loopState)
+			if finalized {
+				finalize(finalResponse)
 				return result, nil
 			}
-
-			// 将 assistant 消息（含 tool_calls）加入历史
-			messages = append(messages, provider.Message{
-				Role:      "assistant",
-				Content:   resp.Content,
-				ToolCalls: resp.ToolCalls,
-			})
-
-			// 写入 session：assistant 的 tool_calls
-			if sess != nil {
-				sess.AddProviderMessage(provider.Message{
-					Role:      "assistant",
-					Content:   resp.Content,
-					ToolCalls: resp.ToolCalls,
-				})
-			}
-
-			// Act: 执行工具调用（并发优化：无依赖的工具并行执行）
-			type toolExecResult struct {
-				Index       int
-				ToolCall    toolCallLog
-				ToolMessage provider.Message
-			}
-
-			allParallelSafe := true
-			for _, tc := range resp.ToolCalls {
-				if !a.isToolParallelSafe(tc.Name) {
-					allParallelSafe = false
-					break
-				}
-			}
-
-			resultCh := make(chan toolExecResult, len(resp.ToolCalls))
-
-			// 同一批次只要出现一个有状态工具，就整体串行执行，避免共享状态交叉污染。
-			if allParallelSafe {
-				for idx, tc := range resp.ToolCalls {
-					go func(idx int, tc provider.ToolCall) {
-						start := time.Now()
-						toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, toolURLRepeatCount, toolURLLastResult, loopCfg.DuplicateFetchLimit)
-						duration := time.Since(start)
-
-						tcLog := toolCallLog{
-							Name:      tc.Name,
-							Arguments: tc.Arguments,
-							Duration:  duration,
-						}
-						if err != nil {
-							toolResult = fmt.Sprintf("Error: %v", err)
-							tcLog.Result = toolResult
-						} else {
-							tcLog.Result = toolResult
-						}
-
-						resultCh <- toolExecResult{
-							Index:    idx,
-							ToolCall: tcLog,
-							ToolMessage: provider.Message{
-								Role:       "tool",
-								Content:    toolResult,
-								ToolCallID: tc.ID,
-								Name:       tc.Name,
-							},
-						}
-					}(idx, tc)
-				}
-			} else {
-				for idx, tc := range resp.ToolCalls {
-					start := time.Now()
-					toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, toolURLRepeatCount, toolURLLastResult, loopCfg.DuplicateFetchLimit)
-					duration := time.Since(start)
-
-					tcLog := toolCallLog{
-						Name:      tc.Name,
-						Arguments: tc.Arguments,
-						Duration:  duration,
-					}
-					if err != nil {
-						toolResult = fmt.Sprintf("Error: %v", err)
-						tcLog.Result = toolResult
-					} else {
-						tcLog.Result = toolResult
-					}
-
-					resultCh <- toolExecResult{
-						Index:    idx,
-						ToolCall: tcLog,
-						ToolMessage: provider.Message{
-							Role:       "tool",
-							Content:    toolResult,
-							ToolCallID: tc.ID,
-							Name:       tc.Name,
-						},
-					}
-				}
-			}
-
-			// 收集所有结果，按原始顺序排列
-			allResults := make([]toolExecResult, 0, len(resp.ToolCalls))
-			for i := 0; i < len(resp.ToolCalls); i++ {
-				allResults = append(allResults, <-resultCh)
-			}
-			// 按 Index 排序，保证消息顺序与 tool_calls 一致
-			sort.Slice(allResults, func(i, j int) bool {
-				return allResults[i].Index < allResults[j].Index
-			})
-
-			for _, r := range allResults {
-				result.ToolCalls = append(result.ToolCalls, r.ToolCall)
-				contextToolMsg := r.ToolMessage
-				contextToolMsg.Content = compactToolResultForContext(contextToolMsg.Name, contextToolMsg.Content)
-				toolCallLastResult[toolCallSignature(r.ToolCall.Name, r.ToolCall.Arguments)] = r.ToolCall.Result
-				if key := normalizedToolTarget(r.ToolCall.Name, r.ToolCall.Arguments); key != "" {
-					toolURLLastResult[key] = r.ToolCall.Result
-				}
-				if isUsefulSearchEvidence(r.ToolCall.Name, r.ToolCall.Result) {
-					successfulSearchEvidenceCount++
-					if r.ToolCall.Name == "web_search" {
-						if detailedSearchEvidenceInContext >= 2 {
-							contextToolMsg.Content = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
-						} else {
-							detailedSearchEvidenceInContext++
-						}
-					}
-				}
-				messages = append(messages, contextToolMsg)
-				if sess != nil {
-					sess.AddProviderMessage(contextToolMsg)
-				}
-			}
-
-			// 每轮工具调用后裁剪上下文窗口
-			messages = a.fitContextWindow(messages)
-
-			result.State = StateObserve
-
-			// v0.24.1: 工具调用后保存会话
-			if sess != nil {
-				if saveErr := sess.Save(); saveErr != nil {
-					logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
-				}
-			}
-
-			if !forceSearchSynthesis && shouldForceSearchSynthesis(successfulSearchEvidenceCount, consecutiveToolOnlyIters) {
-				forceSearchSynthesis = true
-				messages = append(messages, provider.Message{
-					Role:    "user",
-					Content: searchSynthesisPrompt,
-				})
-			}
-
 			continue // 继续循环，让 LLM 处理工具结果
 		}
 
-		raw := resp.Content
-		clean := strings.TrimSpace(raw)
-
-		// 空回复恢复：给模型一次显式重试机会，避免直接返回空答案。
-		if clean == "" {
-			if emptyResponseRetries < maxEmptyResponseRetries {
-				emptyResponseRetries++
-				messages = append(messages, provider.Message{Role: "assistant", Content: raw})
-				messages = append(messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
-				continue
-			}
-			if strings.TrimSpace(continuedResponse.String()) != "" {
-				finalize(strings.TrimSpace(continuedResponse.String()))
-			} else {
-				finalize(emptyFinalResponseMessage)
-			}
-			return result, nil
-		}
-		emptyResponseRetries = 0
-
-		// 截断恢复：当模型因长度截断时，拼接已有内容并显式请求续写。
-		if strings.EqualFold(resp.FinishReason, "length") {
-			appendContinuation(&continuedResponse, raw)
-			if lengthRecoveryCount < maxLengthContinuationRetries {
-				lengthRecoveryCount++
-				messages = append(messages, provider.Message{Role: "assistant", Content: raw})
-				messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
-				continue
-			}
-			partial := strings.TrimSpace(continuedResponse.String())
-			if partial == "" {
-				partial = clean
-			}
-			finalize(partial + lengthTruncatedNotice)
-			return result, nil
-		}
-		lengthRecoveryCount = 0
-
-		// 没有工具调用，LLM 直接给出最终回复
-		finalResponse := raw
-		if strings.TrimSpace(continuedResponse.String()) != "" {
-			appendContinuation(&continuedResponse, raw)
-			finalResponse = strings.TrimSpace(continuedResponse.String())
+		var finalized bool
+		var finalResponse string
+		messages, finalized, finalResponse = a.processDirectResponse(resp, messages, loopState)
+		if !finalized {
+			continue
 		}
 		finalize(finalResponse)
 		return result, nil
 	}
 
-	if strings.TrimSpace(continuedResponse.String()) != "" {
-		finalize(strings.TrimSpace(continuedResponse.String()) + lengthTruncatedNotice)
+	if strings.TrimSpace(loopState.continuedResponse.String()) != "" {
+		finalize(strings.TrimSpace(loopState.continuedResponse.String()) + lengthTruncatedNotice)
 		return result, nil
 	}
 
@@ -651,6 +409,323 @@ func shouldForceSearchSynthesis(successfulSearchEvidenceCount, consecutiveToolOn
 		return true
 	}
 	return successfulSearchEvidenceCount >= searchSynthesisThreshold && consecutiveToolOnlyIters >= 2
+}
+
+/*
+loopRuntimeState 收纳 RunLoopWithSession 在单次执行过程中的临时状态。
+
+这些字段都只服务于当前这一轮 agent loop，不属于 Agent、Session 或 Memory 的长期状态。
+把它们集中到一个结构体里，能让主循环更容易阅读和后续拆分。
+*/
+type loopRuntimeState struct {
+	toolCallRepeatCount      map[string]int
+	toolCallLastResult       map[string]string
+	toolURLRepeatCount       map[string]int
+	toolURLLastResult        map[string]string
+	consecutiveToolOnlyIters int
+	emptyResponseRetries     int
+	lengthRecoveryCount      int
+	successfulSearchEvidence int
+	detailedSearchEvidence   int
+	forceSearchSynthesis     bool
+	continuedResponse        strings.Builder
+}
+
+/*
+toolExecResult 表示一批工具调用中单个工具执行后的结果。
+*/
+type toolExecResult struct {
+	Index       int
+	ToolCall    toolCallLog
+	ToolMessage provider.Message
+}
+
+/*
+newLoopRuntimeState 创建并初始化一份新的循环临时状态。
+*/
+func newLoopRuntimeState() *loopRuntimeState {
+	return &loopRuntimeState{
+		toolCallRepeatCount: make(map[string]int),
+		toolCallLastResult:  make(map[string]string),
+		toolURLRepeatCount:  make(map[string]int),
+		toolURLLastResult:   make(map[string]string),
+	}
+}
+
+/*
+processDirectResponse 处理模型在当前轮次没有返回工具调用时的回复路径。
+
+它负责：
+1. 空回复恢复
+2. 长度截断续写恢复
+3. continuation 拼接
+4. 决定是否直接结束本轮
+
+返回值含义：
+- updatedMessages: 可能附加了恢复提示的消息序列
+- finalized: 是否已经得到最终响应
+- finalResponse: 当 finalized=true 时的最终输出
+*/
+func (a *Agent) processDirectResponse(
+	resp *provider.Response,
+	messages []provider.Message,
+	loopState *loopRuntimeState,
+) (updatedMessages []provider.Message, finalized bool, finalResponse string) {
+	raw := resp.Content
+	clean := strings.TrimSpace(raw)
+
+	if clean == "" {
+		if loopState.emptyResponseRetries < maxEmptyResponseRetries {
+			loopState.emptyResponseRetries++
+			messages = append(messages, provider.Message{Role: "assistant", Content: raw})
+			messages = append(messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
+			return messages, false, ""
+		}
+		if strings.TrimSpace(loopState.continuedResponse.String()) != "" {
+			return messages, true, strings.TrimSpace(loopState.continuedResponse.String())
+		}
+		return messages, true, emptyFinalResponseMessage
+	}
+	loopState.emptyResponseRetries = 0
+
+	if strings.EqualFold(resp.FinishReason, "length") {
+		appendContinuation(&loopState.continuedResponse, raw)
+		if loopState.lengthRecoveryCount < maxLengthContinuationRetries {
+			loopState.lengthRecoveryCount++
+			messages = append(messages, provider.Message{Role: "assistant", Content: raw})
+			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
+			return messages, false, ""
+		}
+		partial := strings.TrimSpace(loopState.continuedResponse.String())
+		if partial == "" {
+			partial = clean
+		}
+		return messages, true, partial + lengthTruncatedNotice
+	}
+	loopState.lengthRecoveryCount = 0
+
+	if strings.TrimSpace(loopState.continuedResponse.String()) != "" {
+		appendContinuation(&loopState.continuedResponse, raw)
+		return messages, true, strings.TrimSpace(loopState.continuedResponse.String())
+	}
+
+	return messages, true, raw
+}
+
+/*
+processToolCallBatch 处理模型在单轮中返回的一整批 tool_calls。
+
+它负责：
+1. 重复工具调用检测
+2. 记录 assistant/tool 消息到上下文与 session
+3. 按并发安全策略执行工具
+4. 按原始顺序收集并回写工具结果
+5. 触发必要的搜索综合提示
+
+返回值含义：
+- updatedMessages: 工具结果回写后的消息序列
+- finalized: 是否已经直接结束本轮并产出最终响应
+- finalResponse: 当 finalized=true 时的最终响应文本
+*/
+func (a *Agent) processToolCallBatch(
+	resp *provider.Response,
+	loopCfg LoopConfig,
+	result *LoopResult,
+	sess *session.Session,
+	messages []provider.Message,
+	loopState *loopRuntimeState,
+) (updatedMessages []provider.Message, finalized bool, finalResponse string) {
+	logger.Info("agent loop tool call batch",
+		"session_id", func() string {
+			if sess != nil {
+				return sess.ID
+			}
+			return ""
+		}(),
+		"count", len(resp.ToolCalls),
+	)
+	loopState.emptyResponseRetries = 0
+	loopState.lengthRecoveryCount = 0
+	result.State = StateAct
+	if strings.TrimSpace(resp.Content) == "" {
+		loopState.consecutiveToolOnlyIters++
+	} else {
+		loopState.consecutiveToolOnlyIters = 0
+	}
+
+	repeatedSigs := make([]string, 0, len(resp.ToolCalls))
+	allRepeated := true
+	for _, tc := range resp.ToolCalls {
+		sig := toolCallSignature(tc.Name, tc.Arguments)
+		repeatedSigs = append(repeatedSigs, sig)
+		loopState.toolCallRepeatCount[sig]++
+		if key := normalizedToolTarget(tc.Name, tc.Arguments); key != "" {
+			loopState.toolURLRepeatCount[key]++
+		}
+		if loopState.toolCallRepeatCount[sig] < loopCfg.RepeatToolCallLimit {
+			allRepeated = false
+		}
+	}
+	if (allRepeated && strings.TrimSpace(resp.Content) == "") || loopState.consecutiveToolOnlyIters >= loopCfg.ToolOnlyIterationLimit {
+		if !loopState.forceSearchSynthesis && loopState.successfulSearchEvidence > 0 {
+			loopState.forceSearchSynthesis = true
+			messages = append(messages, provider.Message{
+				Role:    "user",
+				Content: searchSynthesisPrompt,
+			})
+			return messages, false, ""
+		}
+		var b strings.Builder
+		b.WriteString("Detected repeated tool-call loop and stopped early to avoid timeout.\n")
+		b.WriteString("Latest tool outputs:\n")
+		for _, sig := range repeatedSigs {
+			parts := strings.SplitN(sig, "|", 2)
+			name := parts[0]
+			out := strings.TrimSpace(loopState.toolCallLastResult[sig])
+			if out == "" {
+				out = "(no cached output)"
+			}
+			if len(out) > 240 {
+				out = out[:240] + "...(truncated)"
+			}
+			b.WriteString(fmt.Sprintf("- %s: %s\n", name, out))
+		}
+		return messages, true, strings.TrimSpace(b.String())
+	}
+
+	messages = append(messages, provider.Message{
+		Role:      "assistant",
+		Content:   resp.Content,
+		ToolCalls: resp.ToolCalls,
+	})
+	if sess != nil {
+		sess.AddProviderMessage(provider.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+	}
+
+	allParallelSafe := true
+	for _, tc := range resp.ToolCalls {
+		if !a.isToolParallelSafe(tc.Name) {
+			allParallelSafe = false
+			break
+		}
+	}
+
+	resultCh := make(chan toolExecResult, len(resp.ToolCalls))
+	if allParallelSafe {
+		for idx, tc := range resp.ToolCalls {
+			go func(idx int, tc provider.ToolCall) {
+				start := time.Now()
+				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, loopState.toolURLRepeatCount, loopState.toolURLLastResult, loopCfg.DuplicateFetchLimit)
+				duration := time.Since(start)
+
+				tcLog := toolCallLog{
+					Name:      tc.Name,
+					Arguments: tc.Arguments,
+					Duration:  duration,
+				}
+				if err != nil {
+					toolResult = fmt.Sprintf("Error: %v", err)
+					tcLog.Result = toolResult
+				} else {
+					tcLog.Result = toolResult
+				}
+
+				resultCh <- toolExecResult{
+					Index:    idx,
+					ToolCall: tcLog,
+					ToolMessage: provider.Message{
+						Role:       "tool",
+						Content:    toolResult,
+						ToolCallID: tc.ID,
+						Name:       tc.Name,
+					},
+				}
+			}(idx, tc)
+		}
+	} else {
+		for idx, tc := range resp.ToolCalls {
+			start := time.Now()
+			toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, loopState.toolURLRepeatCount, loopState.toolURLLastResult, loopCfg.DuplicateFetchLimit)
+			duration := time.Since(start)
+
+			tcLog := toolCallLog{
+				Name:      tc.Name,
+				Arguments: tc.Arguments,
+				Duration:  duration,
+			}
+			if err != nil {
+				toolResult = fmt.Sprintf("Error: %v", err)
+				tcLog.Result = toolResult
+			} else {
+				tcLog.Result = toolResult
+			}
+
+			resultCh <- toolExecResult{
+				Index:    idx,
+				ToolCall: tcLog,
+				ToolMessage: provider.Message{
+					Role:       "tool",
+					Content:    toolResult,
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+				},
+			}
+		}
+	}
+
+	allResults := make([]toolExecResult, 0, len(resp.ToolCalls))
+	for i := 0; i < len(resp.ToolCalls); i++ {
+		allResults = append(allResults, <-resultCh)
+	}
+	sort.Slice(allResults, func(i, j int) bool {
+		return allResults[i].Index < allResults[j].Index
+	})
+
+	for _, r := range allResults {
+		result.ToolCalls = append(result.ToolCalls, r.ToolCall)
+		contextToolMsg := r.ToolMessage
+		contextToolMsg.Content = compactToolResultForContext(contextToolMsg.Name, contextToolMsg.Content)
+		loopState.toolCallLastResult[toolCallSignature(r.ToolCall.Name, r.ToolCall.Arguments)] = r.ToolCall.Result
+		if key := normalizedToolTarget(r.ToolCall.Name, r.ToolCall.Arguments); key != "" {
+			loopState.toolURLLastResult[key] = r.ToolCall.Result
+		}
+		if isUsefulSearchEvidence(r.ToolCall.Name, r.ToolCall.Result) {
+			loopState.successfulSearchEvidence++
+			if r.ToolCall.Name == "web_search" {
+				if loopState.detailedSearchEvidence >= 2 {
+					contextToolMsg.Content = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
+				} else {
+					loopState.detailedSearchEvidence++
+				}
+			}
+		}
+		messages = append(messages, contextToolMsg)
+		if sess != nil {
+			sess.AddProviderMessage(contextToolMsg)
+		}
+	}
+
+	messages = a.fitContextWindow(messages)
+	result.State = StateObserve
+	if sess != nil {
+		if saveErr := sess.Save(); saveErr != nil {
+			logger.Warn("agent session save failed", "session_id", sess.ID, "error", saveErr)
+		}
+	}
+
+	if !loopState.forceSearchSynthesis && shouldForceSearchSynthesis(loopState.successfulSearchEvidence, loopState.consecutiveToolOnlyIters) {
+		loopState.forceSearchSynthesis = true
+		messages = append(messages, provider.Message{
+			Role:    "user",
+			Content: searchSynthesisPrompt,
+		})
+	}
+
+	return messages, false, ""
 }
 
 /*
@@ -801,20 +876,17 @@ func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message
 	return messages
 }
 
-// indexConversationTurn 将一轮对话索引进 RAG（异步执行）
+// indexConversationTurn 将最终答案索引进 RAG（异步执行）
 /*
-indexConversationTurn 异步将一轮对话索引到 RAG 系统中。
+indexConversationTurn 异步将本轮最终答案写入 RAG。
+它使用每轮唯一的 source，避免固定 source 导致的新答案覆盖旧答案问题。
 */
 func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 	go func() {
-		assistantResponse = utils.SanitizeToolProtocolOutput(assistantResponse)
-		// 组合对话内容作为索引文本
-		content := "User: " + userInput + "\nAssistant: " + assistantResponse
-		title := userInput
-		if len(title) > 80 {
-			title = title[:80] + "..."
+		source, title, content, ok := buildFinalAnswerRAGDocument(userInput, assistantResponse)
+		if !ok {
+			return
 		}
-		source := "conversation"
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -824,6 +896,102 @@ func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 			_ = ctx.Err()
 		}
 	}()
+}
+
+/*
+buildFinalAnswerRAGDocument 将最终答案整理成适合写入 RAG 的文档。
+*/
+func buildFinalAnswerRAGDocument(userInput, assistantResponse string) (source, title, content string, ok bool) {
+	assistantResponse = strings.TrimSpace(utils.SanitizeToolProtocolOutput(assistantResponse))
+	userInput = strings.TrimSpace(userInput)
+	if assistantResponse == "" {
+		return "", "", "", false
+	}
+
+	title = userInput
+	if title == "" {
+		title = "Final Answer"
+	}
+	if len(title) > 80 {
+		title = title[:80] + "..."
+	}
+
+	var b strings.Builder
+	b.WriteString("Final Answer:\n")
+	b.WriteString(assistantResponse)
+	if userInput != "" {
+		b.WriteString("\n\nUser Request:\n")
+		b.WriteString(userInput)
+	}
+	content = b.String()
+
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(userInput))
+	_, _ = h.Write([]byte{'\n'})
+	_, _ = h.Write([]byte(assistantResponse))
+	source = fmt.Sprintf("conversation/final/%x", h.Sum64())
+	return source, title, content, true
+}
+
+/*
+saveFinalAnswerDocument 将本轮最终答案落盘为 Markdown 文档。
+*/
+func (a *Agent) saveFinalAnswerDocument(sessionID, userInput, assistantResponse string) error {
+	if a == nil || a.cfg == nil {
+		return nil
+	}
+
+	source, title, content, ok := buildFinalAnswerRAGDocument(userInput, assistantResponse)
+	if !ok {
+		return nil
+	}
+
+	dir := filepath.Join(a.cfg.HomeDir(), "knowledge", "final_answers")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create final answer dir: %w", err)
+	}
+
+	filename := buildFinalAnswerFilename(source, time.Now())
+	path := filepath.Join(dir, filename)
+
+	var b strings.Builder
+	b.WriteString("# ")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+	b.WriteString("- Generated At: ")
+	b.WriteString(time.Now().Format(time.RFC3339))
+	b.WriteString("\n")
+	if strings.TrimSpace(sessionID) != "" {
+		b.WriteString("- Session ID: ")
+		b.WriteString(sessionID)
+		b.WriteString("\n")
+	}
+	b.WriteString("- Source: ")
+	b.WriteString(source)
+	b.WriteString("\n\n")
+	b.WriteString("## Final Answer\n\n")
+	b.WriteString(strings.TrimSpace(utils.SanitizeToolProtocolOutput(assistantResponse)))
+	if strings.TrimSpace(userInput) != "" {
+		b.WriteString("\n\n## User Request\n\n")
+		b.WriteString(strings.TrimSpace(userInput))
+	}
+	b.WriteString("\n\n## RAG Content\n\n")
+	b.WriteString(content)
+	b.WriteString("\n")
+
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write final answer doc: %w", err)
+	}
+	return nil
+}
+
+/*
+buildFinalAnswerFilename 为最终答案文档生成稳定且可读的文件名。
+*/
+func buildFinalAnswerFilename(source string, now time.Time) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(source))
+	return fmt.Sprintf("%s_%x.md", now.Format("20060102_150405"), h.Sum64())
 }
 
 // RunLoopStream 执行流式 Agent Loop
@@ -939,16 +1107,6 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 		fields = append(fields, "output_bytes", len(output))
 		logger.Info("tool execution completed", fields...)
 	}()
-
-	// 记忆工具：直接由 agent 处理，不走 gateway
-	if name == "remember" || name == "recall" {
-		output, err = a.handleMemoryTool(name, arguments)
-		return output, err
-	}
-	if name == "rag_search" {
-		output, err = a.handleRAGTool(name, arguments)
-		return output, err
-	}
 
 	// 解析参数
 	var args map[string]any

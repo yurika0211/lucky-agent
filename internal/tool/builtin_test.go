@@ -6,13 +6,16 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/rag"
 )
 
 func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"shell", "file_read", "file_write", "file_list", "web_search", "web_fetch", "current_time", "remember", "recall", "rag_search"}
+	expected := []string{"shell", "file_read", "file_write", "file_list", "web_search", "web_fetch", "current_time", "remember", "recall", "rag_search", "rag_index"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {
@@ -118,6 +121,83 @@ func TestFileListToolTruncatesRecursiveOutput(t *testing.T) {
 	}
 	if !strings.Contains(result, "truncated after 5 entries") {
 		t.Fatalf("expected truncation marker, got %q", result)
+	}
+}
+
+func TestMemoryToolServiceRememberAndRecall(t *testing.T) {
+	dir := t.TempDir()
+	store, err := memory.NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	svc := NewMemoryToolService(store)
+
+	result, err := svc.HandleRemember(map[string]any{
+		"content":  "用户喜欢Python",
+		"category": "preference",
+	})
+	if err != nil {
+		t.Fatalf("HandleRemember: %v", err)
+	}
+	if !strings.Contains(result, "已保存") {
+		t.Fatalf("unexpected remember result: %q", result)
+	}
+
+	recall, err := svc.HandleRecall(map[string]any{"query": "Python"})
+	if err != nil {
+		t.Fatalf("HandleRecall: %v", err)
+	}
+	if !strings.Contains(recall, "Python") {
+		t.Fatalf("unexpected recall result: %q", recall)
+	}
+}
+
+func TestMemoryToolServiceRememberLongTerm(t *testing.T) {
+	dir := t.TempDir()
+	store, err := memory.NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	svc := NewMemoryToolService(store)
+
+	result, err := svc.HandleRemember(map[string]any{
+		"content":   "重要密码",
+		"category":  "security",
+		"long_term": true,
+	})
+	if err != nil {
+		t.Fatalf("HandleRemember: %v", err)
+	}
+	if !strings.Contains(result, "长期记忆") {
+		t.Fatalf("unexpected remember result: %q", result)
+	}
+}
+
+func TestRAGToolServiceSearchAndIndex(t *testing.T) {
+	emb := rag.NewMockEmbedder(8)
+	mgr := rag.NewRAGManager(emb, rag.DefaultRAGConfig())
+	svc := NewRAGToolService(mgr)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(path, []byte("# Demo\n\nalpha beta gamma"), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	indexResult, err := svc.HandleIndex(map[string]any{"path": path})
+	if err != nil {
+		t.Fatalf("HandleIndex: %v", err)
+	}
+	if !strings.Contains(indexResult, "Indexed") {
+		t.Fatalf("unexpected index result: %q", indexResult)
+	}
+
+	searchResult, err := svc.HandleSearch(map[string]any{"query": "alpha", "top_k": 3})
+	if err != nil {
+		t.Fatalf("HandleSearch: %v", err)
+	}
+	if !strings.Contains(searchResult, "alpha") && !strings.Contains(searchResult, "Demo") {
+		t.Fatalf("unexpected search result: %q", searchResult)
 	}
 }
 

@@ -30,9 +30,10 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig) {
 	r.Register(WebSearchTool(searchCfg))
 	r.Register(WebFetchTool(searchCfg))
 	r.Register(CurrentTimeTool())
-	r.Register(RememberTool())
-	r.Register(RecallTool())
-	r.Register(RAGSearchTool())
+	r.Register(RememberTool(nil))
+	r.Register(RecallTool(nil))
+	r.Register(RAGSearchTool(nil))
+	r.Register(RAGIndexTool(nil))
 }
 
 // ShellTool 执行 shell 命令
@@ -1117,7 +1118,12 @@ func validateShellSandbox(command string) error {
 }
 
 // RememberTool 保存记忆工具
-func RememberTool() *Tool {
+func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
+	if handler == nil {
+		handler = func(args map[string]any) (string, error) {
+			return "", fmt.Errorf("remember handler not configured")
+		}
+	}
 	return &Tool{
 		Name:        "remember",
 		Description: "Save important information to long-term or medium-term memory. Use when the user shares preferences, personal info, project context, or anything worth remembering for future conversations.",
@@ -1143,16 +1149,18 @@ func RememberTool() *Tool {
 				Default:     false,
 			},
 		},
-		Handler: func(args map[string]any) (string, error) {
-			// 实际处理在 agent.handleMemoryTool 中
-			return "", nil
-		},
+		Handler:      handler,
 		ParallelSafe: false,
 	}
 }
 
 // RecallTool 搜索记忆工具
-func RecallTool() *Tool {
+func RecallTool(handler func(args map[string]any) (string, error)) *Tool {
+	if handler == nil {
+		handler = func(args map[string]any) (string, error) {
+			return "", fmt.Errorf("recall handler not configured")
+		}
+	}
 	return &Tool{
 		Name:        "recall",
 		Description: "Search your memory for previously saved information. Use when you need to recall user preferences, past conversations, or any stored knowledge.",
@@ -1166,16 +1174,18 @@ func RecallTool() *Tool {
 				Required:    false,
 			},
 		},
-		Handler: func(args map[string]any) (string, error) {
-			// 实际处理在 agent.handleMemoryTool 中
-			return "", nil
-		},
+		Handler:      handler,
 		ParallelSafe: true,
 	}
 }
 
 // RAGSearchTool searches the local indexed knowledge base.
-func RAGSearchTool() *Tool {
+func RAGSearchTool(handler func(args map[string]any) (string, error)) *Tool {
+	if handler == nil {
+		handler = func(args map[string]any) (string, error) {
+			return "", fmt.Errorf("rag_search handler not configured")
+		}
+	}
 	return &Tool{
 		Name:        "rag_search",
 		Description: "Search the local RAG knowledge base for indexed documents and return the most relevant passages.",
@@ -1195,10 +1205,32 @@ func RAGSearchTool() *Tool {
 				Default:     5,
 			},
 		},
-		Handler: func(args map[string]any) (string, error) {
-			// 实际处理在 agent.handleKnowledgeTool 中
-			return "", nil
-		},
+		Handler:      handler,
 		ParallelSafe: true,
+	}
+}
+
+// RAGIndexTool indexes a file or directory into the local knowledge base.
+func RAGIndexTool(handler func(args map[string]any) (string, error)) *Tool {
+	if handler == nil {
+		handler = func(args map[string]any) (string, error) {
+			return "", fmt.Errorf("rag_index handler not configured")
+		}
+	}
+	return &Tool{
+		Name:        "rag_index",
+		Description: "Index a local file or directory into the RAG knowledge base so it can be retrieved later.",
+		Category:    CatBuiltin,
+		Source:      "builtin",
+		Permission:  PermApprove,
+		Parameters: map[string]Param{
+			"path": {
+				Type:        "string",
+				Description: "Local file or directory path to index into the knowledge base.",
+				Required:    true,
+			},
+		},
+		Handler:      handler,
+		ParallelSafe: false,
 	}
 }

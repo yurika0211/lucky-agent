@@ -303,10 +303,10 @@ func (m *CircuitBreakerMiddleware) InterceptChatStream(ctx context.Context, info
 
 // RateLimitMiddleware limits the rate of Provider calls.
 type RateLimitMiddleware struct {
-	mu       sync.Mutex
-	limit    int           // max calls per window
-	window   time.Duration // time window
-	calls    []time.Time   // timestamps of recent calls
+	mu     sync.Mutex
+	limit  int           // max calls per window
+	window time.Duration // time window
+	calls  []time.Time   // timestamps of recent calls
 }
 
 // NewRateLimitMiddleware creates a rate limit middleware.
@@ -410,6 +410,38 @@ func (mp *MiddlewareProvider) ChatStream(ctx context.Context, messages []provide
 	})
 }
 
+// ChatWithOptions sends a message through the middleware chain with function-calling options.
+func (mp *MiddlewareProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
+	info := CallInfo{
+		Provider:  mp.inner.Name(),
+		Messages:  messages,
+		StartTime: time.Now(),
+	}
+
+	return mp.chain.ExecuteChat(ctx, info, func(ctx context.Context, info CallInfo) (*provider.Response, error) {
+		if fc, ok := mp.inner.(provider.FunctionCallingProvider); ok {
+			return fc.ChatWithOptions(ctx, messages, opts)
+		}
+		return mp.inner.Chat(ctx, messages)
+	})
+}
+
+// ChatStreamWithOptions sends a streaming message through the middleware chain with function-calling options.
+func (mp *MiddlewareProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
+	info := CallInfo{
+		Provider:  mp.inner.Name(),
+		Messages:  messages,
+		StartTime: time.Now(),
+	}
+
+	return mp.chain.ExecuteChatStream(ctx, info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		if fc, ok := mp.inner.(provider.FunctionCallingProvider); ok {
+			return fc.ChatStreamWithOptions(ctx, messages, opts)
+		}
+		return mp.inner.ChatStream(ctx, messages)
+	})
+}
+
 // Validate validates the wrapped provider.
 func (mp *MiddlewareProvider) Validate() error {
 	return mp.inner.Validate()
@@ -417,3 +449,4 @@ func (mp *MiddlewareProvider) Validate() error {
 
 // Ensure MiddlewareProvider implements Provider
 var _ provider.Provider = (*MiddlewareProvider)(nil)
+var _ provider.FunctionCallingProvider = (*MiddlewareProvider)(nil)

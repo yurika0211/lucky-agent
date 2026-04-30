@@ -383,14 +383,71 @@ func TestMiddlewareProviderFullStack(t *testing.T) {
 	}
 }
 
+func TestMiddlewareProviderImplementsFunctionCallingProvider(t *testing.T) {
+	mp := NewMiddlewareProvider(&mockFCProvider{}, NewChain())
+	if _, ok := any(mp).(provider.FunctionCallingProvider); !ok {
+		t.Fatal("expected middleware provider to implement FunctionCallingProvider")
+	}
+}
+
+func TestMiddlewareProviderChatWithOptionsPassthrough(t *testing.T) {
+	inner := &mockFCProvider{}
+	mp := NewMiddlewareProvider(inner, NewChain())
+
+	opts := provider.CallOptions{
+		Tools: []map[string]any{
+			{"function": map[string]any{"name": "file_read"}},
+		},
+		ToolChoice: "auto",
+	}
+	resp, err := mp.ChatWithOptions(context.Background(), []provider.Message{{Role: "user", Content: "hello"}}, opts)
+	if err != nil {
+		t.Fatalf("ChatWithOptions: %v", err)
+	}
+	if resp == nil || len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected tool call response, got %#v", resp)
+	}
+	if len(inner.lastOpts.Tools) != 1 {
+		t.Fatalf("expected options passed through, got %#v", inner.lastOpts)
+	}
+}
+
+func TestMiddlewareProviderChatStreamWithOptionsPassthrough(t *testing.T) {
+	inner := &mockFCProvider{}
+	mp := NewMiddlewareProvider(inner, NewChain())
+
+	opts := provider.CallOptions{
+		Tools: []map[string]any{
+			{"function": map[string]any{"name": "file_read"}},
+		},
+		ToolChoice: "auto",
+	}
+	ch, err := mp.ChatStreamWithOptions(context.Background(), []provider.Message{{Role: "user", Content: "hello"}}, opts)
+	if err != nil {
+		t.Fatalf("ChatStreamWithOptions: %v", err)
+	}
+	var sawToolDelta bool
+	for chunk := range ch {
+		if len(chunk.ToolCallDeltas) > 0 {
+			sawToolDelta = true
+		}
+	}
+	if !sawToolDelta {
+		t.Fatal("expected tool call deltas in stream")
+	}
+	if len(inner.lastOpts.Tools) != 1 {
+		t.Fatalf("expected options passed through, got %#v", inner.lastOpts)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Test Helpers
 // ---------------------------------------------------------------------------
 
 type testMiddleware struct {
-	name       string
-	onChat     func(ctx context.Context, info CallInfo, next ChatHandler) (*provider.Response, error)
-	onStream   func(ctx context.Context, info CallInfo, next StreamHandler) (<-chan provider.StreamChunk, error)
+	name     string
+	onChat   func(ctx context.Context, info CallInfo, next ChatHandler) (*provider.Response, error)
+	onStream func(ctx context.Context, info CallInfo, next StreamHandler) (<-chan provider.StreamChunk, error)
 }
 
 func (m *testMiddleware) Name() string { return m.name }
@@ -422,3 +479,41 @@ func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Messa
 	return ch, nil
 }
 func (m *mockProvider) Validate() error { return nil }
+
+type mockFCProvider struct {
+	lastOpts provider.CallOptions
+}
+
+func (m *mockFCProvider) Name() string { return "mock-fc" }
+func (m *mockFCProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	return &provider.Response{Content: "plain", TokensUsed: 10}, nil
+}
+func (m *mockFCProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, 1)
+	ch <- provider.StreamChunk{Content: "plain", Done: true}
+	close(ch)
+	return ch, nil
+}
+func (m *mockFCProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
+	m.lastOpts = opts
+	return &provider.Response{
+		Content: "fc",
+		ToolCalls: []provider.ToolCall{
+			{ID: "call_1", Name: "file_read", Arguments: `{"path":"README.md"}`},
+		},
+		TokensUsed: 11,
+	}, nil
+}
+func (m *mockFCProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
+	m.lastOpts = opts
+	ch := make(chan provider.StreamChunk, 2)
+	ch <- provider.StreamChunk{
+		ToolCallDeltas: []provider.StreamToolCallDelta{
+			{Index: 0, ID: "call_1", Name: "file_read", Arguments: `{"path":"README.md"}`},
+		},
+	}
+	ch <- provider.StreamChunk{Done: true, FinishReason: "tool_calls"}
+	close(ch)
+	return ch, nil
+}
+func (m *mockFCProvider) Validate() error { return nil }

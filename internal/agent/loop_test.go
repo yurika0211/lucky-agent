@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
@@ -130,6 +131,79 @@ func TestToolCallSignatureCanonicalizesArguments(t *testing.T) {
 	sig2 := toolCallSignature("web_fetch", `{"max_chars":500,"url":"https://example.com"}`)
 	if sig1 != sig2 {
 		t.Fatalf("expected canonical signatures to match, got %q vs %q", sig1, sig2)
+	}
+}
+
+func TestBuildFinalAnswerRAGDocument(t *testing.T) {
+	source, title, content, ok := buildFinalAnswerRAGDocument(
+		"请总结一下 LuckyHarness 的 RAG 设计",
+		"结论：当前已经有 SQLite 持久化，但资料沉淀链路还不统一。",
+	)
+	if !ok {
+		t.Fatal("expected document to be built")
+	}
+	if !strings.HasPrefix(source, "conversation/final/") {
+		t.Fatalf("expected conversation final source, got %q", source)
+	}
+	if title != "请总结一下 LuckyHarness 的 RAG 设计" {
+		t.Fatalf("unexpected title: %q", title)
+	}
+	if !strings.Contains(content, "Final Answer:\n结论：当前已经有 SQLite 持久化") {
+		t.Fatalf("expected final answer content, got %q", content)
+	}
+	if !strings.Contains(content, "User Request:\n请总结一下 LuckyHarness 的 RAG 设计") {
+		t.Fatalf("expected user request context, got %q", content)
+	}
+}
+
+func TestBuildFinalAnswerRAGDocumentSkipsEmptyAnswer(t *testing.T) {
+	source, title, content, ok := buildFinalAnswerRAGDocument("hello", "   ")
+	if ok {
+		t.Fatalf("expected empty answer to be skipped, got source=%q title=%q content=%q", source, title, content)
+	}
+}
+
+func TestSaveFinalAnswerDocument(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+
+	a := &Agent{cfg: cfg}
+	err = a.saveFinalAnswerDocument(
+		"session-123",
+		"请总结一下当前项目的持久化设计",
+		"结论：当前已经有 session、memory 和 RAG 持久化。",
+	)
+	if err != nil {
+		t.Fatalf("saveFinalAnswerDocument() error = %v", err)
+	}
+
+	dir := filepath.Join(cfg.HomeDir(), "knowledge", "final_answers")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 saved document, got %d", len(entries))
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(data)
+	if !strings.Contains(text, "# 请总结一下当前项目的持久化设计") {
+		t.Fatalf("expected title in document, got %q", text)
+	}
+	if !strings.Contains(text, "## Final Answer") {
+		t.Fatalf("expected final answer section, got %q", text)
+	}
+	if !strings.Contains(text, "## User Request") {
+		t.Fatalf("expected user request section, got %q", text)
+	}
+	if !strings.Contains(text, "- Session ID: session-123") {
+		t.Fatalf("expected session id in document, got %q", text)
 	}
 }
 

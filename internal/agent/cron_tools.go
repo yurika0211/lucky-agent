@@ -93,6 +93,24 @@ func (a *Agent) registerCronTools() {
 	}
 
 	a.tools.Register(&tool.Tool{
+		Name:        "cron",
+		Description: "Unified cron management tool. Use action=list|status|add|remove|pause|resume to manage scheduled jobs through one high-level interface.",
+		Category:    tool.CatDelegate,
+		Source:      "builtin",
+		Permission:  tool.PermApprove,
+		Parameters: map[string]tool.Param{
+			"action":              {Type: "string", Description: "Action: list, status, add, remove, pause, resume", Required: true},
+			"id":                  {Type: "string", Description: "Job ID for add/remove/pause/resume", Required: false},
+			"schedule":            {Type: "string", Description: "Natural language schedule or 5-field cron expression", Required: false},
+			"mode":                {Type: "string", Description: "Execution mode: shell or agent", Required: false, Default: "shell"},
+			"command":             {Type: "string", Description: "Shell command or agent prompt", Required: false},
+			"platform":            {Type: "string", Description: "Optional notification platform", Required: false},
+			"chat_id":             {Type: "string", Description: "Optional target chat ID for notification delivery", Required: false},
+			"reply_to_message_id": {Type: "string", Description: "Optional reply target message ID", Required: false},
+		},
+		Handler: a.handleCron,
+	})
+	a.tools.Register(&tool.Tool{
 		Name:        "cron_add",
 		Description: "Add a scheduled job. Accepts natural language schedules like 每天9点, 每30分钟, 工作日18点, 明天10点, or a 5-field cron expression like 0 9 * * *. Mode can be shell or agent.",
 		Category:    tool.CatDelegate,
@@ -160,6 +178,27 @@ func (a *Agent) registerCronTools() {
 		Parameters:  map[string]tool.Param{},
 		Handler:     a.handleCronStatus,
 	})
+}
+
+func (a *Agent) handleCron(args map[string]any) (string, error) {
+	action, _ := args["action"].(string)
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "list":
+		return a.handleCronList(args)
+	case "status":
+		return a.handleCronStatus(args)
+	case "add":
+		return a.handleCronAdd(args)
+	case "remove":
+		return a.handleCronRemove(args)
+	case "pause":
+		return a.handleCronPause(args)
+	case "resume":
+		return a.handleCronResume(args)
+	default:
+		return "", fmt.Errorf("invalid cron action %q (use list, status, add, remove, pause, resume)", action)
+	}
 }
 
 func (a *Agent) handleCronAdd(args map[string]any) (string, error) {
