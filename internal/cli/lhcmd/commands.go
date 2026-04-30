@@ -2,17 +2,12 @@ package lhcmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/spf13/cobra"
 
@@ -21,7 +16,6 @@ import (
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/gateway/onebot"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
-	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 )
 
@@ -317,27 +311,6 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	apiAddr, _ := cmd.Flags().GetString("api-addr")
-	if !cmd.Flags().Changed("api-addr") && cfg.MsgGateway.APIAddr != "" {
-		apiAddr = cfg.MsgGateway.APIAddr
-	}
-	if apiAddr == "" {
-		apiAddr = "127.0.0.1:9090"
-	}
-	rateLimit := cfg.Server.RateLimit
-	if rateLimit <= 0 {
-		rateLimit = 60
-	}
-	srv := server.New(a, server.ServerConfig{
-		Addr:       apiAddr,
-		EnableCORS: cfg.Server.EnableCORS,
-		RateLimit:  rateLimit,
-	})
-	if err := srv.Start(); err != nil {
-		return fmt.Errorf("start http api server: %w", err)
-	}
-	fmt.Printf("HTTP API server starting on %s\n", apiAddr)
-
 	startAll, _ := cmd.Flags().GetBool("all")
 	if !cmd.Flags().Changed("all") {
 		startAll = cfg.MsgGateway.StartAll
@@ -351,7 +324,6 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		_ = gm.StopAll()
-		_ = srv.Stop()
 		return nil
 	}
 
@@ -454,168 +426,16 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	_ = gm.StopAll()
-	_ = srv.Stop()
 	return nil
-}
-
-type msgGatewayListResponse struct {
-	Gateways []gateway.GatewayStatus `json:"gateways"`
-	Count    int                     `json:"count"`
-}
-
-type msgGatewayErrorResponse struct {
-	Error   string `json:"error"`
-	Code    int    `json:"code"`
-	Details string `json:"details"`
 }
 
 func runMsgGatewayStop(cmd *cobra.Command, args []string) error {
-	baseURL, err := resolveMsgGatewayAPIBase(cmd)
-	if err != nil {
-		return err
-	}
-
-	statuses, err := fetchMsgGatewayStatuses(baseURL)
-	if err != nil {
-		return fmt.Errorf("无法连接到消息网关 API (%s): %w\n提示: 先运行 `lh msg-gateway start ...`", baseURL, err)
-	}
-
-	if len(args) == 0 {
-		if len(statuses) == 0 {
-			fmt.Println("暂无已注册的消息网关")
-			return nil
-		}
-		stopped := 0
-		for _, st := range statuses {
-			if !st.Running {
-				continue
-			}
-			if err := stopMsgGateway(baseURL, st.Name); err != nil {
-				return err
-			}
-			stopped++
-		}
-		if stopped == 0 {
-			fmt.Println("没有运行中的消息网关")
-			return nil
-		}
-		fmt.Printf("已停止 %d 个消息网关\n", stopped)
-		return nil
-	}
-
-	if err := stopMsgGateway(baseURL, args[0]); err != nil {
-		return err
-	}
-	fmt.Printf("消息网关 %s 已停止\n", args[0])
-	return nil
+	return fmt.Errorf("msg-gateway stop 已禁用：消息网关不再依赖 HTTP API 进行进程外控制。请在运行网关的终端中使用 Ctrl+C 停止")
 }
 
 func runMsgGatewayStatus(cmd *cobra.Command, args []string) error {
-	baseURL, err := resolveMsgGatewayAPIBase(cmd)
-	if err != nil {
-		return err
-	}
-
-	statuses, err := fetchMsgGatewayStatuses(baseURL)
-	if err != nil {
-		return fmt.Errorf("无法连接到消息网关 API (%s): %w\n提示: 先运行 `lh msg-gateway start ...`", baseURL, err)
-	}
-
-	if len(statuses) == 0 {
-		fmt.Println("暂无已注册的消息网关")
-		return nil
-	}
-
-	fmt.Println("消息网关状态:")
-	for _, s := range statuses {
-		running := "停止"
-		if s.Running {
-			running = "运行中"
-		}
-		fmt.Printf("  %s %s (发送: %d, 接收: %d, 错误: %d)\n",
-			running, s.Name, s.Stats.MessagesSent, s.Stats.MessagesReceived, s.Stats.Errors)
-	}
+	fmt.Println("msg-gateway status 已禁用：消息网关不再依赖 HTTP API 暴露状态。请直接查看启动终端日志。")
 	return nil
-}
-
-func resolveMsgGatewayAPIBase(cmd *cobra.Command) (string, error) {
-	addr, _ := cmd.Flags().GetString("api-addr")
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		mgr, err := config.NewManager()
-		if err != nil {
-			return "", err
-		}
-		if err := mgr.Load(); err != nil {
-			return "", err
-		}
-		addr = strings.TrimSpace(mgr.Get().MsgGateway.APIAddr)
-	}
-	if addr == "" {
-		addr = "127.0.0.1:9090"
-	}
-	if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
-		addr = "http://" + addr
-	}
-	return strings.TrimRight(addr, "/"), nil
-}
-
-func fetchMsgGatewayStatuses(baseURL string) ([]gateway.GatewayStatus, error) {
-	client := &http.Client{Timeout: 8 * time.Second}
-	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/gateways", nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, decodeMsgGatewayAPIError(resp)
-	}
-
-	var data msgGatewayListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
-		return nil, fmt.Errorf("解析网关状态失败: %w", err)
-	}
-	return data.Gateways, nil
-}
-
-func stopMsgGateway(baseURL, name string) error {
-	client := &http.Client{Timeout: 8 * time.Second}
-	reqURL := fmt.Sprintf("%s/api/v1/gateways/%s/stop", baseURL, url.PathEscape(name))
-	req, err := http.NewRequest(http.MethodPost, reqURL, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return decodeMsgGatewayAPIError(resp)
-	}
-	return nil
-}
-
-func decodeMsgGatewayAPIError(resp *http.Response) error {
-	body, _ := io.ReadAll(resp.Body)
-
-	var apiErr msgGatewayErrorResponse
-	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error != "" {
-		if apiErr.Details != "" {
-			return fmt.Errorf("%s: %s (HTTP %d)", apiErr.Error, apiErr.Details, resp.StatusCode)
-		}
-		return fmt.Errorf("%s (HTTP %d)", apiErr.Error, resp.StatusCode)
-	}
-	if len(body) == 0 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
-	}
-	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 func runRAGIndex(cmd *cobra.Command, args []string) error {

@@ -163,20 +163,17 @@ func newRootCmd() *cobra.Command {
 	msgGatewayStartCmd.Flags().Bool("onebot-like", true, "OneBot 收到消息自动点赞")
 	msgGatewayStartCmd.Flags().Int("onebot-like-times", 1, "OneBot 点赞次数 (1-10)")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
-	msgGatewayStartCmd.Flags().String("api-addr", "127.0.0.1:9090", "HTTP API 监听地址")
 	msgGatewayStopCmd := &cobra.Command{
 		Use:   "stop [platform]",
 		Short: "停止消息网关",
 		Args:  cobra.MaximumNArgs(1),
 		RunE:  runMsgGatewayStop,
 	}
-	msgGatewayStopCmd.Flags().String("api-addr", "", "消息网关 API 地址（默认读取 msg_gateway.api_addr）")
 	msgGatewayStatusCmd := &cobra.Command{
 		Use:   "status",
 		Short: "查看消息网关状态",
 		RunE:  runMsgGatewayStatus,
 	}
-	msgGatewayStatusCmd.Flags().String("api-addr", "", "消息网关 API 地址（默认读取 msg_gateway.api_addr）")
 	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayStopCmd, msgGatewayStatusCmd)
 
 	ragCmd := &cobra.Command{
