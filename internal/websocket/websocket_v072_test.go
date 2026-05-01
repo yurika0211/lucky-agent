@@ -27,6 +27,11 @@ func createTestAgentForWS(t *testing.T) *agent.Agent {
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
+	t.Cleanup(func() {
+		if err := a.Close(); err != nil {
+			t.Fatalf("close agent: %v", err)
+		}
+	})
 	return a
 }
 
