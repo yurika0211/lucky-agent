@@ -643,7 +643,24 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 		return "", nil
 	}
 
-	systemPrompt := "You are generating one concise in-progress update for the user while the main task is still underway. Summarize what has been checked and what remains. Use the user's language. Do not expose hidden chain-of-thought. Do not mention internal event types or implementation details. Limit the update to at most 3 short sentences."
+	systemPrompt := `You are generating one concise progress update for the user during an unfinished task.
+
+Report real progress only.
+
+Summarize:
+- what has already been verified,
+- what is currently being checked,
+- what remains uncertain or unfinished.
+
+Rules:
+- use the user's language,
+- keep it short and natural,
+- do not expose hidden chain-of-thought,
+- do not mention internal event types, implementation details, or tool protocol syntax,
+- do not pretend the task is complete if it is not,
+- do not sound like a system log.
+
+A good progress update should help the user understand the current state of the task in one quick read. Limit the update to at most 3 short sentences.`
 
 	var userPrompt strings.Builder
 	userPrompt.WriteString("Original user request:\n")

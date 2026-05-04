@@ -25,14 +25,14 @@ func (s *SkillToolService) RegisterSkillTools(r *Registry) {
 	RegisterSkillTools(r, s.skills, nil)
 	r.Register(&Tool{
 		Name:        "skill_read",
-		Description: "读取指定 skill 的 SKILL.md 内容，了解该 skill 的完整使用方法和步骤。当用户请求涉及某个 skill 的能力时，先调用此工具读取 SKILL.md，再按指引操作。",
+		Description: "Read a skill's SKILL.md before using that workflow. Use this when a task clearly matches a named skill and you need its trigger rules, steps, or operating guidance.",
 		Category:    CatSkill,
 		Permission:  PermAuto,
 		Enabled:     true,
 		Parameters: map[string]Param{
 			"name": {
 				Type:        "string",
-				Description: "Skill 名称（如 web-search, summarize, rewrite 等）",
+				Description: "Skill name to inspect before execution. Leave empty to list currently available skills.",
 				Required:    false,
 			},
 		},

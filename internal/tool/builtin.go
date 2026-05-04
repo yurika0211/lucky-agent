@@ -40,7 +40,7 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig) {
 func ShellTool() *Tool {
 	return &Tool{
 		Name:         "shell",
-		Description:  "Execute a shell command and return its output. Use for system operations, file manipulation, and running scripts.",
+		Description:  "Run a shell command when you need to inspect runtime state, execute project commands, check the environment, or perform real system actions that cannot be answered from files alone.",
 		Category:     CatBuiltin,
 		Source:       "builtin",
 		Permission:   PermApprove, // shell 命令需要审批
@@ -49,7 +49,7 @@ func ShellTool() *Tool {
 		Parameters: map[string]Param{
 			"command": {
 				Type:        "string",
-				Description: "The shell command to execute",
+				Description: "Concrete shell command to run. Prefer precise inspection or execution commands over exploratory one-liners.",
 				Required:    true,
 			},
 			"timeout": {
@@ -60,7 +60,7 @@ func ShellTool() *Tool {
 			},
 			"workdir": {
 				Type:        "string",
-				Description: "Working directory for the command",
+				Description: "Optional working directory. Use when the command must run in a specific project or subdirectory.",
 				Required:    false,
 			},
 		},
@@ -165,14 +165,14 @@ func handleShell(args map[string]any) (string, error) {
 func FileReadTool() *Tool {
 	return &Tool{
 		Name:        "file_read",
-		Description: "Read the contents of a file. Returns the file content as text.",
+		Description: "Read a local file when repository or document contents are the source of truth. Prefer this before guessing about code, config, notes, or generated artifacts.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto, // 读文件自动批准
 		Parameters: map[string]Param{
 			"path": {
 				Type:        "string",
-				Description: "Path to the file to read",
+				Description: "Path to the local file that should be inspected.",
 				Required:    true,
 			},
 			"offset": {
@@ -257,19 +257,19 @@ func handleFileRead(args map[string]any) (string, error) {
 func FileWriteTool() *Tool {
 	return &Tool{
 		Name:        "file_write",
-		Description: "Write content to a file. Creates parent directories if needed.",
+		Description: "Write or overwrite a local file when the task requires creating, updating, or exporting a real artifact on disk.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove, // 写文件需要审批
 		Parameters: map[string]Param{
 			"path": {
 				Type:        "string",
-				Description: "Path to the file to write",
+				Description: "Target path of the file to create or overwrite.",
 				Required:    true,
 			},
 			"content": {
 				Type:        "string",
-				Description: "Content to write to the file",
+				Description: "Full file content to write. Use complete intended content, not a diff.",
 				Required:    true,
 			},
 		},
@@ -309,19 +309,19 @@ func handleFileWrite(args map[string]any) (string, error) {
 func FileListTool() *Tool {
 	return &Tool{
 		Name:        "file_list",
-		Description: "List the contents of a directory.",
+		Description: "List files or directories when you need repository structure, candidate files, or navigation context before reading or editing specific paths.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto, // 列目录自动批准
 		Parameters: map[string]Param{
 			"path": {
 				Type:        "string",
-				Description: "Path to the directory to list",
+				Description: "Directory path to inspect.",
 				Required:    true,
 			},
 			"recursive": {
 				Type:        "boolean",
-				Description: "Whether to list recursively",
+				Description: "Whether to include nested files and subdirectories.",
 				Required:    false,
 				Default:     false,
 			},
@@ -437,25 +437,25 @@ func WebSearchTool(cfg *WebSearchConfig) *Tool {
 	}
 	return &Tool{
 		Name:        "web_search",
-		Description: "Search the web for information. Returns search results with titles, URLs, and snippets. Supports multiple providers with automatic fallback (Brave → DDG → SearXNG). Use mode='deep' for multi-source cross-validation.",
+		Description: "Search the web when you need external or recent information, candidate sources, or multiple viewpoints before fetching a specific page. Use mode='deep' when cross-source validation matters.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
 			"query": {
 				Type:        "string",
-				Description: "Search query",
+				Description: "Search query phrased around the actual fact, identifier, or concept you need to verify.",
 				Required:    true,
 			},
 			"count": {
 				Type:        "number",
-				Description: "Number of results (1-10)",
+				Description: "Number of results to return (1-10). Use smaller values when you already know what you are looking for.",
 				Required:    false,
 				Default:     5,
 			},
 			"mode": {
 				Type:        "string",
-				Description: "Search mode: 'quick' (single source), 'deep' (multi-source cross-validation, merges results from multiple providers)",
+				Description: "Search mode: 'quick' for fast single-path lookup, 'deep' for multi-source cross-validation and merged evidence.",
 				Required:    false,
 				Default:     "quick",
 			},
@@ -891,19 +891,19 @@ func WebFetchTool(cfg *WebSearchConfig) *Tool {
 	}
 	return &Tool{
 		Name:        "web_fetch",
-		Description: "Fetch and extract readable content from a URL. Returns page title and text content. Automatically uses Defuddle (best quality) → Jina Reader → curl fallback.",
+		Description: "Fetch and extract the readable content of a specific URL when you already have a target page and need the actual text, not just search snippets.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
 			"url": {
 				Type:        "string",
-				Description: "URL to fetch",
+				Description: "Exact URL to fetch and convert into readable text.",
 				Required:    true,
 			},
 			"max_chars": {
 				Type:        "number",
-				Description: "Maximum characters to return (default 50000)",
+				Description: "Maximum readable text to return. Lower this when you only need a focused excerpt.",
 				Required:    false,
 				Default:     50000,
 			},
@@ -1126,25 +1126,25 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 	}
 	return &Tool{
 		Name:        "remember",
-		Description: "Save important information to long-term or medium-term memory. Use when the user shares preferences, personal info, project context, or anything worth remembering for future conversations.",
+		Description: "Persist stable user facts, preferences, recurring project context, or other reusable conclusions that should help future conversations.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto, // 记忆操作自动批准
 		Parameters: map[string]Param{
 			"content": {
 				Type:        "string",
-				Description: "The information to remember. Be concise and specific.",
+				Description: "Stable fact or reusable note to remember. Keep it concise, concrete, and worth recalling later.",
 				Required:    true,
 			},
 			"category": {
 				Type:        "string",
-				Description: "Category: identity, preference, project, knowledge, or conversation",
+				Description: "Optional category such as identity, preference, project, knowledge, or conversation.",
 				Required:    false,
 				Default:     "conversation",
 			},
 			"long_term": {
 				Type:        "boolean",
-				Description: "Save as long-term memory (core identity/preferences). Default: false (medium-term)",
+				Description: "Set true only for durable core facts like identity, strong preferences, or long-lived project constraints.",
 				Required:    false,
 				Default:     false,
 			},
@@ -1163,14 +1163,14 @@ func RecallTool(handler func(args map[string]any) (string, error)) *Tool {
 	}
 	return &Tool{
 		Name:        "recall",
-		Description: "Search your memory for previously saved information. Use when you need to recall user preferences, past conversations, or any stored knowledge.",
+		Description: "Search saved memory for durable user preferences, prior project facts, or previously stored conclusions before asking again or guessing.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto,
 		Parameters: map[string]Param{
 			"query": {
 				Type:        "string",
-				Description: "Search query to find relevant memories. Leave empty to see recent memories.",
+				Description: "Query for the fact or preference you want to recover. Leave empty to inspect recent memories.",
 				Required:    false,
 			},
 		},
@@ -1188,19 +1188,19 @@ func RAGSearchTool(handler func(args map[string]any) (string, error)) *Tool {
 	}
 	return &Tool{
 		Name:        "rag_search",
-		Description: "Search the local RAG knowledge base for indexed documents and return the most relevant passages.",
+		Description: "Search the local indexed knowledge base when the answer is likely in previously indexed documents, notes, or archived final answers.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto,
 		Parameters: map[string]Param{
 			"query": {
 				Type:        "string",
-				Description: "Search query for the local indexed knowledge base.",
+				Description: "Semantic query describing the fact, topic, identifier, or phrase you want to retrieve from indexed knowledge.",
 				Required:    true,
 			},
 			"top_k": {
 				Type:        "number",
-				Description: "Maximum number of matches to return (default 5).",
+				Description: "Maximum number of relevant passages to return.",
 				Required:    false,
 				Default:     5,
 			},
@@ -1219,14 +1219,14 @@ func RAGIndexTool(handler func(args map[string]any) (string, error)) *Tool {
 	}
 	return &Tool{
 		Name:        "rag_index",
-		Description: "Index a local file or directory into the RAG knowledge base so it can be retrieved later.",
+		Description: "Index a local file or directory into the knowledge base so its contents can be retrieved later through semantic search.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
 			"path": {
 				Type:        "string",
-				Description: "Local file or directory path to index into the knowledge base.",
+				Description: "Local file or directory to add to the indexed knowledge base.",
 				Required:    true,
 			},
 		},

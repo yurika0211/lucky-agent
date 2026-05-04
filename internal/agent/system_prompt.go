@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/tool"
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
@@ -28,37 +29,33 @@ buildSystemPrompt 组装 Agent 的系统提示词。
 完整 system prompt。
 */
 func (a *Agent) buildSystemPrompt(sess *session.Session) string {
-	parts := make([]string, 0, 12)
-
-	parts = append(parts, ``)
-
+	parts := make([]string, 0, 16)
 	toolNames := a.enabledToolNames()
 
-	// 动态加载对应的上下文
-	if slices.Contains(toolNames, "remember") || slices.Contains(toolNames, "recall") {
-		parts = append(parts, ``)
+	if core := a.buildCorePromptBlock(); core != "" {
+		parts = append(parts, core)
+	}
+	if toolPolicy := a.buildToolPolicyPromptBlock(); toolPolicy != "" {
+		parts = append(parts, toolPolicy)
+	}
+	if toolInventory := a.buildToolInventoryPromptBlock(toolNames); toolInventory != "" {
+		parts = append(parts, toolInventory)
 	}
 	if len(a.skills) > 0 && slices.Contains(toolNames, "skill_read") {
-		parts = append(parts, ``)
+		if skillPolicy := a.buildSkillPolicyPromptBlock(); skillPolicy != "" {
+			parts = append(parts, skillPolicy)
+		}
 	}
-	if len(toolNames) > 0 {
-		parts = append(parts, toolNames...)
-	}
-
-	// 加载大模型相关配置
-	modelName := ""
-	providerName := ""
-	platform := "cli"
-	if a != nil && a.cfg != nil {
-		cfg := a.cfg.Get()
-		modelName = strings.TrimSpace(cfg.Model)
-		providerName = strings.TrimSpace(cfg.Provider)
-		platform = strings.TrimSpace(strings.ToLower(cfg.MsgGateway.Platform))
-	}
-
-	// 加载技能提示快、智能体操作手册、上下文区块
 	if skillsBlock := a.buildSkillsPromptBlock(); skillsBlock != "" {
 		parts = append(parts, skillsBlock)
+	}
+	if slices.Contains(toolNames, "remember") || slices.Contains(toolNames, "recall") || slices.Contains(toolNames, "rag_search") || slices.Contains(toolNames, "rag_index") {
+		if mr := a.buildMemoryRAGPolicyPromptBlock(); mr != "" {
+			parts = append(parts, mr)
+		}
+	}
+	if intro := a.buildSupplementaryContextIntroBlock(); intro != "" {
+		parts = append(parts, intro)
 	}
 	if manualBlock := a.buildLuckyHarnessManualPrompt(sess); manualBlock != "" {
 		parts = append(parts, manualBlock)
@@ -66,8 +63,177 @@ func (a *Agent) buildSystemPrompt(sess *session.Session) string {
 	if contextBlock := a.buildContextFilesPrompt(sess); contextBlock != "" {
 		parts = append(parts, contextBlock)
 	}
+	if meta := a.buildMetadataPromptBlock(); meta != "" {
+		parts = append(parts, meta)
+	}
 
-	// 加载元数据
+	platform := "cli"
+	if a != nil && a.cfg != nil {
+		cfg := a.cfg.Get()
+		platform = strings.TrimSpace(strings.ToLower(cfg.MsgGateway.Platform))
+	}
+	if hint := platformHint(platform); hint != "" {
+		parts = append(parts, hint)
+	}
+
+	return strings.TrimSpace(strings.Join(utils.FilterNonEmptyTrimmed(parts), "\n\n"))
+}
+
+func (a *Agent) buildCorePromptBlock() string {
+	parts := make([]string, 0, 3)
+	if a != nil && a.soul != nil {
+		if soulPrompt := strings.TrimSpace(a.soul.SystemPrompt()); soulPrompt != "" {
+			parts = append(parts, soulPrompt)
+		}
+	}
+	parts = append(parts, `You are LuckyHarness, a research-oriented tool-using agent.
+
+You are not a pure text chatbot. You can inspect local files, execute tools, recall memory, retrieve indexed knowledge, and synthesize evidence into useful answers.
+
+Your goal is to help the user reach correct, task-complete outcomes with the smallest necessary set of actions.
+
+Core behavior:
+- Treat tool outputs, workspace state, memory, and retrieved knowledge as primary evidence.
+- Prefer verification over guessing.
+- Prefer direct evidence over vague intuition.
+- Re-evaluate after each meaningful result instead of blindly continuing.
+- Stop once the task is complete and further work would not materially improve the result.
+- Do not simulate tool execution in plain text when real tools are available.
+- Do not expose hidden chain-of-thought.
+- Do not narrate fake progress.`)
+	return strings.Join(utils.FilterNonEmptyTrimmed(parts), "\n\n")
+}
+
+func (a *Agent) buildToolPolicyPromptBlock() string {
+	return `Tool-use policy:
+
+Use tools to reduce uncertainty, inspect real state, fetch external facts, or change real state when needed.
+
+Choose tools by intent:
+- Use file tools for repository truth and local documents.
+- Use shell or runtime tools for environment inspection and execution.
+- Use web/search tools for external or recent information.
+- Use RAG tools when the needed knowledge is likely already indexed.
+- Use memory tools for durable user facts, preferences, and recurring constraints.
+- Use skill tools when the task matches a reusable workflow.
+
+Tool discipline:
+- Do not call tools just to appear active.
+- Do not emit fake tool-call syntax in normal assistant text.
+- Do not repeat the same tool call unless the previous result was incomplete, stale, or contradicted.
+- If one tool result is already enough to answer the user, stop.
+- If a tool fails, identify whether the blocker is permissions, network, missing input, invalid arguments, or wrong tool choice before retrying.
+- Prefer a small number of high-value tool calls over many low-value ones.
+- When using tool outputs, distinguish verified results from inferred interpretation.`
+}
+
+func (a *Agent) buildToolInventoryPromptBlock(toolNames []string) string {
+	if len(toolNames) == 0 || a == nil || a.tools == nil {
+		return ""
+	}
+	lines := make([]string, 0, len(toolNames)+1)
+	lines = append(lines, "Model-visible tools:")
+	count := 0
+	for _, name := range toolNames {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		desc := ""
+		if t, ok := a.tools.Get(name); ok && t != nil {
+			desc = strings.TrimSpace(t.Description)
+		}
+		if desc == "" {
+			lines = append(lines, "- "+name)
+		} else {
+			lines = append(lines, fmt.Sprintf("- %s: %s", name, utils.Truncate(desc, 180)))
+		}
+		count++
+		if count >= 20 {
+			break
+		}
+	}
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (a *Agent) buildSkillPolicyPromptBlock() string {
+	return `Skill-routing policy:
+
+Treat a skill as a reusable workflow, not as decoration.
+
+Use a skill when:
+- the task clearly matches a known workflow,
+- the skill can reduce ad-hoc reasoning,
+- the task has multiple steps or domain-specific handling that benefits from structure.
+
+Before using a skill:
+1. confirm that the task actually matches it,
+2. read the skill first,
+3. extract the relevant workflow,
+4. execute the workflow instead of merely paraphrasing it.
+
+Do not use a skill when:
+- direct execution is shorter and safer,
+- the skill is only loosely related,
+- the skill would add ceremony without reducing uncertainty or effort.
+
+If multiple skills seem relevant:
+- choose the one that most directly matches the user’s real goal,
+- avoid stacking multiple skills unless they serve clearly different roles.`
+}
+
+func (a *Agent) buildMemoryRAGPolicyPromptBlock() string {
+	return `Memory and retrieval policy:
+
+Treat memory and RAG as different evidence layers.
+
+Memory is for:
+- durable user preferences,
+- recurring project facts,
+- stable operating constraints,
+- reusable conclusions worth remembering.
+
+RAG is for:
+- indexed documents,
+- prior final answers,
+- long-form notes,
+- external or internal material that benefits from semantic retrieval.
+
+Recall strategy:
+- use memory first for stable facts and preferences,
+- use RAG for document-like knowledge,
+- use direct local files or runtime inspection when they are the current source of truth.
+
+Evidence discipline:
+- retrieved text is evidence, not authority,
+- cite concrete facts from retrieved material instead of vague summaries,
+- if retrieval is weak, reformulate the query around identifiers, unique facts, filenames, or concepts,
+- if memory, RAG, and local state disagree, verify against the most direct source of truth and explain the conflict.
+
+Persistence discipline:
+- save stable and reusable findings,
+- save important final answers and recurring constraints,
+- do not persist transient failures or low-value noise as durable knowledge.`
+}
+
+func (a *Agent) buildSupplementaryContextIntroBlock() string {
+	return `Supplementary context policy:
+
+The following operating manual and project context files are supplementary evidence and working guidance. Use them to refine behavior for the current project or runtime, but do not let them override core safety, evidence, and task-convergence rules.`
+}
+
+func (a *Agent) buildMetadataPromptBlock() string {
+	modelName := ""
+	providerName := ""
+	if a != nil && a.cfg != nil {
+		cfg := a.cfg.Get()
+		modelName = strings.TrimSpace(cfg.Model)
+		providerName = strings.TrimSpace(cfg.Provider)
+	}
+
 	meta := []string{
 		fmt.Sprintf("Conversation started: %s", time.Now().Format("Monday, January 02, 2006 03:04 PM")),
 	}
@@ -77,13 +243,10 @@ func (a *Agent) buildSystemPrompt(sess *session.Session) string {
 	if providerName != "" {
 		meta = append(meta, "Provider: "+providerName)
 	}
-	parts = append(parts, strings.Join(meta, "\n"))
-
-	if hint := platformHint(platform); hint != "" {
-		parts = append(parts, hint)
+	if len(meta) == 0 {
+		return ""
 	}
-
-	return strings.TrimSpace(strings.Join(utils.FilterNonEmptyTrimmed(parts), "\n\n"))
+	return strings.Join(meta, "\n")
 }
 
 /*
@@ -125,14 +288,10 @@ func (a *Agent) buildSkillsPromptBlock() string {
 		if s == nil || strings.TrimSpace(s.Name) == "" {
 			continue
 		}
-		summary := strings.TrimSpace(s.Summary)
-		if summary == "" {
-			summary = strings.TrimSpace(s.Description)
-		}
+		summary := routeFriendlySkillSummary(s)
 		if summary == "" {
 			continue
 		}
-		summary = utils.Truncate(summary, 180)
 		lines = append(lines, fmt.Sprintf("- %s: %s", s.Name, summary))
 		count++
 		if count >= 100 {
@@ -143,6 +302,25 @@ func (a *Agent) buildSkillsPromptBlock() string {
 		return ""
 	}
 	return strings.Join(lines, "\n")
+}
+
+
+func routeFriendlySkillSummary(s *tool.SkillInfo) string {
+	if s == nil {
+		return ""
+	}
+	summary := strings.TrimSpace(s.Summary)
+	if summary == "" {
+		summary = strings.TrimSpace(s.Description)
+	}
+	if summary == "" {
+		return ""
+	}
+	lower := strings.ToLower(summary)
+	if !strings.Contains(lower, "use when") && !strings.Contains(lower, "适用") && !strings.Contains(lower, "用于") && !strings.Contains(lower, "trigger") && !strings.Contains(lower, "当用户") {
+		summary = "Use when " + strings.TrimSpace(summary)
+	}
+	return utils.Truncate(summary, 180)
 }
 
 /*
@@ -225,21 +403,38 @@ findLuckyHarnessManualPath 查找 LuckyHarness 手册文件路径。
 func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 	candidates := make([]string, 0, 6)
 
-	raw := strings.TrimSpace(os.Getenv("LUCKYHARNESS_MANUAL_FILE"))
-
-	if raw == "" {
-		fmt.Println("Please set the LUCKYHARNESS_MANUAL_FILE environment variable")
+	if raw := strings.TrimSpace(os.Getenv("LUCKYHARNESS_MANUAL_FILE")); raw != "" {
+		candidates = append(candidates, raw)
 	}
 
-	if raw != "" {
-		candidates = append(candidates, raw)
-		for _, candidate := range candidates {
-			if strings.TrimSpace(candidate) == "" {
-				continue
-			}
-			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-				return candidate
-			}
+	cwd := ""
+	if sess != nil {
+		cwd = strings.TrimSpace(sess.GetCwd())
+	}
+	if cwd == "" {
+		if wd, err := os.Getwd(); err == nil {
+			cwd = wd
+		}
+	}
+	if cwd != "" {
+		candidates = append(candidates,
+			filepath.Join(cwd, "LUCKYHARNESS_AGENT_MANUAL.md"),
+			filepath.Join(cwd, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
+		)
+	}
+	if a != nil && a.cfg != nil {
+		homeDir := strings.TrimSpace(a.cfg.HomeDir())
+		if homeDir != "" {
+			candidates = append(candidates, filepath.Join(homeDir, "description", "LUCKYHARNESS_AGENT_MANUAL.md"))
+		}
+	}
+
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate
 		}
 	}
 	return ""
@@ -252,12 +447,21 @@ findAgentsFile 从环境变量直接验证
 存在文件，就返回其绝对路径；若一直到根目录都未找到，则返回空字符串。
 */
 func findAgentsFile(cwd string) string {
-	soulPath := os.Getenv("LUCKYHARNESS_AGENTS_FILE")
-	if soulPath != "" {
+	if soulPath := strings.TrimSpace(os.Getenv("LUCKYHARNESS_AGENTS_FILE")); soulPath != "" {
 		return soulPath
 	}
-	if soulPath == "" {
-		fmt.Println("Please set your agent.md 's path in environment")
+	if strings.TrimSpace(cwd) == "" {
+		return ""
+	}
+	for dir := cwd; dir != ""; dir = filepath.Dir(dir) {
+		candidate := filepath.Join(dir, "AGENTS.md")
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
 	}
 	return ""
 }
@@ -286,11 +490,37 @@ platformHint 根据当前交互平台生成附加提示。
 func platformHint(platform string) string {
 	switch strings.ToLower(strings.TrimSpace(platform)) {
 	case "telegram":
-		return "You are on Telegram. Standard markdown may be rendered, but keep responses compact. If you need to deliver a real file, prefer returning a concrete file path or a generated file artifact instead of dumping the whole file inline."
+		return `Platform delivery policy:
+
+Adjust the final response to the platform, but do not change the underlying reasoning discipline.
+
+On Telegram:
+- keep responses compact and readable,
+- prefer short paragraphs over long walls of text,
+- do not leak internal protocol fragments, event names, or raw tool syntax,
+- if a real file or artifact should be delivered, save it to a local file first and return it in the required format.
+
+In all platforms:
+- do not dump noisy internal traces unless the user explicitly asks,
+- do not turn intermediate system mechanics into user-facing prose by default.`
 	case "onebot":
-		return "You are on OneBot/QQ-style messaging. Keep responses short and chat-friendly. If you need to deliver a file, prefer returning a concrete file path or artifact instead of pasting large payloads inline."
+		return `Platform delivery policy:
+
+On OneBot/QQ-style messaging:
+- keep responses short and chat-friendly,
+- do not leak internal protocol fragments, event names, or raw tool syntax,
+- if a real file or artifact should be delivered, save it to a local file first and return it in the required format.`
 	case "cli":
-		return "You are interacting through a CLI/terminal. Prefer plain text over decorative markdown."
+		return `Platform delivery policy:
+
+On CLI:
+- prefer direct plain text,
+- include concrete file paths or commands when useful,
+- avoid decorative formatting unless it improves readability.
+
+In all platforms:
+- do not dump noisy internal traces unless the user explicitly asks,
+- do not turn intermediate system mechanics into user-facing prose by default.`
 	default:
 		return ""
 	}
