@@ -175,7 +175,7 @@ type openAIBaseProvider struct {
 }
 
 func newOpenAIBaseProvider(cfg Config) openAIBaseProvider {
-	if cfg.LlmProvider.APIKey == "" {
+	if cfg.LlmProvider.BaseURL == "" {
 		cfg.LlmProvider.BaseURL = "https://api.openai.com/v1"
 	}
 	if cfg.LlmProvider.Model == "" {

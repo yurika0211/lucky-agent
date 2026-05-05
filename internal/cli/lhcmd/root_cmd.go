@@ -144,6 +144,13 @@ func newRootCmd() *cobra.Command {
 		},
 	}
 
+	serveCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "启动 HTTP API Server",
+		RunE:  runServe,
+	}
+	serveCmd.Flags().String("addr", "", "监听地址，默认使用 config.json 中的 server.addr")
+
 	msgGatewayCmd := &cobra.Command{
 		Use:   "msg-gateway",
 		Short: "消息平台网关管理",
@@ -198,7 +205,7 @@ func newRootCmd() *cobra.Command {
 		RunE:  runRAGStats,
 	}
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
-	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, msgGatewayCmd, ragCmd)
+	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd)
 
 	return rootCmd
 }

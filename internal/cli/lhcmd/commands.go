@@ -16,6 +16,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/gateway/onebot"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
+	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 )
 
@@ -298,6 +299,55 @@ func getAgent() (*agent.Agent, error) {
 		return nil, err
 	}
 	return agent.New(mgr)
+}
+
+func runServe(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	cfg := server.DefaultServerConfig()
+	runtimeCfg := a.Config().Get().Server
+	if runtimeCfg.Addr != "" {
+		cfg.Addr = runtimeCfg.Addr
+	}
+	if len(runtimeCfg.APIKeys) > 0 {
+		cfg.APIKeys = append([]string(nil), runtimeCfg.APIKeys...)
+	}
+	cfg.EnableCORS = runtimeCfg.EnableCORS
+	if len(runtimeCfg.CORSOrigins) > 0 {
+		cfg.CORSOrigins = append([]string(nil), runtimeCfg.CORSOrigins...)
+	}
+	if runtimeCfg.RateLimit > 0 {
+		cfg.RateLimit = runtimeCfg.RateLimit
+	}
+	if runtimeCfg.MetricsAddr != "" {
+		cfg.MetricsAddr = runtimeCfg.MetricsAddr
+	}
+	if runtimeCfg.LogLevel != "" {
+		cfg.LogLevel = runtimeCfg.LogLevel
+	}
+	if runtimeCfg.LogFormat != "" {
+		cfg.LogFormat = runtimeCfg.LogFormat
+	}
+
+	if cmd.Flags().Changed("addr") {
+		addr, _ := cmd.Flags().GetString("addr")
+		if addr != "" {
+			cfg.Addr = addr
+		}
+	}
+
+	s := server.New(a, cfg)
+	if err := s.Start(); err != nil {
+		return err
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	return s.Stop()
 }
 
 func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
