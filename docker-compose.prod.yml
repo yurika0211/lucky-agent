@@ -1,21 +1,20 @@
+x-luckyharness-env: &luckyharness-env
+  HOME: /var/lib/luckyharness
+  TZ: ${TZ:-Asia/Shanghai}
+
 services:
   luckyharness:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: luckyharness:dev
+    image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyharness:latest}
     container_name: luckyharness
     entrypoint: ["luckyharness"]
     restart: unless-stopped
-    environment:
-      HOME: /var/lib/luckyharness
-      TZ: ${TZ:-Asia/Shanghai}
+    environment: *luckyharness-env
     command: ["serve"]
     ports:
       - "${LH_PORT:-9090}:9090"
     volumes:
       - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/config.json
+      - ./config.json:/var/lib/luckyharness/config.json:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/api/v1/health >/dev/null 2>&1 || exit 1"]
       interval: 30s
@@ -24,17 +23,16 @@ services:
       start_period: 15s
 
   luckyharness-telegram:
-    image: luckyharness:dev
+    image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyharness:latest}
     container_name: luckyharness-telegram
     entrypoint: ["luckyharness"]
     restart: unless-stopped
-    environment:
-      HOME: /var/lib/luckyharness
-      TZ: ${TZ:-Asia/Shanghai}
+    profiles: ["telegram"]
+    environment: *luckyharness-env
     command: ["msg-gateway", "start", "--platform", "telegram"]
     volumes:
       - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/config.json
+      - ./config.json:/var/lib/luckyharness/config.json:ro
     depends_on:
       luckyharness:
         condition: service_healthy

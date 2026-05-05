@@ -48,34 +48,6 @@ go run ./cmd/lh serve --addr 127.0.0.1:9090
 
 - 当前版本未声明已完成 `zap` 全量替换，请继续按现有日志路径使用。
 
-## 版本路线
-
-| 版本 | 主题 | 核心特性 |
-|------|------|----------|
-| v0.1.0 | 基础骨架 | CLI 入口 + 配置系统 + SOUL + 单轮对话 |
-| v0.2.0 | Agent Loop | 多轮推理-行动循环 + 工具调用 |
-| v0.3.0 | Provider 路由 | 多提供商解析 + 自动降级 + OAuth |
-| v0.4.0 | 持久记忆 | 跨会话记忆 + 自动摘要 + 上下文压缩 |
-| v0.5.0 | 工具系统 | Skill 插件 + MCP 集成 + 子代理委派 |
-| v0.6.0 | 消息网关 | Telegram/Discord/Slack 适配器 |
-| v0.7.0 | 定时与自动化 | Cron 调度 + 后台任务监控 |
-| v0.8.0 | 沙箱与安全 | Docker/SSH 沙箱 + 权限控制 |
-| v0.9.0 | 多实例 Profile | 隔离配置 + Web Dashboard |
-| v0.10.0 | Tool Gateway | 统一工具网关 + 订阅制集成 |
-| v0.11.0 | Session & Stream | 会话持久化 + 流式工具调用 + 配置热重载 |
-| v0.12.0 | API Server | HTTP RESTful API + SSE 流式 + 认证限流 |
-| v0.13.0 | Context Window | Token 估算 + 4 种裁剪策略 + 优先级管理 |
-| v0.14.0 | RAG 知识库 | 向量索引 + 语义检索 + 持久化 + API 端点 |
-| v0.15.0 | Plugin Marketplace | 插件清单 + 注册中心 + 安装器 + 沙箱 + CLI/API |
-| v0.16.0 | Function Calling | OpenAI 原生 FC + 多轮调用 + 流式 + API 端点 |
-| v0.17.0 | Observability & Metrics | 结构化日志 + Prometheus 指标 + 三级健康检查 + CLI metrics 命令 |
-| v0.18.0 | WebSocket 实时通信 | 双向实时通信 + 会话绑定 + 心跳保活 + 断线重连 + 流式推送 |
-| v0.19.0 | 多语言 SOUL 模板 | TemplateManager + 6 内置模板 + 变量插值 + 语言检测 + API + CLI |
-| v0.20.0 | RAG SQLite 持久化 | SQLite 向量存储 + WAL 模式 + 增量索引 + 持久化 API + REPL 命令 |
-| v0.21.0 | 嵌入模型管理 | Embedder 接口 + Registry + LRU 缓存 + OpenAI/Ollama Provider + API + REPL |
-| v0.22.0 | 多 Agent 协作 | Agent Registry + 任务委派 + 结果聚合 + Pipeline/Parallel/Debate 模式 + API + CLI |
-| v0.23.0 | 流式 RAG | StreamIndexer + ChangeDetector + IndexQueue + 文件监控 + 增量索引 + API + CLI |
-| v0.24.0 | 工作流引擎 | DAG 任务编排 + 拓扑排序 + 并行执行 + 重试/超时 + API 端点 |
 
 ## v0.24.0 新特性
 
@@ -743,67 +715,78 @@ docker pull ghcr.io/yurika0211/luckyharness:latest
 docker pull ghcr.io/yurika0211/luckyharness:v0.36.0
 ```
 
-### 2. 配置环境变量
+### 2. 准备配置文件
 
 ```bash
-# 克隆仓库获取模板（或直接下载 .env.example）
 git clone https://github.com/yurika0211/luckyharness.git
 cd luckyharness
 
-# 复制并编辑
-cp .env.example .env
+# 容器会直接读取仓库根目录下的 config.json
+# 按你的 provider / telegram / web_search 等实际参数编辑它
 ```
 
-最小配置示例（`.env`）：
+开发/生产共用的关键点：
+
+- LuckyHarness 主配置来自 `./config.json`
+- Docker 只负责挂载 `config.json` 到 `/var/lib/luckyharness/config.json`
+- `HOME` 固定为 `/var/lib/luckyharness`，其他运行数据仍然走持久化 volume
+
+容器级环境变量示例（`.env.prod`，只放镜像/端口/时区）：
 
 ```bash
-# LLM — 使用 OpenAI 兼容的第三方服务
-LH_PROVIDER=openai
-LH_API_KEY=sk-your-key
-LH_API_BASE=https://api.openai.com/v1
-LH_MODEL=gpt-4o
-LH_MAX_TOKENS=131072
-LH_TEMPERATURE=0.7
-
-# Telegram Bot（可选）
-LH_TELEGRAM_TOKEN=123456:ABC-DEF
-
-# HTTP API
-LH_API_ADDR=:9090
-LH_LOG_LEVEL=info
-LH_LOG_FORMAT=json
+LH_IMAGE=ghcr.io/yurika0211/luckyharness:latest
+LH_PORT=9090
+TZ=Asia/Shanghai
 ```
 
 ### 3. 启动
 
-**Docker Compose（推荐）：**
+**开发环境：本地构建镜像**
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
+
+开发环境使用仓库根目录的 [docker-compose.yml](docker-compose.yml)，会：
+
+- 本地构建 `luckyharness:dev`
+- 直接挂载 `./config.json`
+- 将容器 `HOME` 固定到 `/var/lib/luckyharness`
+- 把 LuckyHarness 的运行目录持久化到 Docker volume
+- 默认同时启动 API 服务和 Telegram 网关
+
+**生产环境：使用预构建镜像**
+
+```bash
+cp .env.prod.example .env.prod
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
+```
+
+如果还要一起启动 Telegram 网关：
+
+```bash
+docker compose -f docker-compose.prod.yml --env-file .env.prod --profile telegram up -d
+```
+
+生产环境使用 [docker-compose.prod.yml](docker-compose.prod.yml)，会：
+
+- 使用 `ghcr.io/yurika0211/luckyharness:latest`（可通过 `LH_IMAGE` 覆盖）
+- 直接只读挂载 `./config.json`
+- 复用同一个持久化 volume 给 API 服务和 Telegram 网关
 
 **纯 Docker：**
 
 ```bash
-# 仅 API Server
 docker run -d \
   --name luckyharness \
-  --env-file .env \
+  --entrypoint luckyharness \
+  -e HOME=/var/lib/luckyharness \
+  -e TZ=Asia/Shanghai \
   -p 9090:9090 \
-  -v lh-config:/etc/luckyharness \
-  -v lh-data:/var/lib/luckyharness \
+  -v lh-home:/var/lib/luckyharness \
+  -v "$(pwd)/config.json:/var/lib/luckyharness/config.json:ro" \
   ghcr.io/yurika0211/luckyharness:latest \
   serve
-
-# Telegram Bot + API Server
-docker run -d \
-  --name luckyharness \
-  --env-file .env \
-  -p 9090:9090 \
-  -v lh-config:/etc/luckyharness \
-  -v lh-data:/var/lib/luckyharness \
-  ghcr.io/yurika0211/luckyharness:latest \
-  msg-gateway start --platform telegram --token "$LH_TELEGRAM_TOKEN"
 ```
 
 ### 4. 验证
@@ -836,24 +819,25 @@ You are a helpful coding assistant.
 Answer concisely in the user's language.
 EOF
 
-# docker-compose.yml 添加挂载
-# volumes 下增加:
-#   - ./SOUL.md:/etc/luckyharness/SOUL.md:ro
-# .env 中设置:
-#   LH_SOUL_PATH=/etc/luckyharness/SOUL.md
+# 若 config.json 中的 soul_path 指向 /var/lib/luckyharness/SOUL.md
+# 则在 compose 的 volumes 下增加:
+#   - ./SOUL.md:/var/lib/luckyharness/SOUL.md:ro
 ```
 
 ### 6. 持久化目录结构
 
 ```
 /var/lib/luckyharness/
-├── config.yaml      # 运行时配置（自动生成）
+├── config.json      # 运行时配置（自动生成）
 ├── SOUL.md          # 人格定义
 ├── sessions/        # 会话持久化
 ├── memory/          # 记忆存储
 ├── skills/          # Skill 插件
 ├── rag/             # RAG 知识库
-└── logs/            # 日志
+├── logs/            # 日志
+├── tokens/          # provider token 缓存
+├── mission.md       # cron / mission 存储
+└── knowledge/       # 最终答案归档
 ```
 
 ### 7. 常用运维
@@ -865,8 +849,12 @@ docker compose logs -f luckyharness
 # 重启
 docker compose restart
 
-# 更新镜像
-docker compose pull && docker compose up -d
+# 开发环境重建
+docker compose up -d --build
+
+# 生产环境更新镜像
+docker compose -f docker-compose.prod.yml --env-file .env.prod pull
+docker compose -f docker-compose.prod.yml --env-file .env.prod up -d
 
 # 进入容器调试
 docker compose exec luckyharness sh
@@ -875,25 +863,21 @@ docker compose exec luckyharness sh
 docker compose down -v  # ⚠️ 删除数据卷
 ```
 
-### 环境变量参考
+### 容器环境变量参考
 
 | 变量 | 必填 | 默认值 | 说明 |
 |------|------|--------|------|
-| `LH_PROVIDER` | ✅ | `openai` | LLM 提供商 |
-| `LH_API_KEY` | ✅ | — | API Key |
-| `LH_API_BASE` | ❌ | — | 自定义 API 地址 |
-| `LH_MODEL` | ✅ | `gpt-4o` | 模型名称 |
-| `LH_MAX_TOKENS` | ❌ | `4096` | 上下文窗口大小 |
-| `LH_TEMPERATURE` | ❌ | `0.7` | 生成温度 |
-| `LH_TELEGRAM_TOKEN` | ❌ | — | Telegram Bot Token |
-| `LH_API_ADDR` | ❌ | `:9090` | HTTP API 监听地址 |
-| `LH_API_KEYS` | ❌ | — | API 鉴权白名单 |
-| `LH_RATE_LIMIT` | ❌ | `60` | 每分钟请求限制 |
-| `LH_SOUL_PATH` | ❌ | 自动 | SOUL.md 路径 |
-| `LH_HOME` | ❌ | `~/.luckyharness` | 数据目录 |
-| `LH_LOG_LEVEL` | ❌ | `info` | 日志级别 |
-| `LH_LOG_FORMAT` | ❌ | `text` | 日志格式 (json/text) |
-| `LH_FALLBACKS` | ❌ | — | 降级链 JSON |
+| `LH_IMAGE` | 生产可选 | `ghcr.io/yurika0211/luckyharness:latest` | 生产镜像 |
+| `LH_PORT` | ❌ | `9090` | 宿主机映射端口 |
+| `TZ` | ❌ | `Asia/Shanghai` | 容器时区 |
+
+### config.json 负责的业务配置
+
+- provider / api_key / api_base / model
+- server.addr / server.api_keys / server.log_level
+- msg_gateway.telegram.token / proxy / timeout
+- web_search 相关配置
+- soul_path / rag / memory / agent loop 等其余 LuckyHarness 运行时参数
 
 ## 快速开始
 

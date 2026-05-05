@@ -26,15 +26,14 @@ RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 
 COPY --from=builder /app/luckyharness /usr/local/bin/luckyharness
+COPY docker/prod-entrypoint.sh /usr/local/bin/prod-entrypoint.sh
+RUN chmod +x /usr/local/bin/prod-entrypoint.sh
 
-# 数据目录
-RUN mkdir -p /etc/luckyharness /var/lib/luckyharness/sessions \
-    /var/lib/luckyharness/memory /var/lib/luckyharness/skills \
-    /var/lib/luckyharness/rag /var/lib/luckyharness/logs
+RUN mkdir -p /etc/luckyharness /var/lib/luckyharness
 
 VOLUME ["/etc/luckyharness", "/var/lib/luckyharness"]
 
 EXPOSE 9090
 
-ENTRYPOINT ["luckyharness"]
+ENTRYPOINT ["prod-entrypoint.sh"]
 CMD ["serve"]

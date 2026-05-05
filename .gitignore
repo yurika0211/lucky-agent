@@ -8,6 +8,8 @@ coverage.out
 cover.out
 tmp
 .env
+.env.prod
+config.json
 .codex
 .lh-home*
 docs
