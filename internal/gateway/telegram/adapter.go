@@ -282,7 +282,8 @@ func (a *Adapter) SendPhoto(_ context.Context, chatID string, replyToMsgID strin
 	}
 
 	msg := tgbotapi.NewPhoto(chatIDInt, fileData)
-	msg.Caption = truncateTelegramCaption(caption)
+	msg.Caption = truncateTelegramCaption(formatTelegramRichText(caption))
+	msg.ParseMode = tgbotapi.ModeHTML
 	if replyToID > 0 {
 		msg.ReplyToMessageID = replyToID
 	}
@@ -315,7 +316,8 @@ func (a *Adapter) SendDocument(_ context.Context, chatID string, replyToMsgID st
 	}
 
 	msg := tgbotapi.NewDocument(chatIDInt, fileData)
-	msg.Caption = truncateTelegramCaption(caption)
+	msg.Caption = truncateTelegramCaption(formatTelegramRichText(caption))
+	msg.ParseMode = tgbotapi.ModeHTML
 	if replyToID > 0 {
 		msg.ReplyToMessageID = replyToID
 	}
@@ -554,7 +556,7 @@ func (s *telegramStreamSender) Finish() error {
 
 	// 最终编辑：显示完整内容
 	display := s.renderContent()
-	return s.editMessage(display)
+	return s.editMessageHTML(display)
 }
 
 func (s *telegramStreamSender) MessageID() string {
@@ -611,13 +613,21 @@ func (s *telegramStreamSender) renderContent() string {
 
 // editMessage 调用 Telegram API 编辑消息
 func (s *telegramStreamSender) editMessage(text string) error {
+	return s.editMessageWithMode(text, "")
+}
+
+func (s *telegramStreamSender) editMessageHTML(text string) error {
+	return s.editMessageWithMode(formatTelegramRichText(text), tgbotapi.ModeHTML)
+}
+
+func (s *telegramStreamSender) editMessageWithMode(text string, parseMode string) error {
 	if s.adapter.bot == nil {
 		return fmt.Errorf("bot not available")
 	}
 
 	edit := tgbotapi.NewEditMessageText(s.chatID, s.messageID, text)
-	// 不使用 MarkdownV2，避免转义地狱——流式内容格式不可控
-	edit.ParseMode = ""
+	// 中间流式编辑默认保持纯文本；最终落版可切到 HTML。
+	edit.ParseMode = parseMode
 
 	_, err := s.adapter.bot.Send(edit)
 	if err != nil {
@@ -944,32 +954,20 @@ func (a *Adapter) isReplyToBot(tgMsg *tgbotapi.Message) bool {
 	return tgMsg.ReplyToMessage.From != nil && tgMsg.ReplyToMessage.From.IsBot
 }
 
-// escapeMarkdownV2 转义 Telegram MarkdownV2 特殊字符
-func escapeMarkdownV2(text string) string {
-	const spoilerToken = "__TG_SPOILER__"
-	text = strings.ReplaceAll(text, "||", spoilerToken)
-	special := []string{"_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"}
-	for _, ch := range special {
-		text = strings.ReplaceAll(text, ch, "\\"+ch)
-	}
-	text = strings.ReplaceAll(text, spoilerToken, "||")
-	return text
-}
-
 // sendChunk sends a single message chunk to Telegram.
 func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text string) error {
-	msg := tgbotapi.NewMessage(chatID, text)
+	plainText := text
+	msg := tgbotapi.NewMessage(chatID, formatTelegramRichText(text))
 	if replyTo > 0 {
 		msg.ReplyToMessageID = replyTo
 	}
-	msg.ParseMode = tgbotapi.ModeMarkdownV2
-	msg.Text = escapeMarkdownV2(text)
+	msg.ParseMode = tgbotapi.ModeHTML
 
 	_, err := a.bot.Send(msg)
 	if err != nil {
-		// If MarkdownV2 fails, try plain text
+		// If rich text rendering fails, fall back to plain text.
 		msg.ParseMode = ""
-		msg.Text = text
+		msg.Text = plainText
 		_, err = a.bot.Send(msg)
 		if err != nil {
 			return fmt.Errorf("telegram: send message: %w", err)

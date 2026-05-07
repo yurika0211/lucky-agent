@@ -8,14 +8,15 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/gateway"
-	"github.com/yurika0211/luckyharness/internal/gateway/onebot"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
+	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 )
 
@@ -300,6 +301,55 @@ func getAgent() (*agent.Agent, error) {
 	return agent.New(mgr)
 }
 
+func runServe(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	cfg := server.DefaultServerConfig()
+	runtimeCfg := a.Config().Get().Server
+	if runtimeCfg.Addr != "" {
+		cfg.Addr = runtimeCfg.Addr
+	}
+	if len(runtimeCfg.APIKeys) > 0 {
+		cfg.APIKeys = append([]string(nil), runtimeCfg.APIKeys...)
+	}
+	cfg.EnableCORS = runtimeCfg.EnableCORS
+	if len(runtimeCfg.CORSOrigins) > 0 {
+		cfg.CORSOrigins = append([]string(nil), runtimeCfg.CORSOrigins...)
+	}
+	if runtimeCfg.RateLimit > 0 {
+		cfg.RateLimit = runtimeCfg.RateLimit
+	}
+	if runtimeCfg.MetricsAddr != "" {
+		cfg.MetricsAddr = runtimeCfg.MetricsAddr
+	}
+	if runtimeCfg.LogLevel != "" {
+		cfg.LogLevel = runtimeCfg.LogLevel
+	}
+	if runtimeCfg.LogFormat != "" {
+		cfg.LogFormat = runtimeCfg.LogFormat
+	}
+
+	if cmd.Flags().Changed("addr") {
+		addr, _ := cmd.Flags().GetString("addr")
+		if addr != "" {
+			cfg.Addr = addr
+		}
+	}
+
+	s := server.New(a, cfg)
+	if err := s.Start(); err != nil {
+		return err
+	}
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	return s.Stop()
+}
+
 func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	a, err := getAgent()
 	if err != nil {
@@ -310,6 +360,18 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	gm := a.MsgGateway()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	homeDir := a.Config().HomeDir()
+	syncTelegramState := func(registered, connected bool) {
+		stats, _ := gm.Stats("telegram")
+		_ = gateway.WriteSharedTelegramState(homeDir, gateway.SharedTelegramState{
+			PID:              os.Getpid(),
+			Registered:       registered,
+			Connected:        connected,
+			MessagesSent:     stats.MessagesSent,
+			MessagesReceived: stats.MessagesReceived,
+			Errors:           stats.Errors,
+		})
+	}
 
 	startAll, _ := cmd.Flags().GetBool("all")
 	if !cmd.Flags().Changed("all") {
@@ -357,75 +419,41 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		if err := gm.Register(tgAdapter); err != nil {
 			return err
 		}
+		syncTelegramState(true, false)
 		if err := gm.Start(ctx, "telegram"); err != nil {
+			syncTelegramState(false, false)
 			return err
 		}
+		syncTelegramState(true, true)
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if gw, ok := gm.Get("telegram"); ok {
+						syncTelegramState(true, gw.IsRunning())
+					} else {
+						syncTelegramState(false, false)
+					}
+				}
+			}
+		}()
 		fmt.Println("Telegram 网关已启动")
-	case "onebot":
-		apiBase, _ := cmd.Flags().GetString("onebot-api")
-		if !cmd.Flags().Changed("onebot-api") && cfg.MsgGateway.OneBot.APIBase != "" {
-			apiBase = cfg.MsgGateway.OneBot.APIBase
-		}
-		wsURL, _ := cmd.Flags().GetString("onebot-ws")
-		if !cmd.Flags().Changed("onebot-ws") && cfg.MsgGateway.OneBot.WSURL != "" {
-			wsURL = cfg.MsgGateway.OneBot.WSURL
-		}
-		obToken, _ := cmd.Flags().GetString("onebot-token")
-		if !cmd.Flags().Changed("onebot-token") && cfg.MsgGateway.OneBot.AccessToken != "" {
-			obToken = cfg.MsgGateway.OneBot.AccessToken
-		}
-		botID, _ := cmd.Flags().GetString("onebot-bot-id")
-		if !cmd.Flags().Changed("onebot-bot-id") && cfg.MsgGateway.OneBot.BotID != "" {
-			botID = cfg.MsgGateway.OneBot.BotID
-		}
-		showTyping, _ := cmd.Flags().GetBool("onebot-typing")
-		if !cmd.Flags().Changed("onebot-typing") {
-			showTyping = cfg.MsgGateway.OneBot.ShowTyping
-		}
-		autoLike, _ := cmd.Flags().GetBool("onebot-like")
-		if !cmd.Flags().Changed("onebot-like") {
-			autoLike = cfg.MsgGateway.OneBot.AutoLike
-		}
-		likeTimes, _ := cmd.Flags().GetInt("onebot-like-times")
-		if !cmd.Flags().Changed("onebot-like-times") && cfg.MsgGateway.OneBot.LikeTimes > 0 {
-			likeTimes = cfg.MsgGateway.OneBot.LikeTimes
-		}
-		if apiBase == "" {
-			return fmt.Errorf("onebot 需要 --onebot-api 参数（或在 config.json 里设置 msg_gateway.onebot.api_base）")
-		}
-
-		obAdapter := onebot.NewAdapter(onebot.Config{
-			APIBase:       apiBase,
-			WSURL:         wsURL,
-			AccessToken:   obToken,
-			BotQQID:       botID,
-			ShowTyping:    showTyping,
-			AutoLike:      autoLike,
-			LikeTimes:     likeTimes,
-			MaxMessageLen: 4000,
-		})
-		obHandler := onebot.NewHandler(obAdapter, a)
-		obAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
-			return obHandler.HandleMessage(ctx, msg)
-		})
-		if err := gm.Register(obAdapter); err != nil {
-			return err
-		}
-		if err := gm.Start(ctx, "onebot"); err != nil {
-			return err
-		}
-		fmt.Println("OneBot 网关已启动")
 	default:
 		if platform == "" {
 			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
 		}
-		return fmt.Errorf("不支持的平台: %s (支持: telegram, onebot)", platform)
+		return fmt.Errorf("不支持的平台: %s (支持: telegram)", platform)
 	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	_ = gm.StopAll()
+	syncTelegramState(false, false)
 	return nil
 }
 

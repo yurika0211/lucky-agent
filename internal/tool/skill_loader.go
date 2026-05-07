@@ -190,7 +190,7 @@ func (sl *SkillLoader) autoGenerateTools(info *SkillInfo, content string) []Skil
 		}
 		tools = append(tools, SkillToolDef{
 			Name:        toolName,
-			Description: fmt.Sprintf("执行 %s skill 的 %s 脚本", info.Name, toolName),
+			Description: fmt.Sprintf("Use the %s workflow through its %s script when this skill clearly matches the task and direct execution would be less reliable.", info.Name, toolName),
 			Parameters:  map[string]Param{},
 		})
 	}
@@ -199,11 +199,11 @@ func (sl *SkillLoader) autoGenerateTools(info *SkillInfo, content string) []Skil
 	// 即使有脚本工具，也保留一个入口
 	mainTool := SkillToolDef{
 		Name:        "run",
-		Description: info.Description,
+		Description: fmt.Sprintf("Primary entry for the %s skill. Use when the task matches this workflow and you want the skill to guide the execution path.", info.Name),
 		Parameters: map[string]Param{
 			"query": {
 				Type:        "string",
-				Description: "用户请求内容",
+				Description: "Concrete user task or goal that should be handled through this skill workflow.",
 				Required:    false,
 			},
 		},

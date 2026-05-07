@@ -101,3 +101,11 @@ func TestProviderDefaults(t *testing.T) {
 		t.Errorf("expected default model gpt-4o, got %s", cfg.LlmProvider.Model)
 	}
 }
+
+func TestProviderDefaults_WithAPIKeyStillGetsDefaultBaseURL(t *testing.T) {
+	p := NewOpenAIProvider(Config{LlmProvider: LlmProvider{APIKey: "sk-test"}})
+	cfg := p.(*OpenAIProvider).cfg
+	if cfg.LlmProvider.BaseURL != "https://api.openai.com/v1" {
+		t.Errorf("expected default APIBase with api_key set, got %s", cfg.LlmProvider.BaseURL)
+	}
+}

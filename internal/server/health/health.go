@@ -31,7 +31,7 @@ type CheckResult struct {
 	Status    Status        `json:"status"`
 	Duration  time.Duration `json:"duration"`
 	Error     string        `json:"error,omitempty"`
-	Timestamp time.Time      `json:"timestamp"`
+	Timestamp time.Time     `json:"timestamp"`
 }
 
 // HealthCheck 健康检查器
@@ -57,9 +57,9 @@ type HealthReport struct {
 
 // SystemInfo 系统信息
 type SystemInfo struct {
-	GoVersion    string `json:"go_version"`
-	NumGoroutine int    `json:"num_goroutine"`
-	NumCPU       int    `json:"num_cpu"`
+	GoVersion    string  `json:"go_version"`
+	NumGoroutine int     `json:"num_goroutine"`
+	NumCPU       int     `json:"num_cpu"`
 	HeapAllocMB  float64 `json:"heap_alloc_mb"`
 	HeapSysMB    float64 `json:"heap_sys_mb"`
 	StackInUseMB float64 `json:"stack_in_use_mb"`

@@ -12,6 +12,7 @@ require (
 	github.com/nats-io/nats.go v1.51.0
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
+	github.com/yuin/goldmark v1.3.5
 	go.etcd.io/etcd/client/v3 v3.6.10
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0

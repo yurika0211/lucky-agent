@@ -12,18 +12,18 @@ import (
 
 // ShareInfo 调试信息
 type ShareInfo struct {
-	Timestamp   string                 `json:"timestamp"`
-	Version     string                 `json:"version"`
-	OS          string                 `json:"os"`
-	Arch        string                 `json:"arch"`
-	GoVersion   string                 `json:"go_version"`
-	Profile     map[string]interface{} `json:"profile,omitempty"`
-	Config      map[string]interface{} `json:"config,omitempty"`
-	MemoryStats map[string]interface{} `json:"memory_stats,omitempty"`
-	Tools       []string               `json:"tools,omitempty"`
+	Timestamp   string                   `json:"timestamp"`
+	Version     string                   `json:"version"`
+	OS          string                   `json:"os"`
+	Arch        string                   `json:"arch"`
+	GoVersion   string                   `json:"go_version"`
+	Profile     map[string]interface{}   `json:"profile,omitempty"`
+	Config      map[string]interface{}   `json:"config,omitempty"`
+	MemoryStats map[string]interface{}   `json:"memory_stats,omitempty"`
+	Tools       []string                 `json:"tools,omitempty"`
 	CronJobs    []map[string]interface{} `json:"cron_jobs,omitempty"`
-	Env         map[string]string      `json:"env,omitempty"`
-	Logs        []string               `json:"logs,omitempty"`
+	Env         map[string]string        `json:"env,omitempty"`
+	Logs        []string                 `json:"logs,omitempty"`
 }
 
 // Collector 收集调试信息
@@ -118,9 +118,9 @@ func (c *Collector) collectConfig() map[string]interface{} {
 	// 简单返回行数和大小
 	lines := strings.Count(string(data), "\n")
 	return map[string]interface{}{
-		"size":     len(data),
-		"lines":    lines,
-		"exists":   true,
+		"size":   len(data),
+		"lines":  lines,
+		"exists": true,
 	}
 }
 
