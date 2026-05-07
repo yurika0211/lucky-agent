@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	appheartbeat "github.com/yurika0211/luckyharness/internal/agent/heartbeat"
 	"github.com/yurika0211/luckyharness/internal/autonomy"
 	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/config"
@@ -19,7 +20,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/gateway"
-	appheartbeat "github.com/yurika0211/luckyharness/internal/heartbeat"
+	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/middleware"
@@ -132,10 +133,24 @@ resolveEmbedderRuntimeConfig 从环境变量和主配置中解析嵌入模型运
 返回值中的布尔值表示是否解析到了任何有效配置项。
 */
 func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool) {
-	cfg := embedderRuntimeConfig{
-		APIKey:  os.Getenv("EMBEDDING_MODEL_KEY"),
-		Model:   os.Getenv("EMBEDDING_MODEL_NAME"),
-		BaseURL: os.Getenv("EMBEDDING_MODEL_URL"),
+	cfg := embedderRuntimeConfig{}
+	if c != nil {
+		cfg = embedderRuntimeConfig{
+			APIKey:    strings.TrimSpace(c.Embedding.APIKey),
+			Model:     strings.TrimSpace(c.Embedding.Model),
+			BaseURL:   strings.TrimSpace(c.Embedding.APIBase),
+			Dimension: c.Embedding.Dimension,
+		}
+	}
+
+	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_KEY")); v != "" {
+		cfg.APIKey = v
+	}
+	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_NAME")); v != "" {
+		cfg.Model = v
+	}
+	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_URL")); v != "" {
+		cfg.BaseURL = v
 	}
 	if dim := os.Getenv("EMBEDDING_MODEL_DIMENSION"); dim != "" {
 		dim = strings.TrimSpace(dim)
@@ -395,6 +410,11 @@ func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	}
 
 	activeEmb := embedder.NewCachedEmbedder(embedderReg.Active(), 512)
+	logger.Info("rag embedder selected",
+		"embedder_name", activeEmb.Name(),
+		"embedder_model", activeEmb.Model(),
+		"embedder_dim", activeEmb.Dimension(),
+	)
 	ragConfig := rag.DefaultRAGConfig()
 
 	var ragManager *rag.RAGManager

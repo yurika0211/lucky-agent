@@ -285,10 +285,15 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 // callOpenAI 执行 OpenAI API 调用（非流式）
 // 支持文本响应和工具调用解析
 func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (*Response, error) {
+	normalizedMessages := normalizeToolProtocolMessages(messages)
+	if len(normalizedMessages) != len(messages) {
+		log.Printf("[provider] normalized tool protocol messages: before=%d after=%d", len(messages), len(normalizedMessages))
+	}
+
 	// 部分模型/网关组合（如 gpt-5.4-mini）非流式会返回空 content 但计费已发生。
 	// 这类模型优先走 stream 聚合，避免一次非流式空响应 + 二次 stream 重试。
 	if shouldPreferStreamFirst(cfg.LlmProvider.Model) {
-		streamResult, err := retryWithStream(ctx, cfg, messages, opts)
+		streamResult, err := retryWithStream(ctx, cfg, normalizedMessages, opts)
 		if err == nil && streamResult != nil && (streamResult.Content != "" || len(streamResult.ToolCalls) > 0) {
 			log.Printf("[provider] stream-first OK (model=%s): content_len=%d, tool_calls=%d", cfg.LlmProvider.Model, len(streamResult.Content), len(streamResult.ToolCalls))
 			return streamResult, nil
@@ -302,7 +307,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 
 	reqBody := openaiChatRequest{
 		Model:               cfg.LlmProvider.Model,
-		Messages:            toOpenAIMessages(messages),
+		Messages:            toOpenAIMessages(normalizedMessages),
 		MaxTokens:           cfg.Limits.MaxTokens,
 		MaxCompletionTokens: cfg.Limits.MaxTokens,
 		Temperature:         cfg.LlmProvider.Temperature,
@@ -495,9 +500,14 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 // callOpenAIStream 执行 OpenAI API 流式调用
 // 支持文本内容和工具调用的流式解析
 func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
+	normalizedMessages := normalizeToolProtocolMessages(messages)
+	if len(normalizedMessages) != len(messages) {
+		log.Printf("[provider] normalized tool protocol messages (stream): before=%d after=%d", len(messages), len(normalizedMessages))
+	}
+
 	reqBody := openaiChatRequest{
 		Model:               cfg.LlmProvider.Model,
-		Messages:            toOpenAIMessages(messages),
+		Messages:            toOpenAIMessages(normalizedMessages),
 		MaxTokens:           cfg.Limits.MaxTokens,
 		MaxCompletionTokens: cfg.Limits.MaxTokens,
 		Temperature:         cfg.LlmProvider.Temperature,

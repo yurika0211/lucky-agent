@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	appheartbeat "github.com/yurika0211/luckyharness/internal/heartbeat"
+	appheartbeat "github.com/yurika0211/luckyharness/internal/agent/heartbeat"
 	"github.com/yurika0211/luckyharness/internal/session"
 )
 

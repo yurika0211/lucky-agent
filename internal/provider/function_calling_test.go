@@ -119,3 +119,79 @@ func TestNewToolFunctionEmpty(t *testing.T) {
 		t.Errorf("expected empty name, got %s", tf.Name)
 	}
 }
+
+func TestNormalizeToolProtocolMessagesPreservesCompleteRound(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "search"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "web_search", Arguments: `{"q":"a"}`},
+			{ID: "call_2", Name: "current_time", Arguments: `{}`},
+		}},
+		{Role: "tool", Content: "result-a", ToolCallID: "call_1", Name: "web_search"},
+		{Role: "tool", Content: "result-b", ToolCallID: "call_2", Name: "current_time"},
+		{Role: "assistant", Content: "done"},
+	}
+
+	got := normalizeToolProtocolMessages(messages)
+	if len(got) != len(messages) {
+		t.Fatalf("expected complete round to be preserved, got %d messages", len(got))
+	}
+	if got[1].Role != "assistant" || len(got[1].ToolCalls) != 2 {
+		t.Fatalf("expected assistant tool call message to remain intact: %+v", got[1])
+	}
+}
+
+func TestNormalizeToolProtocolMessagesDropsOrphanToolMessage(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "search"},
+		{Role: "tool", Content: "orphan", ToolCallID: "call_orphan", Name: "web_search"},
+		{Role: "assistant", Content: "done"},
+	}
+
+	got := normalizeToolProtocolMessages(messages)
+	if len(got) != 2 {
+		t.Fatalf("expected orphan tool to be dropped, got %d messages", len(got))
+	}
+	if got[1].Role != "assistant" {
+		t.Fatalf("unexpected normalized sequence: %+v", got)
+	}
+}
+
+func TestNormalizeToolProtocolMessagesDropsIncompleteRound(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: "search"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "web_search", Arguments: `{"q":"a"}`},
+			{ID: "call_2", Name: "current_time", Arguments: `{}`},
+		}},
+		{Role: "tool", Content: "result-a", ToolCallID: "call_1", Name: "web_search"},
+		{Role: "assistant", Content: "should force round drop"},
+	}
+
+	got := normalizeToolProtocolMessages(messages)
+	if len(got) != 2 {
+		t.Fatalf("expected incomplete round to be dropped, got %d messages", len(got))
+	}
+	if got[0].Role != "user" || got[1].Role != "assistant" || got[1].Content != "should force round drop" {
+		t.Fatalf("unexpected normalized sequence: %+v", got)
+	}
+}
+
+func TestNormalizeToolProtocolMessagesDropsDuplicateToolResult(t *testing.T) {
+	messages := []Message{
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "web_search", Arguments: `{"q":"a"}`},
+		}},
+		{Role: "tool", Content: "result-a", ToolCallID: "call_1", Name: "web_search"},
+		{Role: "tool", Content: "duplicate", ToolCallID: "call_1", Name: "web_search"},
+		{Role: "assistant", Content: "done"},
+	}
+
+	got := normalizeToolProtocolMessages(messages)
+	if len(got) != 3 {
+		t.Fatalf("expected duplicate tool result to be dropped, got %d messages", len(got))
+	}
+	if got[1].Role != "tool" || got[1].Content != "result-a" {
+		t.Fatalf("unexpected normalized tool result: %+v", got[1])
+	}
+}
