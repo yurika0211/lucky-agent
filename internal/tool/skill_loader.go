@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -37,6 +38,8 @@ type SkillToolDef struct {
 	Description string
 	Parameters  map[string]Param
 	Handler     func(args map[string]any) (string, error) // 需要外部注入
+	Command     []string
+	ExposeToModel bool
 }
 
 // LoadAll 加载所有 Skill
@@ -181,6 +184,25 @@ func (sl *SkillLoader) autoGenerateTools(info *SkillInfo, content string) []Skil
 		return nil
 	}
 
+	if len(scripts) == 1 {
+		scriptPath := filepath.Join(scriptsDir, scripts[0].Name())
+		if cliTools := sl.discoverCLITools(scriptPath); len(cliTools) > 0 {
+			mainTool := SkillToolDef{
+				Name:          "run",
+				Description:   fmt.Sprintf("Primary entry for the %s skill. Use when the task matches this workflow and you want the skill to guide the execution path.", info.Name),
+				ExposeToModel: true,
+				Parameters: map[string]Param{
+					"query": {
+						Type:        "string",
+						Description: "Concrete user task or goal that should be handled through this skill workflow.",
+						Required:    false,
+					},
+				},
+			}
+			return append([]SkillToolDef{mainTool}, cliTools...)
+		}
+	}
+
 	// 为每个脚本生成一个工具
 	for _, script := range scripts {
 		toolName := strings.TrimSuffix(script.Name(), filepath.Ext(script.Name()))
@@ -192,14 +214,16 @@ func (sl *SkillLoader) autoGenerateTools(info *SkillInfo, content string) []Skil
 			Name:        toolName,
 			Description: fmt.Sprintf("Use the %s workflow through its %s script when this skill clearly matches the task and direct execution would be less reliable.", info.Name, toolName),
 			Parameters:  map[string]Param{},
+			ExposeToModel: false,
 		})
 	}
 
 	// 始终生成一个主工具（skill name 本身）
 	// 即使有脚本工具，也保留一个入口
 	mainTool := SkillToolDef{
-		Name:        "run",
-		Description: fmt.Sprintf("Primary entry for the %s skill. Use when the task matches this workflow and you want the skill to guide the execution path.", info.Name),
+		Name:          "run",
+		Description:   fmt.Sprintf("Primary entry for the %s skill. Use when the task matches this workflow and you want the skill to guide the execution path.", info.Name),
+		ExposeToModel: true,
 		Parameters: map[string]Param{
 			"query": {
 				Type:        "string",
@@ -211,6 +235,108 @@ func (sl *SkillLoader) autoGenerateTools(info *SkillInfo, content string) []Skil
 	tools = append([]SkillToolDef{mainTool}, tools...)
 
 	return tools
+}
+
+func (sl *SkillLoader) discoverCLITools(scriptPath string) []SkillToolDef {
+	top, err := inspectCLICommands(scriptPath, nil)
+	if err != nil || len(top) == 0 {
+		return nil
+	}
+
+	var tools []SkillToolDef
+	for _, cmd := range top {
+		children, _ := inspectCLICommands(scriptPath, []string{cmd.Name})
+		if len(children) == 0 {
+			tools = append(tools, cliCommandToToolDef([]string{cmd.Name}, cmd.Description))
+			continue
+		}
+		for _, child := range children {
+			tools = append(tools, cliCommandToToolDef([]string{cmd.Name, child.Name}, child.Description))
+		}
+	}
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
+	return tools
+}
+
+type cliCommandInfo struct {
+	Name        string
+	Description string
+}
+
+func inspectCLICommands(scriptPath string, prefix []string) ([]cliCommandInfo, error) {
+	baseCmd, err := buildSkillScriptCommand(scriptPath, prefix...)
+	if err != nil {
+		return nil, err
+	}
+	baseCmd = append(baseCmd, "--help")
+	cmd := exec.Command(baseCmd[0], baseCmd[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return nil, err
+	}
+	return parseCLIHelpCommands(string(out)), nil
+}
+
+func parseCLIHelpCommands(help string) []cliCommandInfo {
+	lines := strings.Split(help, "\n")
+	entryRe := regexp.MustCompile(`^\s{2,}([a-zA-Z0-9][a-zA-Z0-9_-]*)\s{2,}(.+)$`)
+	var cmds []cliCommandInfo
+	inPositional := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch trimmed {
+		case "positional arguments:":
+			inPositional = true
+			continue
+		case "options:", "optional arguments:":
+			inPositional = false
+		}
+		if !inPositional {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}") {
+			continue
+		}
+		m := entryRe.FindStringSubmatch(line)
+		if len(m) != 3 {
+			continue
+		}
+		name := strings.TrimSpace(m[1])
+		if name == "-h" || name == "--help" {
+			continue
+		}
+		cmds = append(cmds, cliCommandInfo{
+			Name:        sanitizeName(name),
+			Description: strings.TrimSpace(m[2]),
+		})
+	}
+	return cmds
+}
+
+func cliCommandToToolDef(command []string, description string) SkillToolDef {
+	name := sanitizeName(strings.Join(command, "_"))
+	if name == "" {
+		name = "run"
+	}
+	desc := strings.TrimSpace(description)
+	if desc == "" {
+		desc = fmt.Sprintf("Run CLI subcommand: %s", strings.Join(command, " "))
+	}
+	return SkillToolDef{
+		Name:          name,
+		Description:   desc + " Pass CLI flags and arguments through the args parameter, for example: --username admin --password ***",
+		Command:       append([]string(nil), command...),
+		ExposeToModel: true,
+		Parameters: map[string]Param{
+			"args": {
+				Type:        "string",
+				Description: "Additional CLI flags and arguments to append after the subcommand.",
+				Required:    false,
+			},
+		},
+	}
 }
 
 // findScripts 查找 scripts 目录下的可执行脚本
@@ -424,13 +550,13 @@ func RegisterSkillTools(r *Registry, skills []*SkillInfo, handler func(toolName 
 				Source:          skill.Name,
 				Permission:      PermApprove, // Skill 工具默认需要审批
 				Enabled:         true,
-				HiddenFromModel: toolDef.Name != "run",
+				HiddenFromModel: !toolDef.ExposeToModel && toolDef.Name != "run",
 			}
 			if handler != nil {
 				tool.Handler = handler(toolDef.Name, skill.Dir)
 			} else {
 				// v0.35.0: 默认处理器 — 尝试执行脚本，否则返回 SKILL.md 摘要
-				tool.Handler = defaultSkillHandler(toolDef.Name, skill.Dir, skill.Name)
+				tool.Handler = defaultSkillHandler(toolDef, skill.Dir, skill.Name)
 			}
 			r.Register(tool)
 		}
@@ -438,8 +564,9 @@ func RegisterSkillTools(r *Registry, skills []*SkillInfo, handler func(toolName 
 }
 
 // defaultSkillHandler 为 skill 工具提供默认执行逻辑
-func defaultSkillHandler(toolName, skillDir, skillName string) func(args map[string]any) (string, error) {
+func defaultSkillHandler(toolDef SkillToolDef, skillDir, skillName string) func(args map[string]any) (string, error) {
 	return func(args map[string]any) (string, error) {
+		toolName := toolDef.Name
 		// 1. 尝试执行 scripts/<toolName>.sh 或 .py
 		for _, ext := range []string{".sh", ".py", ".js"} {
 			scriptPath := filepath.Join(skillDir, "scripts", toolName+ext)
@@ -453,6 +580,9 @@ func defaultSkillHandler(toolName, skillDir, skillName string) func(args map[str
 		if entries, err := os.ReadDir(scriptsDir); err == nil && len(entries) == 1 {
 			if !entries[0].IsDir() {
 				scriptPath := filepath.Join(scriptsDir, entries[0].Name())
+				if len(toolDef.Command) > 0 {
+					return executeScriptWithCommand(scriptPath, toolDef.Command, args)
+				}
 				return executeScript(scriptPath, args)
 			}
 		}
@@ -476,19 +606,11 @@ func defaultSkillHandler(toolName, skillDir, skillName string) func(args map[str
 
 // executeScript 执行脚本并返回输出
 func executeScript(scriptPath string, args map[string]any) (string, error) {
-	var cmd *exec.Cmd
-	ext := filepath.Ext(scriptPath)
-
-	switch ext {
-	case ".sh":
-		cmd = exec.Command("/bin/sh", scriptPath)
-	case ".py":
-		cmd = exec.Command("python3", scriptPath)
-	case ".js":
-		cmd = exec.Command("node", scriptPath)
-	default:
-		cmd = exec.Command("/bin/sh", scriptPath)
+	baseCmd, err := buildSkillScriptCommand(scriptPath)
+	if err != nil {
+		return "", err
 	}
+	cmd := exec.Command(baseCmd[0], baseCmd[1:]...)
 
 	// 将 args 序列化为环境变量
 	for k, v := range args {
@@ -500,6 +622,39 @@ func executeScript(scriptPath string, args map[string]any) (string, error) {
 		return string(output), fmt.Errorf("script error: %w", err)
 	}
 	return string(output), nil
+}
+
+func executeScriptWithCommand(scriptPath string, commandParts []string, args map[string]any) (string, error) {
+	baseCmd, err := buildSkillScriptCommand(scriptPath, commandParts...)
+	if err != nil {
+		return "", err
+	}
+	if rawArgs, ok := args["args"].(string); ok && strings.TrimSpace(rawArgs) != "" {
+		baseCmd = append(baseCmd, strings.Fields(rawArgs)...)
+	}
+	cmd := exec.Command(baseCmd[0], baseCmd[1:]...)
+	for k, v := range args {
+		cmd.Env = append(cmd.Environ(), fmt.Sprintf("SKILL_ARG_%s=%v", strings.ToUpper(k), v))
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("script error: %w", err)
+	}
+	return string(output), nil
+}
+
+func buildSkillScriptCommand(scriptPath string, args ...string) ([]string, error) {
+	ext := filepath.Ext(scriptPath)
+	switch ext {
+	case ".sh":
+		return append([]string{"/bin/sh", scriptPath}, args...), nil
+	case ".py":
+		return append([]string{"python3", scriptPath}, args...), nil
+	case ".js":
+		return append([]string{"node", scriptPath}, args...), nil
+	default:
+		return append([]string{"/bin/sh", scriptPath}, args...), nil
+	}
 }
 
 // extractSummary 从 SKILL.md 提取精简摘要，用于注入 system prompt

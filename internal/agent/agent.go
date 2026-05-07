@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -722,6 +723,7 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 		cfg := a.cfg.Get()
 		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 	}
+	applySimpleTaskLoopTuning(&loopCfg, userInput)
 	loopCfg.AutoApprove = true // Telegram 场景自动批准工具调用
 
 	result, err := a.RunLoopWithSession(ctx, sess, userInput, loopCfg)
@@ -767,6 +769,48 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 	}
 
 	return response, nil
+}
+
+var simpleLocalInspectionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(list|show|check|inspect|read|open|verify|confirm|find)\b.*\b(file|files|dir|directory|folder|path|workspace)\b`),
+	regexp.MustCompile(`(?i)\b(can|could|should)\b.*\b(send|attach|upload)\b.*\b(file|files|document|documents)\b`),
+	regexp.MustCompile(`(?i)\bwhat\b.*\b(in|inside)\b.*\b(directory|folder|workspace)\b`),
+	regexp.MustCompile(`查看.{0,10}(目录|文件|路径|工作区|文件夹)`),
+	regexp.MustCompile(`检查.{0,10}(目录|文件|路径|工作区|文件夹)`),
+	regexp.MustCompile(`确认.{0,14}(路径|文件|目录|能不能发|是否可发|是否可以发送|是否可发送)`),
+	regexp.MustCompile(`(能不能|是否可以|是否可).{0,8}(发送|发出|上传).{0,10}(文件|附件)`),
+	regexp.MustCompile(`列出.{0,8}(目录|文件)`),
+}
+
+func IsSimpleLocalInspectionTask(input string) bool {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return false
+	}
+	for _, re := range simpleLocalInspectionPatterns {
+		if re.MatchString(input) {
+			return true
+		}
+	}
+	return false
+}
+
+func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string) {
+	if loopCfg == nil || !IsSimpleLocalInspectionTask(userInput) {
+		return
+	}
+	if loopCfg.MaxIterations > 3 {
+		loopCfg.MaxIterations = 3
+	}
+	if loopCfg.Timeout > 25*time.Second {
+		loopCfg.Timeout = 25 * time.Second
+	}
+	if loopCfg.RepeatToolCallLimit > 2 {
+		loopCfg.RepeatToolCallLimit = 2
+	}
+	if loopCfg.ToolOnlyIterationLimit > 2 {
+		loopCfg.ToolOnlyIterationLimit = 2
+	}
 }
 
 // chatStreamSimple 是不使用工具的简单流式聊天（作为 RunLoop 的回退）。
@@ -1035,10 +1079,7 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 
 		// 构建 function calling 工具定义
 		fcMgr := function.NewManager(a.tools)
-		callOpts := provider.CallOptions{
-			Tools:      fcMgr.BuildTools(),
-			ToolChoice: "auto",
-		}
+		callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
 
 		loopCfg := DefaultLoopConfig()
 		cfg := a.cfg.Get()
@@ -1377,6 +1418,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	var resp *provider.Response
 	var err error
 	iterCallOpts := callOpts
+	iterCallOpts = relaxForcedSkillToolChoice(messages, iterCallOpts)
 	if state.forceSearchSynthesis {
 		iterCallOpts.Tools = nil
 		iterCallOpts.ToolChoice = "none"

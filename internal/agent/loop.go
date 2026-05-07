@@ -310,22 +310,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 	// v0.16.0: 构建 function calling 工具定义
 	fcMgr := function.NewManager(a.tools)
-	callOpts := provider.CallOptions{
-		Tools:      fcMgr.BuildTools(),
-		ToolChoice: "auto",
-	}
-	// 若用户显式在输入中点名工具（如“必须调用 file_read”），优先只暴露这些工具，提升可控性。
-	if required := a.extractRequiredToolNames(userInput); len(required) > 0 {
-		filtered := make([]map[string]any, 0, len(required))
-		for _, name := range required {
-			if t, ok := a.tools.Get(name); ok && t.Enabled {
-				filtered = append(filtered, t.ToOpenAIFormat())
-			}
-		}
-		if len(filtered) > 0 {
-			callOpts.Tools = filtered
-		}
-	}
+	callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
 
 	for i := 0; i < loopCfg.MaxIterations; i++ {
 		result.Iterations = i + 1
@@ -341,6 +326,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		var resp *provider.Response
 		var err error
 		iterCallOpts := callOpts
+		iterCallOpts = relaxForcedSkillToolChoice(messages, iterCallOpts)
 		if loopState.forceSearchSynthesis {
 			iterCallOpts.Tools = nil
 			iterCallOpts.ToolChoice = "none"
@@ -1008,10 +994,7 @@ func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg Loo
 
 		// v0.16.0: 构建 function calling 工具定义
 		fcMgr := function.NewManager(a.tools)
-		callOpts := provider.CallOptions{
-			Tools:      fcMgr.BuildTools(),
-			ToolChoice: "auto",
-		}
+		callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
 
 		for i := 0; i < loopCfg.MaxIterations; i++ {
 			events <- StreamEvent{Type: EventReason, Iteration: i + 1}

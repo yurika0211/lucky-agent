@@ -261,3 +261,40 @@ func TestSkillLoaderDoesNotGenerateRunToolForDocOnlySkill(t *testing.T) {
 		t.Fatalf("expected doc-only skill to expose no tools, got %d", len(info.Tools))
 	}
 }
+
+func TestParseCLIHelpCommands(t *testing.T) {
+	help := `usage: blog_api.py [-h] {health,login,list-posts} ...
+
+positional arguments:
+  {health,login,list-posts}
+    health              GET /health
+    login               POST /login
+    list-posts          GET /posts/
+
+options:
+  -h, --help            show this help message and exit
+`
+	cmds := parseCLIHelpCommands(help)
+	if len(cmds) != 3 {
+		t.Fatalf("expected 3 commands, got %d", len(cmds))
+	}
+	if cmds[0].Name != "health" || cmds[1].Name != "login" || cmds[2].Name != "list-posts" {
+		t.Fatalf("unexpected commands: %#v", cmds)
+	}
+}
+
+func TestCLICommandToToolDef(t *testing.T) {
+	def := cliCommandToToolDef([]string{"posts", "list"}, "List posts.")
+	if def.Name != "posts_list" {
+		t.Fatalf("expected posts_list, got %q", def.Name)
+	}
+	if len(def.Command) != 2 || def.Command[0] != "posts" || def.Command[1] != "list" {
+		t.Fatalf("unexpected command path: %#v", def.Command)
+	}
+	if !def.ExposeToModel {
+		t.Fatal("expected generated CLI tool to be model visible")
+	}
+	if _, ok := def.Parameters["args"]; !ok {
+		t.Fatal("expected args parameter")
+	}
+}

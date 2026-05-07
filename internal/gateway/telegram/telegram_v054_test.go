@@ -3722,6 +3722,18 @@ func TestV054HandleChatStreamNaturalProgressFinalOnly(t *testing.T) {
 	}
 }
 
+func TestShouldPrependToolNarratives(t *testing.T) {
+	if !shouldPrependToolNarratives(true, false) {
+		t.Fatal("expected tool narratives in non-narrative mode when enabled")
+	}
+	if shouldPrependToolNarratives(true, true) {
+		t.Fatal("expected tool narratives to be suppressed in narrative mode")
+	}
+	if shouldPrependToolNarratives(false, false) {
+		t.Fatal("expected tool narratives to stay disabled when flag is off")
+	}
+}
+
 func TestV054HandleChatStreamErrorEvent(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()
