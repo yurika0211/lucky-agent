@@ -15,6 +15,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/gateway/qqofficial"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
@@ -142,6 +143,16 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MsgGateway.Telegram.ProgressSummaryWithLLM)
 	case "msg_gateway.telegram.show_tool_details_in_result", "msg_gateway.telegram.show_tool_chain":
 		fmt.Println(cfg.MsgGateway.Telegram.ShowToolDetailsInResult)
+	case "msg_gateway.qqofficial.app_id":
+		fmt.Println(cfg.MsgGateway.QQOfficial.AppID)
+	case "msg_gateway.qqofficial.app_secret":
+		fmt.Println(maskKey(cfg.MsgGateway.QQOfficial.AppSecret))
+	case "msg_gateway.qqofficial.sandbox":
+		fmt.Println(cfg.MsgGateway.QQOfficial.Sandbox)
+	case "msg_gateway.qqofficial.api_base_url":
+		fmt.Println(cfg.MsgGateway.QQOfficial.APIBaseURL)
+	case "msg_gateway.qqofficial.gateway_url":
+		fmt.Println(cfg.MsgGateway.QQOfficial.GatewayURL)
 	default:
 		if v, ok := cfg.Extra[args[0]]; ok {
 			fmt.Println(v)
@@ -401,6 +412,18 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			token = cfg.MsgGateway.Token
 		}
 	}
+	qqAppID, _ := cmd.Flags().GetString("qq-appid")
+	if !cmd.Flags().Changed("qq-appid") {
+		qqAppID = cfg.MsgGateway.QQOfficial.AppID
+	}
+	qqAppSecret, _ := cmd.Flags().GetString("qq-appsecret")
+	if !cmd.Flags().Changed("qq-appsecret") {
+		qqAppSecret = cfg.MsgGateway.QQOfficial.AppSecret
+	}
+	qqSandbox, _ := cmd.Flags().GetBool("qq-sandbox")
+	if !cmd.Flags().Changed("qq-sandbox") {
+		qqSandbox = cfg.MsgGateway.QQOfficial.Sandbox
+	}
 
 	switch platform {
 	case "telegram":
@@ -442,11 +465,39 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			}
 		}()
 		fmt.Println("Telegram 网关已启动")
+	case "qqofficial":
+		if strings.TrimSpace(qqAppID) == "" || strings.TrimSpace(qqAppSecret) == "" {
+			return fmt.Errorf("qqofficial 需要 --qq-appid 和 --qq-appsecret（或在 config.json 里设置 msg_gateway.qqofficial.app_id / app_secret）")
+		}
+		qqAdapter := qqofficial.NewAdapter(qqofficial.Config{
+			AppID:         qqAppID,
+			AppSecret:     qqAppSecret,
+			Sandbox:       qqSandbox,
+			APIBaseURL:    cfg.MsgGateway.QQOfficial.APIBaseURL,
+			GatewayURL:    cfg.MsgGateway.QQOfficial.GatewayURL,
+			AllowedChats:  append([]string(nil), cfg.MsgGateway.QQOfficial.AllowedChats...),
+			AllowedUsers:  append([]string(nil), cfg.MsgGateway.QQOfficial.AllowedUsers...),
+			RemoveAt:      cfg.MsgGateway.QQOfficial.RemoveAt,
+			HeartbeatSec:  cfg.MsgGateway.QQOfficial.HeartbeatSec,
+			ReconnectWait: cfg.MsgGateway.QQOfficial.ReconnectWait,
+			Intents:       append([]string(nil), cfg.MsgGateway.QQOfficial.Intents...),
+		})
+		handler := qqofficial.NewHandler(qqAdapter, a)
+		qqAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			return handler.HandleMessage(ctx, msg)
+		})
+		if err := gm.Register(qqAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "qqofficial"); err != nil {
+			return err
+		}
+		fmt.Println("QQ 官方机器人网关已启动")
 	default:
 		if platform == "" {
 			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
 		}
-		return fmt.Errorf("不支持的平台: %s (支持: telegram)", platform)
+		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial)", platform)
 	}
 
 	sigCh := make(chan os.Signal, 1)

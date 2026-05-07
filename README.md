@@ -185,9 +185,7 @@ curl http://127.0.0.1:9090/api/v1/health
 #### 以源码方式启动 API
 
 ```bash
-mkdir -p ~/.luckyharness
-cp config.example.json ~/.luckyharness/config.json
-
+go run ./cmd/lh init
 go run ./cmd/lh serve --addr 127.0.0.1:9090
 ```
 
@@ -200,8 +198,7 @@ go run ./cmd/lh msg-gateway start --platform telegram
 如果你不想污染自己真实的 home 目录，推荐把运行目录隔离到仓库内：
 
 ```bash
-mkdir -p .lh-home/.luckyharness
-cp config.example.json .lh-home/.luckyharness/config.json
+mkdir -p .lh-home
 HOME="$PWD/.lh-home" go run ./cmd/lh serve --addr 127.0.0.1:9090
 ```
 
@@ -223,7 +220,7 @@ HOME="$PWD/.lh-home" go run ./cmd/lh msg-gateway start --platform telegram
 
 仓库已经提供开发用 Compose：
 
-- [docker-compose.yml](/media/shiokou/DevRepo44/DevHub/Projects/2026-myapp/luckyharness/docker-compose.yml)
+- `docker-compose.yml`
 
 这套开发 Compose 的特点是：
 
@@ -233,6 +230,31 @@ HOME="$PWD/.lh-home" go run ./cmd/lh msg-gateway start --platform telegram
 - 可以同时带起 Telegram 辅助服务
 - 按源码约定，运行时配置应该位于 `/var/lib/luckyharness/.luckyharness/config.json`
 - 显式设置 `HOME=/var/lib/luckyharness`
+- named volume `lh-home` 持久化整个 `HOME`
+- 宿主机 `./config.json` 挂载到 `/var/lib/luckyharness/.luckyharness/config.json`
+
+#### 先准备宿主机 `./config.json`
+
+这里的 `./config.json` 指的是：
+
+- 你执行 `docker compose` 命令时所在目录里的 `config.json`
+- 在这个仓库里，通常就是仓库根目录下的 `config.json`
+
+如果仓库根目录下还没有这个文件，推荐这样准备：
+
+```bash
+go run ./cmd/lh init
+cp ~/.luckyharness/config.json ./config.json
+```
+
+然后修改 `./config.json` 里的关键字段，例如：
+
+- `provider`
+- `api_key`
+- `api_base`
+- `model`
+- `server.addr`
+- `msg_gateway.telegram.token`
 
 #### 只启动 API 服务
 
@@ -255,6 +277,8 @@ docker compose down
 #### 开发环境 Docker 说明
 
 - 启动前请确认容器内最终可读到的是 `${HOME}/.luckyharness/config.json`
+- `./config.json` 是宿主机文件，不是容器内文件
+- 你通常应该修改宿主机仓库根目录下的 `./config.json`，而不是进入容器里改
 - 如果需要让宿主机外部访问 API，请把 `server.addr` 设为 `0.0.0.0:9090`
 - 健康检查走的是容器内部的 `http://127.0.0.1:9090/api/v1/health`
 - Telegram 容器依赖 API 容器健康检查通过后再启动，便于整体运维
@@ -299,12 +323,16 @@ docker compose -f docker-compose.prod.yml down
 
 - 生产环境里也应保证配置最终落在 `${HOME}/.luckyharness/config.json`
 - 运行时 HOME 仍然是 `/var/lib/luckyharness`
+- `docker-compose.prod.yml` 会把宿主机 `./config.json` 挂到 `/var/lib/luckyharness/.luckyharness/config.json:ro`
+- 生产环境推荐在宿主机先维护好这份 `./config.json`，再启动容器
 - 如果要对外暴露 API，请确认 `server.addr` 是 `0.0.0.0:9090`
 - Telegram 服务被放在 `telegram` profile 后面，是否启用可以按需决定
 
 ## 从镜像角度理解部署
 
 如果你不想直接使用 Compose，也可以直接从镜像层面运行。
+
+这里的 `"$PWD/config.json"` 同样指宿主机当前目录下的 `config.json`，通常建议放在仓库根目录，或你专门的部署目录里。
 
 ### 构建镜像
 

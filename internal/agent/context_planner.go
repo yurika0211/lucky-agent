@@ -137,6 +137,11 @@ func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userI
 	if systemContent != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemContent})
 	}
+	if p.agent != nil {
+		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHint(userInput)); skillHint != "" {
+			messages = append(messages, provider.Message{Role: "system", Content: skillHint})
+		}
+	}
 
 	messages = append(messages, p.buildMemoryMessages(userInput)...)
 	if p.options.IncludeRAG {

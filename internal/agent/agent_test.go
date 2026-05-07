@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -138,9 +137,10 @@ func TestParseEmbedderDimensionEnv(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got, ok := strconv.Atoi(tt.input)
-		if got != tt.want || ok != nil {
-			t.Fatalf("parseEmbedderDimensionEnv(%q) = (%d, %v), want (%d, %v)", tt.input, got, ok, tt.want, tt.ok)
+		t.Setenv("EMBEDDING_MODEL_DIMENSION", tt.input)
+		gotCfg, ok := resolveEmbedderRuntimeConfig(nil)
+		if gotCfg.Dimension != tt.want || ok != tt.ok {
+			t.Fatalf("parseEmbedderDimensionEnv(%q) = (%d, %v), want (%d, %v)", tt.input, gotCfg.Dimension, ok, tt.want, tt.ok)
 		}
 	}
 }

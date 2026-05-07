@@ -487,6 +487,10 @@ func (h *Handler) effectiveShowToolDetailsInResult() bool {
 	return h.showToolDetailsInResult
 }
 
+func shouldPrependToolNarratives(showToolDetails, narrativeMode bool) bool {
+	return showToolDetails && !narrativeMode
+}
+
 // SetDataDir 设置数据目录并从磁盘恢复 chatID→sessionID 映射
 func (h *Handler) SetDataDir(dir string) {
 	h.mu.Lock()
@@ -934,6 +938,10 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 	}
 	inputText = telegramMediaDeliveryGuidance(inputText)
 
+	if agent.IsSimpleLocalInspectionTask(inputText) {
+		return h.handleChatSync(taskCtx, msg, inputText, sessionID)
+	}
+
 	// 自然语言进度模式：直接按步骤发独立消息，最终结论也作为“最后一条新消息”发送。
 	// 这样可以避免结论写回到最早的占位流消息，导致视觉上跑到最上面。
 	if h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage() {
@@ -1291,9 +1299,6 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 						roundObservations = nil
 						currentRound = nextRound
 					}
-					if line := strings.TrimSpace(evt.Content); line != "" {
-						roundObservations = append(roundObservations, "Thinking: "+line)
-					}
 				} else {
 					progress := humanizeThinkingProgress(evt.Content)
 					if strings.TrimSpace(progress) != "" && progress != lastProgress {
@@ -1317,16 +1322,12 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				}
 
 			case agent.ChatEventToolResult:
-				if h.effectiveShowToolDetailsInResult() {
+				if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), true) {
 					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
 						toolNarratives = append(toolNarratives, line)
 					}
 				}
-				if summaryMode {
-					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
-						roundObservations = append(roundObservations, "Tool result: "+line)
-					}
-				} else {
+				if !summaryMode {
 					progress := humanizeToolResultProgress(toolCallCount, evt.Name, evt.Result)
 					if strings.TrimSpace(progress) != "" && progress != lastProgress {
 						h.sendProgressMessage(msg, progress)
@@ -1346,7 +1347,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 					finalContent.WriteString(evt.Content)
 				}
 				finalOutput := strings.TrimSpace(finalContent.String())
-				if h.effectiveShowToolDetailsInResult() && finalOutput != "" {
+				if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), true) && finalOutput != "" {
 					finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 				}
 				h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
@@ -1378,7 +1379,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 			if summaryMode {
 				h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
 			}
-			if h.effectiveShowToolDetailsInResult() {
+			if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), true) {
 				finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 			}
 			h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
@@ -1454,10 +1455,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						roundObservations = nil
 						currentRound = nextRound
 					}
-					if line := strings.TrimSpace(evt.Content); line != "" {
-						roundObservations = append(roundObservations, "Thinking: "+line)
-					}
-				} else if h.effectiveProgressAsMessages() {
+				} else if h.effectiveProgressAsMessages() && toolCallCount == 0 && lastProgress == "" {
 					progress := "🧠 " + clipOneLine(evt.Content, 180)
 					if narrativeMode {
 						progress = humanizeThinkingProgress(evt.Content)
@@ -1474,42 +1472,31 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			case agent.ChatEventToolCall:
 				toolCallCount++
 				if summaryMode {
-					if line := humanizeToolCall(evt.Name, evt.Args); line != "" {
+					if line := humanizeToolCall(evt.Name, evt.Args); line != "" && len(roundObservations) < 2 {
 						roundObservations = append(roundObservations, "Tool call: "+line)
 					}
-				} else if h.effectiveProgressAsMessages() {
+				} else if h.effectiveProgressAsMessages() && toolCallCount == 1 {
 					// 工具调用作为独立自然语言消息发送（Nanobot 风格）。
 					progress := "🔧 " + humanizeToolCall(evt.Name, evt.Args)
 					if narrativeMode {
-						progress = humanizeToolCallProgress(toolCallCount, evt.Name, evt.Args)
+						progress = humanizeToolCallProgress(1, evt.Name, evt.Args)
 					}
-					h.sendProgressMessage(msg, progress)
-					lastProgress = progress
+					if strings.TrimSpace(progress) != "" && progress != lastProgress {
+						h.sendProgressMessage(msg, progress)
+						lastProgress = progress
+					}
 				} else {
 					// 兼容旧模式：显示工具调用标签
 					sender.SetToolCall(evt.Name, evt.Args)
 				}
 
 			case agent.ChatEventToolResult:
-				if h.effectiveShowToolDetailsInResult() {
+				if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), narrativeMode) {
 					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
 						toolNarratives = append(toolNarratives, line)
 					}
 				}
-				if summaryMode {
-					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
-						roundObservations = append(roundObservations, "Tool result: "+line)
-					}
-				} else if h.effectiveProgressAsMessages() {
-					progress := fmt.Sprintf("✅ 已完成第 %d 个步骤", toolCallCount)
-					if narrativeMode {
-						progress = humanizeToolResultProgress(toolCallCount, evt.Name, evt.Result)
-					}
-					if progress != lastProgress {
-						h.sendProgressMessage(msg, progress)
-						lastProgress = progress
-					}
-				} else {
+				if !summaryMode && !h.effectiveProgressAsMessages() {
 					// 兼容旧模式：工具结果后切回思考态
 					sender.SetThinking(fmt.Sprintf("Continuing... (%d tools used)", toolCallCount))
 				}
@@ -1530,7 +1517,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 					finalContent.WriteString(evt.Content)
 				}
 				finalOutput := finalContent.String()
-				if h.effectiveShowToolDetailsInResult() {
+				if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), narrativeMode) {
 					finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 				}
 				if narrativeMode {
@@ -1588,7 +1575,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 		if summaryMode && finalOutput != "" {
 			h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
 		}
-		if h.effectiveShowToolDetailsInResult() && finalOutput != "" {
+		if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), narrativeMode) && finalOutput != "" {
 			finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 		}
 		if narrativeMode && finalOutput != "" {

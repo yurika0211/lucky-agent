@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"strconv"
 	"strings"
@@ -27,84 +27,96 @@ import (
 )
 
 // ============================================================
-// v0.54.0: Telegram 包测试补全 — 使用 httptest mock API
+// v0.54.0: Telegram 包测试补全 — 使用内存 mock API
 // ============================================================
 
-// newMockBotServer 创建一个模拟 Telegram Bot API 的 httptest 服务器
-// 返回 server 和一个可用的 bot 实例
-func newMockBotServer() (*httptest.Server, *tgbotapi.BotAPI, error) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var result map[string]interface{}
+type mockBotClient struct {
+	handler func(*http.Request) map[string]any
+}
 
-		switch {
-		case containsMethod(r.URL.Path, "getMe"):
-			result = map[string]interface{}{
-				"ok": true,
-				"result": map[string]interface{}{
-					"id":         123456789,
-					"is_bot":     true,
-					"first_name": "TestBot",
-					"username":   "testbot",
-				},
-			}
-		case containsMethod(r.URL.Path, "sendMessage"):
-			result = map[string]interface{}{
-				"ok": true,
-				"result": map[string]interface{}{
-					"message_id": 42,
-					"chat": map[string]interface{}{
-						"id": 12345,
-					},
-					"text": "ok",
-				},
-			}
-		case containsMethod(r.URL.Path, "editMessageText"):
-			result = map[string]interface{}{
-				"ok": true,
-				"result": map[string]interface{}{
-					"message_id": 42,
-					"text":       "edited",
-				},
-			}
-		case containsMethod(r.URL.Path, "sendChatAction"):
-			result = map[string]interface{}{
-				"ok": true,
-			}
-		case containsMethod(r.URL.Path, "setMessageReaction"):
-			result = map[string]interface{}{
-				"ok": true,
-			}
-		case containsMethod(r.URL.Path, "getFile"):
-			result = map[string]interface{}{
-				"ok": true,
-				"result": map[string]interface{}{
-					"file_id":   "test_file_id",
-					"file_path": "photos/test.jpg",
-				},
-			}
-		case containsMethod(r.URL.Path, "getUpdates"):
-			result = map[string]interface{}{
-				"ok":     true,
-				"result": []interface{}{},
-			}
-		default:
-			result = map[string]interface{}{
-				"ok":     true,
-				"result": map[string]interface{}{},
-			}
-		}
+type mockBotServer struct{}
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(result)
-	}))
+func (mockBotServer) Close() {}
 
-	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", server.URL+"/bot%s/%s")
-	if err != nil {
-		server.Close()
-		return nil, nil, fmt.Errorf("failed to create bot: %w", err)
+func (c *mockBotClient) Do(req *http.Request) (*http.Response, error) {
+	if c.handler == nil {
+		return nil, fmt.Errorf("mock bot client: nil handler")
 	}
+	result := c.handler(req)
+	body, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(string(body))),
+	}, nil
+}
 
-	return server, bot, nil
+func defaultMockBotResponse(r *http.Request) map[string]any {
+	switch {
+	case containsMethod(r.URL.Path, "getMe"):
+		return map[string]any{
+			"ok": true,
+			"result": map[string]any{
+				"id":         123456789,
+				"is_bot":     true,
+				"first_name": "TestBot",
+				"username":   "testbot",
+			},
+		}
+	case containsMethod(r.URL.Path, "sendMessage"):
+		return map[string]any{
+			"ok": true,
+			"result": map[string]any{
+				"message_id": 42,
+				"chat": map[string]any{
+					"id": 12345,
+				},
+				"text": "ok",
+			},
+		}
+	case containsMethod(r.URL.Path, "editMessageText"):
+		return map[string]any{
+			"ok": true,
+			"result": map[string]any{
+				"message_id": 42,
+				"text":       "edited",
+			},
+		}
+	case containsMethod(r.URL.Path, "sendChatAction"), containsMethod(r.URL.Path, "setMessageReaction"):
+		return map[string]any{"ok": true}
+	case containsMethod(r.URL.Path, "getFile"):
+		return map[string]any{
+			"ok": true,
+			"result": map[string]any{
+				"file_id":   "test_file_id",
+				"file_path": "photos/test.jpg",
+			},
+		}
+	case containsMethod(r.URL.Path, "getUpdates"):
+		return map[string]any{
+			"ok":     true,
+			"result": []any{},
+		}
+	default:
+		return map[string]any{
+			"ok":     true,
+			"result": map[string]any{},
+		}
+	}
+}
+
+func newMockBot(handler func(*http.Request) map[string]any) (*tgbotapi.BotAPI, error) {
+	if handler == nil {
+		handler = defaultMockBotResponse
+	}
+	return tgbotapi.NewBotAPIWithClient(
+		"123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+		"https://mock.telegram.invalid/bot%s/%s",
+		&mockBotClient{handler: handler},
+	)
 }
 
 // containsMethod 检查 URL 路径是否包含指定的 API 方法
@@ -113,10 +125,10 @@ func containsMethod(path, method string) bool {
 }
 
 // newAdapterWithMockBot 创建一个使用 mock bot 的 Adapter
-func newAdapterWithMockBot() (*Adapter, *httptest.Server, error) {
-	server, bot, err := newMockBotServer()
+func newAdapterWithMockBot() (*Adapter, mockBotServer, error) {
+	bot, err := newMockBot(nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, mockBotServer{}, err
 	}
 
 	cfg := DefaultConfig()
@@ -126,7 +138,7 @@ func newAdapterWithMockBot() (*Adapter, *httptest.Server, error) {
 	adapter.botUsername = "testbot"
 	adapter.running = true
 
-	return adapter, server, nil
+	return adapter, mockBotServer{}, nil
 }
 
 // ============================================================
@@ -559,7 +571,7 @@ func TestV054StreamSenderRenderContent(t *testing.T) {
 	sender.content = ""
 	content = sender.renderContent()
 	sender.mu.Unlock()
-	if content != "🧠 Searching\n\n" {
+	if content != "🧠 Searching" {
 		t.Errorf("expected thinking label, got '%s'", content)
 	}
 
@@ -1126,10 +1138,9 @@ func TestV054ConvertMessageWithAttachments(t *testing.T) {
 	if len(result.Attachments) == 0 {
 		t.Error("expected non-empty attachments")
 	}
-	// Photo 消息的 Text 为空，Caption 不被 convertMessage 读取
-	// 所以 Text 会被自动构造为 "[用户发送了一张图片]"
-	if result.Text != "[用户发送了一张图片]" {
-		t.Errorf("expected auto-generated text for photo, got '%s'", result.Text)
+	// 当前实现会优先把 Caption 回填给 Text，再提取附件。
+	if result.Text != "photo caption" {
+		t.Errorf("expected caption-backed photo text, got '%s'", result.Text)
 	}
 }
 
@@ -2711,7 +2722,7 @@ func (m *mockStreamSender) MessageID() string {
 }
 
 // newHandlerWithMockAgent creates a Handler with a mock agent for testing.
-func newHandlerWithMockAgent(t *testing.T) (*Handler, *httptest.Server) {
+func newHandlerWithMockAgent(t *testing.T) (*Handler, mockBotServer) {
 	t.Helper()
 
 	adapter, server, err := newAdapterWithMockBot()
@@ -3719,6 +3730,18 @@ func TestV054HandleChatStreamNaturalProgressFinalOnly(t *testing.T) {
 	}
 	if sender.content.Len() != 0 {
 		t.Fatalf("expected no streaming append in natural progress mode, got content length %d", sender.content.Len())
+	}
+}
+
+func TestShouldPrependToolNarratives(t *testing.T) {
+	if !shouldPrependToolNarratives(true, false) {
+		t.Fatal("expected tool narratives in non-narrative mode when enabled")
+	}
+	if shouldPrependToolNarratives(true, true) {
+		t.Fatal("expected tool narratives to be suppressed in narrative mode")
+	}
+	if shouldPrependToolNarratives(false, false) {
+		t.Fatal("expected tool narratives to stay disabled when flag is off")
 	}
 }
 

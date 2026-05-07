@@ -108,14 +108,21 @@
       "progress_summary_with_llm": false,
       "show_tool_details_in_result": false
     },
-    "onebot": {
-      "api_base": "",
-      "ws_url": "",
-      "access_token": "",
-      "bot_id": "",
-      "show_typing": true,
-      "auto_like": true,
-      "like_times": 1
+    "qqofficial": {
+      "app_id": "",
+      "app_secret": "",
+      "sandbox": true,
+      "api_base_url": "",
+      "gateway_url": "",
+      "allowed_chats": [],
+      "allowed_users": [],
+      "remove_at": true,
+      "heartbeat_sec": 25,
+      "reconnect_wait_seconds": 5,
+      "intents": [
+        "public_guild_messages",
+        "group_and_c2c_messages"
+      ]
     }
   }
 }
