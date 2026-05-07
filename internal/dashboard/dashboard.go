@@ -249,10 +249,17 @@ func (d *Dashboard) serveEmbeddedSPA(w http.ResponseWriter, r *http.Request) {
   .status-dot.red { background: #ef4444; }
   .section { margin-top: 24px; }
   .section h2 { font-size: 18px; color: #f8fafc; margin-bottom: 12px; }
+  .section-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
   .log { background: #0f172a; border-radius: 8px; padding: 16px; font-family: monospace; font-size: 13px; max-height: 300px; overflow-y: auto; border: 1px solid #334155; }
   .log .entry { padding: 4px 0; border-bottom: 1px solid #1e293b; }
   .log .time { color: #64748b; }
   .log .msg { color: #e2e8f0; }
+  .panel { background: #1e293b; border-radius: 12px; padding: 18px; border: 1px solid #334155; }
+  .panel h3 { color: #f8fafc; font-size: 15px; margin-bottom: 12px; }
+  .kv { display: grid; gap: 8px; }
+  .kv-row { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; border-bottom: 1px solid #243244; padding-bottom: 6px; }
+  .kv-key { color: #94a3b8; }
+  .kv-value { color: #e2e8f0; text-align: right; word-break: break-word; }
   .refresh { background: #22c55e; color: #0f172a; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600; }
   .refresh:hover { background: #16a34a; }
   .auto-refresh { margin-left: 12px; color: #94a3b8; font-size: 13px; }
@@ -270,6 +277,32 @@ func (d *Dashboard) serveEmbeddedSPA(w http.ResponseWriter, r *http.Request) {
   </div>
   <div class="grid" id="cards"></div>
   <div class="section">
+    <h2>📡 Telegram 运行态</h2>
+    <div class="section-grid">
+      <div class="panel">
+        <h3>Telegram 网关</h3>
+        <div class="kv" id="telegramPanel">加载中...</div>
+      </div>
+      <div class="panel">
+        <h3>Tool / Skill</h3>
+        <div class="kv" id="toolSkillPanel">加载中...</div>
+      </div>
+    </div>
+  </div>
+  <div class="section">
+    <h2>🧠 会话与任务</h2>
+    <div class="section-grid">
+      <div class="panel">
+        <h3>最近会话</h3>
+        <div class="kv" id="sessionPanel">加载中...</div>
+      </div>
+      <div class="panel">
+        <h3>Cron 概览</h3>
+        <div class="kv" id="cronPanel">加载中...</div>
+      </div>
+    </div>
+  </div>
+  <div class="section">
     <h2>📊 详细数据</h2>
     <div class="log" id="dataLog">加载中...</div>
   </div>
@@ -278,9 +311,14 @@ func (d *Dashboard) serveEmbeddedSPA(w http.ResponseWriter, r *http.Request) {
 let autoRefreshTimer = null;
 async function refresh() {
   try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    renderCards(data);
+    const [statusRes, dataRes] = await Promise.all([
+      fetch('/api/status'),
+      fetch('/api/data')
+    ]);
+    const status = await statusRes.json();
+    const data = await dataRes.json();
+    renderCards(status);
+    renderPanels(data);
     renderData(data);
   } catch(e) {
     document.getElementById('dataLog').textContent = '连接失败: ' + e.message;
@@ -290,18 +328,79 @@ function renderCards(data) {
   const cards = document.getElementById('cards');
   const items = [
     { title: '状态', value: data.running ? '运行中' : '已停止', dot: data.running ? 'green' : 'red' },
-    { title: '地址', value: data.addr || 'N/A', dot: 'green' },
-    { title: '活跃 Profile', value: data.active_profile || 'default', dot: 'green' },
+    { title: 'Telegram', value: data.telegram_connected ? '已连接' : (data.telegram_registered ? '已注册未连接' : '未注册'), dot: data.telegram_connected ? 'green' : 'yellow' },
     { title: 'Provider', value: data.provider || 'N/A', dot: 'yellow' },
     { title: '模型', value: data.model || 'N/A', dot: 'yellow' },
-    { title: '记忆条数', value: (data.memory_short||0)+(data.memory_medium||0)+(data.memory_long||0), dot: 'green' },
+    { title: '会话数', value: data.sessions_total ?? 0, dot: 'green' },
+    { title: '记忆条数', value: data.memory_total ?? 0, dot: 'green' },
+    { title: 'Cron 任务', value: data.cron_jobs_total ?? 0, dot: data.cron_running ? 'green' : 'yellow' },
+    { title: 'Tool 数', value: data.tools_enabled ?? data.tools_total ?? 0, dot: 'green' },
+    { title: 'Skill 数', value: data.skills_loaded ?? 0, dot: 'green' },
+    { title: '总请求数', value: data.total_requests ?? 0, dot: 'green' },
+    { title: 'TG 收消息', value: data.telegram_messages_received ?? 0, dot: 'green' },
+    { title: 'TG 发消息', value: data.telegram_messages_sent ?? 0, dot: 'green' },
+    { title: 'TG 错误数', value: data.telegram_errors ?? 0, dot: (data.telegram_errors ?? 0) > 0 ? 'red' : 'green' },
   ];
   cards.innerHTML = items.map(i => '<div class="card"><h3>'+i.title+'</h3><div class="value"><span class="status-dot '+i.dot+'"></span>'+i.value+'</div></div>').join('');
 }
+function renderPanels(data) {
+  document.getElementById('telegramPanel').innerHTML = renderKV([
+    ['注册状态', data.telegram_registered ? '已注册' : '未注册'],
+    ['连接状态', data.telegram_connected ? '已连接' : '未连接'],
+    ['消息接收', data.telegram_messages_received ?? 0],
+    ['消息发送', data.telegram_messages_sent ?? 0],
+    ['错误数', data.telegram_errors ?? 0],
+    ['代理', data.telegram_proxy || '未设置'],
+    ['超时秒数', data.telegram_timeout_seconds ?? 'N/A'],
+  ]);
+
+  document.getElementById('toolSkillPanel').innerHTML = renderKV([
+    ['Builtin Tools', data.tools_builtin_total ?? 0],
+    ['Skill Tools', data.tools_skill_total ?? 0],
+    ['MCP Tools', data.tools_mcp_total ?? 0],
+    ['Delegate Tools', data.tools_delegate_total ?? 0],
+    ['Model Visible', data.tools_model_visible_total ?? 0],
+    ['Loaded Skills', data.skills_loaded ?? 0],
+    ['Skills', (data.skills_names || []).join(', ') || '无'],
+  ]);
+
+  document.getElementById('sessionPanel').innerHTML = renderSessionPanel(data.sessions_recent || []);
+  document.getElementById('cronPanel').innerHTML = renderCronPanel(data);
+}
 function renderData(data) {
   const log = document.getElementById('dataLog');
-  const entries = Object.entries(data).map(([k,v]) => '<div class="entry"><span class="time">'+new Date().toLocaleTimeString()+'</span> <span class="msg">'+k+': '+JSON.stringify(v)+'</span></div>');
+  const entries = Object.entries(data).map(([k,v]) => '<div class="entry"><span class="time">'+new Date().toLocaleTimeString()+'</span> <span class="msg">'+k+': '+escapeHtml(JSON.stringify(v, null, 2))+'</span></div>');
   log.innerHTML = entries.join('');
+}
+function renderKV(rows) {
+  return rows.map(([k, v]) => '<div class="kv-row"><span class="kv-key">'+escapeHtml(k)+'</span><span class="kv-value">'+escapeHtml(String(v))+'</span></div>').join('');
+}
+function renderSessionPanel(sessions) {
+  if (!sessions.length) return '<div class="kv-row"><span class="kv-key">状态</span><span class="kv-value">暂无会话</span></div>';
+  return sessions.map((s, idx) =>
+    '<div class="kv-row"><span class="kv-key">#'+(idx+1)+' '+escapeHtml(s.title || s.id || "untitled")+'</span><span class="kv-value">'+escapeHtml(String(s.message_count ?? 0))+' msg</span></div>'
+  ).join('');
+}
+function renderCronPanel(data) {
+  const jobs = data.cron_jobs || [];
+  let html = renderKV([
+    ['引擎状态', data.cron_running ? '运行中' : '未运行'],
+    ['任务总数', data.cron_jobs_total ?? 0],
+  ]);
+  if (!jobs.length) {
+    html += '<div class="kv-row"><span class="kv-key">最近任务</span><span class="kv-value">暂无</span></div>';
+    return html;
+  }
+  html += jobs.slice(0, 3).map(job =>
+    '<div class="kv-row"><span class="kv-key">'+escapeHtml(job.id || 'job')+'</span><span class="kv-value">'+escapeHtml(job.status || 'unknown')+'</span></div>'
+  ).join('');
+  return html;
+}
+function escapeHtml(str) {
+  return String(str)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;');
 }
 function toggleAutoRefresh() {
   if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }

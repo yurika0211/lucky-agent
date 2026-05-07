@@ -14,7 +14,6 @@ import (
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/gateway"
-	"github.com/yurika0211/luckyharness/internal/gateway/onebot"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
@@ -411,65 +410,11 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		fmt.Println("Telegram 网关已启动")
-	case "onebot":
-		apiBase, _ := cmd.Flags().GetString("onebot-api")
-		if !cmd.Flags().Changed("onebot-api") && cfg.MsgGateway.OneBot.APIBase != "" {
-			apiBase = cfg.MsgGateway.OneBot.APIBase
-		}
-		wsURL, _ := cmd.Flags().GetString("onebot-ws")
-		if !cmd.Flags().Changed("onebot-ws") && cfg.MsgGateway.OneBot.WSURL != "" {
-			wsURL = cfg.MsgGateway.OneBot.WSURL
-		}
-		obToken, _ := cmd.Flags().GetString("onebot-token")
-		if !cmd.Flags().Changed("onebot-token") && cfg.MsgGateway.OneBot.AccessToken != "" {
-			obToken = cfg.MsgGateway.OneBot.AccessToken
-		}
-		botID, _ := cmd.Flags().GetString("onebot-bot-id")
-		if !cmd.Flags().Changed("onebot-bot-id") && cfg.MsgGateway.OneBot.BotID != "" {
-			botID = cfg.MsgGateway.OneBot.BotID
-		}
-		showTyping, _ := cmd.Flags().GetBool("onebot-typing")
-		if !cmd.Flags().Changed("onebot-typing") {
-			showTyping = cfg.MsgGateway.OneBot.ShowTyping
-		}
-		autoLike, _ := cmd.Flags().GetBool("onebot-like")
-		if !cmd.Flags().Changed("onebot-like") {
-			autoLike = cfg.MsgGateway.OneBot.AutoLike
-		}
-		likeTimes, _ := cmd.Flags().GetInt("onebot-like-times")
-		if !cmd.Flags().Changed("onebot-like-times") && cfg.MsgGateway.OneBot.LikeTimes > 0 {
-			likeTimes = cfg.MsgGateway.OneBot.LikeTimes
-		}
-		if apiBase == "" {
-			return fmt.Errorf("onebot 需要 --onebot-api 参数（或在 config.json 里设置 msg_gateway.onebot.api_base）")
-		}
-
-		obAdapter := onebot.NewAdapter(onebot.Config{
-			APIBase:       apiBase,
-			WSURL:         wsURL,
-			AccessToken:   obToken,
-			BotQQID:       botID,
-			ShowTyping:    showTyping,
-			AutoLike:      autoLike,
-			LikeTimes:     likeTimes,
-			MaxMessageLen: 4000,
-		})
-		obHandler := onebot.NewHandler(obAdapter, a)
-		obAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
-			return obHandler.HandleMessage(ctx, msg)
-		})
-		if err := gm.Register(obAdapter); err != nil {
-			return err
-		}
-		if err := gm.Start(ctx, "onebot"); err != nil {
-			return err
-		}
-		fmt.Println("OneBot 网关已启动")
 	default:
 		if platform == "" {
 			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
 		}
-		return fmt.Errorf("不支持的平台: %s (支持: telegram, onebot)", platform)
+		return fmt.Errorf("不支持的平台: %s (支持: telegram)", platform)
 	}
 
 	sigCh := make(chan os.Signal, 1)

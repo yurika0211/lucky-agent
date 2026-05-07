@@ -160,15 +160,8 @@ func newRootCmd() *cobra.Command {
 		Short: "启动消息网关",
 		RunE:  runMsgGatewayStart,
 	}
-	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, onebot)")
+	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram)")
 	msgGatewayStartCmd.Flags().String("token", "", "Bot token (Telegram)")
-	msgGatewayStartCmd.Flags().String("onebot-api", "", "OneBot HTTP API 地址 (如 http://127.0.0.1:3000)")
-	msgGatewayStartCmd.Flags().String("onebot-ws", "", "OneBot WebSocket 事件地址 (如 ws://127.0.0.1:3001)")
-	msgGatewayStartCmd.Flags().String("onebot-token", "", "OneBot Access Token")
-	msgGatewayStartCmd.Flags().String("onebot-bot-id", "", "OneBot Bot QQ ID")
-	msgGatewayStartCmd.Flags().Bool("onebot-typing", true, "OneBot 显示正在输入")
-	msgGatewayStartCmd.Flags().Bool("onebot-like", true, "OneBot 收到消息自动点赞")
-	msgGatewayStartCmd.Flags().Int("onebot-like-times", 1, "OneBot 点赞次数 (1-10)")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
 	msgGatewayStopCmd := &cobra.Command{
 		Use:   "stop [platform]",

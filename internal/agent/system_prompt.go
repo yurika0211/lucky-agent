@@ -304,7 +304,6 @@ func (a *Agent) buildSkillsPromptBlock() string {
 	return strings.Join(lines, "\n")
 }
 
-
 func routeFriendlySkillSummary(s *tool.SkillInfo) string {
 	if s == nil {
 		return ""
@@ -503,13 +502,6 @@ On Telegram:
 In all platforms:
 - do not dump noisy internal traces unless the user explicitly asks,
 - do not turn intermediate system mechanics into user-facing prose by default.`
-	case "onebot":
-		return `Platform delivery policy:
-
-On OneBot/QQ-style messaging:
-- keep responses short and chat-friendly,
-- do not leak internal protocol fragments, event names, or raw tool syntax,
-- if a real file or artifact should be delivered, save it to a local file first and return it in the required format.`
 	case "cli":
 		return `Platform delivery policy:
 

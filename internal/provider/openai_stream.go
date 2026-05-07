@@ -19,6 +19,14 @@ import (
 
 var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
+func maskedKeySuffix(key string) string {
+	key = strings.TrimSpace(key)
+	if len(key) <= 8 {
+		return key
+	}
+	return key[:8] + "..."
+}
+
 // openaiChatRequest 是发送给 OpenAI API 的请求体
 type openaiChatRequest struct {
 	Model               string          `json:"model"`
@@ -225,6 +233,7 @@ func retryDelay(settings openAIRetrySettings, attempt int) time.Duration {
 func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Response, error) {
 	settings := resolveOpenAIRetrySettings(cfg)
 	url := strings.TrimRight(cfg.LlmProvider.BaseURL, "/") + "/chat/completions"
+	log.Printf("[provider] openai request: model=%s url=%s stream_retry_attempts=%d api_key=%s", cfg.LlmProvider.Model, url, settings.MaxAttempts, maskedKeySuffix(cfg.LlmProvider.APIKey))
 
 	var lastErr error
 	for attempt := 1; attempt <= settings.MaxAttempts; attempt++ {
@@ -248,10 +257,12 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 
 		resp, err := openAIHTTPClient.Do(req)
 		if err == nil {
+			log.Printf("[provider] openai response: model=%s url=%s status=%d", cfg.LlmProvider.Model, url, resp.StatusCode)
 			return resp, nil
 		}
 
 		lastErr = err
+		log.Printf("[provider] openai transport error: model=%s url=%s attempt=%d err=%v", cfg.LlmProvider.Model, url, attempt, err)
 		if attempt == settings.MaxAttempts || !shouldRetryTransportError(err, cfg) {
 			return nil, fmt.Errorf("send request: %w", err)
 		}
@@ -338,6 +349,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	capture.writeResponseBody(respBody)
 
 	if resp.StatusCode != http.StatusOK {
+		log.Printf("[provider] openai non-200: model=%s url=%s status=%d body=%s", cfg.LlmProvider.Model, strings.TrimRight(cfg.LlmProvider.BaseURL, "/")+"/chat/completions", resp.StatusCode, strings.TrimSpace(string(respBody)))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -527,6 +539,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		resp.Body.Close()
 		capture.writeResponseMeta(resp.StatusCode, resp.Header)
 		capture.writeResponseBody(respBody)
+		log.Printf("[provider] openai stream non-200: model=%s url=%s status=%d body=%s", cfg.LlmProvider.Model, strings.TrimRight(cfg.LlmProvider.BaseURL, "/")+"/chat/completions", resp.StatusCode, strings.TrimSpace(string(respBody)))
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 	capture.writeResponseMeta(resp.StatusCode, resp.Header)

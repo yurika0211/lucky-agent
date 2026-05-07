@@ -163,7 +163,6 @@ type MsgGatewayConfig struct {
 	APIAddr  string             `json:"api_addr,omitempty"`
 	Token    string             `json:"token,omitempty"` // 兼容: telegram token
 	Telegram MsgGatewayTelegram `json:"telegram,omitempty"`
-	OneBot   MsgGatewayOneBot   `json:"onebot,omitempty"`
 }
 
 // MsgGatewayTelegram Telegram 网关配置
@@ -175,17 +174,6 @@ type MsgGatewayTelegram struct {
 	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
 	ProgressSummaryWithLLM    bool   `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
 	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
-}
-
-// MsgGatewayOneBot OneBot 网关配置
-type MsgGatewayOneBot struct {
-	APIBase     string `json:"api_base,omitempty"`
-	WSURL       string `json:"ws_url,omitempty"`
-	AccessToken string `json:"access_token,omitempty"`
-	BotID       string `json:"bot_id,omitempty"`
-	ShowTyping  bool   `json:"show_typing,omitempty"`
-	AutoLike    bool   `json:"auto_like,omitempty"`
-	LikeTimes   int    `json:"like_times,omitempty"`
 }
 
 // MemoryConfig 记忆系统配置
@@ -439,11 +427,6 @@ func DefaultConfig() *Config {
 				ProgressAsNaturalLanguage: false,
 				ShowToolDetailsInResult:   false,
 			},
-			OneBot: MsgGatewayOneBot{
-				ShowTyping: true,
-				AutoLike:   true,
-				LikeTimes:  1,
-			},
 		},
 	}
 }
@@ -612,9 +595,6 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.MsgGateway.Token == "" && cfg.MsgGateway.Telegram.Token != "" {
 		cfg.MsgGateway.Token = cfg.MsgGateway.Telegram.Token
-	}
-	if cfg.MsgGateway.OneBot.LikeTimes <= 0 {
-		cfg.MsgGateway.OneBot.LikeTimes = def.MsgGateway.OneBot.LikeTimes
 	}
 	if cfg.MsgGateway.Telegram.ChatTimeoutSeconds <= 0 {
 		cfg.MsgGateway.Telegram.ChatTimeoutSeconds = def.MsgGateway.Telegram.ChatTimeoutSeconds
@@ -858,22 +838,6 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.telegram.show_tool_chain":
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
-	case "msg_gateway.onebot.api_base":
-		m.config.MsgGateway.OneBot.APIBase = value
-	case "msg_gateway.onebot.ws_url":
-		m.config.MsgGateway.OneBot.WSURL = value
-	case "msg_gateway.onebot.access_token":
-		m.config.MsgGateway.OneBot.AccessToken = value
-	case "msg_gateway.onebot.bot_id":
-		m.config.MsgGateway.OneBot.BotID = value
-	case "msg_gateway.onebot.show_typing":
-		m.config.MsgGateway.OneBot.ShowTyping = parseBool(value)
-	case "msg_gateway.onebot.auto_like":
-		m.config.MsgGateway.OneBot.AutoLike = parseBool(value)
-	case "msg_gateway.onebot.like_times":
-		var n int
-		fmt.Sscanf(value, "%d", &n)
-		m.config.MsgGateway.OneBot.LikeTimes = n
 	case "limits.max_tokens":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

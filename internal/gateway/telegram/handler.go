@@ -1353,6 +1353,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				return true, true
 
 			case agent.ChatEventError:
+				fmt.Printf("[telegram] chat event error: chatID=%s sessionID=%s err=%v\n", msg.Chat.ID, sessionID, evt.Err)
 				if isTaskTimeoutError(evt.Err) {
 					h.sendProgressMessage(msg, "⏱ 请求超时")
 				} else if isTaskCanceledError(evt.Err) {
@@ -1559,6 +1560,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				return true, true
 
 			case agent.ChatEventError:
+				fmt.Printf("[telegram] chat event error: chatID=%s sessionID=%s err=%v\n", msg.Chat.ID, sessionID, evt.Err)
 				if isTaskTimeoutError(evt.Err) {
 					sender.SetResult("⏱ 请求超时")
 					sender.Finish()

@@ -13,7 +13,6 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/cron"
-	"github.com/yurika0211/luckyharness/internal/dashboard"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/server"
@@ -454,8 +453,8 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 		"/profile": func(_ replCommandContext, arg string) (bool, bool) {
 			return handleProfileCommand(arg), false
 		},
-		"/dashboard": func(_ replCommandContext, arg string) (bool, bool) {
-			return handleDashboardCommand(arg), false
+		"/dashboard": func(ctx replCommandContext, arg string) (bool, bool) {
+			return handleDashboardCommand(arg, ctx.agent), false
 		},
 		"/serve": func(ctx replCommandContext, arg string) (bool, bool) {
 			return handleServeCommand(arg, ctx.agent), false
@@ -981,10 +980,10 @@ func handleProfileCommand(arg string) bool {
 }
 
 // handleDashboardCommand 处理 /dashboard 命令
-func handleDashboardCommand(arg string) bool {
+func handleDashboardCommand(arg string, a *agent.Agent) bool {
 	parts := strings.Fields(arg)
 	if len(parts) == 0 {
-		fmt.Println("用法: /dashboard start [addr]")
+		fmt.Println("用法: /dashboard <start [addr]|status|stop>")
 		return true
 	}
 
@@ -994,12 +993,38 @@ func handleDashboardCommand(arg string) bool {
 		if len(parts) > 1 {
 			addr = parts[1]
 		}
-		cfg := dashboard.Config{Addr: addr}
-		d := dashboard.New(cfg)
+		d, created := ensureREPLDashboard(a, addr)
+		if d.IsRunning() {
+			fmt.Printf("🌐 Dashboard 已在运行: http://localhost%s\n", d.Addr())
+			return true
+		}
 		if err := d.Start(); err != nil {
 			fmt.Printf("❌ %v\n", err)
 		} else {
-			fmt.Printf("🌐 Dashboard 已启动: http://localhost%s\n", addr)
+			if created {
+				fmt.Printf("✅ Dashboard provider 已接入当前 Agent 运行态\n")
+			}
+			fmt.Printf("🌐 Dashboard 已启动: http://localhost%s\n", d.Addr())
+		}
+	case "status":
+		d := getREPLDashboard()
+		if d == nil {
+			fmt.Println("Dashboard 尚未创建。先执行 /dashboard start")
+		} else if d.IsRunning() {
+			fmt.Printf("🌐 Dashboard 运行中: http://localhost%s\n", d.Addr())
+		} else {
+			fmt.Printf("Dashboard 已创建但未运行，监听地址: %s\n", d.Addr())
+		}
+	case "stop":
+		d := getREPLDashboard()
+		if d == nil {
+			fmt.Println("Dashboard 尚未创建，无需停止")
+			return true
+		}
+		if err := d.Stop(); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Println("🛑 Dashboard 已停止")
 		}
 
 	default:
