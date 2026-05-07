@@ -2,10 +2,8 @@ package telegram
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"math/rand"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,10 +11,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-
-	"github.com/yurika0211/luckyharness/internal/gateway"
 )
 
 type telegramMethodRecorder struct {
@@ -42,12 +36,10 @@ func newCaptureBotAdapter(t *testing.T) (*Adapter, func(), *telegramMethodRecord
 	t.Helper()
 
 	recorder := &telegramMethodRecorder{}
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var result map[string]any
-
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
 		switch {
 		case containsMethod(r.URL.Path, "getMe"):
-			result = map[string]any{
+			return map[string]any{
 				"ok": true,
 				"result": map[string]any{
 					"id":         123456789,
@@ -58,7 +50,7 @@ func newCaptureBotAdapter(t *testing.T) (*Adapter, func(), *telegramMethodRecord
 			}
 		case containsMethod(r.URL.Path, "sendMessage"):
 			recorder.add("sendMessage")
-			result = map[string]any{
+			return map[string]any{
 				"ok": true,
 				"result": map[string]any{
 					"message_id": 42,
@@ -70,7 +62,7 @@ func newCaptureBotAdapter(t *testing.T) (*Adapter, func(), *telegramMethodRecord
 			}
 		case containsMethod(r.URL.Path, "sendPhoto"):
 			recorder.add("sendPhoto")
-			result = map[string]any{
+			return map[string]any{
 				"ok": true,
 				"result": map[string]any{
 					"message_id": 43,
@@ -81,7 +73,7 @@ func newCaptureBotAdapter(t *testing.T) (*Adapter, func(), *telegramMethodRecord
 			}
 		case containsMethod(r.URL.Path, "sendDocument"):
 			recorder.add("sendDocument")
-			result = map[string]any{
+			return map[string]any{
 				"ok": true,
 				"result": map[string]any{
 					"message_id": 44,
@@ -91,29 +83,10 @@ func newCaptureBotAdapter(t *testing.T) (*Adapter, func(), *telegramMethodRecord
 				},
 			}
 		default:
-			result = map[string]any{
-				"ok":     true,
-				"result": map[string]any{},
-			}
+			return defaultMockBotResponse(r)
 		}
-
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(result)
 	})
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen on localhost: %v", err)
-	}
-	server := &http.Server{Handler: handler}
-	go func() {
-		_ = server.Serve(listener)
-	}()
-	baseURL := fmt.Sprintf("http://%s", listener.Addr().String())
-
-	bot, err := tgbotapi.NewBotAPIWithAPIEndpoint("123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11", baseURL+"/bot%s/%s")
-	if err != nil {
-		_ = server.Close()
-		_ = listener.Close()
 		t.Fatalf("create mock bot: %v", err)
 	}
 
@@ -121,10 +94,7 @@ func newCaptureBotAdapter(t *testing.T) (*Adapter, func(), *telegramMethodRecord
 	adapter.bot = bot
 	adapter.botUsername = "testbot"
 	adapter.running = true
-	cleanup := func() {
-		_ = server.Close()
-		_ = listener.Close()
-	}
+	cleanup := func() {}
 	return adapter, cleanup, recorder
 }
 

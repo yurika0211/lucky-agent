@@ -218,8 +218,8 @@ func TestManagerReload(t *testing.T) {
 	mgr.Set("provider", "openai")
 	mgr.Save()
 
-	// Modify externally with JSON format
-	os.WriteFile(cfgPath, []byte(`{"provider": "anthropic", "model": "claude-3"}`+"\n"), 0600)
+	// Modify externally using the current persisted schema.
+	os.WriteFile(cfgPath, []byte(`{"llm_provider":{"name":"anthropic","model":"claude-3"}}`+"\n"), 0600)
 
 	// Reload
 	if err := mgr.Reload(); err != nil {
