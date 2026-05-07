@@ -14,7 +14,7 @@ services:
       - "${LH_PORT:-9090}:9090"
     volumes:
       - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/config.json:ro
+      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/api/v1/health >/dev/null 2>&1 || exit 1"]
       interval: 30s
@@ -32,7 +32,7 @@ services:
     command: ["msg-gateway", "start", "--platform", "telegram"]
     volumes:
       - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/config.json:ro
+      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
     depends_on:
       luckyharness:
         condition: service_healthy
