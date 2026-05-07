@@ -158,11 +158,12 @@ type DashboardConfig struct {
 
 // MsgGatewayConfig 消息网关配置
 type MsgGatewayConfig struct {
-	Platform string             `json:"platform,omitempty"`
-	StartAll bool               `json:"start_all,omitempty"`
-	APIAddr  string             `json:"api_addr,omitempty"`
-	Token    string             `json:"token,omitempty"` // 兼容: telegram token
-	Telegram MsgGatewayTelegram `json:"telegram,omitempty"`
+	Platform   string               `json:"platform,omitempty"`
+	StartAll   bool                 `json:"start_all,omitempty"`
+	APIAddr    string               `json:"api_addr,omitempty"`
+	Token      string               `json:"token,omitempty"` // 兼容: telegram token
+	Telegram   MsgGatewayTelegram   `json:"telegram,omitempty"`
+	QQOfficial MsgGatewayQQOfficial `json:"qqofficial,omitempty"`
 }
 
 // MsgGatewayTelegram Telegram 网关配置
@@ -174,6 +175,21 @@ type MsgGatewayTelegram struct {
 	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
 	ProgressSummaryWithLLM    bool   `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
 	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
+}
+
+// MsgGatewayQQOfficial QQ 官方机器人配置
+type MsgGatewayQQOfficial struct {
+	AppID         string   `json:"app_id,omitempty"`
+	AppSecret     string   `json:"app_secret,omitempty"`
+	Sandbox       bool     `json:"sandbox,omitempty"`
+	APIBaseURL    string   `json:"api_base_url,omitempty"`
+	GatewayURL    string   `json:"gateway_url,omitempty"`
+	AllowedChats  []string `json:"allowed_chats,omitempty"`
+	AllowedUsers  []string `json:"allowed_users,omitempty"`
+	RemoveAt      bool     `json:"remove_at,omitempty"`
+	HeartbeatSec  int      `json:"heartbeat_sec,omitempty"`
+	ReconnectWait int      `json:"reconnect_wait_seconds,omitempty"`
+	Intents       []string `json:"intents,omitempty"`
 }
 
 // MemoryConfig 记忆系统配置
@@ -427,6 +443,15 @@ func DefaultConfig() *Config {
 				ProgressAsNaturalLanguage: false,
 				ShowToolDetailsInResult:   false,
 			},
+			QQOfficial: MsgGatewayQQOfficial{
+				RemoveAt:      true,
+				HeartbeatSec:  25,
+				ReconnectWait: 5,
+				Intents: []string{
+					"public_guild_messages",
+					"group_and_c2c_messages",
+				},
+			},
 		},
 	}
 }
@@ -601,6 +626,15 @@ func normalizeConfig(cfg *Config) {
 	}
 	if !cfg.MsgGateway.Telegram.ShowToolDetailsInResult {
 		cfg.MsgGateway.Telegram.ShowToolDetailsInResult = def.MsgGateway.Telegram.ShowToolDetailsInResult
+	}
+	if cfg.MsgGateway.QQOfficial.HeartbeatSec <= 0 {
+		cfg.MsgGateway.QQOfficial.HeartbeatSec = def.MsgGateway.QQOfficial.HeartbeatSec
+	}
+	if cfg.MsgGateway.QQOfficial.ReconnectWait <= 0 {
+		cfg.MsgGateway.QQOfficial.ReconnectWait = def.MsgGateway.QQOfficial.ReconnectWait
+	}
+	if len(cfg.MsgGateway.QQOfficial.Intents) == 0 {
+		cfg.MsgGateway.QQOfficial.Intents = append([]string(nil), def.MsgGateway.QQOfficial.Intents...)
 	}
 }
 
@@ -838,6 +872,32 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.telegram.show_tool_chain":
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
+	case "msg_gateway.qqofficial.app_id":
+		m.config.MsgGateway.QQOfficial.AppID = value
+	case "msg_gateway.qqofficial.app_secret":
+		m.config.MsgGateway.QQOfficial.AppSecret = value
+	case "msg_gateway.qqofficial.sandbox":
+		m.config.MsgGateway.QQOfficial.Sandbox = parseBool(value)
+	case "msg_gateway.qqofficial.api_base_url":
+		m.config.MsgGateway.QQOfficial.APIBaseURL = value
+	case "msg_gateway.qqofficial.gateway_url":
+		m.config.MsgGateway.QQOfficial.GatewayURL = value
+	case "msg_gateway.qqofficial.allowed_chats":
+		m.config.MsgGateway.QQOfficial.AllowedChats = splitCSV(value)
+	case "msg_gateway.qqofficial.allowed_users":
+		m.config.MsgGateway.QQOfficial.AllowedUsers = splitCSV(value)
+	case "msg_gateway.qqofficial.remove_at":
+		m.config.MsgGateway.QQOfficial.RemoveAt = parseBool(value)
+	case "msg_gateway.qqofficial.heartbeat_sec":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.QQOfficial.HeartbeatSec = n
+	case "msg_gateway.qqofficial.reconnect_wait_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.QQOfficial.ReconnectWait = n
+	case "msg_gateway.qqofficial.intents":
+		m.config.MsgGateway.QQOfficial.Intents = splitCSV(value)
 	case "limits.max_tokens":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
