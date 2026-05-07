@@ -981,8 +981,18 @@ func (m *Manager) InitHome() error {
 		m.homeDir,
 		filepath.Join(m.homeDir, "sessions"),
 		filepath.Join(m.homeDir, "memory"),
+		filepath.Join(m.homeDir, "memory", "midterm"),
 		filepath.Join(m.homeDir, "logs"),
 		filepath.Join(m.homeDir, "skills"),
+		filepath.Join(m.homeDir, "tokens"),
+		filepath.Join(m.homeDir, "rag"),
+		filepath.Join(m.homeDir, "workspace"),
+		filepath.Join(m.homeDir, "knowledge"),
+		filepath.Join(m.homeDir, "knowledge", "final_answers"),
+		filepath.Join(m.homeDir, "runtime"),
+		filepath.Join(m.homeDir, "data"),
+		filepath.Join(m.homeDir, "data", "telegram"),
+		filepath.Join(m.homeDir, "description"),
 	}
 
 	for _, dir := range dirs {
@@ -997,6 +1007,27 @@ func (m *Manager) InitHome() error {
 		defaultSoul := DefaultSoul()
 		if err := os.WriteFile(soulPath, []byte(defaultSoul), 0o644); err != nil {
 			return fmt.Errorf("write SOUL.md: %w", err)
+		}
+	}
+
+	manualPath := filepath.Join(m.homeDir, "description", "LUCKYHARNESS_AGENT_MANUAL.md")
+	if _, err := os.Stat(manualPath); os.IsNotExist(err) {
+		if err := os.WriteFile(manualPath, []byte(DefaultAgentManual()), 0o644); err != nil {
+			return fmt.Errorf("write LUCKYHARNESS_AGENT_MANUAL.md: %w", err)
+		}
+	}
+
+	missionPath := filepath.Join(m.homeDir, "mission.md")
+	if _, err := os.Stat(missionPath); os.IsNotExist(err) {
+		if err := os.WriteFile(missionPath, []byte(DefaultMission()), 0o644); err != nil {
+			return fmt.Errorf("write mission.md: %w", err)
+		}
+	}
+
+	heartbeatPath := filepath.Join(m.homeDir, "workspace", "HEARTBEAT.md")
+	if _, err := os.Stat(heartbeatPath); os.IsNotExist(err) {
+		if err := os.WriteFile(heartbeatPath, []byte(DefaultHeartbeat()), 0o600); err != nil {
+			return fmt.Errorf("write HEARTBEAT.md: %w", err)
 		}
 	}
 
