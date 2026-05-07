@@ -51,11 +51,13 @@ ${HOME}/.luckyharness/config.json
 - 在容器里运行时，应该显式设置 `HOME=/var/lib/luckyharness` 或别的持久化目录
 - 如果容器里的 `HOME` 不对，LuckyHarness 就不会读到你以为它会读到的那份配置
 
-可以从仓库自带模板开始：
+推荐先执行初始化命令：
 
 ```bash
-cp config.example.json ~/.luckyharness/config.json
+go run ./cmd/lh init
 ```
+
+它会初始化 `~/.luckyharness` 运行目录，创建默认 `config.json`、`SOUL.md` 以及运行期会用到的目录骨架。
 
 最小配置示例：
 
@@ -86,11 +88,35 @@ cp config.example.json ~/.luckyharness/config.json
 
 ## 快速开始
 
-### 1. 准备配置文件
+### 1. 初始化运行目录
 
 ```bash
-mkdir -p ~/.luckyharness
-cp config.example.json ~/.luckyharness/config.json
+go run ./cmd/lh init
+```
+
+初始化后，默认目录结构大致如下：
+
+```text
+~/.luckyharness/
+├── config.json
+├── SOUL.md
+├── mission.md
+├── sessions/
+├── memory/
+│   └── midterm/
+├── logs/
+├── skills/
+├── tokens/
+├── rag/
+├── workspace/
+│   └── HEARTBEAT.md
+├── knowledge/
+│   └── final_answers/
+├── runtime/
+├── data/
+│   └── telegram/
+└── description/
+    └── LUCKYHARNESS_AGENT_MANUAL.md
 ```
 
 然后重点修改这些字段：
@@ -101,6 +127,14 @@ cp config.example.json ~/.luckyharness/config.json
 - `model`
 - `server.addr`
 - `msg_gateway.telegram.token`（如果你要接 Telegram）
+
+也可以用命令直接修改，例如：
+
+```bash
+go run ./cmd/lh config set api_key sk-your-api-key
+go run ./cmd/lh config set provider openai
+go run ./cmd/lh config set model gpt-4o
+```
 
 ### 2. 启动本地对话调试
 
