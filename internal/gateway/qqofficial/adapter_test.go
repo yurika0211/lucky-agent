@@ -80,3 +80,23 @@ func TestConvertDispatchC2CMessage(t *testing.T) {
 		t.Fatalf("unexpected text: %q", msg.Text)
 	}
 }
+
+func TestAccessTokenResponseUnmarshalExpiresInString(t *testing.T) {
+	var resp accessTokenResponse
+	if err := json.Unmarshal([]byte(`{"access_token":"abc","expires_in":"7200"}`), &resp); err != nil {
+		t.Fatalf("unmarshal string expires_in: %v", err)
+	}
+	if resp.AccessToken != "abc" || resp.ExpiresIn != 7200 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestAccessTokenResponseUnmarshalExpiresInNumber(t *testing.T) {
+	var resp accessTokenResponse
+	if err := json.Unmarshal([]byte(`{"access_token":"abc","expires_in":7200}`), &resp); err != nil {
+		t.Fatalf("unmarshal numeric expires_in: %v", err)
+	}
+	if resp.AccessToken != "abc" || resp.ExpiresIn != 7200 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}

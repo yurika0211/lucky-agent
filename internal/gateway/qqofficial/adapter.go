@@ -32,6 +32,44 @@ type accessTokenResponse struct {
 	ExpiresIn   int    `json:"expires_in"`
 }
 
+func (r *accessTokenResponse) UnmarshalJSON(data []byte) error {
+	type rawAccessTokenResponse struct {
+		AccessToken string          `json:"access_token"`
+		ExpiresIn   json.RawMessage `json:"expires_in"`
+	}
+
+	var raw rawAccessTokenResponse
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	r.AccessToken = raw.AccessToken
+	if len(raw.ExpiresIn) == 0 {
+		return nil
+	}
+
+	var expiresInt int
+	if err := json.Unmarshal(raw.ExpiresIn, &expiresInt); err == nil {
+		r.ExpiresIn = expiresInt
+		return nil
+	}
+
+	var expiresStr string
+	if err := json.Unmarshal(raw.ExpiresIn, &expiresStr); err != nil {
+		return fmt.Errorf("decode expires_in: %w", err)
+	}
+	expiresStr = strings.TrimSpace(expiresStr)
+	if expiresStr == "" {
+		return nil
+	}
+	n, err := strconv.Atoi(expiresStr)
+	if err != nil {
+		return fmt.Errorf("parse expires_in %q: %w", expiresStr, err)
+	}
+	r.ExpiresIn = n
+	return nil
+}
+
 type gatewayFrame struct {
 	Op int             `json:"op"`
 	S  *int64          `json:"s,omitempty"`
