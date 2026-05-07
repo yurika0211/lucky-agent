@@ -347,6 +347,9 @@ function renderPanels(data) {
   document.getElementById('telegramPanel').innerHTML = renderKV([
     ['注册状态', data.telegram_registered ? '已注册' : '未注册'],
     ['连接状态', data.telegram_connected ? '已连接' : '未连接'],
+    ['状态来源', formatStateSource(data.telegram_state_source)],
+    ['状态时间', data.telegram_state_updated_at || 'N/A'],
+    ['状态 PID', data.telegram_state_pid || 'N/A'],
     ['消息接收', data.telegram_messages_received ?? 0],
     ['消息发送', data.telegram_messages_sent ?? 0],
     ['错误数', data.telegram_errors ?? 0],
@@ -371,6 +374,16 @@ function renderData(data) {
   const log = document.getElementById('dataLog');
   const entries = Object.entries(data).map(([k,v]) => '<div class="entry"><span class="time">'+new Date().toLocaleTimeString()+'</span> <span class="msg">'+k+': '+escapeHtml(JSON.stringify(v, null, 2))+'</span></div>');
   log.innerHTML = entries.join('');
+}
+function formatStateSource(source) {
+  switch (source) {
+    case 'shared_runtime':
+      return 'shared_runtime';
+    case 'local_memory':
+      return 'local_memory';
+    default:
+      return source || 'unknown';
+  }
 }
 function renderKV(rows) {
   return rows.map(([k, v]) => '<div class="kv-row"><span class="kv-key">'+escapeHtml(k)+'</span><span class="kv-value">'+escapeHtml(String(v))+'</span></div>').join('');

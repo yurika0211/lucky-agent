@@ -1957,6 +1957,49 @@ func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
 	}
 }
 
+func TestCronNotificationFallsBackToRecentTelegramTarget(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &mockProvider{name: "test-mock"}
+
+	gm := msggateway.NewGatewayManager()
+	gw := &cronNotifyGateway{name: "telegram", running: true}
+	if err := gm.Register(gw); err != nil {
+		t.Fatalf("register gateway: %v", err)
+	}
+	a.msgGateway = gm
+	a.RecordRecentChatTarget("telegram", "12345", "77")
+
+	if _, err := a.Tools().Call("cron_add", map[string]any{
+		"id":       "agent-job-fallback-tg",
+		"schedule": "每小时",
+		"mode":     "agent",
+		"command":  "say hello from cron fallback",
+	}); err != nil {
+		t.Fatalf("cron_add(agent fallback telegram) error = %v", err)
+	}
+
+	job, ok := a.CronEngine().GetJob("agent-job-fallback-tg")
+	if !ok {
+		t.Fatal("expected agent-job-fallback-tg to exist")
+	}
+	if err := job.Task(); err != nil {
+		t.Fatalf("agent cron task error = %v", err)
+	}
+	if len(gw.messages) == 0 {
+		t.Fatal("expected fallback telegram notification to be sent")
+	}
+}
+
 func TestCronToolsPersistAcrossAgentRestart(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)

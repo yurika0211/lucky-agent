@@ -7,8 +7,9 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/cron"
-	"github.com/yurika0211/luckyharness/internal/dashboard"
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/server/dashboard"
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
@@ -52,6 +53,7 @@ func (p *replDashboardProvider) DashboardData() map[string]interface{} {
 	}
 
 	cfg := p.agent.Config().Get()
+	homeDir := p.agent.Config().HomeDir()
 	data["provider"] = cfg.Provider
 	data["model"] = cfg.Model
 	data["stream_mode"] = cfg.StreamMode
@@ -128,6 +130,19 @@ func (p *replDashboardProvider) DashboardData() map[string]interface{} {
 			data["telegram_messages_received"] = 0
 			data["telegram_errors"] = 0
 		}
+		data["telegram_state_source"] = "local_memory"
+		data["telegram_state_updated_at"] = time.Now().Format(time.RFC3339)
+		data["telegram_state_pid"] = 0
+	}
+	if sharedState, err := gateway.ReadSharedTelegramState(homeDir); err == nil && sharedState.IsFresh(15*time.Second) {
+		data["telegram_registered"] = sharedState.Registered
+		data["telegram_connected"] = sharedState.Connected
+		data["telegram_messages_sent"] = sharedState.MessagesSent
+		data["telegram_messages_received"] = sharedState.MessagesReceived
+		data["telegram_errors"] = sharedState.Errors
+		data["telegram_state_source"] = "shared_runtime"
+		data["telegram_state_updated_at"] = sharedState.UpdatedAt.Format(time.RFC3339)
+		data["telegram_state_pid"] = sharedState.PID
 	}
 
 	if tools := p.agent.Tools(); tools != nil {

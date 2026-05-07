@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -359,6 +360,18 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	gm := a.MsgGateway()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	homeDir := a.Config().HomeDir()
+	syncTelegramState := func(registered, connected bool) {
+		stats, _ := gm.Stats("telegram")
+		_ = gateway.WriteSharedTelegramState(homeDir, gateway.SharedTelegramState{
+			PID:              os.Getpid(),
+			Registered:       registered,
+			Connected:        connected,
+			MessagesSent:     stats.MessagesSent,
+			MessagesReceived: stats.MessagesReceived,
+			Errors:           stats.Errors,
+		})
+	}
 
 	startAll, _ := cmd.Flags().GetBool("all")
 	if !cmd.Flags().Changed("all") {
@@ -406,9 +419,28 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		if err := gm.Register(tgAdapter); err != nil {
 			return err
 		}
+		syncTelegramState(true, false)
 		if err := gm.Start(ctx, "telegram"); err != nil {
+			syncTelegramState(false, false)
 			return err
 		}
+		syncTelegramState(true, true)
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if gw, ok := gm.Get("telegram"); ok {
+						syncTelegramState(true, gw.IsRunning())
+					} else {
+						syncTelegramState(false, false)
+					}
+				}
+			}
+		}()
 		fmt.Println("Telegram 网关已启动")
 	default:
 		if platform == "" {
@@ -421,6 +453,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	_ = gm.StopAll()
+	syncTelegramState(false, false)
 	return nil
 }
 

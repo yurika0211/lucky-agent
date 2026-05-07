@@ -483,6 +483,19 @@ func (a *Agent) sendCronNotification(metadata map[string]string, message string)
 	}
 	platform := strings.TrimSpace(metadata["platform"])
 	chatID := strings.TrimSpace(metadata["chatID"])
+	replyToMsgID := strings.TrimSpace(metadata["replyToMsgID"])
+	if platform == "" || chatID == "" {
+		target := a.pickRecentChatTarget()
+		if platform == "" {
+			platform = strings.TrimSpace(target.Platform)
+		}
+		if chatID == "" {
+			chatID = strings.TrimSpace(target.ChatID)
+		}
+		if replyToMsgID == "" {
+			replyToMsgID = strings.TrimSpace(target.ReplyToMsgID)
+		}
+	}
 	if platform == "" || chatID == "" {
 		return
 	}
@@ -490,7 +503,6 @@ func (a *Agent) sendCronNotification(metadata map[string]string, message string)
 	if !ok || gw == nil || !gw.IsRunning() {
 		return
 	}
-	replyToMsgID := strings.TrimSpace(metadata["replyToMsgID"])
 	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if replyToMsgID != "" {
