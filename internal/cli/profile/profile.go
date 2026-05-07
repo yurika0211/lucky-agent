@@ -50,8 +50,8 @@ func DefaultProfile(name string) *Profile {
 // Manager 管理多个 Profile
 type Manager struct {
 	mu         sync.RWMutex
-	homeDir    string    // ~/.luckyharness
-	activeName string   // 当前活跃 profile 名称
+	homeDir    string // ~/.luckyharness
+	activeName string // 当前活跃 profile 名称
 	profiles   map[string]*Profile
 }
 

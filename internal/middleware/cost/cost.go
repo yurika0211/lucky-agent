@@ -19,23 +19,23 @@ import (
 
 // CostRecord represents a single API call cost entry.
 type CostRecord struct {
-	ID        string    `json:"id"`
-	Timestamp time.Time `json:"timestamp"`
-	Provider  string    `json:"provider"`
-	Model     string    `json:"model"`
-	SessionID string    `json:"sessionId,omitempty"`
-	PromptTokens     int `json:"promptTokens"`
-	CompletionTokens int `json:"completionTokens"`
-	TotalTokens      int `json:"totalTokens"`
-	CostUSD   float64   `json:"costUsd"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	ID               string            `json:"id"`
+	Timestamp        time.Time         `json:"timestamp"`
+	Provider         string            `json:"provider"`
+	Model            string            `json:"model"`
+	SessionID        string            `json:"sessionId,omitempty"`
+	PromptTokens     int               `json:"promptTokens"`
+	CompletionTokens int               `json:"completionTokens"`
+	TotalTokens      int               `json:"totalTokens"`
+	CostUSD          float64           `json:"costUsd"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
 // PriceEntry defines the pricing for a model.
 type PriceEntry struct {
-	Provider       string  `json:"provider" yaml:"provider"`
-	Model          string  `json:"model" yaml:"model"`
-	PromptPrice    float64 `json:"promptPrice" yaml:"promptPrice"`       // $/1K prompt tokens
+	Provider        string  `json:"provider" yaml:"provider"`
+	Model           string  `json:"model" yaml:"model"`
+	PromptPrice     float64 `json:"promptPrice" yaml:"promptPrice"`         // $/1K prompt tokens
 	CompletionPrice float64 `json:"completionPrice" yaml:"completionPrice"` // $/1K completion tokens
 }
 
@@ -120,22 +120,22 @@ func (pt *PriceTable) CalculateCost(provider, model string, promptTokens, comple
 
 // CostSummary is an aggregated cost summary.
 type CostSummary struct {
-	Provider       string  `json:"provider,omitempty"`
-	Model          string  `json:"model,omitempty"`
-	SessionID      string  `json:"sessionId,omitempty"`
-	Period         string  `json:"period,omitempty"` // "today", "week", "month", "all"
-	TotalCalls     int     `json:"totalCalls"`
-	TotalTokens    int     `json:"totalTokens"`
-	PromptTokens   int     `json:"promptTokens"`
-	CompletionTokens int   `json:"completionTokens"`
-	TotalCostUSD   float64 `json:"totalCostUsd"`
+	Provider         string  `json:"provider,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	SessionID        string  `json:"sessionId,omitempty"`
+	Period           string  `json:"period,omitempty"` // "today", "week", "month", "all"
+	TotalCalls       int     `json:"totalCalls"`
+	TotalTokens      int     `json:"totalTokens"`
+	PromptTokens     int     `json:"promptTokens"`
+	CompletionTokens int     `json:"completionTokens"`
+	TotalCostUSD     float64 `json:"totalCostUsd"`
 }
 
 // CostStore stores and queries cost records.
 type CostStore struct {
-	mu      sync.RWMutex
-	records []CostRecord
-	prices  *PriceTable
+	mu       sync.RWMutex
+	records  []CostRecord
+	prices   *PriceTable
 	filePath string // persistence path
 }
 
@@ -381,7 +381,7 @@ func matchPeriod(t time.Time, period string) bool {
 type BudgetLevel string
 
 const (
-	BudgetLevelWarning BudgetLevel = "warning" // 80% of budget
+	BudgetLevelWarning  BudgetLevel = "warning"  // 80% of budget
 	BudgetLevelCritical BudgetLevel = "critical" // 100% of budget
 )
 
@@ -400,18 +400,18 @@ type AlertHandler func(alert BudgetAlert)
 
 // BudgetConfig defines a budget for a time period.
 type BudgetConfig struct {
-	Period       string  `json:"period" yaml:"period"`             // "daily", "weekly", "monthly"
-	LimitUSD     float64 `json:"limitUsd" yaml:"limitUsd"`         // total budget
-	WarningPct   float64 `json:"warningPct" yaml:"warningPct"`     // warning threshold % (default 80)
-	CriticalPct  float64 `json:"criticalPct" yaml:"criticalPct"`   // critical threshold % (default 100)
-	Provider     string  `json:"provider,omitempty" yaml:"provider,omitempty"` // optional provider filter
+	Period      string  `json:"period" yaml:"period"`                         // "daily", "weekly", "monthly"
+	LimitUSD    float64 `json:"limitUsd" yaml:"limitUsd"`                     // total budget
+	WarningPct  float64 `json:"warningPct" yaml:"warningPct"`                 // warning threshold % (default 80)
+	CriticalPct float64 `json:"criticalPct" yaml:"criticalPct"`               // critical threshold % (default 100)
+	Provider    string  `json:"provider,omitempty" yaml:"provider,omitempty"` // optional provider filter
 }
 
 // BudgetManager manages budgets and alerts.
 type BudgetManager struct {
-	mu      sync.RWMutex
-	configs map[string]BudgetConfig // key: period or "provider/period"
-	store   *CostStore
+	mu       sync.RWMutex
+	configs  map[string]BudgetConfig // key: period or "provider/period"
+	store    *CostStore
 	handlers []AlertHandler
 	fired    map[string]bool // track already-fired alerts to avoid duplicates
 }

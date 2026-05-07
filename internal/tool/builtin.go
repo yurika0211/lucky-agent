@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	searchpkg "github.com/yurika0211/luckyharness/internal/search"
+	searchpkg "github.com/yurika0211/luckyharness/internal/tool/search"
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
