@@ -514,12 +514,12 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.
 			middleStart = 0
 		}
 		if middleStart > 0 {
-			if themes := summarizeConversationRange(all[:middleStart], "[Conversation Themes]", p.est, utils.MaxInt(96, p.budget.History/4)); themes != "" {
+			if themes := p.summarizeConversationRangeWithLLM(context.Background(), sess, all[:middleStart], "[Conversation Themes]", utils.MaxInt(96, p.budget.History/4)); themes != "" {
 				messages = append(messages, provider.Message{Role: "system", Content: themes})
 			}
 		}
 		if middleStart < recentStart {
-			if summary := summarizeConversationRange(all[middleStart:recentStart], "[Conversation Summary]", p.est, utils.MaxInt(96, p.budget.History/3)); summary != "" {
+			if summary := p.summarizeConversationRangeWithLLM(context.Background(), sess, all[middleStart:recentStart], "[Conversation Summary]", utils.MaxInt(96, p.budget.History/3)); summary != "" {
 				messages = append(messages, provider.Message{Role: "system", Content: summary})
 			}
 		}
@@ -538,6 +538,125 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.
 	}
 
 	return messages
+}
+
+func (p *contextPlanner) summarizeConversationRangeWithLLM(ctx context.Context, sess *session.Session, messages []provider.Message, header string, tokenBudget int) string {
+	if summary := p.tryLLMConversationSummary(ctx, sess, messages, header, tokenBudget); summary != "" {
+		return summary
+	}
+	return summarizeConversationRange(messages, header, p.est, tokenBudget)
+}
+
+func (p *contextPlanner) tryLLMConversationSummary(ctx context.Context, sess *session.Session, messages []provider.Message, header string, tokenBudget int) string {
+	if p == nil || p.agent == nil || p.agent.provider == nil || len(messages) < 8 || tokenBudget <= 0 {
+		return ""
+	}
+	historyTokens := 0
+	for _, msg := range messages {
+		historyTokens += p.est.Estimate(msg.Content) + 4
+	}
+	threshold := p.agent.cfg.Get().Context.CompressionThreshold
+	if threshold <= 0 {
+		threshold = 0.8
+	}
+	if float64(historyTokens) < float64(tokenBudget)*threshold {
+		return ""
+	}
+
+	var transcript strings.Builder
+	for _, msg := range messages {
+		content := strings.TrimSpace(msg.Content)
+		if content == "" {
+			continue
+		}
+		role := strings.ToUpper(msg.Role)
+		transcript.WriteString(role)
+		if msg.Name != "" {
+			transcript.WriteString("(" + msg.Name + ")")
+		}
+		transcript.WriteString(": ")
+		transcript.WriteString(truncate(content, 240))
+		transcript.WriteString("\n")
+	}
+	if strings.TrimSpace(transcript.String()) == "" {
+		return ""
+	}
+
+	prompt := fmt.Sprintf(
+		"Summarize the following prior conversation for future context compression.\n"+
+			"Return concise plain text under these headings only:\n"+
+			"User topics:\nAssistant progress:\nTool evidence:\nOpen questions:\n"+
+			"Keep the summary factual, preserve decisions, file/module names, errors, and unresolved items.\n"+
+			"Avoid markdown bullets deeper than one level. Do not add commentary outside the summary.\n\nConversation:\n%s",
+		transcript.String(),
+	)
+
+	sumCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	resp, err := p.agent.provider.Chat(sumCtx, []provider.Message{
+		{Role: "system", Content: "You compress prior conversation into a compact working-memory summary for an autonomous coding assistant."},
+		{Role: "user", Content: prompt},
+	})
+	if err != nil || resp == nil {
+		return ""
+	}
+
+	content := strings.TrimSpace(resp.Content)
+	if content == "" {
+		return ""
+	}
+	content = header + "\n" + content
+	content = p.fitTextToBudget(content, tokenBudget)
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+
+	p.persistCompressedSummary(sess, messages, content)
+	return content
+}
+
+func (p *contextPlanner) persistCompressedSummary(sess *session.Session, messages []provider.Message, summary string) {
+	if p == nil || p.agent == nil || strings.TrimSpace(summary) == "" {
+		return
+	}
+
+	if p.agent.memory != nil {
+		_ = p.agent.memory.SaveWithTier(summary, "context_compression", memory.TierMedium, 0.65)
+	}
+
+	if p.agent.midTerm == nil {
+		return
+	}
+
+	sessionID := "context-compression"
+	title := ""
+	if sess != nil {
+		if strings.TrimSpace(sess.ID) != "" {
+			sessionID = sess.ID
+		}
+		title = strings.TrimSpace(sess.Title)
+	}
+
+	turns := make([]memory.ConversationTurn, 0, len(messages))
+	for _, msg := range messages {
+		if strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		turns = append(turns, memory.ConversationTurn{
+			Role:    msg.Role,
+			Content: msg.Content,
+		})
+	}
+	sessionSummary := memory.GenerateSessionSummary(sessionID, "context-compression", turns)
+	if sessionSummary == nil {
+		return
+	}
+	sessionSummary.RawSummary = strings.TrimSpace(summary)
+	if title != "" {
+		sessionSummary.Topics = append([]string{title}, sessionSummary.Topics...)
+	}
+	sessionSummary.Topics = utils.DedupStringsLimit(sessionSummary.Topics, 6)
+	_ = p.agent.midTerm.SaveSessionSummary(sessionSummary)
 }
 
 /*
