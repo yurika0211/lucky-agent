@@ -2,11 +2,11 @@ name: CI
 
 on:
   push:
-    branches: [main, dev-*]
+    branches: [main, master, dev-*]
     tags:
       - 'v*'
   pull_request:
-    branches: [main]
+    branches: [main, master]
     types: [closed]
 
 env:
