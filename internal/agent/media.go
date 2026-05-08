@@ -64,17 +64,29 @@ func buildMultimodalInput(att gateway.Attachment) (*multimodal.Input, string, er
 		return input, title, nil
 	}
 
-	if strings.TrimSpace(att.FileURL) != "" {
-		input := multimodal.NewInputFromURL(modality, att.FileURL)
+	if strings.TrimSpace(att.FilePath) != "" {
+		input := multimodal.NewInputFromPath(modality, att.FilePath)
 		input.MimeType = att.MimeType
 		input.Metadata = map[string]string{
-			"filename": att.FileName,
-			"file_url": att.FileURL,
+			"filename":  att.FileName,
+			"file_url":  att.FileURL,
+			"file_path": att.FilePath,
 		}
 		return input, title, nil
 	}
 
-	return nil, title, fmt.Errorf("attachment has no downloadable data or url")
+	if strings.TrimSpace(att.FileURL) != "" {
+		input := multimodal.NewInputFromURL(modality, att.FileURL)
+		input.MimeType = att.MimeType
+		input.Metadata = map[string]string{
+			"filename":  att.FileName,
+			"file_url":  att.FileURL,
+			"file_path": att.FilePath,
+		}
+		return input, title, nil
+	}
+
+	return nil, title, fmt.Errorf("attachment has no downloaded file, data, or url")
 }
 
 /*

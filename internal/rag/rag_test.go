@@ -129,7 +129,6 @@ func TestMockEmbedderBatch(t *testing.T) {
 
 func TestOpenAIEmbedder(t *testing.T) {
 	cfg := embedder.OpenAIEmbedderConfig{
-		APIKey:    "test-key",
 		Model:     "text-embedding-3-small",
 		Dimension: 256,
 	}
@@ -142,7 +141,7 @@ func TestOpenAIEmbedder(t *testing.T) {
 		t.Errorf("expected dimension 256, got %d", e.Dimension())
 	}
 
-	// Without real API key, it falls back to mock
+	// Without API credentials, it falls back to the deterministic mock embedder.
 	vec, err := e.Embed(context.Background(), "test")
 	if err != nil {
 		t.Fatal(err)

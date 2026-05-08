@@ -1123,8 +1123,8 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 		return "", err
 	}
 
-	// shell 执行后更新 session 的 cwd/env
-	if sess != nil && name == "shell" {
+	// terminal/shell 执行后更新 session 的 cwd/env
+	if sess != nil && (name == "terminal" || name == "shell") {
 		a.updateShellContext(sess, arguments, result.Output)
 	}
 

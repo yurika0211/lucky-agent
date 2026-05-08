@@ -483,6 +483,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			Intents:       append([]string(nil), cfg.MsgGateway.QQOfficial.Intents...),
 		})
 		handler := qqofficial.NewHandler(qqAdapter, a)
+		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "qqofficial"))
 		qqAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
 			return handler.HandleMessage(ctx, msg)
 		})

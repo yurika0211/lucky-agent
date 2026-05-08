@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +20,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
 
-const defaultAttachmentDownloadLimit = 8 << 20
+const defaultAttachmentDownloadLimit = 1 << 30
 const internalOutputFilteredFallback = "已完成处理。内部工具调用日志已自动隐藏。"
 
 // Adapter implements gateway.Gateway for Telegram.
@@ -904,15 +905,98 @@ func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
 		return
 	}
 
-	reader := io.LimitReader(resp.Body, defaultAttachmentDownloadLimit+1)
-	data, err := io.ReadAll(reader)
+	dir, err := telegramAttachmentStorageDir()
 	if err != nil {
 		return
 	}
-	if len(data) > defaultAttachmentDownloadLimit {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return
 	}
-	att.Data = data
+
+	fileName := telegramAttachmentFileName(att)
+	tmpFile, err := os.CreateTemp(dir, fileName+".*.part")
+	if err != nil {
+		return
+	}
+	tmpPath := tmpFile.Name()
+	defer func() {
+		_ = tmpFile.Close()
+	}()
+
+	reader := io.LimitReader(resp.Body, defaultAttachmentDownloadLimit+1)
+	written, err := io.Copy(tmpFile, reader)
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return
+	}
+	if written > defaultAttachmentDownloadLimit {
+		_ = os.Remove(tmpPath)
+		return
+	}
+
+	finalPath := filepath.Join(dir, fileName)
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return
+	}
+	att.FilePath = finalPath
+}
+
+func telegramAttachmentStorageDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".luckyharness", "data", "telegram", "attachments"), nil
+	}
+	return filepath.Join(os.TempDir(), "luckyharness", "telegram", "attachments"), nil
+}
+
+func telegramAttachmentFileName(att *gateway.Attachment) string {
+	name := strings.TrimSpace(att.FileName)
+	if name == "" {
+		switch att.Type {
+		case gateway.AttachmentImage:
+			name = "image"
+		case gateway.AttachmentAudio:
+			name = "audio"
+		case gateway.AttachmentVideo:
+			name = "video"
+		default:
+			name = "document"
+		}
+	}
+
+	name = filepath.Base(name)
+	name = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', '*', '?', '"', '<', '>', '|':
+			return '_'
+		default:
+			return r
+		}
+	}, name)
+	if strings.TrimSpace(name) == "" {
+		name = "attachment"
+	}
+
+	prefix := strings.TrimSpace(att.FileID)
+	if prefix == "" {
+		prefix = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	prefix = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-' || r == '_':
+			return r
+		default:
+			return '_'
+		}
+	}, prefix)
+	return prefix + "_" + name
 }
 
 // isMentioned checks if the bot is mentioned in the message.
