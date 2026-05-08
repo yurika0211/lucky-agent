@@ -10,12 +10,13 @@ func NewBuiltinToolService(searchCfg *WebSearchConfig) *BuiltinToolService {
 	return &BuiltinToolService{searchCfg: searchCfg}
 }
 
-// RegisterTools registers builtin shell/file/web/time tools.
+// RegisterTools registers builtin terminal/file/web/time tools.
 func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	if s == nil || r == nil {
 		return
 	}
-	r.Register(ShellTool())
+	r.Register(TerminalTool())
+	r.Register(LegacyShellTool())
 	r.Register(FileReadTool())
 	r.Register(FileWriteTool())
 	r.Register(FileListTool())

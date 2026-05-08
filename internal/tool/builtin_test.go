@@ -15,7 +15,7 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"shell", "file_read", "file_write", "file_list", "web_search", "web_fetch", "current_time", "remember", "recall", "rag_search", "rag_index"}
+	expected := []string{"terminal", "shell", "file_read", "file_write", "file_list", "web_search", "web_fetch", "current_time", "remember", "recall", "rag_search", "rag_index"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {
@@ -32,6 +32,24 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 
 	if r.Count() != len(expected) {
 		t.Errorf("expected %d builtin tools, got %d", len(expected), r.Count())
+	}
+
+	visible := r.ListModelVisible()
+	foundTerminal := false
+	foundShell := false
+	for _, tool := range visible {
+		if tool.Name == "terminal" {
+			foundTerminal = true
+		}
+		if tool.Name == "shell" {
+			foundShell = true
+		}
+	}
+	if !foundTerminal {
+		t.Error("expected terminal to be model-visible")
+	}
+	if foundShell {
+		t.Error("expected shell compatibility tool to be hidden from model")
 	}
 }
 
@@ -205,14 +223,14 @@ func TestShellTool(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	result, err := r.Call("shell", map[string]any{
+	result, err := r.Call("terminal", map[string]any{
 		"command": "echo hello",
 	})
 	if err != nil {
-		t.Fatalf("shell call: %v", err)
+		t.Fatalf("terminal call: %v", err)
 	}
 	if result == "" {
-		t.Error("expected shell result")
+		t.Error("expected terminal result")
 	}
 }
 
@@ -245,9 +263,13 @@ func TestToolPermissions(t *testing.T) {
 	}
 
 	// shell 应该是 approve
+	terminalPerm, _ := r.CheckPermission("terminal")
+	if terminalPerm != PermApprove {
+		t.Errorf("terminal should be approve, got %s", terminalPerm)
+	}
 	shellPerm, _ := r.CheckPermission("shell")
 	if shellPerm != PermApprove {
-		t.Errorf("shell should be approve, got %s", shellPerm)
+		t.Errorf("shell compatibility tool should be approve, got %s", shellPerm)
 	}
 
 	// current_time 应该是 auto

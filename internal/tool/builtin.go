@@ -23,7 +23,8 @@ func RegisterBuiltinTools(r *Registry) {
 
 // RegisterBuiltinToolsWithConfig 注册所有内置工具（带搜索配置）
 func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig) {
-	r.Register(ShellTool())
+	r.Register(TerminalTool())
+	r.Register(LegacyShellTool())
 	r.Register(FileReadTool())
 	r.Register(FileWriteTool())
 	r.Register(FileListTool())
@@ -36,20 +37,20 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig) {
 	r.Register(RAGIndexTool(nil))
 }
 
-// ShellTool 执行 shell 命令
-func ShellTool() *Tool {
+func terminalToolWithName(name string, hidden bool) *Tool {
 	return &Tool{
-		Name:         "shell",
-		Description:  "Run a shell command when you need to inspect runtime state, execute project commands, check the environment, or perform real system actions that cannot be answered from files alone.",
-		Category:     CatBuiltin,
-		Source:       "builtin",
-		Permission:   PermApprove, // shell 命令需要审批
-		ShellAware:   true,
-		ParallelSafe: false,
+		Name:            name,
+		Description:     "Run a terminal command when you need to inspect runtime state, execute project commands, check the environment, or perform real system actions that cannot be answered from files alone.",
+		Category:        CatBuiltin,
+		Source:          "builtin",
+		Permission:      PermApprove, // shell 命令需要审批
+		ShellAware:      true,
+		ParallelSafe:    false,
+		HiddenFromModel: hidden,
 		Parameters: map[string]Param{
 			"command": {
 				Type:        "string",
-				Description: "Concrete shell command to run. Prefer precise inspection or execution commands over exploratory one-liners.",
+				Description: "Concrete terminal command to run. Prefer precise inspection or execution commands over exploratory one-liners.",
 				Required:    true,
 			},
 			"timeout": {
@@ -66,6 +67,21 @@ func ShellTool() *Tool {
 		},
 		Handler: handleShell,
 	}
+}
+
+// TerminalTool 执行终端命令，是当前推荐的主工具名。
+func TerminalTool() *Tool {
+	return terminalToolWithName("terminal", false)
+}
+
+// LegacyShellTool 保留 shell 作为兼容入口，但不再默认暴露给模型。
+func LegacyShellTool() *Tool {
+	return terminalToolWithName("shell", true)
+}
+
+// ShellTool 保留旧函数名，避免调用方在迁移期间直接断裂。
+func ShellTool() *Tool {
+	return TerminalTool()
 }
 
 func handleShell(args map[string]any) (string, error) {
