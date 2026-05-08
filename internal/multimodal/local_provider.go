@@ -3,6 +3,7 @@ package multimodal
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -56,6 +57,15 @@ func (lp *LocalProvider) Analyze(ctx context.Context, input *Input) (*AnalysisRe
 	lp.analyzed++
 	lp.mu.Unlock()
 
+	data := input.Data
+	if len(data) == 0 && input.FilePath != "" {
+		var err error
+		data, err = os.ReadFile(input.FilePath)
+		if err != nil {
+			return nil, fmt.Errorf("read local input %q: %w", input.FilePath, err)
+		}
+	}
+
 	result := &AnalysisResult{
 		InputID:  input.ID,
 		Modality: input.Modality,
@@ -63,49 +73,49 @@ func (lp *LocalProvider) Analyze(ctx context.Context, input *Input) (*AnalysisRe
 
 	switch input.Modality {
 	case ModalityText:
-		result.Text = string(input.Data)
-		result.Summary = utils.Truncate(string(input.Data), 200)
+		result.Text = string(data)
+		result.Summary = utils.Truncate(string(data), 200)
 		result.Confidence = 1.0
 		result.Labels = []string{"text"}
 
 	case ModalityDocument:
-		result.Text = fmt.Sprintf("[Document: %s, %d bytes]", input.MimeType, len(input.Data))
-		result.Summary = fmt.Sprintf("Document file (%s, %d bytes)", input.MimeType, len(input.Data))
+		result.Text = fmt.Sprintf("[Document: %s, %d bytes]", input.MimeType, len(data))
+		result.Summary = fmt.Sprintf("Document file (%s, %d bytes)", input.MimeType, len(data))
 		result.Labels = []string{"document", input.MimeType}
 		result.Confidence = 0.4
 		result.Metadata = map[string]string{
-			"size":      fmt.Sprintf("%d", len(input.Data)),
+			"size":      fmt.Sprintf("%d", len(data)),
 			"mime_type": input.MimeType,
 		}
 
 	case ModalityImage:
 		// Local image processing: extract metadata
-		result.Text = fmt.Sprintf("[Image: %s, %d bytes]", input.MimeType, len(input.Data))
-		result.Summary = fmt.Sprintf("Image file (%s, %d bytes)", input.MimeType, len(input.Data))
+		result.Text = fmt.Sprintf("[Image: %s, %d bytes]", input.MimeType, len(data))
+		result.Summary = fmt.Sprintf("Image file (%s, %d bytes)", input.MimeType, len(data))
 		result.Labels = []string{"image", input.MimeType}
 		result.Confidence = 0.5 // Low confidence without vision model
 		result.Metadata = map[string]string{
-			"size":      fmt.Sprintf("%d", len(input.Data)),
+			"size":      fmt.Sprintf("%d", len(data)),
 			"mime_type": input.MimeType,
 		}
 
 	case ModalityAudio:
-		result.Text = fmt.Sprintf("[Audio: %s, %d bytes]", input.MimeType, len(input.Data))
-		result.Summary = fmt.Sprintf("Audio file (%s, %d bytes)", input.MimeType, len(input.Data))
+		result.Text = fmt.Sprintf("[Audio: %s, %d bytes]", input.MimeType, len(data))
+		result.Summary = fmt.Sprintf("Audio file (%s, %d bytes)", input.MimeType, len(data))
 		result.Labels = []string{"audio", input.MimeType}
 		result.Confidence = 0.3
 		result.Metadata = map[string]string{
-			"size":      fmt.Sprintf("%d", len(input.Data)),
+			"size":      fmt.Sprintf("%d", len(data)),
 			"mime_type": input.MimeType,
 		}
 
 	case ModalityVideo:
-		result.Text = fmt.Sprintf("[Video: %s, %d bytes]", input.MimeType, len(input.Data))
-		result.Summary = fmt.Sprintf("Video file (%s, %d bytes)", input.MimeType, len(input.Data))
+		result.Text = fmt.Sprintf("[Video: %s, %d bytes]", input.MimeType, len(data))
+		result.Summary = fmt.Sprintf("Video file (%s, %d bytes)", input.MimeType, len(data))
 		result.Labels = []string{"video", input.MimeType}
 		result.Confidence = 0.3
 		result.Metadata = map[string]string{
-			"size":      fmt.Sprintf("%d", len(input.Data)),
+			"size":      fmt.Sprintf("%d", len(data)),
 			"mime_type": input.MimeType,
 		}
 

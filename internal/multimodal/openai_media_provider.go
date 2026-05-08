@@ -9,6 +9,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -177,7 +178,11 @@ func (o *OpenAIMediaProvider) analyzeWithResponses(ctx context.Context, input *I
 }
 
 func (o *OpenAIMediaProvider) transcribeAudio(ctx context.Context, input *Input) (*AnalysisResult, error) {
-	if len(input.Data) == 0 {
+	data, err := o.resolveInputData(input)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
 		return nil, fmt.Errorf("audio input requires downloaded data")
 	}
 
@@ -199,7 +204,7 @@ func (o *OpenAIMediaProvider) transcribeAudio(ctx context.Context, input *Input)
 	if err != nil {
 		return nil, fmt.Errorf("create multipart file: %w", err)
 	}
-	if _, err := part.Write(input.Data); err != nil {
+	if _, err := part.Write(data); err != nil {
 		return nil, fmt.Errorf("write audio file: %w", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -255,12 +260,16 @@ func (o *OpenAIMediaProvider) buildResponsesContentItem(input *Input) (map[strin
 				"image_url": input.URL,
 			}, nil
 		}
-		if len(input.Data) == 0 {
+		data, err := o.resolveInputData(input)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) == 0 {
 			return nil, fmt.Errorf("image input requires url or data")
 		}
 		return map[string]any{
 			"type":      "input_image",
-			"image_url": fmt.Sprintf("data:%s;base64,%s", input.MimeType, base64.StdEncoding.EncodeToString(input.Data)),
+			"image_url": fmt.Sprintf("data:%s;base64,%s", input.MimeType, base64.StdEncoding.EncodeToString(data)),
 		}, nil
 
 	case ModalityDocument:
@@ -275,16 +284,34 @@ func (o *OpenAIMediaProvider) buildResponsesContentItem(input *Input) (map[strin
 				"filename": filename,
 			}, nil
 		}
-		if len(input.Data) == 0 {
+		data, err := o.resolveInputData(input)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) == 0 {
 			return nil, fmt.Errorf("document input requires url or data")
 		}
 		return map[string]any{
 			"type":      "input_file",
-			"file_data": base64.StdEncoding.EncodeToString(input.Data),
+			"file_data": base64.StdEncoding.EncodeToString(data),
 			"filename":  filename,
 		}, nil
 	}
 	return nil, fmt.Errorf("unsupported modality %q", input.Modality)
+}
+
+func (o *OpenAIMediaProvider) resolveInputData(input *Input) ([]byte, error) {
+	if len(input.Data) > 0 {
+		return input.Data, nil
+	}
+	if strings.TrimSpace(input.FilePath) == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(input.FilePath)
+	if err != nil {
+		return nil, fmt.Errorf("read input file %q: %w", input.FilePath, err)
+	}
+	return data, nil
 }
 
 func extractResponsesOutputText(body []byte) string {

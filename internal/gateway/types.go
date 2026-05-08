@@ -9,7 +9,7 @@ import (
 type ChatType int
 
 const (
-	ChatPrivate   ChatType = iota
+	ChatPrivate ChatType = iota
 	ChatGroup
 	ChatSuperGroup
 	ChatChannel
@@ -86,6 +86,7 @@ type Attachment struct {
 	Type     AttachmentType // image, audio, video, document
 	FileID   string         // platform-specific file ID
 	FileURL  string         // download URL (if available)
+	FilePath string         // downloaded local file path (if available)
 	FileName string         // original filename
 	MimeType string         // MIME type
 	FileSize int64          // file size in bytes
