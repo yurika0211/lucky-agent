@@ -19,6 +19,8 @@ import (
 
 var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
+const defaultOpenAIUserAgent = "luckyharness"
+
 func maskedKeySuffix(key string) string {
 	key = strings.TrimSpace(key)
 	if len(key) <= 8 {
@@ -230,6 +232,15 @@ func retryDelay(settings openAIRetrySettings, attempt int) time.Duration {
 	return delay
 }
 
+func applyOpenAIRequestHeaders(req *http.Request, apiKey string, extraHeaders map[string]string) {
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("User-Agent", defaultOpenAIUserAgent)
+	for k, v := range extraHeaders {
+		req.Header.Set(k, v)
+	}
+}
+
 func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Response, error) {
 	settings := resolveOpenAIRetrySettings(cfg)
 	url := strings.TrimRight(cfg.LlmProvider.BaseURL, "/") + "/chat/completions"
@@ -241,11 +252,7 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 		if err != nil {
 			return nil, fmt.Errorf("create request: %w", err)
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+cfg.LlmProvider.APIKey)
-		for k, v := range cfg.ExtraHeaders {
-			req.Header.Set(k, v)
-		}
+		applyOpenAIRequestHeaders(req, cfg.LlmProvider.APIKey, cfg.ExtraHeaders)
 
 		// 重试时强制新连接，避免复用潜在损坏的 TLS/HTTP2 长连接。
 		if attempt > 1 {

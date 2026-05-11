@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+const defaultOpenAIUserAgent = "luckyharness"
+
 type OpenAIMediaConfig struct {
 	APIKey             string
 	APIBase            string
@@ -110,6 +112,12 @@ func (o *OpenAIMediaProvider) Validate() error {
 	return nil
 }
 
+func applyOpenAIMediaHeaders(req *http.Request, apiKey, contentType string) {
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("User-Agent", defaultOpenAIUserAgent)
+}
+
 func (o *OpenAIMediaProvider) analyzeWithResponses(ctx context.Context, input *Input, prompt string) (*AnalysisResult, error) {
 	contentItem, err := o.buildResponsesContentItem(input)
 	if err != nil {
@@ -141,8 +149,7 @@ func (o *OpenAIMediaProvider) analyzeWithResponses(ctx context.Context, input *I
 	if err != nil {
 		return nil, fmt.Errorf("create responses request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	req.Header.Set("Content-Type", "application/json")
+	applyOpenAIMediaHeaders(req, o.apiKey, "application/json")
 
 	resp, err := o.client.Do(req)
 	if err != nil {
@@ -215,8 +222,7 @@ func (o *OpenAIMediaProvider) transcribeAudio(ctx context.Context, input *Input)
 	if err != nil {
 		return nil, fmt.Errorf("create transcription request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+o.apiKey)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
+	applyOpenAIMediaHeaders(req, o.apiKey, writer.FormDataContentType())
 
 	resp, err := o.client.Do(req)
 	if err != nil {
