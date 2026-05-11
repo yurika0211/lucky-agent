@@ -725,6 +725,19 @@ func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Messa
 }
 func (m *mockProvider) Validate() error { return nil }
 
+
+// errorProvider returns errors for all calls, used to test error handling
+type errorProvider struct{}
+
+func (e *errorProvider) Name() string { return "error-mock" }
+func (e *errorProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	return nil, fmt.Errorf("mock provider error: no API key available")
+}
+func (e *errorProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
+	return nil, fmt.Errorf("mock provider error: no API key available")
+}
+func (e *errorProvider) Validate() error { return nil }
+
 type loopingFunctionProvider struct {
 	callCount int
 	toolName  string
@@ -1467,6 +1480,9 @@ func TestAgentChatMethodsExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
+	// Replace provider with error mock to avoid real API calls
+	a.provider = &errorProvider{}
 
 	// Test that Chat methods exist and handle errors gracefully
 	ctx := context.Background()
@@ -1495,7 +1511,9 @@ func TestAgentStreamMethodsExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-
+	defer a.Close()
+	// Replace provider with error mock to avoid real API calls
+	a.provider = &errorProvider{}
 	ctx := context.Background()
 
 	// ChatStream should return error without proper provider setup
