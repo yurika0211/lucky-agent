@@ -127,7 +127,20 @@ func (w *Worker) Execute(ctx context.Context, task *QueueTask) *WorkerResult {
 		AutoApprove:   true, // workers auto-approve tool calls
 	}
 
-	result, err := w.Executor.RunLoopWithSession(ctx, w.SessionID, prompt, loopCfg)
+	w.mu.RLock()
+	executor := w.Executor
+	sessionID := w.SessionID
+	w.mu.RUnlock()
+
+	if executor == nil {
+		return &WorkerResult{
+			TaskID:   task.ID,
+			Error:    fmt.Errorf("worker %s has no executor", w.ID),
+			Duration: time.Since(start),
+		}
+	}
+
+	result, err := executor.RunLoopWithSession(ctx, sessionID, prompt, loopCfg)
 
 	duration := time.Since(start)
 
@@ -355,7 +368,10 @@ func (p *WorkerPool) dispatch(ctx context.Context) {
 		}
 
 		// Skip if worker has no executor
-		if worker.Executor == nil {
+		worker.mu.RLock()
+		hasExecutor := worker.Executor != nil
+		worker.mu.RUnlock()
+		if !hasExecutor {
 			select {
 			case <-ctx.Done():
 				return
