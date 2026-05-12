@@ -204,19 +204,19 @@ func TestStreamParserFeedChunk(t *testing.T) {
 	sp := NewStreamParser()
 
 	// 正常 chunk
-	if !sp.Feed(StreamChunk{Content: "hello", Model: "gpt-4o"}) {
+	if !sp.Feed(StreamChunk{Content: "hello", Model: "gpt-5.4-mini"}) {
 		t.Error("expected Feed to return true")
 	}
 
 	// Done chunk
-	if sp.Feed(StreamChunk{Done: true, Model: "gpt-4o"}) {
+	if sp.Feed(StreamChunk{Done: true, Model: "gpt-5.4-mini"}) {
 		t.Error("expected Feed to return false for done")
 	}
 
 	if !sp.IsDone() {
 		t.Error("expected IsDone")
 	}
-	if sp.GetModel() != "gpt-4o" {
-		t.Errorf("expected gpt-4o, got %s", sp.GetModel())
+	if sp.GetModel() != "gpt-5.4-mini" {
+		t.Errorf("expected gpt-5.4-mini, got %s", sp.GetModel())
 	}
 }

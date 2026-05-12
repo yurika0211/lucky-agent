@@ -23,9 +23,9 @@ func TestPriceTableDefaults(t *testing.T) {
 
 func TestPriceTableGet(t *testing.T) {
 	pt := NewPriceTable()
-	entry, ok := pt.Get("openai", "gpt-4o")
+	entry, ok := pt.Get("openai", "gpt-5.4-mini")
 	if !ok {
-		t.Error("expected to find gpt-4o pricing")
+		t.Error("expected to find gpt-5.4-mini pricing")
 	}
 	if entry.PromptPrice != 0.0025 {
 		t.Errorf("expected prompt price 0.0025, got %f", entry.PromptPrice)
@@ -54,8 +54,8 @@ func TestPriceTableSet(t *testing.T) {
 
 func TestCalculateCost(t *testing.T) {
 	pt := NewPriceTable()
-	// gpt-4o: prompt $0.0025/1K, completion $0.01/1K
-	cost := pt.CalculateCost("openai", "gpt-4o", 1000, 500)
+	// gpt-5.4-mini: prompt $0.0025/1K, completion $0.01/1K
+	cost := pt.CalculateCost("openai", "gpt-5.4-mini", 1000, 500)
 	expected := 1.0*0.0025 + 0.5*0.01 // 0.0025 + 0.005 = 0.0075
 	if fmt.Sprintf("%.6f", cost) != fmt.Sprintf("%.6f", expected) {
 		t.Errorf("expected %f, got %f", expected, cost)
@@ -88,7 +88,7 @@ func TestCostStoreRecord(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	rec := store.RecordCall("call-1", "openai", "gpt-4o", "sess-1", 1000, 500)
+	rec := store.RecordCall("call-1", "openai", "gpt-5.4-mini", "sess-1", 1000, 500)
 	if rec.ID != "call-1" {
 		t.Errorf("expected ID call-1, got %s", rec.ID)
 	}
@@ -104,8 +104,8 @@ func TestCostStoreSummary(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
-	store.RecordCall("c2", "openai", "gpt-4o", "s1", 2000, 1000)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
+	store.RecordCall("c2", "openai", "gpt-5.4-mini", "s1", 2000, 1000)
 	store.RecordCall("c3", "anthropic", "claude-3.5-sonnet", "s2", 500, 250)
 
 	summary := store.Summary(SummaryOptions{Period: "all"})
@@ -124,7 +124,7 @@ func TestCostStoreSummaryByProvider(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
 	store.RecordCall("c2", "anthropic", "claude-3.5-sonnet", "s2", 500, 250)
 
 	summary := store.Summary(SummaryOptions{Provider: "openai", Period: "all"})
@@ -137,10 +137,10 @@ func TestCostStoreSummaryByModel(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
-	store.RecordCall("c2", "openai", "gpt-4o-mini", "s2", 500, 250)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
+	store.RecordCall("c2", "openai", "gpt-5.4-mini-mini", "s2", 500, 250)
 
-	summary := store.Summary(SummaryOptions{Model: "gpt-4o", Period: "all"})
+	summary := store.Summary(SummaryOptions{Model: "gpt-5.4-mini", Period: "all"})
 	if summary.TotalCalls != 1 {
 		t.Errorf("expected 1 call, got %d", summary.TotalCalls)
 	}
@@ -150,8 +150,8 @@ func TestCostStoreSummaryBySession(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
-	store.RecordCall("c2", "openai", "gpt-4o", "s2", 500, 250)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
+	store.RecordCall("c2", "openai", "gpt-5.4-mini", "s2", 500, 250)
 
 	summary := store.Summary(SummaryOptions{SessionID: "s1", Period: "all"})
 	if summary.TotalCalls != 1 {
@@ -163,7 +163,7 @@ func TestCostStoreByProvider(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
 	store.RecordCall("c2", "anthropic", "claude-3.5-sonnet", "s2", 500, 250)
 
 	byProvider := store.ByProvider("all")
@@ -179,8 +179,8 @@ func TestCostStoreByModel(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
-	store.RecordCall("c2", "openai", "gpt-4o-mini", "s2", 500, 250)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
+	store.RecordCall("c2", "openai", "gpt-5.4-mini-mini", "s2", 500, 250)
 
 	byModel := store.ByModel("all")
 	if len(byModel) != 2 {
@@ -192,9 +192,9 @@ func TestCostStoreRecent(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
-	store.RecordCall("c2", "openai", "gpt-4o", "s2", 2000, 1000)
-	store.RecordCall("c3", "openai", "gpt-4o", "s3", 500, 250)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
+	store.RecordCall("c2", "openai", "gpt-5.4-mini", "s2", 2000, 1000)
+	store.RecordCall("c3", "openai", "gpt-5.4-mini", "s3", 500, 250)
 
 	recent := store.Recent(2)
 	if len(recent) != 2 {
@@ -212,7 +212,7 @@ func TestCostStorePersistence(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
 	store.RecordCall("c2", "anthropic", "claude-3.5-sonnet", "s2", 500, 250)
 
 	// Save
@@ -240,7 +240,7 @@ func TestCostStoreAutoPersist(t *testing.T) {
 	store := NewCostStore(pt)
 	store.SetFilePath(path)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
 
 	// Verify file was written
 	data, err := os.ReadFile(path)
@@ -260,7 +260,7 @@ func TestCostStoreSummaryToday(t *testing.T) {
 	pt := NewPriceTable()
 	store := NewCostStore(pt)
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
 
 	summary := store.Summary(SummaryOptions{Period: "today"})
 	if summary.TotalCalls != 1 {
@@ -347,7 +347,7 @@ func TestBudgetManagerAlertWarning(t *testing.T) {
 	})
 
 	// Record enough to trigger warning (>50% of $1)
-	// gpt-4o: 1000 prompt + 500 completion ≈ $0.0075
+	// gpt-5.4-mini: 1000 prompt + 500 completion ≈ $0.0075
 	// Need ~67 calls to hit 50%, or use a more expensive model
 	// Let's use gpt-4-turbo: prompt $0.01/1K, completion $0.03/1K
 	// 1000 prompt + 1000 completion = $0.01 + $0.03 = $0.04
@@ -443,7 +443,7 @@ func TestBudgetManagerStatus(t *testing.T) {
 
 	bm.SetBudget(BudgetConfig{Period: "daily", LimitUSD: 1.0})
 
-	store.RecordCall("c1", "openai", "gpt-4o", "s1", 1000, 500)
+	store.RecordCall("c1", "openai", "gpt-5.4-mini", "s1", 1000, 500)
 
 	statuses := bm.Status()
 	if len(statuses) != 1 {

@@ -725,7 +725,6 @@ func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Messa
 }
 func (m *mockProvider) Validate() error { return nil }
 
-
 // errorProvider returns errors for all calls, used to test error handling
 type errorProvider struct{}
 
@@ -733,6 +732,7 @@ func (e *errorProvider) Name() string { return "error-mock" }
 func (e *errorProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
 	return nil, fmt.Errorf("mock provider error: no API key available")
 }
+
 func (e *errorProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
 	return nil, fmt.Errorf("mock provider error: no API key available")
 }
@@ -1255,7 +1255,7 @@ func TestAgentSwitchModel(t *testing.T) {
 	}
 
 	// Switch to a different model
-	err = a.SwitchModel("gpt-4o")
+	err = a.SwitchModel("gpt-5.4-mini")
 	if err != nil {
 		t.Errorf("SwitchModel() error = %v", err)
 	}

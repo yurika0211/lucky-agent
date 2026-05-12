@@ -340,7 +340,7 @@ func TestHandleChatSyncRunsLoopOncePerRequest(t *testing.T) {
 	if err := mgr.Set("api_base", upstream.URL); err != nil {
 		t.Fatalf("set api_base: %v", err)
 	}
-	if err := mgr.Set("model", "gpt-4o-mini"); err != nil {
+	if err := mgr.Set("model", "gpt-5.4-mini-mini"); err != nil {
 		t.Fatalf("set model: %v", err)
 	}
 
@@ -658,13 +658,13 @@ func TestEventTypeString(t *testing.T) {
 		input    agent.EventType
 		expected string
 	}{
-		{0, "reason"},    // EventReason
-		{1, "act"},       // EventAct
-		{2, "observe"},   // EventObserve
-		{3, "content"},   // EventContent
-		{4, "done"},      // EventDone
-		{5, "error"},     // EventError
-		{99, "unknown"},  // Unknown
+		{0, "reason"},   // EventReason
+		{1, "act"},      // EventAct
+		{2, "observe"},  // EventObserve
+		{3, "content"},  // EventContent
+		{4, "done"},     // EventDone
+		{5, "error"},    // EventError
+		{99, "unknown"}, // Unknown
 	}
 
 	for _, tt := range tests {

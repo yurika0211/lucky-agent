@@ -361,10 +361,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		LlmProvider: LlmProviderConfig{
 			Name:  "openai",
-			Model: "gpt-4o",
+			Model: "gpt-5.4-mini",
 		},
 		Provider:     "openai",
-		Model:        "gpt-4o",
+		Model:        "gpt-5.4-mini",
 		SoulPath:     filepath.Join(home, ".luckyharness", "SOUL.md"),
 		MaxTokens:    4096,
 		Temperature:  0.7,

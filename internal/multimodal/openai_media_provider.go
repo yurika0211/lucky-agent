@@ -44,7 +44,7 @@ func NewOpenAIMediaProvider(cfg OpenAIMediaConfig) (*OpenAIMediaProvider, error)
 	}
 	cfg.APIBase = strings.TrimRight(cfg.APIBase, "/")
 	if cfg.ResponsesModel == "" {
-		cfg.ResponsesModel = "gpt-4o"
+		cfg.ResponsesModel = "gpt-5.4-mini"
 	}
 	if cfg.TranscriptionModel == "" {
 		cfg.TranscriptionModel = "whisper-1"

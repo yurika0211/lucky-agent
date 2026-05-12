@@ -57,10 +57,10 @@ func NewPriceTable() *PriceTable {
 // loadDefaults sets common model pricing.
 func (pt *PriceTable) loadDefaults() {
 	defaults := []PriceEntry{
-		{Provider: "openai", Model: "gpt-4o", PromptPrice: 0.0025, CompletionPrice: 0.01},
-		{Provider: "openai", Model: "gpt-4o-mini", PromptPrice: 0.00015, CompletionPrice: 0.0006},
-		{Provider: "openai", Model: "gpt-4-turbo", PromptPrice: 0.01, CompletionPrice: 0.03},
-		{Provider: "openai", Model: "gpt-3.5-turbo", PromptPrice: 0.0005, CompletionPrice: 0.0015},
+		{Provider: "openai", Model: "gpt-5.4-mini", PromptPrice: 0.0025, CompletionPrice: 0.01},
+		{Provider: "openai", Model: "gpt-5.4-mini", PromptPrice: 0.00015, CompletionPrice: 0.0006},
+		{Provider: "openai", Model: "gpt-5.4-mini", PromptPrice: 0.01, CompletionPrice: 0.03},
+		{Provider: "openai", Model: "gpt-5.4-mini", PromptPrice: 0.0005, CompletionPrice: 0.0015},
 		{Provider: "anthropic", Model: "claude-3.5-sonnet", PromptPrice: 0.003, CompletionPrice: 0.015},
 		{Provider: "anthropic", Model: "claude-3-opus", PromptPrice: 0.015, CompletionPrice: 0.075},
 		{Provider: "anthropic", Model: "claude-3-haiku", PromptPrice: 0.00025, CompletionPrice: 0.00125},
@@ -312,11 +312,11 @@ func (s *CostStore) Save(path string) error {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0600)
+	return os.WriteFile(path, data, 0o600)
 }
 
 // persistLocked saves to the configured file path (must hold lock).
@@ -328,7 +328,7 @@ func (s *CostStore) persistLocked() {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(s.filePath, data, 0600)
+	_ = os.WriteFile(s.filePath, data, 0o600)
 }
 
 // SummaryOptions defines filters for cost summary queries.

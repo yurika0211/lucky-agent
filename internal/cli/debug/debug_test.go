@@ -10,9 +10,9 @@ import (
 
 func TestCollect(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.MkdirAll(filepath.Join(tmpDir, "logs"), 0700)
-	os.WriteFile(filepath.Join(tmpDir, "logs", "test.log"), []byte("line1\nline2\nline3\n"), 0600)
-	os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte("provider: openai\n"), 0600)
+	os.MkdirAll(filepath.Join(tmpDir, "logs"), 0o700)
+	os.WriteFile(filepath.Join(tmpDir, "logs", "test.log"), []byte("line1\nline2\nline3\n"), 0o600)
+	os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte("provider: openai\n"), 0o600)
 
 	collector := New(tmpDir)
 	opts := DefaultCollectOptions()
@@ -38,7 +38,7 @@ func TestCollect(t *testing.T) {
 
 func TestCollectEnv(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.MkdirAll(tmpDir, 0700)
+	os.MkdirAll(tmpDir, 0o700)
 
 	os.Setenv("LH_TEST_VAR", "test_value")
 	os.Setenv("OPENAI_API_KEY", "sk-1234567890abcdef")
@@ -60,7 +60,7 @@ func TestCollectEnv(t *testing.T) {
 
 func TestCollectConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(`{"provider": "openai", "model": "gpt-4o"}`+"\n"), 0600)
+	os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(`{"provider": "openai", "model": "gpt-5.4-mini"}`+"\n"), 0o600)
 
 	collector := New(tmpDir)
 	config := collector.collectConfig()
@@ -72,8 +72,8 @@ func TestCollectConfig(t *testing.T) {
 
 func TestCollectLogs(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.MkdirAll(filepath.Join(tmpDir, "logs"), 0700)
-	os.WriteFile(filepath.Join(tmpDir, "logs", "app.log"), []byte("log line 1\nlog line 2\nlog line 3\n"), 0600)
+	os.MkdirAll(filepath.Join(tmpDir, "logs"), 0o700)
+	os.WriteFile(filepath.Join(tmpDir, "logs", "app.log"), []byte("log line 1\nlog line 2\nlog line 3\n"), 0o600)
 
 	collector := New(tmpDir)
 	logs := collector.collectLogs(10)
@@ -85,7 +85,7 @@ func TestCollectLogs(t *testing.T) {
 
 func TestExport(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.MkdirAll(filepath.Join(tmpDir, "logs"), 0700)
+	os.MkdirAll(filepath.Join(tmpDir, "logs"), 0o700)
 
 	collector := New(tmpDir)
 	opts := DefaultCollectOptions()
@@ -117,7 +117,7 @@ func TestExport(t *testing.T) {
 
 func TestExportAutoName(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.MkdirAll(filepath.Join(tmpDir, "logs"), 0700)
+	os.MkdirAll(filepath.Join(tmpDir, "logs"), 0o700)
 
 	collector := New(tmpDir)
 	opts := DefaultCollectOptions()

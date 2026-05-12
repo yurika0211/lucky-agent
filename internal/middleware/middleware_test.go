@@ -114,7 +114,7 @@ func TestLoggingMiddleware(t *testing.T) {
 		t.Errorf("expected 'logging', got '%s'", mw.Name())
 	}
 
-	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	info := CallInfo{Provider: "openai", Model: "gpt-5.4-mini", StartTime: time.Now()}
 	resp, err := mw.InterceptChat(context.Background(), info, func(ctx context.Context, info CallInfo) (*provider.Response, error) {
 		return &provider.Response{Content: "ok", TokensUsed: 100}, nil
 	})
@@ -130,7 +130,7 @@ func TestLoggingMiddlewareError(t *testing.T) {
 	logger := log.New(os.Stderr, "[test] ", 0)
 	mw := NewLoggingMiddleware(logger)
 
-	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	info := CallInfo{Provider: "openai", Model: "gpt-5.4-mini", StartTime: time.Now()}
 	_, err := mw.InterceptChat(context.Background(), info, func(ctx context.Context, info CallInfo) (*provider.Response, error) {
 		return nil, fmt.Errorf("500 server error")
 	})
@@ -147,7 +147,7 @@ func TestCostTrackingMiddleware(t *testing.T) {
 		t.Errorf("expected 'cost-tracking', got '%s'", mw.Name())
 	}
 
-	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	info := CallInfo{Provider: "openai", Model: "gpt-5.4-mini", StartTime: time.Now()}
 	resp, err := mw.InterceptChat(context.Background(), info, func(ctx context.Context, info CallInfo) (*provider.Response, error) {
 		return &provider.Response{Content: "hello world", TokensUsed: 50}, nil
 	})
@@ -177,7 +177,7 @@ func TestRetryMiddleware(t *testing.T) {
 	}
 
 	callCount := int32(0)
-	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	info := CallInfo{Provider: "openai", Model: "gpt-5.4-mini", StartTime: time.Now()}
 	resp, err := mw.InterceptChat(context.Background(), info, func(ctx context.Context, info CallInfo) (*provider.Response, error) {
 		count := atomic.AddInt32(&callCount, 1)
 		if count < 3 {
@@ -204,7 +204,7 @@ func TestCircuitBreakerMiddleware(t *testing.T) {
 	}
 
 	// Trip the breaker
-	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	info := CallInfo{Provider: "openai", Model: "gpt-5.4-mini", StartTime: time.Now()}
 	for i := 0; i < 2; i++ {
 		_, _ = mw.InterceptChat(context.Background(), info, func(ctx context.Context, info CallInfo) (*provider.Response, error) {
 			return nil, fmt.Errorf("500")
@@ -226,7 +226,7 @@ func TestRateLimitMiddleware(t *testing.T) {
 		t.Errorf("expected 'rate-limit', got '%s'", mw.Name())
 	}
 
-	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	info := CallInfo{Provider: "openai", Model: "gpt-5.4-mini", StartTime: time.Now()}
 
 	// First 2 should succeed
 	_, err1 := mw.InterceptChat(context.Background(), info, func(ctx context.Context, info CallInfo) (*provider.Response, error) {
@@ -472,6 +472,7 @@ func (m *mockProvider) Name() string { return "mock" }
 func (m *mockProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
 	return &provider.Response{Content: "ok", TokensUsed: 10}, nil
 }
+
 func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, 1)
 	ch <- provider.StreamChunk{Content: "ok", Done: true}
@@ -488,12 +489,14 @@ func (m *mockFCProvider) Name() string { return "mock-fc" }
 func (m *mockFCProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
 	return &provider.Response{Content: "plain", TokensUsed: 10}, nil
 }
+
 func (m *mockFCProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
 	ch := make(chan provider.StreamChunk, 1)
 	ch <- provider.StreamChunk{Content: "plain", Done: true}
 	close(ch)
 	return ch, nil
 }
+
 func (m *mockFCProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
 	m.lastOpts = opts
 	return &provider.Response{
@@ -504,6 +507,7 @@ func (m *mockFCProvider) ChatWithOptions(ctx context.Context, messages []provide
 		TokensUsed: 11,
 	}, nil
 }
+
 func (m *mockFCProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
 	m.lastOpts = opts
 	ch := make(chan provider.StreamChunk, 2)

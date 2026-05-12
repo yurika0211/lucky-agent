@@ -12,8 +12,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Provider != "openai" {
 		t.Errorf("expected provider openai, got %s", cfg.Provider)
 	}
-	if cfg.Model != "gpt-4o" {
-		t.Errorf("expected model gpt-4o, got %s", cfg.Model)
+	if cfg.Model != "gpt-5.4-mini" {
+		t.Errorf("expected model ggpt-5.4-mini, got %s", cfg.Model)
 	}
 	if cfg.MaxTokens != 4096 {
 		t.Errorf("expected max_tokens 4096, got %d", cfg.MaxTokens)
@@ -197,8 +197,8 @@ func TestInitHome(t *testing.T) {
 func TestModelRouterNewModelRouter(t *testing.T) {
 	config := ModelRouterConfig{
 		Enable:         true,
-		SimpleModel:    "gpt-4o-mini",
-		ComplexModel:   "gpt-4o",
+		SimpleModel:    "gpt-5.4-mini",
+		ComplexModel:   "gpt-5.4",
 		LocalModel:     "qwen2.5-coder-32b",
 		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
@@ -215,8 +215,8 @@ func TestModelRouterNewModelRouter(t *testing.T) {
 func TestModelRouterSelectModel(t *testing.T) {
 	config := ModelRouterConfig{
 		Enable:         true,
-		SimpleModel:    "gpt-4o-mini",
-		ComplexModel:   "gpt-4o",
+		SimpleModel:    "gpt-5.4-mini",
+		ComplexModel:   "gpt-5.4",
 		LocalModel:     "qwen2.5-coder-32b",
 		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
@@ -225,14 +225,14 @@ func TestModelRouterSelectModel(t *testing.T) {
 
 	// Test simple task
 	model, apiBase := router.SelectModel(TaskSimple)
-	if model != "gpt-4o-mini" {
-		t.Errorf("expected gpt-4o-mini, got %s", model)
+	if model != "gpt-5.4-mini" {
+		t.Errorf("expected gpt-5.4-mini, got %s", model)
 	}
 
 	// Test complex task
 	model, apiBase = router.SelectModel(TaskComplex)
-	if model != "gpt-4o" {
-		t.Errorf("expected gpt-4o, got %s", model)
+	if model != "gpt-5.4" {
+		t.Errorf("expected gpt-5.4, got %s", model)
 	}
 
 	// Test moderate task (should use local)
@@ -327,8 +327,8 @@ func TestIsLocalTask(t *testing.T) {
 func TestSelectModelForTask(t *testing.T) {
 	config := ModelRouterConfig{
 		Enable:         true,
-		SimpleModel:    "gpt-4o-mini",
-		ComplexModel:   "gpt-4o",
+		SimpleModel:    "gpt-5.4-mini",
+		ComplexModel:   "gpt-5.4",
 		LocalModel:     "qwen2.5-coder-32b",
 		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
@@ -343,7 +343,7 @@ func TestSelectModelForTask(t *testing.T) {
 
 	// Complex task
 	model, apiBase = router.SelectModelForTask("write code for me", 100)
-	if model != "gpt-4o" {
+	if model != "gpt-5.4" {
 		t.Errorf("expected complex model for complex task, got %s", model)
 	}
 
@@ -383,7 +383,7 @@ func TestConfigWatcherOnError(t *testing.T) {
 	defer watcher.Stop()
 
 	// Write initial valid config
-	if err := os.WriteFile(cfgPath, []byte("provider: test\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("provider: test\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -465,7 +465,7 @@ func TestManagerLoad_InvalidYAML(t *testing.T) {
 
 	// 写入无效 YAML
 	invalidYAML := []byte("invalid: yaml: content: [")
-	if err := os.WriteFile(cfgPath, invalidYAML, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, invalidYAML, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -617,10 +617,10 @@ func TestNewManagerWithDir_PermDenied(t *testing.T) {
 	// 创建目录并设置不可写
 	tmpDir := t.TempDir()
 	restrictedDir := filepath.Join(tmpDir, "restricted")
-	if err := os.MkdirAll(restrictedDir, 0000); err != nil {
+	if err := os.MkdirAll(restrictedDir, 0o000); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	defer os.Chmod(restrictedDir, 0755)
+	defer os.Chmod(restrictedDir, 0o755)
 
 	_, err := NewManagerWithDir(restrictedDir)
 	if err == nil {
@@ -837,7 +837,7 @@ func TestInitHome_SoulAlreadyExists(t *testing.T) {
 	// 先创建 SOUL.md
 	soulPath := filepath.Join(tmpDir, "SOUL.md")
 	customContent := "custom soul content"
-	if err := os.WriteFile(soulPath, []byte(customContent), 0644); err != nil {
+	if err := os.WriteFile(soulPath, []byte(customContent), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 

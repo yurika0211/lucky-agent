@@ -21,7 +21,7 @@ func TestConfigWatcherNoChange(t *testing.T) {
 
 	// Save initial config
 	mgr.Set("provider", "openai")
-	mgr.Set("model", "gpt-4o")
+	mgr.Set("model", "gpt-5.4-mini")
 	if err := mgr.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestConfigWatcherDetectsChange(t *testing.T) {
 
 	// Save initial config
 	mgr.Set("provider", "openai")
-	mgr.Set("model", "gpt-4o")
+	mgr.Set("model", "gpt-5.4-mini")
 	if err := mgr.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -166,16 +166,16 @@ func TestConfigWatcherStop(t *testing.T) {
 func TestDiffConfig(t *testing.T) {
 	oldCfg := &Config{
 		Provider:    "openai",
-		Model:       "gpt-4o",
-		MaxTokens:   4096,
-		Temperature: 0.7,
+		Model:       "gpt-5.4-mini",
+		MaxTokens:   40960,
+		Temperature: 0.1,
 	}
 
 	newCfg := &Config{
 		Provider:    "anthropic",
-		Model:       "gpt-4o",
-		MaxTokens:   8192,
-		Temperature: 0.7,
+		Model:       "gpt-5.4-mini",
+		MaxTokens:   81920,
+		Temperature: 0.1,
 	}
 
 	diff := DiffConfig(oldCfg, newCfg)
@@ -194,8 +194,8 @@ func TestDiffConfig(t *testing.T) {
 }
 
 func TestDiffConfigNoChange(t *testing.T) {
-	cfg1 := &Config{Provider: "openai", Model: "gpt-4o"}
-	cfg2 := &Config{Provider: "openai", Model: "gpt-4o"}
+	cfg1 := &Config{Provider: "openai", Model: "gpt-5.4-mini"}
+	cfg2 := &Config{Provider: "openai", Model: "gpt-5.4-mini"}
 
 	diff := DiffConfig(cfg1, cfg2)
 	if diff.HasChanged() {
@@ -219,7 +219,7 @@ func TestManagerReload(t *testing.T) {
 	mgr.Save()
 
 	// Modify externally using the current persisted schema.
-	os.WriteFile(cfgPath, []byte(`{"llm_provider":{"name":"anthropic","model":"claude-3"}}`+"\n"), 0600)
+	os.WriteFile(cfgPath, []byte(`{"llm_provider":{"name":"anthropic","model":"claude-3"}}`+"\n"), 0o600)
 
 	// Reload
 	if err := mgr.Reload(); err != nil {

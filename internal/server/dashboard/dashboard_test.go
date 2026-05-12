@@ -68,7 +68,7 @@ func TestHandleStatus(t *testing.T) {
 	d := New(DefaultConfig())
 	d.AddProvider(&mockDataProvider{data: map[string]interface{}{
 		"provider": "openai",
-		"model":    "gpt-4o",
+		"model":    "gpt-5.4-mini",
 	}})
 
 	req := httptest.NewRequest("GET", "/api/status", nil)
@@ -85,8 +85,8 @@ func TestHandleStatus(t *testing.T) {
 	if result["provider"] != "openai" {
 		t.Errorf("expected provider openai, got %v", result["provider"])
 	}
-	if result["model"] != "gpt-4o" {
-		t.Errorf("expected model gpt-4o, got %v", result["model"])
+	if result["model"] != "gpt-5.4-mini" {
+		t.Errorf("expected model gpt-5.4-mini, got %v", result["model"])
 	}
 }
 
