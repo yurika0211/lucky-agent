@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -31,23 +34,39 @@ func maskedKeySuffix(key string) string {
 
 // openaiChatRequest 是发送给 OpenAI API 的请求体
 type openaiChatRequest struct {
-	Model               string          `json:"model"`
-	Messages            []openaiMessage `json:"messages"`
-	MaxTokens           int             `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
-	Temperature         float64         `json:"temperature,omitempty"`
-	Stream              bool            `json:"stream"`
-	Tools               []openaiTool    `json:"tools,omitempty"`
-	ToolChoice          any             `json:"tool_choice,omitempty"`
+	Model               string                 `json:"model"`
+	Messages            []openaiRequestMessage `json:"messages"`
+	MaxTokens           int                    `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int                    `json:"max_completion_tokens,omitempty"`
+	Temperature         float64                `json:"temperature,omitempty"`
+	Stream              bool                   `json:"stream"`
+	Tools               []openaiTool           `json:"tools,omitempty"`
+	ToolChoice          any                    `json:"tool_choice,omitempty"`
 }
 
 // openaiMessage 是 OpenAI API 的消息格式
 type openaiMessage struct {
 	Role       string               `json:"role"`
+	Content    any                  `json:"content,omitempty"`
+	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
+	ToolCallID string               `json:"tool_call_id,omitempty"`
+	Name       string               `json:"name,omitempty"`
+}
+
+type openaiRequestMessage struct {
+	Role       string               `json:"role"`
+	Content    any                  `json:"content,omitempty"`
+	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
+	ToolCallID string               `json:"tool_call_id,omitempty"`
+	Name       string               `json:"name,omitempty"`
+}
+
+type openaiResponseMessage struct {
+	Role       string               `json:"role"`
 	Content    string               `json:"content,omitempty"`
 	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"` // v0.16.0: tool 消息的 call ID
-	Name       string               `json:"name,omitempty"`         // v0.16.0: tool 消息的函数名
+	ToolCallID string               `json:"tool_call_id,omitempty"`
+	Name       string               `json:"name,omitempty"`
 }
 
 // openaiToolCallResp 是 OpenAI 响应中的工具调用格式
@@ -81,10 +100,10 @@ type openaiChatResponse struct {
 }
 
 type openaiChoice struct {
-	Index        int           `json:"index"`
-	Message      openaiMessage `json:"message"`
-	Delta        *openaiDelta  `json:"delta,omitempty"`
-	FinishReason string        `json:"finish_reason"`
+	Index        int                   `json:"index"`
+	Message      openaiResponseMessage `json:"message"`
+	Delta        *openaiDelta          `json:"delta,omitempty"`
+	FinishReason string                `json:"finish_reason"`
 }
 
 type openaiDelta struct {
@@ -117,6 +136,94 @@ type openaiSSEEvent struct {
 // openAIHTTPClient 使用独立 transport，避免 http.DefaultTransport 在某些代理链路上复用连接导致 TLS 记录损坏。
 var openAIHTTPClient = &http.Client{
 	Transport: newOpenAITransport(),
+}
+
+// 转换到OPENAI的图片兼容格式
+func toOpenAIContent(m Message) (any, error) {
+	if len(m.ContentParts) == 0 {
+		return m.Content, nil
+	}
+	parts := make([]map[string]any, 0, len(m.ContentParts))
+
+	for _, part := range m.ContentParts {
+		switch part.Type {
+		case "text":
+			text := strings.TrimSpace(part.Text)
+			if text == "" {
+				continue
+			}
+			parts = append(parts, map[string]any{
+				"type": "text",
+				"text": text,
+			})
+		case "image":
+			if m.Role != "user" {
+				return nil, fmt.Errorf("image content is only supported for user messages")
+			}
+			if part.Image == nil {
+				return nil, fmt.Errorf("image content part is missing image payload")
+			}
+			imageURL, err := resolveOpenAIImageURL(part.Image)
+			if err != nil {
+				return nil, err
+			}
+
+			detail := strings.TrimSpace(part.Image.Detail)
+			if detail == "" {
+				detail = "auto"
+			}
+
+			parts = append(parts, map[string]any{
+				"type": "image_url",
+				"image_url": map[string]any{
+					"url":    imageURL,
+					"detail": detail,
+				},
+			})
+		default:
+			return nil, fmt.Errorf("unsupported content part type %q", part.Type)
+		}
+	}
+
+	if len(parts) == 0 {
+		return m.Content, nil
+	}
+
+	return parts, nil
+}
+
+// 解析OPENAI的图片URL
+func resolveOpenAIImageURL(img *ImagePart) (string, error) {
+	if img == nil {
+		return "", fmt.Errorf("image payload is nil")
+	}
+
+	if path := strings.TrimSpace(img.FilePath); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read image file %q: %w", path, err)
+		}
+
+		mimeType := strings.TrimSpace(img.MimeType)
+		if mimeType == "" {
+			mimeType = mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+		}
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		if !strings.HasPrefix(mimeType, "image/") {
+			return "", fmt.Errorf("file %q is not an image (mime=%q)", path, mimeType)
+		}
+		return fmt.Sprintf(
+			"data:%s;base64,%s",
+			mimeType,
+			base64.StdEncoding.EncodeToString(data),
+		), nil
+	}
+	if url := strings.TrimSpace(img.URL); url != "" {
+		return url, nil
+	}
+	return "", fmt.Errorf("image content requires file_path or url")
 }
 
 func newOpenAITransport() http.RoundTripper {
@@ -312,9 +419,14 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 		}
 	}
 
+	apiMessages, err := toOpenAIMessages(normalizedMessages)
+	if err != nil {
+		return nil, fmt.Errorf("convert openai messages: %w", err)
+	}
+
 	reqBody := openaiChatRequest{
 		Model:               cfg.LlmProvider.Model,
-		Messages:            toOpenAIMessages(normalizedMessages),
+		Messages:            apiMessages,
 		MaxTokens:           cfg.Limits.MaxTokens,
 		MaxCompletionTokens: cfg.Limits.MaxTokens,
 		Temperature:         cfg.LlmProvider.Temperature,
@@ -401,7 +513,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 		}
 	}
 
-	// v0.55.0: 非流式返回空 content 但有 completion_tokens 时，
+	// 非流式返回空 content 但有 completion_tokens 时，
 	// 用流式重试（某些 API 代理如 api.boaiak.com 的 gpt-5.4-mini 非流式不返回 content）
 	hasUsage := chatResp.Usage != nil && chatResp.Usage.CompletionTokens > 0
 	if result.Content == "" && len(result.ToolCalls) == 0 && hasUsage {
@@ -512,9 +624,14 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		log.Printf("[provider] normalized tool protocol messages (stream): before=%d after=%d", len(messages), len(normalizedMessages))
 	}
 
+	apiMessages, err := toOpenAIMessages(normalizedMessages)
+	if err != nil {
+		return nil, fmt.Errorf("convert openai messages: %w", err)
+	}
+
 	reqBody := openaiChatRequest{
 		Model:               cfg.LlmProvider.Model,
-		Messages:            toOpenAIMessages(normalizedMessages),
+		Messages:            apiMessages,
 		MaxTokens:           cfg.Limits.MaxTokens,
 		MaxCompletionTokens: cfg.Limits.MaxTokens,
 		Temperature:         cfg.LlmProvider.Temperature,
@@ -661,8 +778,8 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 }
 
 // toOpenAIMessages 将通用 Message 转换为 OpenAI 格式
-func toOpenAIMessages(messages []Message) []openaiMessage {
-	result := make([]openaiMessage, 0, len(messages))
+func toOpenAIMessages(messages []Message) ([]openaiRequestMessage, error) {
+	result := make([]openaiRequestMessage, 0, len(messages))
 	for _, m := range messages {
 		// 兼容旧会话：tool 消息缺失 tool_call_id 时，不能以 role=tool 发送。
 		// 否则部分 API 网关会返回 400（Invalid input[*].call_id）。
@@ -674,16 +791,21 @@ func toOpenAIMessages(messages []Message) []openaiMessage {
 			if m.Name != "" && !strings.HasPrefix(content, "[Tool:") {
 				content = fmt.Sprintf("[Tool: %s] %s", m.Name, content)
 			}
-			result = append(result, openaiMessage{
+			result = append(result, openaiRequestMessage{
 				Role:    "assistant",
 				Content: content,
 			})
 			continue
 		}
 
-		msg := openaiMessage{
+		content, err := toOpenAIContent(m)
+		if err != nil {
+			return nil, fmt.Errorf("convert message content: %w", err)
+		}
+
+		msg := openaiRequestMessage{
 			Role:       m.Role,
-			Content:    m.Content,
+			Content:    content,
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
@@ -701,7 +823,7 @@ func toOpenAIMessages(messages []Message) []openaiMessage {
 		}
 		result = append(result, msg)
 	}
-	return result
+	return result, nil
 }
 
 // toolFunction 从 map 创建 toolFunction 结构

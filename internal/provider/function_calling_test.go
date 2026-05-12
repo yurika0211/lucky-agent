@@ -63,7 +63,10 @@ func TestToOpenAIMessagesWithToolCalls(t *testing.T) {
 		{Role: "tool", Content: "3", ToolCallID: "call_1", Name: "add"},
 	}
 
-	result := toOpenAIMessages(messages)
+	result, err := toOpenAIMessages(messages)
+	if err != nil {
+		t.Fatalf("toOpenAIMessages() error = %v", err)
+	}
 	if len(result) != 3 {
 		t.Fatalf("expected 3 messages, got %d", len(result))
 	}

@@ -11,7 +11,7 @@ func TestRegistryResolve(t *testing.T) {
 		LlmProvider: LlmProvider{
 			Name:   "openai",
 			APIKey: "test-key",
-			Model:  "gpt-4o",
+			Model:  "gpt-5.4-mini",
 		},
 	}
 
@@ -79,7 +79,10 @@ func TestToOpenAIMessages(t *testing.T) {
 		{Role: "system", Content: "You are helpful"},
 		{Role: "user", Content: "Hello"},
 	}
-	result := toOpenAIMessages(msgs)
+	result, err := toOpenAIMessages(msgs)
+	if err != nil {
+		t.Fatalf("toOpenAIMessages() error = %v", err)
+	}
 	if len(result) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(result))
 	}
@@ -97,8 +100,8 @@ func TestProviderDefaults(t *testing.T) {
 	if cfg.LlmProvider.BaseURL != "https://api.openai.com/v1" {
 		t.Errorf("expected default APIBase, got %s", cfg.LlmProvider.BaseURL)
 	}
-	if cfg.LlmProvider.Model != "gpt-4o" {
-		t.Errorf("expected default model gpt-4o, got %s", cfg.LlmProvider.Model)
+	if cfg.LlmProvider.Model != "gpt-5.4-mini" {
+		t.Errorf("expected default model gpt-5.4-mini, got %s", cfg.LlmProvider.Model)
 	}
 }
 

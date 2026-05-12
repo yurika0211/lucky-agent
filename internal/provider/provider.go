@@ -7,10 +7,25 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 )
 
+type ContentPart struct {
+	Type  string     `json:"type"`
+	Text  string     `json:"text,omitempty"`
+	Image *ImagePart `json:"image,omitempty"`
+}
+
+type ImagePart struct {
+	URL      string `json:"url,omitempty"`
+	FilePath string `json:"file_path,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
 // Message 代表一条对话消息
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
+	Role         string        `json:"role"`
+	Content      string        `json:"content"`
+	ContentParts []ContentPart `json:"content_parts,omitempty"`
+
 	ToolCallID string     `json:"tool_call_id,omitempty"` // v0.16.0: function calling tool result
 	Name       string     `json:"name,omitempty"`         // v0.16.0: function name for tool messages
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // v0.16.0: assistant tool calls
@@ -179,7 +194,7 @@ func newOpenAIBaseProvider(cfg Config) openAIBaseProvider {
 		cfg.LlmProvider.BaseURL = "https://api.openai.com/v1"
 	}
 	if cfg.LlmProvider.Model == "" {
-		cfg.LlmProvider.Model = "gpt-4o"
+		cfg.LlmProvider.Model = "gpt-5.4-mini"
 	}
 	return openAIBaseProvider{cfg: cfg}
 }
