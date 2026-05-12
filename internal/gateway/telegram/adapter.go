@@ -1064,7 +1064,7 @@ func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text s
 // splitMessage splits a message into chunks that fit within Telegram's 4096 char limit.
 func (a *Adapter) splitMessage(message string) []string {
 	maxLen := a.cfg.MaxMessageLen
-	if maxLen > 4096 {
+	if maxLen <= 0 || maxLen > 4096 {
 		maxLen = 4096
 	}
 
@@ -1072,28 +1072,118 @@ func (a *Adapter) splitMessage(message string) []string {
 		return []string{message}
 	}
 
+	return splitTelegramMessageChunks(message, maxLen)
+}
+
+func splitTelegramMessageChunks(message string, maxLen int) []string {
+	lines := strings.SplitAfter(message, "\n")
 	var chunks []string
-	for len(message) > 0 {
-		chunkLen := maxLen
-		if chunkLen > len(message) {
-			chunkLen = len(message)
+	var current strings.Builder
+	inFence := false
+	pendingFenceReopen := false
+	fenceOpener := ""
+
+	for _, originalLine := range lines {
+		line := originalLine
+		lineIsFence := isMarkdownFenceLine(originalLine)
+
+		for {
+			if pendingFenceReopen && current.Len() == 0 {
+				current.WriteString(fenceOpener)
+				if !strings.HasSuffix(fenceOpener, "\n") {
+					current.WriteString("\n")
+				}
+				pendingFenceReopen = false
+			}
+
+			limit := maxLen
+			if inFence && !lineIsFence {
+				limit -= len("\n```")
+				if limit <= 0 {
+					limit = 1
+				}
+			}
+
+			if current.Len()+len(line) > limit {
+				if current.Len() == 0 || chunkHasOnlyFencePrefix(current.String(), fenceOpener) {
+					take := limit - current.Len()
+					if take <= 0 {
+						take = maxLen
+					}
+					current.WriteString(line[:take])
+					line = line[take:]
+					chunk, reopen := finalizeTelegramChunk(current.String(), inFence)
+					if chunk != "" {
+						chunks = append(chunks, chunk)
+					}
+					current.Reset()
+					pendingFenceReopen = reopen && fenceOpener != ""
+					continue
+				}
+
+				chunk, reopen := finalizeTelegramChunk(current.String(), inFence)
+				if chunk != "" {
+					chunks = append(chunks, chunk)
+				}
+				current.Reset()
+				pendingFenceReopen = reopen && fenceOpener != ""
+				continue
+			}
+
+			current.WriteString(line)
+			break
 		}
 
-		chunk := message[:chunkLen]
-
-		// Try to split at newline boundary
-		if chunkLen < len(message) {
-			if idx := strings.LastIndex(chunk, "\n"); idx > 0 {
-				chunk = chunk[:idx+1]
-				chunkLen = idx + 1
+		if lineIsFence {
+			trimmed := strings.TrimRight(originalLine, "\n")
+			if !inFence {
+				inFence = true
+				fenceOpener = trimmed
+			} else {
+				inFence = false
+				pendingFenceReopen = false
+				fenceOpener = ""
 			}
 		}
+	}
 
-		chunks = append(chunks, chunk)
-		message = message[chunkLen:]
+	if current.Len() > 0 {
+		chunk, _ := finalizeTelegramChunk(current.String(), inFence)
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	return chunks
+}
+
+func isMarkdownFenceLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimRight(line, "\n"))
+	if len(trimmed) < 3 {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+}
+
+func finalizeTelegramChunk(chunk string, inFence bool) (string, bool) {
+	if chunk == "" {
+		return "", false
+	}
+	if !inFence {
+		return chunk, false
+	}
+	if !strings.HasSuffix(chunk, "\n") {
+		chunk += "\n"
+	}
+	chunk += "```"
+	return chunk, true
+}
+
+func chunkHasOnlyFencePrefix(chunk string, fenceOpener string) bool {
+	if fenceOpener == "" {
+		return false
+	}
+	return chunk == fenceOpener || chunk == fenceOpener+"\n"
 }
 
 // waitRateLimit enforces per-chat rate limiting.
