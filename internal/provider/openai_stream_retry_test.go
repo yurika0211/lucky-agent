@@ -31,10 +31,12 @@ func TestDoOpenAIRequestRetriesOnTransportError(t *testing.T) {
 
 	attempts := 0
 	closeFlags := make([]bool, 0, 2)
+	userAgents := make([]string, 0, 2)
 	openAIHTTPClient = &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			attempts++
 			closeFlags = append(closeFlags, req.Close)
+			userAgents = append(userAgents, req.Header.Get("User-Agent"))
 			if attempts == 1 {
 				return nil, fmt.Errorf("local error: tls: bad record MAC")
 			}
@@ -77,6 +79,54 @@ func TestDoOpenAIRequestRetriesOnTransportError(t *testing.T) {
 	}
 	if !closeFlags[1] {
 		t.Fatal("retry attempt should force close connection")
+	}
+	if len(userAgents) != 2 {
+		t.Fatalf("expected 2 user agents, got %d", len(userAgents))
+	}
+	for i, ua := range userAgents {
+		if ua != defaultOpenAIUserAgent {
+			t.Fatalf("attempt %d user agent = %q, want %q", i+1, ua, defaultOpenAIUserAgent)
+		}
+	}
+}
+
+func TestDoOpenAIRequestAllowsUserAgentOverride(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	var gotUserAgent string
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			gotUserAgent = req.Header.Get("User-Agent")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"ok":true}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+		},
+		ExtraHeaders: map[string]string{
+			"User-Agent": "custom-agent",
+		},
+	}
+
+	resp, err := doOpenAIRequest(context.Background(), cfg, []byte(`{"model":"x"}`))
+	if err != nil {
+		t.Fatalf("doOpenAIRequest returned error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if gotUserAgent != "custom-agent" {
+		t.Fatalf("user agent = %q, want %q", gotUserAgent, "custom-agent")
 	}
 }
 
