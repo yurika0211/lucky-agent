@@ -38,4 +38,12 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	r.Register(CurrentTimeTool())
 	r.Register(CalculateTool())
 	r.Register(ImageAnalyzeTool(s.mediaProcessor, s.defaultImageProvider))
+	r.Register(LogTailTool())
+	r.Register(LogGrepTool())
+	r.Register(HTTPRequestTool())
+	r.Register(JSONQueryTool())
+	r.Register(YAMLQueryTool())
+	r.Register(CSVQueryTool())
+	r.Register(SQLQueryTool())
+	r.Register(DBSchemaTool())
 }
