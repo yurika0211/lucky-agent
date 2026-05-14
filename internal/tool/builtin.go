@@ -545,21 +545,7 @@ func handleWebSearch(cfg *WebSearchConfig, args map[string]any) (string, error) 
 }
 
 func quickSearchOrder(provider string, cfg *WebSearchConfig) []string {
-	switch provider {
-	case "searxng":
-		return []string{"searxng", "exa", "ddgs", "ddg-lite", "brave"}
-	case "exa":
-		return []string{"exa", "searxng", "ddgs", "ddg-lite", "brave"}
-	case "ddgs":
-		return []string{"ddgs", "ddg-lite", "searxng", "exa", "brave"}
-	case "brave":
-		return []string{"brave", "ddgs", "ddg-lite", "searxng", "exa"}
-	default:
-		if cfg != nil && cfg.BaseURL != "" {
-			return []string{"searxng", "brave", "ddgs", "ddg-lite", "exa"}
-		}
-		return []string{"brave", "ddgs", "ddg-lite", "searxng", "exa"}
-	}
+	return []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
 }
 
 // handleDeepSearch 深度搜索模式：多源交叉验证，合并去重
@@ -627,37 +613,21 @@ func sourceDisplayName(source string) string {
 }
 
 func deepSearchOrder(provider string, cfg *WebSearchConfig) []string {
-	hasExa := resolveExaAPIKey(cfg) != ""
-	switch provider {
-	case "searxng":
-		if hasExa {
-			return []string{"searxng", "exa", "ddgs", "brave"}
-		}
-		return []string{"searxng", "ddgs", "brave"}
-	case "exa":
-		return []string{"exa", "searxng", "ddgs", "brave"}
-	case "ddgs":
-		if hasExa {
-			return []string{"ddgs", "searxng", "exa", "brave"}
-		}
-		return []string{"ddgs", "searxng", "brave"}
-	case "brave":
-		if hasExa {
-			return []string{"brave", "ddgs", "searxng", "exa"}
-		}
-		return []string{"brave", "ddgs", "searxng"}
-	default:
-		if cfg != nil && cfg.BaseURL != "" {
-			if hasExa {
-				return []string{"searxng", "brave", "ddgs", "exa"}
-			}
-			return []string{"searxng", "brave", "ddgs"}
-		}
-		if hasExa {
-			return []string{"brave", "ddgs", "searxng", "exa"}
-		}
-		return []string{"brave", "ddgs", "searxng"}
+	order := []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
+	if resolveExaAPIKey(cfg) == "" {
+		order = []string{"ddgs", "searxng", "ddg-lite", "brave"}
 	}
+	if cfg == nil || strings.TrimSpace(cfg.BaseURL) == "" {
+		filtered := make([]string, 0, len(order))
+		for _, name := range order {
+			if name == "searxng" {
+				continue
+			}
+			filtered = append(filtered, name)
+		}
+		return filtered
+	}
+	return order
 }
 
 func buildSearchEngineForSource(source string, cfg *WebSearchConfig) searchpkg.SearchEngine {

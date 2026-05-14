@@ -2101,12 +2101,17 @@ func (a *Agent) StartAutonomy(ctx context.Context) error {
 	}
 	if a.cfg != nil {
 		cfg := a.cfg.Get()
-		raw := strings.TrimSpace(cfg.Extra["autonomy.enabled"])
-		if raw == "" {
-			return nil
+		enabled := cfg.Autonomy.Enabled
+		if !enabled {
+			raw := strings.TrimSpace(cfg.Extra["autonomy.enabled"])
+			if raw != "" {
+				parsed, err := strconv.ParseBool(strings.ToLower(raw))
+				if err == nil {
+					enabled = parsed
+				}
+			}
 		}
-		enabled, err := strconv.ParseBool(strings.ToLower(raw))
-		if err != nil || !enabled {
+		if !enabled {
 			return nil
 		}
 	}

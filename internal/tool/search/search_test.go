@@ -342,21 +342,21 @@ func TestSearchConfigFromEnv(t *testing.T) {
 }
 
 func TestBuildEnginesBrave(t *testing.T) {
-	cfg := &SearchConfig{DefaultProvider: "brave", BraveAPIKey: "test"}
+	cfg := &SearchConfig{DefaultProvider: "brave", BraveAPIKey: "test", ExaAPIKey: "test-exa", SearXNGBaseURL: "http://searxng:8080"}
 	engines := cfg.BuildEngines()
 	if len(engines) < 2 {
-		t.Errorf("expected at least 2 engines (brave + ddgs fallback), got %d", len(engines))
+		t.Errorf("expected at least 2 engines, got %d", len(engines))
 	}
-	if engines[0].Name() != "brave" {
-		t.Errorf("expected first engine 'brave', got '%s'", engines[0].Name())
+	if engines[0].Name() != "exa" {
+		t.Errorf("expected first engine 'exa', got '%s'", engines[0].Name())
 	}
 }
 
 func TestBuildEnginesDDGS(t *testing.T) {
-	cfg := &SearchConfig{DefaultProvider: "ddgs"}
+	cfg := &SearchConfig{DefaultProvider: "ddgs", ExaAPIKey: "test-exa"}
 	engines := cfg.BuildEngines()
-	if engines[0].Name() != "ddgs" {
-		t.Errorf("expected first engine 'ddgs', got '%s'", engines[0].Name())
+	if engines[0].Name() != "exa" {
+		t.Errorf("expected first engine 'exa', got '%s'", engines[0].Name())
 	}
 }
 
@@ -962,10 +962,10 @@ func TestSearchConfigFromEnvWithBase(t *testing.T) {
 }
 
 func TestBuildEnginesSearXNG(t *testing.T) {
-	cfg := &SearchConfig{DefaultProvider: "searxng", SearXNGBaseURL: "http://searxng:8080"}
+	cfg := &SearchConfig{DefaultProvider: "searxng", SearXNGBaseURL: "http://searxng:8080", ExaAPIKey: "test-exa"}
 	engines := cfg.BuildEngines()
-	if engines[0].Name() != "searxng" {
-		t.Errorf("expected first engine 'searxng', got '%s'", engines[0].Name())
+	if engines[0].Name() != "exa" {
+		t.Errorf("expected first engine 'exa', got '%s'", engines[0].Name())
 	}
 }
 

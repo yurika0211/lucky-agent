@@ -1707,6 +1707,50 @@ func TestRunLoopWithSessionLazyStartsAutonomy(t *testing.T) {
 	}
 }
 
+func TestRunLoopWithSessionLazyStartsAutonomyFromFormalConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	current := cfg.Get()
+	current.Autonomy.Enabled = true
+	cfgBytes, err := json.Marshal(current)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), cfgBytes, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := cfg.Reload(); err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	a.provider = &mockProvider{name: "test-mock"}
+
+	if a.Autonomy().Status().Started {
+		t.Fatal("autonomy should be stopped before the first loop")
+	}
+
+	result, err := a.RunLoop(context.Background(), "say hi", DefaultLoopConfig())
+	if err != nil {
+		t.Fatalf("RunLoop() error = %v", err)
+	}
+	if result == nil || result.Response == "" {
+		t.Fatal("expected non-empty run loop response")
+	}
+	if !a.Autonomy().Status().Started {
+		t.Fatal("RunLoop() should lazy-start autonomy from formal config")
+	}
+}
+
 func TestAgent_SwitchModel_NoProvider(t *testing.T) {
 	// SwitchModel requires a fully initialized Agent with config manager
 	// Testing with nil config should not panic

@@ -39,6 +39,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit != 2 {
 		t.Errorf("expected simple_local_inspection.tool_only_iteration_limit 2, got %d", cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit)
 	}
+	if cfg.Autonomy.Enabled {
+		t.Errorf("expected autonomy.enabled false by default, got true")
+	}
 }
 
 func TestManagerSetAndGet(t *testing.T) {
@@ -114,6 +117,22 @@ func TestManagerSetSimpleLocalInspectionConfig(t *testing.T) {
 	}
 	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit != 3 {
 		t.Fatalf("expected 3, got %d", cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit)
+	}
+}
+
+func TestManagerSetAutonomyEnabled(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("autonomy.enabled", "true"); err != nil {
+		t.Fatalf("Set autonomy.enabled: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if !cfg.Autonomy.Enabled {
+		t.Fatalf("expected autonomy.enabled to be true")
 	}
 }
 

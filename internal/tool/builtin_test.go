@@ -366,17 +366,17 @@ func TestResolveExaAPIKey(t *testing.T) {
 	}
 }
 
-func TestQuickSearchOrderPrefersSearXNG(t *testing.T) {
+func TestQuickSearchOrderPrefersExa(t *testing.T) {
 	order := quickSearchOrder("searxng", &WebSearchConfig{BaseURL: "https://search.shiokou.asia"})
-	if len(order) == 0 || order[0] != "searxng" {
-		t.Fatalf("expected searxng first, got %v", order)
+	if len(order) == 0 || order[0] != "exa" {
+		t.Fatalf("expected exa first, got %v", order)
 	}
 }
 
-func TestDeepSearchOrderPrefersSearXNG(t *testing.T) {
-	t.Setenv("EXA_API_KEY", "")
+func TestDeepSearchOrderPrefersExa(t *testing.T) {
+	t.Setenv("EXA_API_KEY", "env-exa-key")
 	order := deepSearchOrder("searxng", &WebSearchConfig{BaseURL: "https://search.shiokou.asia"})
-	if len(order) == 0 || order[0] != "searxng" {
-		t.Fatalf("expected searxng first, got %v", order)
+	if len(order) == 0 || order[0] != "exa" {
+		t.Fatalf("expected exa first, got %v", order)
 	}
 }

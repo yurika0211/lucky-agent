@@ -483,35 +483,31 @@ func SearchConfigFromEnv(base *SearchConfig) *SearchConfig {
 
 // BuildEngines creates the search engine chain from config.
 func (c *SearchConfig) BuildEngines() []SearchEngine {
-	var engines []SearchEngine
+	order := []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
+	engines := make([]SearchEngine, 0, len(order))
+	seen := make(map[string]bool, len(order))
 
-	switch c.DefaultProvider {
-	case "ddgs":
-		engines = append(engines, NewDDGSEngine())
-	case "searxng":
-		engines = append(engines, NewSearXNGEngine(c.SearXNGBaseURL, c.Proxy))
-	case "exa":
-		engines = append(engines, NewExaEngine(c.ExaAPIKey))
-	default: // brave or auto
-		engines = append(engines, NewBraveEngine(c.BraveAPIKey, c.Proxy))
-	}
-
-	// Always add DDGS as fallback (unless it's the primary)
-	if c.DefaultProvider != "ddgs" {
-		engines = append(engines, NewDDGSEngine())
-	}
-
-	// DDG Lite as last-resort fallback
-	engines = append(engines, NewDDGLiteEngine())
-
-	// SearXNG if configured
-	if c.SearXNGBaseURL != "" && c.DefaultProvider != "searxng" {
-		engines = append(engines, NewSearXNGEngine(c.SearXNGBaseURL, c.Proxy))
-	}
-
-	// Exa if configured
-	if c.ExaAPIKey != "" && c.DefaultProvider != "exa" {
-		engines = append(engines, NewExaEngine(c.ExaAPIKey))
+	for _, name := range order {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		switch name {
+		case "exa":
+			if strings.TrimSpace(c.ExaAPIKey) != "" {
+				engines = append(engines, NewExaEngine(c.ExaAPIKey))
+			}
+		case "ddgs":
+			engines = append(engines, NewDDGSEngine())
+		case "searxng":
+			if strings.TrimSpace(c.SearXNGBaseURL) != "" {
+				engines = append(engines, NewSearXNGEngine(c.SearXNGBaseURL, c.Proxy))
+			}
+		case "ddg-lite":
+			engines = append(engines, NewDDGLiteEngine())
+		case "brave":
+			engines = append(engines, NewBraveEngine(c.BraveAPIKey, c.Proxy))
+		}
 	}
 
 	return engines

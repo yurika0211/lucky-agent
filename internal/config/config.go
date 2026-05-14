@@ -65,6 +65,9 @@ type Config struct {
 	// v0.64.0: Dashboard 配置
 	Dashboard DashboardConfig `json:"dashboard,omitempty"`
 
+	// v0.95.0: Autonomy 配置
+	Autonomy AutonomyConfig `json:"autonomy,omitempty"`
+
 	// v0.64.0: Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
 }
@@ -163,6 +166,11 @@ type ServerConfig struct {
 // DashboardConfig Dashboard 配置
 type DashboardConfig struct {
 	Addr string `json:"addr,omitempty"`
+}
+
+// AutonomyConfig 自主工作套件配置
+type AutonomyConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
 }
 
 // MsgGatewayConfig 消息网关配置
@@ -449,6 +457,9 @@ func DefaultConfig() *Config {
 		},
 		Dashboard: DashboardConfig{
 			Addr: ":8765",
+		},
+		Autonomy: AutonomyConfig{
+			Enabled: false,
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
@@ -887,6 +898,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Server.LogFormat = value
 	case "dashboard.addr":
 		m.config.Dashboard.Addr = value
+	case "autonomy.enabled":
+		m.config.Autonomy.Enabled = parseBool(value)
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":
