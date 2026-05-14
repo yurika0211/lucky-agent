@@ -50,23 +50,68 @@ func TestHumanizeToolCall(t *testing.T) {
 func TestHumanizeProgressNarrative(t *testing.T) {
 	t.Run("thinking", func(t *testing.T) {
 		got := humanizeThinkingProgress("先看下 tasks 目录状态")
-		assert.Contains(t, got, "我先陪你把这条思路慢慢捋顺喔：")
+		assert.Contains(t, got, "先整理一下当前思路：")
+	})
+
+	t.Run("internal thinking marker is hidden", func(t *testing.T) {
+		got := humanizeThinkingProgress("Thinking... (round 2)")
+		assert.Equal(t, "", got)
 	})
 
 	t.Run("tool call narrative", func(t *testing.T) {
 		got := humanizeToolCallProgress(2, "file_read", `{"path":"tasks/QUEUE.md"}`)
-		assert.Contains(t, got, "我先陪你翻一下文件")
+		assert.Contains(t, got, "先查看文件")
 		assert.Contains(t, got, "tasks/QUEUE.md")
 	})
 
 	t.Run("skill narrative", func(t *testing.T) {
 		got := humanizeToolCallProgress(1, "skill_run", `{"skill_name":"deep-research"}`)
-		assert.Contains(t, got, "技能")
-		assert.Contains(t, got, "deep-research")
+		assert.Contains(t, got, "处理链路")
+		assert.NotContains(t, got, "deep-research")
 	})
 
 	t.Run("tool result narrative", func(t *testing.T) {
 		got := humanizeToolResultProgress(3, "web_search", "ok")
-		assert.Contains(t, got, "搜索结果")
+		assert.Contains(t, got, "搜索结果已经拿到")
+	})
+}
+
+func TestTelegramProgressCards(t *testing.T) {
+	t.Run("thinking card", func(t *testing.T) {
+		got := renderTelegramThinkingCard("先看下 tasks 目录状态")
+		assert.Contains(t, got, "<b>💭 Reasoning Trace</b>")
+		assert.Contains(t, got, "<blockquote expandable>")
+		assert.Contains(t, got, "先看下 tasks 目录状态")
+	})
+
+	t.Run("internal thinking marker is suppressed", func(t *testing.T) {
+		got := renderTelegramThinkingCard("Thinking... (round 2)")
+		assert.Equal(t, "", got)
+	})
+
+	t.Run("tool trace card", func(t *testing.T) {
+		got := renderTelegramToolTraceCard([]telegramToolTraceStep{
+			{Name: "web_search", Args: `{"query":"luckyharness telegram"}`, Result: "Results for: luckyharness telegram", Success: true},
+			{Name: "file_read", Args: `{"path":"internal/gateway/telegram/handler.go"}`, Result: "package telegram", Success: true},
+		})
+		assert.Contains(t, got, "<b>🛠 Tool Trace</b>")
+		assert.Contains(t, got, "<pre><code>")
+		assert.Contains(t, got, "[1]")
+		assert.Contains(t, got, "web_search")
+		assert.Contains(t, got, "→")
+		assert.Contains(t, got, "[2]")
+		assert.Contains(t, got, "file_read")
+		assert.Contains(t, got, "Done · 2 tools")
+	})
+
+	t.Run("tool trace hides internal skill tools", func(t *testing.T) {
+		got := renderTelegramToolTraceCard([]telegramToolTraceStep{
+			{Name: "skill_obsidian_run", Args: `{"name":"vault"}`, Result: "ok", Success: true},
+			{Name: "skill_read", Args: `{"name":"obsidian"}`, Result: "ok", Success: true},
+		})
+		assert.NotContains(t, got, "skill_obsidian_run")
+		assert.Contains(t, got, "skill_read")
+		assert.Contains(t, got, "[1]")
+		assert.Contains(t, got, "Done · 1 tools")
 	})
 }

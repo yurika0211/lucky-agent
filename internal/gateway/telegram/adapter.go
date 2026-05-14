@@ -229,6 +229,32 @@ func (a *Adapter) Send(ctx context.Context, chatID string, message string) error
 	return nil
 }
 
+// SendHTML sends a pre-rendered Telegram HTML message without markdown reformatting.
+func (a *Adapter) SendHTML(ctx context.Context, chatID string, message string) error {
+	if !a.running || a.bot == nil {
+		return fmt.Errorf("telegram: adapter not running")
+	}
+
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	chunks := a.splitHTMLMessage(message)
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+
+	for _, chunk := range chunks {
+		if err := a.sendChunkHTML(ctx, chatIDInt, 0, chunk); err != nil {
+			return err
+		}
+		a.waitRateLimit(chatID)
+	}
+
+	return nil
+}
+
 // SendWithReply sends a message as a reply to a specific message.
 func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
 	if !a.running || a.bot == nil {
@@ -253,6 +279,41 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 			replyID = replyToID
 		}
 		if err := a.sendChunk(ctx, chatIDInt, replyID, chunk); err != nil {
+			return err
+		}
+		a.waitRateLimit(chatID)
+	}
+
+	return nil
+}
+
+// SendWithReplyHTML sends a pre-rendered Telegram HTML message as a reply.
+func (a *Adapter) SendWithReplyHTML(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	if !a.running || a.bot == nil {
+		return fmt.Errorf("telegram: adapter not running")
+	}
+
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	chunks := a.splitHTMLMessage(message)
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+
+	replyToID, err := strconv.Atoi(replyToMsgID)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid reply-to message ID %q: %w", replyToMsgID, err)
+	}
+
+	for i, chunk := range chunks {
+		replyID := 0
+		if i == 0 {
+			replyID = replyToID
+		}
+		if err := a.sendChunkHTML(ctx, chatIDInt, replyID, chunk); err != nil {
 			return err
 		}
 		a.waitRateLimit(chatID)
@@ -543,6 +604,23 @@ func (s *telegramStreamSender) SetResult(content string) error {
 	s.content = sanitizeOutgoingText(content)
 	s.thinking = ""
 	return s.throttledEdit()
+}
+
+func (s *telegramStreamSender) SetHTMLCard(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.finished {
+		return nil
+	}
+
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+	s.content = content
+	s.thinking = ""
+	return s.editMessageHTML(content)
 }
 
 func (s *telegramStreamSender) Finish() error {
@@ -1061,6 +1139,19 @@ func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text s
 	return nil
 }
 
+func (a *Adapter) sendChunkHTML(_ context.Context, chatID int64, replyTo int, text string) error {
+	msg := tgbotapi.NewMessage(chatID, text)
+	if replyTo > 0 {
+		msg.ReplyToMessageID = replyTo
+	}
+	msg.ParseMode = tgbotapi.ModeHTML
+
+	if _, err := a.bot.Send(msg); err != nil {
+		return fmt.Errorf("telegram: send html message: %w", err)
+	}
+	return nil
+}
+
 // splitMessage splits a message into chunks that fit within Telegram's 4096 char limit.
 func (a *Adapter) splitMessage(message string) []string {
 	maxLen := a.cfg.MaxMessageLen
@@ -1073,6 +1164,37 @@ func (a *Adapter) splitMessage(message string) []string {
 	}
 
 	return splitTelegramMessageChunks(message, maxLen)
+}
+
+func (a *Adapter) splitHTMLMessage(message string) []string {
+	maxLen := a.cfg.MaxMessageLen
+	if maxLen <= 0 || maxLen > 4096 {
+		maxLen = 4096
+	}
+	if len(message) <= maxLen {
+		return []string{message}
+	}
+
+	lines := strings.SplitAfter(message, "\n")
+	var chunks []string
+	var current strings.Builder
+	for _, line := range lines {
+		if current.Len()+len(line) > maxLen && current.Len() > 0 {
+			chunks = append(chunks, current.String())
+			current.Reset()
+		}
+		if len(line) > maxLen {
+			for len(line) > maxLen {
+				chunks = append(chunks, line[:maxLen])
+				line = line[maxLen:]
+			}
+		}
+		current.WriteString(line)
+	}
+	if current.Len() > 0 {
+		chunks = append(chunks, current.String())
+	}
+	return chunks
 }
 
 func splitTelegramMessageChunks(message string, maxLen int) []string {
