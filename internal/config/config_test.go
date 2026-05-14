@@ -136,6 +136,52 @@ func TestManagerSetAutonomyEnabled(t *testing.T) {
 	}
 }
 
+func TestManagerSetMultimodalImageProvider(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("multimodal.provider", "openai"); err != nil {
+		t.Fatalf("Set multimodal.provider: %v", err)
+	}
+	if err := mgr.Set("multimodal.api_key", "mm-key"); err != nil {
+		t.Fatalf("Set multimodal.api_key: %v", err)
+	}
+	if err := mgr.Set("multimodal.api_base", "https://vision.example/v1"); err != nil {
+		t.Fatalf("Set multimodal.api_base: %v", err)
+	}
+	if err := mgr.Set("multimodal.image_model", "gpt-4.1-mini"); err != nil {
+		t.Fatalf("Set multimodal.image_model: %v", err)
+	}
+	if err := mgr.Set("multimodal.transcription_model", "whisper-1"); err != nil {
+		t.Fatalf("Set multimodal.transcription_model: %v", err)
+	}
+	if err := mgr.Set("multimodal.image_provider", "openai-media"); err != nil {
+		t.Fatalf("Set multimodal.image_provider: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Multimodal.Provider != "openai" {
+		t.Fatalf("expected openai, got %q", cfg.Multimodal.Provider)
+	}
+	if cfg.Multimodal.APIKey != "mm-key" {
+		t.Fatalf("expected mm-key, got %q", cfg.Multimodal.APIKey)
+	}
+	if cfg.Multimodal.APIBase != "https://vision.example/v1" {
+		t.Fatalf("expected multimodal api base, got %q", cfg.Multimodal.APIBase)
+	}
+	if cfg.Multimodal.ImageModel != "gpt-4.1-mini" {
+		t.Fatalf("expected gpt-4.1-mini, got %q", cfg.Multimodal.ImageModel)
+	}
+	if cfg.Multimodal.TranscriptionModel != "whisper-1" {
+		t.Fatalf("expected whisper-1, got %q", cfg.Multimodal.TranscriptionModel)
+	}
+	if cfg.Multimodal.ImageProvider != "openai-media" {
+		t.Fatalf("expected openai-media, got %q", cfg.Multimodal.ImageProvider)
+	}
+}
+
 func TestManagerSetTelegramShowToolChainAlias(t *testing.T) {
 	mgr, err := NewManager()
 	if err != nil {

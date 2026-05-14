@@ -3,34 +3,50 @@ package tool
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"math"
+	"mime"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/multimodal"
 	searchpkg "github.com/yurika0211/luckyharness/internal/tool/search"
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // RegisterBuiltinTools 注册所有内置工具
-func RegisterBuiltinTools(r *Registry) {
-	RegisterBuiltinToolsWithConfig(r, nil)
+func RegisterBuiltinTools(r *Registry, mediaProcessor ...*multimodal.Processor) {
+	RegisterBuiltinToolsWithConfig(r, nil, mediaProcessor...)
 }
 
 // RegisterBuiltinToolsWithConfig 注册所有内置工具（带搜索配置）
-func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig) {
+func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, mediaProcessor ...*multimodal.Processor) {
+	var processor *multimodal.Processor
+	if len(mediaProcessor) > 0 {
+		processor = mediaProcessor[0]
+	}
 	r.Register(TerminalTool())
 	r.Register(LegacyShellTool())
 	r.Register(FileReadTool())
 	r.Register(FileWriteTool())
+	r.Register(FilePatchTool())
 	r.Register(FileListTool())
 	r.Register(WebSearchTool(searchCfg))
 	r.Register(WebFetchTool(searchCfg))
 	r.Register(CurrentTimeTool())
+	r.Register(CalculateTool())
+	r.Register(ImageAnalyzeTool(processor, ""))
 	r.Register(RememberTool(nil))
 	r.Register(RecallTool(nil))
 	r.Register(RAGSearchTool(nil))
@@ -319,6 +335,147 @@ func handleFileWrite(args map[string]any) (string, error) {
 	}
 
 	return fmt.Sprintf("Written %d bytes to %s", len(content), path), nil
+}
+
+// FilePatchTool applies a targeted string replacement inside an existing file.
+func FilePatchTool() *Tool {
+	return &Tool{
+		Name:        "file_patch",
+		Description: "Apply a targeted in-place edit to an existing file by replacing one matched text block with another. Prefer this over file_write when only a small part of the file should change.",
+		Category:    CatBuiltin,
+		Source:      "builtin",
+		Permission:  PermApprove,
+		Parameters: map[string]Param{
+			"path": {
+				Type:        "string",
+				Description: "Path to the file that should be patched.",
+				Required:    true,
+			},
+			"match": {
+				Type:        "string",
+				Description: "Exact text to find in the file before applying the patch.",
+				Required:    true,
+			},
+			"replace": {
+				Type:        "string",
+				Description: "Replacement text for the matched block.",
+				Required:    true,
+			},
+			"occurrence": {
+				Type:        "number",
+				Description: "1-based occurrence to replace when the same text appears multiple times. Default 1.",
+				Required:    false,
+				Default:     1,
+			},
+			"replace_all": {
+				Type:        "boolean",
+				Description: "Replace every exact occurrence instead of a single targeted one.",
+				Required:    false,
+				Default:     false,
+			},
+		},
+		Handler: handleFilePatch,
+	}
+}
+
+func handleFilePatch(args map[string]any) (string, error) {
+	path, ok := args["path"].(string)
+	if !ok {
+		return "", fmt.Errorf("path is required")
+	}
+	match, ok := args["match"].(string)
+	if !ok {
+		return "", fmt.Errorf("match is required")
+	}
+	replace, ok := args["replace"].(string)
+	if !ok {
+		return "", fmt.Errorf("replace is required")
+	}
+	if strings.TrimSpace(match) == "" {
+		return "", fmt.Errorf("match must not be empty")
+	}
+
+	replaceAll := false
+	if v, ok := args["replace_all"].(bool); ok {
+		replaceAll = v
+	}
+
+	occurrence := 1
+	if v, ok := args["occurrence"]; ok {
+		switch n := v.(type) {
+		case float64:
+			occurrence = int(n)
+		case int:
+			occurrence = n
+		}
+	}
+	if occurrence <= 0 {
+		occurrence = 1
+	}
+
+	if err := validatePath(path); err != nil {
+		return "", err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read file: %w", err)
+	}
+	content := string(data)
+
+	matchCount := strings.Count(content, match)
+	if matchCount == 0 {
+		return "", fmt.Errorf("match text not found in %s", path)
+	}
+
+	var patched string
+	replacedCount := 0
+	if replaceAll {
+		patched = strings.ReplaceAll(content, match, replace)
+		replacedCount = matchCount
+	} else {
+		if occurrence > matchCount {
+			return "", fmt.Errorf("occurrence %d exceeds %d matches in %s", occurrence, matchCount, path)
+		}
+		patched, replacedCount = replaceStringOccurrence(content, match, replace, occurrence)
+	}
+
+	if replacedCount == 0 {
+		return "", fmt.Errorf("no patch applied to %s", path)
+	}
+	if err := os.WriteFile(path, []byte(patched), 0644); err != nil {
+		return "", fmt.Errorf("write file: %w", err)
+	}
+
+	return fmt.Sprintf("Patched %s (%d replacement%s)", path, replacedCount, pluralSuffix(replacedCount)), nil
+}
+
+func replaceStringOccurrence(content, match, replace string, occurrence int) (string, int) {
+	searchFrom := 0
+	found := 0
+	for {
+		idx := strings.Index(content[searchFrom:], match)
+		if idx < 0 {
+			return content, 0
+		}
+		idx += searchFrom
+		found++
+		if found == occurrence {
+			var b strings.Builder
+			b.WriteString(content[:idx])
+			b.WriteString(replace)
+			b.WriteString(content[idx+len(match):])
+			return b.String(), 1
+		}
+		searchFrom = idx + len(match)
+	}
+}
+
+func pluralSuffix(count int) string {
+	if count == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // FileListTool 列出目录内容
@@ -995,6 +1152,358 @@ func CurrentTimeTool() *Tool {
 func handleCurrentTime(args map[string]any) (string, error) {
 	now := time.Now()
 	return fmt.Sprintf("Current time: %s (%s)", now.Format("2006-01-02 15:04:05"), now.Location()), nil
+}
+
+// CalculateTool evaluates small arithmetic expressions locally.
+func CalculateTool() *Tool {
+	return &Tool{
+		Name:         "calculate",
+		Description:  "Evaluate a small arithmetic expression locally. Useful for quick numeric checks without using a shell or external model call.",
+		Category:     CatBuiltin,
+		Source:       "builtin",
+		Permission:   PermAuto,
+		ParallelSafe: true,
+		Parameters: map[string]Param{
+			"expression": {
+				Type:        "string",
+				Description: "Arithmetic expression such as (12.5*8)/3, sqrt(144), max(3,7,2), or 2^10.",
+				Required:    true,
+			},
+		},
+		Handler: handleCalculate,
+	}
+}
+
+func handleCalculate(args map[string]any) (string, error) {
+	expression, ok := args["expression"].(string)
+	if !ok || strings.TrimSpace(expression) == "" {
+		return "", fmt.Errorf("expression is required")
+	}
+
+	expr, err := parser.ParseExpr(strings.TrimSpace(expression))
+	if err != nil {
+		return "", fmt.Errorf("parse expression: %w", err)
+	}
+
+	value, err := evalNumericExpr(expr)
+	if err != nil {
+		return "", err
+	}
+
+	if math.IsNaN(value) || math.IsInf(value, 0) {
+		return "", fmt.Errorf("expression produced non-finite result")
+	}
+
+	return strconv.FormatFloat(value, 'f', -1, 64), nil
+}
+
+func evalNumericExpr(expr ast.Expr) (float64, error) {
+	switch n := expr.(type) {
+	case *ast.BasicLit:
+		if n.Kind != token.INT && n.Kind != token.FLOAT {
+			return 0, fmt.Errorf("unsupported literal %q", n.Value)
+		}
+		v, err := strconv.ParseFloat(n.Value, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse number %q: %w", n.Value, err)
+		}
+		return v, nil
+
+	case *ast.ParenExpr:
+		return evalNumericExpr(n.X)
+
+	case *ast.UnaryExpr:
+		v, err := evalNumericExpr(n.X)
+		if err != nil {
+			return 0, err
+		}
+		switch n.Op {
+		case token.ADD:
+			return v, nil
+		case token.SUB:
+			return -v, nil
+		default:
+			return 0, fmt.Errorf("unsupported unary operator %s", n.Op)
+		}
+
+	case *ast.BinaryExpr:
+		left, err := evalNumericExpr(n.X)
+		if err != nil {
+			return 0, err
+		}
+		right, err := evalNumericExpr(n.Y)
+		if err != nil {
+			return 0, err
+		}
+		switch n.Op {
+		case token.ADD:
+			return left + right, nil
+		case token.SUB:
+			return left - right, nil
+		case token.MUL:
+			return left * right, nil
+		case token.QUO:
+			if right == 0 {
+				return 0, fmt.Errorf("division by zero")
+			}
+			return left / right, nil
+		case token.REM:
+			if right == 0 {
+				return 0, fmt.Errorf("modulo by zero")
+			}
+			return math.Mod(left, right), nil
+		case token.XOR:
+			return math.Pow(left, right), nil
+		default:
+			return 0, fmt.Errorf("unsupported binary operator %s", n.Op)
+		}
+
+	case *ast.CallExpr:
+		ident, ok := n.Fun.(*ast.Ident)
+		if !ok {
+			return 0, fmt.Errorf("unsupported function call")
+		}
+		args := make([]float64, 0, len(n.Args))
+		for _, arg := range n.Args {
+			v, err := evalNumericExpr(arg)
+			if err != nil {
+				return 0, err
+			}
+			args = append(args, v)
+		}
+		return evalNumericFunc(ident.Name, args)
+
+	default:
+		return 0, fmt.Errorf("unsupported expression type %T", expr)
+	}
+}
+
+func evalNumericFunc(name string, args []float64) (float64, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "sqrt":
+		if len(args) != 1 {
+			return 0, fmt.Errorf("sqrt expects 1 argument")
+		}
+		if args[0] < 0 {
+			return 0, fmt.Errorf("sqrt of negative number")
+		}
+		return math.Sqrt(args[0]), nil
+	case "abs":
+		if len(args) != 1 {
+			return 0, fmt.Errorf("abs expects 1 argument")
+		}
+		return math.Abs(args[0]), nil
+	case "ceil":
+		if len(args) != 1 {
+			return 0, fmt.Errorf("ceil expects 1 argument")
+		}
+		return math.Ceil(args[0]), nil
+	case "floor":
+		if len(args) != 1 {
+			return 0, fmt.Errorf("floor expects 1 argument")
+		}
+		return math.Floor(args[0]), nil
+	case "round":
+		if len(args) != 1 {
+			return 0, fmt.Errorf("round expects 1 argument")
+		}
+		return math.Round(args[0]), nil
+	case "min":
+		if len(args) == 0 {
+			return 0, fmt.Errorf("min expects at least 1 argument")
+		}
+		v := args[0]
+		for _, arg := range args[1:] {
+			v = math.Min(v, arg)
+		}
+		return v, nil
+	case "max":
+		if len(args) == 0 {
+			return 0, fmt.Errorf("max expects at least 1 argument")
+		}
+		v := args[0]
+		for _, arg := range args[1:] {
+			v = math.Max(v, arg)
+		}
+		return v, nil
+	case "pow":
+		if len(args) != 2 {
+			return 0, fmt.Errorf("pow expects 2 arguments")
+		}
+		return math.Pow(args[0], args[1]), nil
+	default:
+		return 0, fmt.Errorf("unsupported function %q", name)
+	}
+}
+
+// ImageAnalyzeTool analyzes images, screenshots, and simple documents through the multimodal processor.
+func ImageAnalyzeTool(processor *multimodal.Processor, defaultProvider string) *Tool {
+	return &Tool{
+		Name:         "image_analyze",
+		Description:  "Analyze an image, screenshot, chart, or scanned document. Extract visible text, summarize UI or visual content, and surface likely errors or key signals.",
+		Category:     CatBuiltin,
+		Source:       "builtin",
+		Permission:   PermAuto,
+		ParallelSafe: true,
+		Parameters: map[string]Param{
+			"path": {
+				Type:        "string",
+				Description: "Local file path to the image or document.",
+				Required:    false,
+			},
+			"url": {
+				Type:        "string",
+				Description: "Remote URL to the image or document.",
+				Required:    false,
+			},
+			"base64_data": {
+				Type:        "string",
+				Description: "Base64-encoded file contents when the image is already in memory.",
+				Required:    false,
+			},
+			"mime_type": {
+				Type:        "string",
+				Description: "Optional MIME type such as image/png or application/pdf.",
+				Required:    false,
+			},
+			"provider": {
+				Type:        "string",
+				Description: "Optional multimodal provider name override.",
+				Required:    false,
+			},
+		},
+		Handler: handleImageAnalyze(processor, defaultProvider),
+	}
+}
+
+func handleImageAnalyze(processor *multimodal.Processor, defaultProvider string) func(args map[string]any) (string, error) {
+	return func(args map[string]any) (string, error) {
+		if processor == nil {
+			return "", fmt.Errorf("image analysis is not configured")
+		}
+
+		input, err := buildImageAnalyzeInput(args)
+		if err != nil {
+			return "", err
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+
+		providerName, _ := args["provider"].(string)
+		providerName = strings.TrimSpace(providerName)
+		if providerName == "" {
+			providerName = strings.TrimSpace(defaultProvider)
+		}
+		var result *multimodal.AnalysisResult
+		if providerName != "" {
+			result, err = processor.AnalyzeWithProvider(ctx, providerName, input)
+		} else {
+			result, err = processor.Analyze(ctx, input)
+		}
+		if err != nil {
+			return "", err
+		}
+		return formatImageAnalysisResult(result), nil
+	}
+}
+
+func buildImageAnalyzeInput(args map[string]any) (*multimodal.Input, error) {
+	path, _ := args["path"].(string)
+	url, _ := args["url"].(string)
+	base64Data, _ := args["base64_data"].(string)
+	mimeType, _ := args["mime_type"].(string)
+
+	path = strings.TrimSpace(path)
+	url = strings.TrimSpace(url)
+	base64Data = strings.TrimSpace(base64Data)
+	mimeType = strings.TrimSpace(mimeType)
+
+	if path == "" && url == "" && base64Data == "" {
+		return nil, fmt.Errorf("one of path, url, or base64_data is required")
+	}
+
+	modality := inferImageAnalyzeModality(path, mimeType)
+	var input *multimodal.Input
+	switch {
+	case path != "":
+		if err := validatePath(path); err != nil {
+			return nil, err
+		}
+		input = multimodal.NewInputFromPath(modality, path)
+		if mimeType == "" {
+			mimeType = mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+		}
+	case url != "":
+		input = multimodal.NewInputFromURL(modality, url)
+	case base64Data != "":
+		data, err := base64.StdEncoding.DecodeString(base64Data)
+		if err != nil {
+			return nil, fmt.Errorf("decode base64_data: %w", err)
+		}
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		modality = inferImageAnalyzeModality("", mimeType)
+		input = multimodal.NewInput(modality, mimeType, data)
+	}
+
+	if input == nil {
+		return nil, fmt.Errorf("failed to build multimodal input")
+	}
+	input.Modality = modality
+	input.MimeType = mimeType
+	if input.Metadata == nil {
+		input.Metadata = make(map[string]string)
+	}
+	if path != "" {
+		input.Metadata["file_path"] = path
+		input.Metadata["filename"] = filepath.Base(path)
+	}
+	if url != "" {
+		input.Metadata["url"] = url
+	}
+	return input, nil
+}
+
+func inferImageAnalyzeModality(path, mimeType string) multimodal.Modality {
+	mimeType = strings.ToLower(strings.TrimSpace(mimeType))
+	if strings.EqualFold(mimeType, "application/pdf") || strings.EqualFold(filepath.Ext(path), ".pdf") {
+		return multimodal.ModalityDocument
+	}
+	return multimodal.ModalityImage
+}
+
+func formatImageAnalysisResult(result *multimodal.AnalysisResult) string {
+	if result == nil {
+		return "Image analysis unavailable."
+	}
+
+	lines := []string{
+		fmt.Sprintf("Modality: %s", result.Modality),
+	}
+	if summary := strings.TrimSpace(result.Summary); summary != "" {
+		lines = append(lines, "Summary: "+summary)
+	}
+	if text := strings.TrimSpace(result.Text); text != "" {
+		lines = append(lines, "Visible text / analysis:")
+		lines = append(lines, utils.Truncate(text, 4000))
+	}
+	if len(result.Labels) > 0 {
+		lines = append(lines, "Labels: "+strings.Join(result.Labels, ", "))
+	}
+	if result.Confidence > 0 {
+		lines = append(lines, fmt.Sprintf("Confidence: %.2f", result.Confidence))
+	}
+	if result.Metadata != nil {
+		if model := strings.TrimSpace(result.Metadata["model"]); model != "" {
+			lines = append(lines, "Model: "+model)
+		}
+		if source := strings.TrimSpace(result.Metadata["source"]); source != "" {
+			lines = append(lines, "Source: "+source)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // validatePath 路径安全检查（防止路径遍历 + 沙箱限制）

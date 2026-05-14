@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,14 +9,41 @@ import (
 	"testing"
 
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/multimodal"
 	"github.com/yurika0211/luckyharness/internal/rag"
 )
+
+type namedImageTestProvider struct{}
+
+func (namedImageTestProvider) Name() string { return "named-image-provider" }
+func (namedImageTestProvider) SupportedModalities() []multimodal.Modality {
+	return []multimodal.Modality{multimodal.ModalityImage}
+}
+func (namedImageTestProvider) Analyze(ctx context.Context, input *multimodal.Input) (*multimodal.AnalysisResult, error) {
+	return &multimodal.AnalysisResult{
+		InputID:    input.ID,
+		Modality:   input.Modality,
+		Text:       "named provider text",
+		Summary:    "named provider summary",
+		Labels:     []string{"named"},
+		Confidence: 0.99,
+		Metadata: map[string]string{
+			"source": "named-provider",
+		},
+	}, nil
+}
+func (namedImageTestProvider) AnalyzeStream(ctx context.Context, input *multimodal.Input) (<-chan multimodal.StreamChunk, error) {
+	ch := make(chan multimodal.StreamChunk, 1)
+	close(ch)
+	return ch, nil
+}
+func (namedImageTestProvider) Validate() error { return nil }
 
 func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"terminal", "shell", "file_read", "file_write", "file_list", "web_search", "web_fetch", "current_time", "remember", "recall", "rag_search", "rag_index"}
+	expected := []string{"terminal", "shell", "file_read", "file_write", "file_patch", "file_list", "web_search", "web_fetch", "current_time", "calculate", "image_analyze", "remember", "recall", "rag_search", "rag_index"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {
@@ -66,6 +94,74 @@ func TestCurrentTimeTool(t *testing.T) {
 	}
 }
 
+func TestCalculateTool(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	result, err := r.Call("calculate", map[string]any{
+		"expression": "sqrt(144)+pow(2,3)",
+	})
+	if err != nil {
+		t.Fatalf("calculate call: %v", err)
+	}
+	if result != "20" {
+		t.Fatalf("expected 20, got %q", result)
+	}
+}
+
+func TestImageAnalyzeTool(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(
+		multimodal.ModalityImage,
+		multimodal.ModalityDocument,
+	), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+
+	r := NewRegistry()
+	RegisterBuiltinTools(r, processor)
+
+	result, err := r.Call("image_analyze", map[string]any{
+		"base64_data": "ZmFrZS1pbWFnZS1ieXRlcw==",
+		"mime_type":   "image/png",
+	})
+	if err != nil {
+		t.Fatalf("image_analyze call: %v", err)
+	}
+	if !strings.Contains(result, "Modality: image") {
+		t.Fatalf("expected image modality, got %q", result)
+	}
+	if !strings.Contains(result, "Summary:") {
+		t.Fatalf("expected summary, got %q", result)
+	}
+}
+
+func TestImageAnalyzeToolUsesConfiguredDefaultProvider(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(
+		multimodal.ModalityImage,
+	), true); err != nil {
+		t.Fatalf("register local provider: %v", err)
+	}
+	if err := processor.RegisterProvider(namedImageTestProvider{}, false); err != nil {
+		t.Fatalf("register named provider: %v", err)
+	}
+
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, "named-image-provider"))
+
+	result, err := r.Call("image_analyze", map[string]any{
+		"base64_data": "ZmFrZS1pbWFnZS1ieXRlcw==",
+		"mime_type":   "image/png",
+	})
+	if err != nil {
+		t.Fatalf("image_analyze call: %v", err)
+	}
+	if !strings.Contains(result, "named provider summary") {
+		t.Fatalf("expected configured provider output, got %q", result)
+	}
+}
+
 func TestFileReadWriteTool(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -95,6 +191,97 @@ func TestFileReadWriteTool(t *testing.T) {
 	}
 	if readResult == "" {
 		t.Error("expected read result")
+	}
+}
+
+func TestFilePatchTool(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "patch.txt")
+	if err := os.WriteFile(testFile, []byte("alpha\nbeta\nbeta\ngamma\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	result, err := r.Call("file_patch", map[string]any{
+		"path":       testFile,
+		"match":      "beta",
+		"replace":    "delta",
+		"occurrence": 2,
+	})
+	if err != nil {
+		t.Fatalf("file_patch: %v", err)
+	}
+	if !strings.Contains(result, "Patched") {
+		t.Fatalf("expected patch result, got %q", result)
+	}
+
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if got := string(data); got != "alpha\nbeta\ndelta\ngamma\n" {
+		t.Fatalf("unexpected patched content: %q", got)
+	}
+}
+
+func TestFilePatchToolReplaceAll(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "patch-all.txt")
+	if err := os.WriteFile(testFile, []byte("foo bar foo\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	_, err := r.Call("file_patch", map[string]any{
+		"path":        testFile,
+		"match":       "foo",
+		"replace":     "baz",
+		"replace_all": true,
+	})
+	if err != nil {
+		t.Fatalf("file_patch replace_all: %v", err)
+	}
+
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if got := string(data); got != "baz bar baz\n" {
+		t.Fatalf("unexpected patched content: %q", got)
+	}
+}
+
+func TestFilePatchToolErrors(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "patch-error.txt")
+	if err := os.WriteFile(testFile, []byte("one\ntwo\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	_, err := r.Call("file_patch", map[string]any{
+		"path":    testFile,
+		"match":   "missing",
+		"replace": "x",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected missing match error, got %v", err)
+	}
+
+	_, err = r.Call("file_patch", map[string]any{
+		"path":       testFile,
+		"match":      "two",
+		"replace":    "x",
+		"occurrence": 2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "occurrence") {
+		t.Fatalf("expected occurrence error, got %v", err)
 	}
 }
 
@@ -260,6 +447,10 @@ func TestToolPermissions(t *testing.T) {
 	writePerm, _ := r.CheckPermission("file_write")
 	if writePerm != PermApprove {
 		t.Errorf("file_write should be approve, got %s", writePerm)
+	}
+	patchPerm, _ := r.CheckPermission("file_patch")
+	if patchPerm != PermApprove {
+		t.Errorf("file_patch should be approve, got %s", patchPerm)
 	}
 
 	// shell 应该是 approve

@@ -32,6 +32,9 @@ type Config struct {
 	// Embedding 配置（供 RAG / 记忆向量化使用）
 	Embedding EmbeddingConfig `json:"embedding,omitempty"`
 
+	// v0.95.0: 多模态配置
+	Multimodal MultimodalConfig `json:"multimodal,omitempty"`
+
 	// v0.40.0: 流式输出模式 (native=真流式，simulated=非流式获取 + 模拟推送)
 	StreamMode string `json:"stream_mode,omitempty"`
 
@@ -84,6 +87,15 @@ type EmbeddingConfig struct {
 	APIKey    string `json:"api_key,omitempty"`
 	APIBase   string `json:"api_base,omitempty"`
 	Dimension int    `json:"dimension,omitempty"`
+}
+
+type MultimodalConfig struct {
+	Provider           string `json:"provider,omitempty"`
+	APIKey             string `json:"api_key,omitempty"`
+	APIBase            string `json:"api_base,omitempty"`
+	ImageModel         string `json:"image_model,omitempty"`
+	TranscriptionModel string `json:"transcription_model,omitempty"`
+	ImageProvider      string `json:"image_provider,omitempty"`
 }
 
 // LimitsConfig 限制配置
@@ -813,6 +825,18 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Embedding.Dimension = n
+	case "multimodal.provider":
+		m.config.Multimodal.Provider = value
+	case "multimodal.api_key":
+		m.config.Multimodal.APIKey = value
+	case "multimodal.api_base":
+		m.config.Multimodal.APIBase = value
+	case "multimodal.image_model":
+		m.config.Multimodal.ImageModel = value
+	case "multimodal.transcription_model":
+		m.config.Multimodal.TranscriptionModel = value
+	case "multimodal.image_provider":
+		m.config.Multimodal.ImageProvider = value
 	case "soul_path":
 		m.config.SoulPath = value
 	case "max_tokens":

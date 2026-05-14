@@ -464,8 +464,28 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		MaxResults: c.WebSearch.MaxResults,
 		Proxy:      c.WebSearch.Proxy,
 	}
+	mediaProcessor := multimodal.NewProcessor()
+	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
+		multimodal.ModalityText,
+		multimodal.ModalityImage,
+		multimodal.ModalityAudio,
+		multimodal.ModalityVideo,
+		multimodal.ModalityDocument,
+	), true)
+
+	if mmCfg, ok := resolveOpenAIMultimodalConfig(c); ok {
+		if openaiMedia, mediaErr := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
+			APIKey:             mmCfg.APIKey,
+			APIBase:            mmCfg.APIBase,
+			ResponsesModel:     mmCfg.ImageModel,
+			TranscriptionModel: mmCfg.TranscriptionModel,
+		}); mediaErr == nil {
+			_ = mediaProcessor.RegisterProvider(openaiMedia, true)
+		}
+	}
+
 	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
-	toolServices := tool.NewServices(searchCfg, mem, ragMgr, delegateMgr)
+	toolServices := tool.NewServices(searchCfg, c.Multimodal.ImageProvider, mediaProcessor, mem, ragMgr, delegateMgr)
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
@@ -476,23 +496,6 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		MemoryBudget:         800,
 		SummarizeThreshold:   0.8,
 	})
-
-	mediaProcessor := multimodal.NewProcessor()
-	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
-		multimodal.ModalityText,
-		multimodal.ModalityImage,
-		multimodal.ModalityAudio,
-		multimodal.ModalityVideo,
-		multimodal.ModalityDocument,
-	), true)
-	if c.APIKey != "" && (c.Provider == "openai" || strings.Contains(strings.ToLower(c.APIBase), "openai.com")) {
-		if openaiMedia, mediaErr := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
-			APIKey:  c.APIKey,
-			APIBase: c.APIBase,
-		}); mediaErr == nil {
-			_ = mediaProcessor.RegisterProvider(openaiMedia, true)
-		}
-	}
 
 	cronEngine := cron.NewEngine()
 	cronEngine.SetEventHandler(func(event cron.Event) {
@@ -520,6 +523,58 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		cronEngine:     cronEngine,
 		autonomyKit:    autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), nil),
 	}
+}
+
+type multimodalRuntimeConfig struct {
+	APIKey             string
+	APIBase            string
+	ImageModel         string
+	TranscriptionModel string
+}
+
+func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, bool) {
+	if c == nil {
+		return multimodalRuntimeConfig{}, false
+	}
+
+	cfg := multimodalRuntimeConfig{
+		APIKey:             strings.TrimSpace(c.Multimodal.APIKey),
+		APIBase:            strings.TrimSpace(c.Multimodal.APIBase),
+		ImageModel:         strings.TrimSpace(c.Multimodal.ImageModel),
+		TranscriptionModel: strings.TrimSpace(c.Multimodal.TranscriptionModel),
+	}
+
+	providerName := strings.ToLower(strings.TrimSpace(c.Multimodal.Provider))
+	if providerName == "" {
+		providerName = strings.ToLower(strings.TrimSpace(c.Provider))
+	}
+
+	if cfg.APIKey == "" {
+		cfg.APIKey = strings.TrimSpace(c.APIKey)
+	}
+	if cfg.APIBase == "" {
+		cfg.APIBase = strings.TrimSpace(c.APIBase)
+	}
+
+	explicitMultimodalConfig := strings.TrimSpace(c.Multimodal.APIKey) != "" ||
+		strings.TrimSpace(c.Multimodal.APIBase) != "" ||
+		strings.TrimSpace(c.Multimodal.ImageModel) != "" ||
+		strings.TrimSpace(c.Multimodal.TranscriptionModel) != "" ||
+		strings.TrimSpace(c.Multimodal.Provider) != ""
+
+	if providerName == "openai" || explicitMultimodalConfig {
+		if cfg.APIKey != "" {
+			return cfg, true
+		}
+		return multimodalRuntimeConfig{}, false
+	}
+
+	// Backward-compatible fallback for the old implicit OpenAI-only behavior.
+	if cfg.APIKey != "" && (strings.EqualFold(c.Provider, "openai") || strings.Contains(strings.ToLower(c.APIBase), "openai.com")) {
+		return cfg, true
+	}
+
+	return multimodalRuntimeConfig{}, false
 }
 
 // New 创建 Agent

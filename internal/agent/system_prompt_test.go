@@ -125,4 +125,7 @@ func TestMaterializedContextFallsBackWithoutSessionCwd(t *testing.T) {
 	if !strings.Contains(prompt, "Conversation started:") {
 		t.Fatalf("expected conversation timestamp in prompt, got %q", prompt)
 	}
+	if strings.Contains(prompt, "Supplementary context policy:") {
+		t.Fatalf("did not expect supplementary context intro without manual/context files, got %q", prompt)
+	}
 }
