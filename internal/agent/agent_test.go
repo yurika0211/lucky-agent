@@ -1751,6 +1751,39 @@ func TestRunLoopWithSessionLazyStartsAutonomyFromFormalConfig(t *testing.T) {
 	}
 }
 
+func TestNewRegistersOpenAIMultimodalProviderFromDedicatedConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-main")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("multimodal.provider", "openai")
+	cfg.Set("multimodal.api_key", "sk-mm")
+	cfg.Set("multimodal.api_base", "https://example.com/v1")
+	cfg.Set("multimodal.image_model", "gpt-4.1-mini")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	if a.mediaProcessor == nil {
+		t.Fatal("expected mediaProcessor to be initialized")
+	}
+	providers := a.mediaProcessor.ProvidersForModality(multimodal.ModalityImage)
+	found := false
+	for _, provider := range providers {
+		if provider.Name() == "openai-media" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected openai-media provider to be registered for image modality")
+	}
+}
+
 func TestAgent_SwitchModel_NoProvider(t *testing.T) {
 	// SwitchModel requires a fully initialized Agent with config manager
 	// Testing with nil config should not panic
