@@ -110,10 +110,23 @@ func newContextPlanner(a *Agent, options contextBuildOptions) *contextPlanner {
 Build 根据当前请求、会话和预算生成最终上下文消息序列。
 */
 func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userInput string) []provider.Message {
-	if key, ok := p.cacheKey(sess, userInput); ok && p.agent != nil && p.agent.contextCache != nil {
-		if cached, entry, hit := p.agent.contextCache.Get(key); hit {
-			p.logContextReport("cache_hit", key, entry)
-			return cached
+	return p.BuildInput(ctx, sess, TextUserTurnInput(userInput))
+}
+
+/*
+BuildInput 根据结构化用户输入、会话和预算生成最终上下文消息序列。
+*/
+func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, input UserTurnInput) []provider.Message {
+	input = input.Normalize()
+	routingText := input.RoutingText
+	allowCache := len(input.Message.ContentParts) == 0
+
+	if allowCache {
+		if key, ok := p.cacheKey(sess, routingText); ok && p.agent != nil && p.agent.contextCache != nil {
+			if cached, entry, hit := p.agent.contextCache.Get(key); hit {
+				p.logContextReport("cache_hit", key, entry)
+				return cached
+			}
 		}
 	}
 
@@ -138,38 +151,55 @@ func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userI
 		messages = append(messages, provider.Message{Role: "system", Content: systemContent})
 	}
 	if p.agent != nil {
-		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHint(userInput)); skillHint != "" {
+		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHint(routingText)); skillHint != "" {
 			messages = append(messages, provider.Message{Role: "system", Content: skillHint})
 		}
 	}
 
-	messages = append(messages, p.buildMemoryMessages(userInput)...)
+	messages = append(messages, p.buildMemoryMessages(routingText)...)
 	if p.options.IncludeRAG {
-		if ragMsg := p.buildRAGMessage(ctx, userInput); ragMsg.Content != "" {
+		if ragMsg := p.buildRAGMessage(ctx, routingText); ragMsg.Content != "" {
 			messages = append(messages, ragMsg)
 		}
 	}
 	if p.options.IncludeHistory && sess != nil {
 		messages = append(messages, p.buildHistoryMessages(sess)...)
 	}
-	messages = append(messages, provider.Message{Role: "user", Content: userInput})
 
 	if p.agent == nil {
-		return messages
+		return append(messages, input.Message)
 	}
-	messages = p.agent.fitContextWindow(messages)
+
+	// Reserve budget for the current turn using routing text, then append the
+	// structured payload after trimming older context. This preserves current-round
+	// image parts without rewriting the window manager yet.
+	provisional := append(append([]provider.Message(nil), messages...), provider.Message{
+		Role:    "user",
+		Content: routingText,
+	})
+	provisional = p.agent.fitContextWindow(provisional)
+	if n := len(provisional); n > 0 {
+		last := provisional[n-1]
+		if last.Role == "user" && strings.TrimSpace(last.Content) == routingText {
+			provisional = provisional[:n-1]
+		}
+	}
+	messages = append(provisional, input.Message)
+
 	report := p.buildContextReport(messages)
-	if key, ok := p.cacheKey(sess, userInput); ok && p.agent.contextCache != nil {
-		p.agent.contextCache.Set(key, contextCacheEntry{
-			messages:     messages,
-			totalTokens:  report.totalTokens,
-			bucketTokens: report.bucketTokens,
-		})
-		p.logContextReport("cache_store", key, contextCacheEntry{
-			messages:     messages,
-			totalTokens:  report.totalTokens,
-			bucketTokens: report.bucketTokens,
-		})
+	if allowCache {
+		if key, ok := p.cacheKey(sess, routingText); ok && p.agent.contextCache != nil {
+			p.agent.contextCache.Set(key, contextCacheEntry{
+				messages:     messages,
+				totalTokens:  report.totalTokens,
+				bucketTokens: report.bucketTokens,
+			})
+			p.logContextReport("cache_store", key, contextCacheEntry{
+				messages:     messages,
+				totalTokens:  report.totalTokens,
+				bucketTokens: report.bucketTokens,
+			})
+		}
 	}
 	return messages
 }
@@ -663,6 +693,9 @@ func (p *contextPlanner) persistCompressedSummary(sess *session.Session, message
 compactHistoryMessage 对历史消息做必要的压缩与清洗。
 */
 func (p *contextPlanner) compactHistoryMessage(msg provider.Message) provider.Message {
+	if len(msg.ContentParts) > 0 {
+		msg.ContentParts = nil
+	}
 	if msg.Role == "tool" {
 		msg.Content = compactToolResultForContext(msg.Name, msg.Content)
 		return msg

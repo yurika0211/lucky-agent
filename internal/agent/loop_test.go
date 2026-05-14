@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/session"
@@ -44,6 +45,62 @@ func TestDefaultLoopConfig(t *testing.T) {
 	}
 	if cfg.DuplicateFetchLimit != 1 {
 		t.Errorf("expected duplicate fetch limit 1, got %d", cfg.DuplicateFetchLimit)
+	}
+}
+
+func TestApplySimpleTaskLoopTuningDefaults(t *testing.T) {
+	loopCfg := LoopConfig{
+		MaxIterations:          10,
+		Timeout:                60 * time.Second,
+		RepeatToolCallLimit:    3,
+		ToolOnlyIterationLimit: 3,
+	}
+
+	applySimpleTaskLoopTuning(&loopCfg, "check workspace files", config.AgentLoopConfig{})
+
+	if loopCfg.MaxIterations != 3 {
+		t.Fatalf("expected max iterations to be reduced to 3, got %d", loopCfg.MaxIterations)
+	}
+	if loopCfg.Timeout != 25*time.Second {
+		t.Fatalf("expected timeout to be reduced to 25s, got %s", loopCfg.Timeout)
+	}
+	if loopCfg.RepeatToolCallLimit != 2 {
+		t.Fatalf("expected repeat tool call limit to be reduced to 2, got %d", loopCfg.RepeatToolCallLimit)
+	}
+	if loopCfg.ToolOnlyIterationLimit != 2 {
+		t.Fatalf("expected tool-only iteration limit to be reduced to 2, got %d", loopCfg.ToolOnlyIterationLimit)
+	}
+}
+
+func TestApplySimpleTaskLoopTuningConfigurable(t *testing.T) {
+	loopCfg := LoopConfig{
+		MaxIterations:          10,
+		Timeout:                60 * time.Second,
+		RepeatToolCallLimit:    8,
+		ToolOnlyIterationLimit: 7,
+	}
+	agentCfg := config.AgentLoopConfig{
+		SimpleLocalInspection: config.SimpleLocalInspectionConfig{
+			MaxIterations:          5,
+			TimeoutSeconds:         12,
+			RepeatToolCallLimit:    4,
+			ToolOnlyIterationLimit: 6,
+		},
+	}
+
+	applySimpleTaskLoopTuning(&loopCfg, "check workspace files", agentCfg)
+
+	if loopCfg.MaxIterations != 5 {
+		t.Fatalf("expected max iterations 5, got %d", loopCfg.MaxIterations)
+	}
+	if loopCfg.Timeout != 12*time.Second {
+		t.Fatalf("expected timeout 12s, got %s", loopCfg.Timeout)
+	}
+	if loopCfg.RepeatToolCallLimit != 4 {
+		t.Fatalf("expected repeat tool call limit 4, got %d", loopCfg.RepeatToolCallLimit)
+	}
+	if loopCfg.ToolOnlyIterationLimit != 6 {
+		t.Fatalf("expected tool-only iteration limit 6, got %d", loopCfg.ToolOnlyIterationLimit)
 	}
 }
 

@@ -180,6 +180,23 @@ func TestManagerNewWithTitle(t *testing.T) {
 	}
 }
 
+func TestManagerEnsure(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.Ensure("ws-session")
+	if s1.ID != "ws-session" {
+		t.Fatalf("expected ensured session ID ws-session, got %q", s1.ID)
+	}
+
+	s2 := m.Ensure("ws-session")
+	if s1 != s2 {
+		t.Fatal("expected Ensure to return the existing session instance")
+	}
+}
+
 func TestLoadMarkdownSessionWithEmbeddedCodeFenceText(t *testing.T) {
 	dir := t.TempDir()
 	content := "# LuckyHarness Session\n\n" +

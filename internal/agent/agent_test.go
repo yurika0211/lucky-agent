@@ -1377,6 +1377,50 @@ func TestAgentLoadSkills(t *testing.T) {
 	a.LoadSkills(filepath.Join(tmpDir, "skills"))
 }
 
+func TestAgentLoadSkillsUsesRegistryLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillsDir := filepath.Join(tmpDir, "skills")
+	skillDir := filepath.Join(skillsDir, "script-skill")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# script-skill\n\nDesc.\n\n## Tools\n\n- `echo`: Echo\n"), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "echo.sh"), []byte("echo agent-skill\n"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	a := &Agent{tools: tool.NewRegistry()}
+	count, err := a.LoadSkills(skillsDir)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 skill, got %d", count)
+	}
+	if a.SkillRegistry() == nil {
+		t.Fatal("expected skill registry to be initialized")
+	}
+
+	registered, ok := a.Tools().Get("skill_script-skill_echo")
+	if !ok {
+		t.Fatal("expected skill tool to be registered")
+	}
+	if !registered.Enabled {
+		t.Fatal("expected skill tool to be enabled after lifecycle activation")
+	}
+
+	out, err := a.Tools().Call("skill_script-skill_echo", nil)
+	if err != nil {
+		t.Fatalf("call skill tool: %v", err)
+	}
+	if out != "agent-skill\n" {
+		t.Fatalf("expected script output, got %q", out)
+	}
+}
+
 func TestAgentHandleSkillRead(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)

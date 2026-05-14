@@ -113,8 +113,9 @@ type Agent struct {
 	collabReg          *collab.Registry        // Agent 协作注册表
 	collabMgr          *collab.DelegateManager // 协作任务管理器
 	skills             []*tool.SkillInfo       // 已加载的 skill 列表
-	metrics            *metrics.Metrics        // 指标收集器
-	cronEngine         *cron.Engine            // 定时任务引擎
+	skillRegistry      *tool.SkillRegistry
+	metrics            *metrics.Metrics // 指标收集器
+	cronEngine         *cron.Engine     // 定时任务引擎
 	cronStore          *cron.Store
 	autonomy           *autonomy.AutonomyKit // 自主工作套件
 	heartbeatSvc       *appheartbeat.Service
@@ -643,7 +644,7 @@ Chat 在新会话中执行一次完整对话。
 */
 func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 	sess := a.sessions.New()
-	return a.chatWithSession(ctx, sess, userInput)
+	return a.chatWithSessionInput(ctx, sess, TextUserTurnInput(userInput))
 }
 
 // ChatWithSession 在已有会话中继续对话，实现多轮上下文。
@@ -652,7 +653,16 @@ func (a *Agent) ChatWithSession(ctx context.Context, sessionID string, userInput
 	if !ok {
 		return "", fmt.Errorf("session not found: %s", sessionID)
 	}
-	return a.chatWithSession(ctx, sess, userInput)
+	return a.chatWithSessionInput(ctx, sess, TextUserTurnInput(userInput))
+}
+
+// ChatWithSessionInput 在已有会话中继续对话，支持结构化多模态输入。
+func (a *Agent) ChatWithSessionInput(ctx context.Context, sessionID string, input UserTurnInput) (string, error) {
+	sess, ok := a.sessions.Get(sessionID)
+	if !ok {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+	return a.chatWithSessionInput(ctx, sess, input)
 }
 
 // ProgressFeedback generates a concise model-authored progress update for an unfinished round.
@@ -664,24 +674,34 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 		return "", nil
 	}
 
-	systemPrompt := `You are generating one concise progress update for the user during an unfinished task.
+	systemPrompt := `You are generating one concise reasoning update for the user during an unfinished task.
 
-Report real progress only.
+Report real progress only. Stay close to the observed evidence.
 
-Summarize:
-- what has already been verified,
-- what is currently being checked,
-- what remains uncertain or unfinished.
+Write in English.
 
-Rules:
-- use the user's language,
-- keep it short and natural,
+The update should sound like a human investigator thinking aloud in a compact way.
+It should read like a short natural reasoning paragraph, not like a checklist, template, or repeated report.
+
+What to include when relevant:
+- what you have checked,
+- what that currently suggests,
+- what you are verifying now and why,
+- what is still uncertain,
+- what likely matters next.
+
+Style requirements:
+- use 2 to 4 short connected sentences,
+- use natural transitions, but vary them across updates,
+- do not start every update with the same pattern such as "I first checked...",
+- avoid rigid labels like "Verified", "Checking", "Uncertain", "Next",
+- avoid repeating the same rhetorical skeleton from one round to the next,
+- include brief causal links and small explanations, not just status labels,
+- keep it concrete and evidence-driven,
 - do not expose hidden chain-of-thought,
 - do not mention internal event types, implementation details, or tool protocol syntax,
 - do not pretend the task is complete if it is not,
-- do not sound like a system log.
-
-A good progress update should help the user understand the current state of the task in one quick read. Limit the update to at most 3 short sentences.`
+- do not use rigid headings like "Verified:" or "Checking:" unless the user explicitly asked for a checklist.`
 
 	var userPrompt strings.Builder
 	userPrompt.WriteString("Original user request:\n")
@@ -715,21 +735,29 @@ A good progress update should help the user understand the current state of the 
 chatWithSession 是 Chat 与 ChatWithSession 共用的内部实现。
 */
 func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
-	a.maybeRouteModel(userInput)
+	return a.chatWithSessionInput(ctx, sess, TextUserTurnInput(userInput))
+}
+
+func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
+	input = input.Normalize()
+	routingText := input.RoutingText
+	a.maybeRouteModel(routingText)
 
 	// 优先使用 RunLoop（支持 function calling / 工具调用）
 	loopCfg := DefaultLoopConfig()
+	agentLoopCfg := config.AgentLoopConfig{}
 	if a.cfg != nil {
 		cfg := a.cfg.Get()
+		agentLoopCfg = cfg.Agent
 		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 	}
-	applySimpleTaskLoopTuning(&loopCfg, userInput)
+	applySimpleTaskLoopTuning(&loopCfg, routingText, agentLoopCfg)
 	loopCfg.AutoApprove = true // Telegram 场景自动批准工具调用
 
-	result, err := a.RunLoopWithSession(ctx, sess, userInput, loopCfg)
+	result, err := a.RunLoopWithSessionInput(ctx, sess, input, loopCfg)
 	if err != nil {
 		// 如果 RunLoop 失败，回退到简单流式聊天
-		response, chatErr := a.chatStreamSimple(ctx, sess, userInput)
+		response, chatErr := a.chatStreamSimpleInput(ctx, sess, input)
 		if chatErr != nil {
 			return "", fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr)
 		}
@@ -742,7 +770,7 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 
 	// 自动记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
-	a.saveConversationMemory(userInput, response)
+	a.saveConversationMemory(routingText, response)
 
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
@@ -795,21 +823,38 @@ func IsSimpleLocalInspectionTask(input string) bool {
 	return false
 }
 
-func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string) {
+func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string, cfg config.AgentLoopConfig) {
 	if loopCfg == nil || !IsSimpleLocalInspectionTask(userInput) {
 		return
 	}
-	if loopCfg.MaxIterations > 3 {
-		loopCfg.MaxIterations = 3
+	maxIterations := cfg.SimpleLocalInspection.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 3
 	}
-	if loopCfg.Timeout > 25*time.Second {
-		loopCfg.Timeout = 25 * time.Second
+	timeout := time.Duration(cfg.SimpleLocalInspection.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 25 * time.Second
 	}
-	if loopCfg.RepeatToolCallLimit > 2 {
-		loopCfg.RepeatToolCallLimit = 2
+	repeatToolCallLimit := cfg.SimpleLocalInspection.RepeatToolCallLimit
+	if repeatToolCallLimit <= 0 {
+		repeatToolCallLimit = 2
 	}
-	if loopCfg.ToolOnlyIterationLimit > 2 {
-		loopCfg.ToolOnlyIterationLimit = 2
+	toolOnlyIterationLimit := cfg.SimpleLocalInspection.ToolOnlyIterationLimit
+	if toolOnlyIterationLimit <= 0 {
+		toolOnlyIterationLimit = 2
+	}
+
+	if loopCfg.MaxIterations > maxIterations {
+		loopCfg.MaxIterations = maxIterations
+	}
+	if loopCfg.Timeout > timeout {
+		loopCfg.Timeout = timeout
+	}
+	if loopCfg.RepeatToolCallLimit > repeatToolCallLimit {
+		loopCfg.RepeatToolCallLimit = repeatToolCallLimit
+	}
+	if loopCfg.ToolOnlyIterationLimit > toolOnlyIterationLimit {
+		loopCfg.ToolOnlyIterationLimit = toolOnlyIterationLimit
 	}
 }
 
@@ -818,8 +863,14 @@ func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string) {
 chatStreamSimple 使用不带工具调用的简单流式聊天作为回退路径。
 */
 func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, userInput string) (string, error) {
-	a.maybeRouteModel(userInput)
-	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
+	return a.chatStreamSimpleInput(ctx, sess, TextUserTurnInput(userInput))
+}
+
+func (a *Agent) chatStreamSimpleInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
+	input = input.Normalize()
+	routingText := input.RoutingText
+	a.maybeRouteModel(routingText)
+	messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
 
 	// 调用 Provider
 	ch, err := a.provider.ChatStream(ctx, messages)
@@ -836,14 +887,15 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 	}
 
 	response := utils.SanitizeToolProtocolOutput(result.String())
-	sess.AddMessage("assistant", response)
+	sess.AddProviderMessage(input.Message)
+	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
 
 	// 保存会话
 	_ = sess.Save()
 
 	// 自动记忆：将对话存为短期记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
-	a.saveConversationMemory(userInput, response)
+	a.saveConversationMemory(routingText, response)
 
 	// 每 10 轮对话触发衰减 + 过期清理
 	if a.chatCount%10 == 0 {
@@ -881,8 +933,12 @@ func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provid
 buildContextMessages 为一次请求构造送入模型的完整上下文消息序列。
 */
 func (a *Agent) buildContextMessages(ctx context.Context, sess *session.Session, userInput string, opts contextBuildOptions) []provider.Message {
+	return a.buildContextMessagesForInput(ctx, sess, TextUserTurnInput(userInput), opts)
+}
+
+func (a *Agent) buildContextMessagesForInput(ctx context.Context, sess *session.Session, input UserTurnInput, opts contextBuildOptions) []provider.Message {
 	planner := newContextPlanner(a, opts)
-	return planner.Build(ctx, sess, userInput)
+	return planner.BuildInput(ctx, sess, input)
 }
 
 // ChatEvent 是流式对话事件，包含思考过程和内容
@@ -1065,21 +1121,27 @@ func (s *streamConvergenceState) repeatedToolLoopMessage(repeatedSigs []string) 
 }
 
 func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, userInput string) (<-chan ChatEvent, error) {
+	return a.ChatWithSessionStreamInput(ctx, sessionID, TextUserTurnInput(userInput))
+}
+
+func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string, input UserTurnInput) (<-chan ChatEvent, error) {
 	sess, ok := a.sessions.Get(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
+	input = input.Normalize()
+	routingText := input.RoutingText
 
 	events := make(chan ChatEvent, 64)
 
 	go func() {
 		defer close(events)
 
-		messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
+		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
 
 		// 构建 function calling 工具定义
 		fcMgr := function.NewManager(a.tools)
-		callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
+		callOpts := a.buildFunctionCallOptionsForInput(routingText, fcMgr.BuildTools())
 
 		loopCfg := DefaultLoopConfig()
 		cfg := a.cfg.Get()
@@ -1098,12 +1160,12 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 		mode := a.getStreamMode()
 		if mode == StreamModeNative {
 			// === 真流式路径 ===
-			a.streamNative(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations, state)
+			a.streamNative(ctx, events, messages, callOpts, sess, input, 1, loopCfg.MaxIterations, state)
 			return
 		}
 
 		// === 模拟流式路径 ===
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations, state)
+		a.streamSimulated(ctx, events, messages, callOpts, sess, input, 1, loopCfg.MaxIterations, state)
 	}()
 
 	return events, nil
@@ -1114,13 +1176,13 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 /*
 streamNative 使用 provider 原生流式接口执行一轮或多轮对话。
 */
-func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int, state *streamConvergenceState) {
+func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, turnInput UserTurnInput, round int, remaining int, state *streamConvergenceState) {
 	if state == nil {
 		state = &streamConvergenceState{}
 	}
 	if remaining <= 0 {
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1199,7 +1261,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 
 		if len(toolCalls) > 0 {
 			if shouldStop, repeatedSigs := state.trackToolCallPattern(toolCalls, content.String()); shouldStop {
-				a.finalizeStream(events, sess, userInput, state.repeatedToolLoopMessage(repeatedSigs))
+				a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
 				return
 			}
 
@@ -1328,7 +1390,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			}
 			if remaining <= 1 {
 				if state.hasContinuation() {
-					a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+					a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 					return
 				}
 				events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1338,7 +1400,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
 
 			// 递归进入下一轮（用非流式，因为 tool_calls 后通常需要完整响应）
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 	}
@@ -1356,13 +1418,13 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String()))
+			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()))
 		} else {
-			a.finalizeStream(events, sess, userInput, emptyFinalResponseMessage)
+			a.finalizeStream(events, sess, turnInput, emptyFinalResponseMessage)
 		}
 		return
 	}
@@ -1378,14 +1440,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 		partial := strings.TrimSpace(state.continuedResponse.String())
 		if partial == "" {
 			partial = clean
 		}
-		a.finalizeStream(events, sess, userInput, partial+lengthTruncatedNotice)
+		a.finalizeStream(events, sess, turnInput, partial+lengthTruncatedNotice)
 		return
 	}
 	state.lengthRecoveryCount = 0
@@ -1395,20 +1457,20 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		appendContinuation(&state.continuedResponse, response)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 	}
-	a.finalizeStream(events, sess, userInput, finalResponse)
+	a.finalizeStream(events, sess, turnInput, finalResponse)
 }
 
 // streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
 /*
 streamSimulated 先获取完整响应，再按块模拟流式输出。
 */
-func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int, state *streamConvergenceState) {
+func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, turnInput UserTurnInput, round int, remaining int, state *streamConvergenceState) {
 	if state == nil {
 		state = &streamConvergenceState{}
 	}
 	if remaining <= 0 {
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1438,7 +1500,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		state.emptyResponseRetries = 0
 		state.lengthRecoveryCount = 0
 		if shouldStop, repeatedSigs := state.trackToolCallPattern(resp.ToolCalls, resp.Content); shouldStop {
-			a.finalizeStream(events, sess, userInput, state.repeatedToolLoopMessage(repeatedSigs))
+			a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
 			return
 		}
 		messages = append(messages, provider.Message{
@@ -1564,7 +1626,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 		if remaining <= 1 {
 			if state.hasContinuation() {
-				a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+				a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 				return
 			}
 			events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1572,7 +1634,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 		nextRound := round + 1
 		events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+		a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 		return
 	}
 
@@ -1589,13 +1651,13 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String()))
+			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()))
 		} else {
-			a.finalizeStream(events, sess, userInput, emptyFinalResponseMessage)
+			a.finalizeStream(events, sess, turnInput, emptyFinalResponseMessage)
 		}
 		return
 	}
@@ -1616,14 +1678,14 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 		partial := strings.TrimSpace(state.continuedResponse.String())
 		if partial == "" {
 			partial = clean
 		}
-		a.finalizeStream(events, sess, userInput, partial+lengthTruncatedNotice)
+		a.finalizeStream(events, sess, turnInput, partial+lengthTruncatedNotice)
 		return
 	}
 	state.lengthRecoveryCount = 0
@@ -1639,18 +1701,20 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		appendContinuation(&state.continuedResponse, response)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 	}
-	a.finalizeStream(events, sess, userInput, finalResponse)
+	a.finalizeStream(events, sess, turnInput, finalResponse)
 }
 
 // finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引
-func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, userInput, response string) {
+func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string) {
+	turnInput = turnInput.Normalize()
+	routingText := turnInput.RoutingText
 	response = utils.SanitizeToolProtocolOutput(response)
-	sess.AddMessage("user", userInput)
-	sess.AddMessage("assistant", response)
+	sess.AddProviderMessage(turnInput.Message)
+	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
 	_ = sess.Save()
 
 	a.chatCount++
-	a.saveConversationMemory(userInput, response)
+	a.saveConversationMemory(routingText, response)
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
 		a.memory.Expire()
@@ -1669,7 +1733,7 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, u
 	}
 
 	if a.ragManager != nil {
-		a.indexConversationTurn(userInput, response)
+		a.indexConversationTurn(routingText, response)
 	}
 
 	a.metrics.RecordChatRequest()
@@ -2122,16 +2186,39 @@ func (a *Agent) MsgGateway() *gateway.GatewayManager {
 
 // LoadSkills 从目录加载 Skill 插件
 func (a *Agent) LoadSkills(skillsDir string) (int, error) {
+	if a.tools == nil {
+		a.tools = tool.NewRegistry()
+	}
 	loader := tool.NewSkillLoader(skillsDir)
-	skills, err := loader.LoadAll()
-	if err != nil {
+	skillRegistry := tool.NewSkillRegistry(a.tools, loader)
+
+	if _, err := skillRegistry.Discover(); err != nil {
+		return 0, fmt.Errorf("discover skills: %w", err)
+	}
+	if err := skillRegistry.LoadAll(); err != nil {
 		return 0, fmt.Errorf("load skills: %w", err)
 	}
+	if err := skillRegistry.ValidateAll(); err != nil {
+		return 0, fmt.Errorf("validate skills: %w", err)
+	}
+	if err := skillRegistry.RegisterAll(); err != nil {
+		return 0, fmt.Errorf("register skills: %w", err)
+	}
+	if err := skillRegistry.EnableAll(); err != nil {
+		return 0, fmt.Errorf("enable skills: %w", err)
+	}
 
+	skills := skillRegistry.SkillInfos()
+	a.skillRegistry = skillRegistry
 	a.skills = skills
-	tool.NewSkillToolService(skills).RegisterSkillTools(a.tools)
+	tool.NewSkillToolService(skills).RegisterReadTool(a.tools)
 
 	return len(skills), nil
+}
+
+// SkillRegistry returns the lifecycle registry for loaded skills.
+func (a *Agent) SkillRegistry() *tool.SkillRegistry {
+	return a.skillRegistry
 }
 
 // Skills 返回已加载的 skill 列表

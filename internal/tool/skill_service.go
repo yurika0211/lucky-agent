@@ -23,6 +23,16 @@ func (s *SkillToolService) RegisterSkillTools(r *Registry) {
 		return
 	}
 	RegisterSkillTools(r, s.skills, nil)
+	s.RegisterReadTool(r)
+}
+
+// RegisterReadTool registers the skill_read helper without registering skill tools.
+// This lets SkillRegistry own the executable skill-tool lifecycle while the
+// service still exposes skill documentation lookup.
+func (s *SkillToolService) RegisterReadTool(r *Registry) {
+	if s == nil || r == nil {
+		return
+	}
 	r.Register(&Tool{
 		Name:        "skill_read",
 		Description: "Read a skill's SKILL.md before using that workflow. Use this when a task clearly matches a named skill and you need its trigger rules, steps, or operating guidance.",

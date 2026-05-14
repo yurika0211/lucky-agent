@@ -27,6 +27,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.DuplicateFetchLimit != 1 {
 		t.Errorf("expected duplicate_fetch_limit 1, got %d", cfg.Agent.DuplicateFetchLimit)
 	}
+	if cfg.Agent.SimpleLocalInspection.MaxIterations != 3 {
+		t.Errorf("expected simple_local_inspection.max_iterations 3, got %d", cfg.Agent.SimpleLocalInspection.MaxIterations)
+	}
+	if cfg.Agent.SimpleLocalInspection.TimeoutSeconds != 25 {
+		t.Errorf("expected simple_local_inspection.timeout_seconds 25, got %d", cfg.Agent.SimpleLocalInspection.TimeoutSeconds)
+	}
+	if cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit != 2 {
+		t.Errorf("expected simple_local_inspection.repeat_tool_call_limit 2, got %d", cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit)
+	}
+	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit != 2 {
+		t.Errorf("expected simple_local_inspection.tool_only_iteration_limit 2, got %d", cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit)
+	}
 }
 
 func TestManagerSetAndGet(t *testing.T) {
@@ -68,6 +80,40 @@ func TestManagerSetTelegramProxy(t *testing.T) {
 	cfg := mgr.Get()
 	if cfg.MsgGateway.Telegram.Proxy != "http://127.0.0.1:7897" {
 		t.Errorf("expected telegram proxy to be set, got %q", cfg.MsgGateway.Telegram.Proxy)
+	}
+}
+
+func TestManagerSetSimpleLocalInspectionConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("agent.simple_local_inspection.max_iterations", "5"); err != nil {
+		t.Fatalf("Set simple_local_inspection.max_iterations: %v", err)
+	}
+	if err := mgr.Set("agent.simple_local_inspection.timeout_seconds", "15"); err != nil {
+		t.Fatalf("Set simple_local_inspection.timeout_seconds: %v", err)
+	}
+	if err := mgr.Set("agent.simple_local_inspection.repeat_tool_call_limit", "4"); err != nil {
+		t.Fatalf("Set simple_local_inspection.repeat_tool_call_limit: %v", err)
+	}
+	if err := mgr.Set("agent.simple_local_inspection.tool_only_iteration_limit", "3"); err != nil {
+		t.Fatalf("Set simple_local_inspection.tool_only_iteration_limit: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Agent.SimpleLocalInspection.MaxIterations != 5 {
+		t.Fatalf("expected 5, got %d", cfg.Agent.SimpleLocalInspection.MaxIterations)
+	}
+	if cfg.Agent.SimpleLocalInspection.TimeoutSeconds != 15 {
+		t.Fatalf("expected 15, got %d", cfg.Agent.SimpleLocalInspection.TimeoutSeconds)
+	}
+	if cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit != 4 {
+		t.Fatalf("expected 4, got %d", cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit)
+	}
+	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit != 3 {
+		t.Fatalf("expected 3, got %d", cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit)
 	}
 }
 

@@ -34,11 +34,11 @@ type SkillInfo struct {
 
 // SkillToolDef Skill 中定义的工具
 type SkillToolDef struct {
-	Name        string
-	Description string
-	Parameters  map[string]Param
-	Handler     func(args map[string]any) (string, error) // 需要外部注入
-	Command     []string
+	Name          string
+	Description   string
+	Parameters    map[string]Param
+	Handler       func(args map[string]any) (string, error) // 需要外部注入
+	Command       []string
 	ExposeToModel bool
 }
 
@@ -211,9 +211,9 @@ func (sl *SkillLoader) autoGenerateTools(info *SkillInfo, content string) []Skil
 			continue
 		}
 		tools = append(tools, SkillToolDef{
-			Name:        toolName,
-			Description: fmt.Sprintf("Use the %s workflow through its %s script when this skill clearly matches the task and direct execution would be less reliable.", info.Name, toolName),
-			Parameters:  map[string]Param{},
+			Name:          toolName,
+			Description:   fmt.Sprintf("Use the %s workflow through its %s script when this skill clearly matches the task and direct execution would be less reliable.", info.Name, toolName),
+			Parameters:    map[string]Param{},
 			ExposeToModel: false,
 		})
 	}
@@ -540,25 +540,19 @@ func sanitizeName(name string) string {
 // RegisterSkillTools 将 Skill 工具注册到 Registry
 // handler 为 Skill 工具的通用处理器（通常调用脚本或子进程）
 func RegisterSkillTools(r *Registry, skills []*SkillInfo, handler func(toolName string, skillDir string) func(args map[string]any) (string, error)) {
+	executor := NewSkillExecutor()
 	for _, skill := range skills {
+		if skill == nil {
+			continue
+		}
 		for _, toolDef := range skill.Tools {
-			tool := &Tool{
-				Name:            fmt.Sprintf("skill_%s_%s", skill.Name, toolDef.Name),
-				Description:     toolDef.Description,
-				Parameters:      toolDef.Parameters,
-				Category:        CatSkill,
-				Source:          skill.Name,
-				Permission:      PermApprove, // Skill 工具默认需要审批
-				Enabled:         true,
-				HiddenFromModel: !toolDef.ExposeToModel && toolDef.Name != "run",
-			}
+			var toolHandler func(args map[string]any) (string, error)
 			if handler != nil {
-				tool.Handler = handler(toolDef.Name, skill.Dir)
+				toolHandler = handler(toolDef.Name, skill.Dir)
 			} else {
-				// v0.35.0: 默认处理器 — 尝试执行脚本，否则返回 SKILL.md 摘要
-				tool.Handler = defaultSkillHandler(toolDef, skill.Dir, skill.Name)
+				toolHandler, _ = executor.HandlerFor(skill, toolDef)
 			}
-			r.Register(tool)
+			r.Register(newSkillToolFromDef(skill, toolDef, toolHandler))
 		}
 	}
 }

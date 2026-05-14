@@ -505,9 +505,12 @@ func TestErrorMessageSerialization(t *testing.T) {
 
 func TestToolCallMessageSerialization(t *testing.T) {
 	toolData := ToolCallData{
-		Name:  "web_search",
-		Phase: "start",
-		Params: map[string]interface{}{"query": "test"},
+		Name:       "web_search",
+		Phase:      "start",
+		Params:     map[string]interface{}{"query": "test"},
+		GroupID:    "round-1",
+		StepID:     "round-1-tool-1",
+		Visibility: "visible",
 	}
 
 	msg, err := NewMessage(TypeToolCall, "test-session", toolData)
@@ -532,6 +535,12 @@ func TestToolCallMessageSerialization(t *testing.T) {
 
 	if parsedTool.Name != "web_search" {
 		t.Errorf("expected name web_search, got %s", parsedTool.Name)
+	}
+	if parsedTool.StepID != "round-1-tool-1" {
+		t.Errorf("expected step id round-1-tool-1, got %s", parsedTool.StepID)
+	}
+	if parsedTool.Visibility != "visible" {
+		t.Errorf("expected visibility visible, got %s", parsedTool.Visibility)
 	}
 }
 
@@ -608,11 +617,53 @@ func TestStreamEndMessageSerialization(t *testing.T) {
 	}
 }
 
+func TestReasoningMessageSerialization(t *testing.T) {
+	reasoningData := ReasoningData{
+		Summary: "Analyzing the request",
+		Round:   2,
+		Stage:   "continue",
+	}
+
+	msg, err := NewMessage(TypeReasoning, "test-session", reasoningData)
+	if err != nil {
+		t.Fatalf("NewMessage error: %v", err)
+	}
+
+	data, err := json.Marshal(msg)
+	if err != nil {
+		t.Fatalf("Marshal error: %v", err)
+	}
+
+	var received Message
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatalf("Unmarshal error: %v", err)
+	}
+
+	if received.Type != TypeReasoning {
+		t.Errorf("expected type %s, got %s", TypeReasoning, received.Type)
+	}
+
+	var parsed ReasoningData
+	if err := received.ParseData(&parsed); err != nil {
+		t.Fatalf("ParseData error: %v", err)
+	}
+
+	if parsed.Round != 2 {
+		t.Errorf("expected round 2, got %d", parsed.Round)
+	}
+	if parsed.Stage != "continue" {
+		t.Errorf("expected stage continue, got %q", parsed.Stage)
+	}
+}
+
 func TestToolResultMessageSerialization(t *testing.T) {
 	resultData := ToolResultData{
-		Name:    "web_search",
-		Success: true,
-		Output:  "search results",
+		Name:       "web_search",
+		Success:    true,
+		Output:     "search results",
+		GroupID:    "round-1",
+		StepID:     "round-1-tool-1",
+		Visibility: "visible",
 	}
 
 	msg, err := NewMessage(TypeToolResult, "test-session", resultData)
@@ -644,6 +695,12 @@ func TestToolResultMessageSerialization(t *testing.T) {
 	}
 	if !parsedResult.Success {
 		t.Error("expected success=true")
+	}
+	if parsedResult.GroupID != "round-1" {
+		t.Errorf("expected group round-1, got %s", parsedResult.GroupID)
+	}
+	if parsedResult.StepID != "round-1-tool-1" {
+		t.Errorf("expected step id round-1-tool-1, got %s", parsedResult.StepID)
 	}
 }
 

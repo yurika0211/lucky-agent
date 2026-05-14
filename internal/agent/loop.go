@@ -205,12 +205,19 @@ type toolCallLog struct {
 
 // RunLoop 执行 Agent Loop
 func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfig) (*LoopResult, error) {
-	return a.RunLoopWithSession(ctx, nil, userInput, loopCfg)
+	return a.RunLoopWithSessionInput(ctx, nil, TextUserTurnInput(userInput), loopCfg)
 }
 
 // RunLoopWithSession 执行 Agent Loop（带会话上下文）
 func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, userInput string, loopCfg LoopConfig) (result *LoopResult, err error) {
-	a.maybeRouteModel(userInput)
+	return a.RunLoopWithSessionInput(ctx, sess, TextUserTurnInput(userInput), loopCfg)
+}
+
+// RunLoopWithSessionInput 执行 Agent Loop（带结构化多模态输入）。
+func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Session, turnInput UserTurnInput, loopCfg LoopConfig) (result *LoopResult, err error) {
+	turnInput = turnInput.Normalize()
+	routingText := turnInput.RoutingText
+	a.maybeRouteModel(routingText)
 
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
@@ -286,10 +293,10 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
 		if a.ragManager != nil {
-			a.indexConversationTurn(userInput, response)
+			a.indexConversationTurn(routingText, response)
 		}
 
-		if saveErr := a.saveFinalAnswerDocument(sessionID, userInput, response); saveErr != nil {
+		if saveErr := a.saveFinalAnswerDocument(sessionID, routingText, response); saveErr != nil {
 			logger.Warn("save final answer document failed", "session_id", sessionID, "error", saveErr)
 		}
 
@@ -303,14 +310,14 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	loopState := newLoopRuntimeState()
 
 	// 构建初始消息
-	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
+	messages := a.buildContextMessagesForInput(ctx, sess, turnInput, defaultContextBuildOptions())
 	if sess != nil {
-		sess.AddProviderMessage(provider.Message{Role: "user", Content: userInput})
+		sess.AddProviderMessage(turnInput.Message)
 	}
 
 	// v0.16.0: 构建 function calling 工具定义
 	fcMgr := function.NewManager(a.tools)
-	callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
+	callOpts := a.buildFunctionCallOptionsForInput(routingText, fcMgr.BuildTools())
 
 	for i := 0; i < loopCfg.MaxIterations; i++ {
 		result.Iterations = i + 1
@@ -853,6 +860,11 @@ fitContextWindow 将消息序列裁剪到上下文窗口预算内。
 func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message {
 	if a == nil || a.contextWin == nil {
 		return messages
+	}
+	for _, msg := range messages {
+		if len(msg.ContentParts) > 0 {
+			return messages
+		}
 	}
 	contextMessages := a.toContextMessages(messages)
 	fitted, trimResult := a.contextWin.Fit(contextMessages)

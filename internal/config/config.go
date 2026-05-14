@@ -129,14 +129,23 @@ type ContextConfig struct {
 }
 
 // AgentLoopConfig Agent Loop 配置
+type SimpleLocalInspectionConfig struct {
+	MaxIterations          int `json:"max_iterations,omitempty"`
+	TimeoutSeconds         int `json:"timeout_seconds,omitempty"`
+	RepeatToolCallLimit    int `json:"repeat_tool_call_limit,omitempty"`
+	ToolOnlyIterationLimit int `json:"tool_only_iteration_limit,omitempty"`
+}
+
+// AgentLoopConfig Agent Loop 配置
 type AgentLoopConfig struct {
-	MaxIterations          int  `json:"max_iterations,omitempty"`
-	TimeoutSeconds         int  `json:"timeout_seconds,omitempty"`
-	AutoApprove            bool `json:"auto_approve,omitempty"`
-	RepeatToolCallLimit    int  `json:"repeat_tool_call_limit,omitempty"`
-	ToolOnlyIterationLimit int  `json:"tool_only_iteration_limit,omitempty"`
-	DuplicateFetchLimit    int  `json:"duplicate_fetch_limit,omitempty"`
-	ContextDebug           bool `json:"context_debug,omitempty"`
+	MaxIterations          int                         `json:"max_iterations,omitempty"`
+	TimeoutSeconds         int                         `json:"timeout_seconds,omitempty"`
+	AutoApprove            bool                        `json:"auto_approve,omitempty"`
+	RepeatToolCallLimit    int                         `json:"repeat_tool_call_limit,omitempty"`
+	ToolOnlyIterationLimit int                         `json:"tool_only_iteration_limit,omitempty"`
+	DuplicateFetchLimit    int                         `json:"duplicate_fetch_limit,omitempty"`
+	ContextDebug           bool                        `json:"context_debug,omitempty"`
+	SimpleLocalInspection  SimpleLocalInspectionConfig `json:"simple_local_inspection,omitempty"`
 }
 
 // ServerConfig API Server 配置
@@ -423,6 +432,12 @@ func DefaultConfig() *Config {
 			ToolOnlyIterationLimit: 3,
 			DuplicateFetchLimit:    1,
 			ContextDebug:           false,
+			SimpleLocalInspection: SimpleLocalInspectionConfig{
+				MaxIterations:          3,
+				TimeoutSeconds:         25,
+				RepeatToolCallLimit:    2,
+				ToolOnlyIterationLimit: 2,
+			},
 		},
 		Server: ServerConfig{
 			Addr:        "127.0.0.1:9090",
@@ -590,6 +605,18 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Agent.DuplicateFetchLimit <= 0 {
 		cfg.Agent.DuplicateFetchLimit = def.Agent.DuplicateFetchLimit
+	}
+	if cfg.Agent.SimpleLocalInspection.MaxIterations <= 0 {
+		cfg.Agent.SimpleLocalInspection.MaxIterations = def.Agent.SimpleLocalInspection.MaxIterations
+	}
+	if cfg.Agent.SimpleLocalInspection.TimeoutSeconds <= 0 {
+		cfg.Agent.SimpleLocalInspection.TimeoutSeconds = def.Agent.SimpleLocalInspection.TimeoutSeconds
+	}
+	if cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit <= 0 {
+		cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit = def.Agent.SimpleLocalInspection.RepeatToolCallLimit
+	}
+	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit <= 0 {
+		cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit = def.Agent.SimpleLocalInspection.ToolOnlyIterationLimit
 	}
 
 	if cfg.Server.Addr == "" {
@@ -824,6 +851,22 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Agent.DuplicateFetchLimit = n
 	case "agent.context_debug":
 		m.config.Agent.ContextDebug = parseBool(value)
+	case "agent.simple_local_inspection.max_iterations":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.SimpleLocalInspection.MaxIterations = n
+	case "agent.simple_local_inspection.timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.SimpleLocalInspection.TimeoutSeconds = n
+	case "agent.simple_local_inspection.repeat_tool_call_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.SimpleLocalInspection.RepeatToolCallLimit = n
+	case "agent.simple_local_inspection.tool_only_iteration_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.SimpleLocalInspection.ToolOnlyIterationLimit = n
 	case "server.addr":
 		m.config.Server.Addr = value
 	case "server.api_keys":

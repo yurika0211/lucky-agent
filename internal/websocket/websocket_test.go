@@ -84,6 +84,7 @@ func TestMessageTypes(t *testing.T) {
 	}{
 		{TypeStreamChunk, StreamChunkData{Content: "hello", Done: false}},
 		{TypeStreamEnd, StreamEndData{FullResponse: "hello world", Iterations: 1}},
+		{TypeReasoning, ReasoningData{Summary: "Analyzing the request", Round: 1, Stage: "start"}},
 		{TypeToolCall, ToolCallData{Name: "search", Phase: "start"}},
 		{TypeToolResult, ToolResultData{Name: "search", Success: true, Output: "result"}},
 		{TypeStatus, StatusData{State: "thinking", Message: "processing"}},
