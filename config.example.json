@@ -78,7 +78,13 @@
     "repeat_tool_call_limit": 3,
     "tool_only_iteration_limit": 3,
     "duplicate_fetch_limit": 1,
-    "context_debug": false
+    "context_debug": false,
+    "simple_local_inspection": {
+      "max_iterations": 3,
+      "timeout_seconds": 25,
+      "repeat_tool_call_limit": 2,
+      "tool_only_iteration_limit": 2
+    }
   },
   "server": {
     "addr": "127.0.0.1:9090",
@@ -94,6 +100,9 @@
   },
   "dashboard": {
     "addr": ":8765"
+  },
+  "autonomy": {
+    "enabled": false
   },
   "msg_gateway": {
     "platform": "telegram",

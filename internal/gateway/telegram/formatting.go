@@ -13,8 +13,10 @@ import (
 )
 
 var (
-	allowedHTMLTagRe = regexp.MustCompile(`(?i)</?(?:b|strong|i|em|u|ins|s|strike|del|pre|tg-spoiler|blockquote)\s*>|<code(?:\s+class="language-[a-zA-Z0-9_+-]+")?\s*>|</code>|<span\s+class="tg-spoiler"\s*>|</span>|<blockquote(?:\s+expandable)?\s*>`)
-	mdParser         = goldmark.New()
+	allowedHTMLTagRe         = regexp.MustCompile(`(?i)</?(?:b|strong|i|em|u|ins|s|strike|del|tg-spoiler|blockquote)\s*>|<pre(?:\s+language="[a-zA-Z0-9_+-]+")?\s*>|</pre>|<code(?:\s+class="language-[a-zA-Z0-9_+-]+")?\s*>|</code>|<span\s+class="tg-spoiler"\s*>|</span>|<blockquote(?:\s+expandable)?\s*>`)
+	telegramCodeClassTagRe   = regexp.MustCompile(`(?i)<code\s+class="language-[a-zA-Z0-9_+-]+"\s*>`)
+	telegramPreLanguageTagRe = regexp.MustCompile(`(?i)<pre\s+language="[a-zA-Z0-9_+-]+"\s*>`)
+	mdParser                 = goldmark.New()
 )
 
 type telegramHTMLBlock struct {
@@ -165,12 +167,7 @@ func (r *telegramHTMLRenderer) renderListItem(n *ast.ListItem) string {
 }
 
 func (r *telegramHTMLRenderer) renderFencedCodeBlock(n *ast.FencedCodeBlock) string {
-	language := strings.TrimSpace(string(n.Language(r.source)))
-	codeTag := "<code>"
-	if language != "" {
-		codeTag = `<code class="language-` + html.EscapeString(language) + `">`
-	}
-	return "<pre>" + codeTag + html.EscapeString(r.blockText(n.Lines())) + "</code></pre>"
+	return "<pre><code>" + html.EscapeString(r.blockText(n.Lines())) + "</code></pre>"
 }
 
 func (r *telegramHTMLRenderer) renderCodeBlock(n *ast.CodeBlock) string {
@@ -257,6 +254,8 @@ func (r *telegramHTMLRenderer) preserveAllowedHTML(raw string) string {
 	if raw == "" {
 		return ""
 	}
+	raw = telegramCodeClassTagRe.ReplaceAllString(raw, "<code>")
+	raw = telegramPreLanguageTagRe.ReplaceAllString(raw, "<pre>")
 
 	placeholders := make([]telegramHTMLBlock, 0, 8)
 	idx := 0

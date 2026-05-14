@@ -27,7 +27,7 @@ func sanitizeOutgoingText(input string) string {
 	removed := 0
 
 	protocolSeen := false
-	for _, line := range lines {
+	for idx, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
 			kept = append(kept, line)
@@ -43,7 +43,7 @@ func sanitizeOutgoingText(input string) string {
 			removed++
 			continue
 		}
-		if trimmed == "```" || strings.HasPrefix(trimmed, "```json") {
+		if isProtocolFenceLine(lines, idx) {
 			protocolSeen = true
 			removed++
 			continue
@@ -60,6 +60,53 @@ func sanitizeOutgoingText(input string) string {
 		return internalOutputFilteredFallback
 	}
 	return out
+}
+
+func isProtocolFenceLine(lines []string, idx int) bool {
+	if idx < 0 || idx >= len(lines) {
+		return false
+	}
+	trimmed := strings.TrimSpace(lines[idx])
+	if !isMarkdownFenceLine(trimmed) {
+		return false
+	}
+	if neighborLooksLikeProtocol(lines, idx, -1) || neighborLooksLikeProtocol(lines, idx, 1) {
+		return true
+	}
+	return false
+}
+
+func neighborLooksLikeProtocol(lines []string, idx int, step int) bool {
+	for j := idx + step; j >= 0 && j < len(lines); j += step {
+		trimmed := strings.TrimSpace(lines[j])
+		if trimmed == "" {
+			continue
+		}
+		return isLikelyProtocolFencePayload(trimmed)
+	}
+	return false
+}
+
+func isLikelyProtocolFencePayload(trimmed string) bool {
+	lower := strings.ToLower(trimmed)
+	if channelTagRe.MatchString(trimmed) ||
+		jsonToolCallRe.MatchString(trimmed) ||
+		jsonCommandRe.MatchString(trimmed) ||
+		jsonToolRe.MatchString(trimmed) ||
+		strings.Contains(lower, "<tool_call>") ||
+		strings.Contains(lower, "</tool_call>") {
+		return true
+	}
+	if lower == "tool" || lower == "tool_call" {
+		return true
+	}
+	if toolNameLikeRe.MatchString(lower) && strings.Contains(lower, "_") {
+		return true
+	}
+	if strings.HasPrefix(lower, "{to=") || strings.HasPrefix(lower, "to=") {
+		return true
+	}
+	return false
 }
 
 func isLikelyProtocolFragment(line string) bool {

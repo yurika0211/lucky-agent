@@ -40,7 +40,7 @@ func TestFormatTelegramRichTextFormatsHeadingsAndLists(t *testing.T) {
 func TestFormatTelegramRichTextKeepsCodeBlockAheadOfLayoutFormatting(t *testing.T) {
 	input := "## 代码\n```python\nprint(\"hello\")\n```"
 	got := formatTelegramRichText(input)
-	want := "<b>代码</b>\n<pre><code class=\"language-python\">print(&#34;hello&#34;)</code></pre>"
+	want := "<b>代码</b>\n<pre><code>print(&#34;hello&#34;)</code></pre>"
 	if got != want {
 		t.Fatalf("formatTelegramRichText() = %q, want %q", got, want)
 	}
@@ -49,7 +49,7 @@ func TestFormatTelegramRichTextKeepsCodeBlockAheadOfLayoutFormatting(t *testing.
 func TestFormatTelegramRichTextCodeBlockWithoutLanguage(t *testing.T) {
 	input := "```text\nhello\n```"
 	got := formatTelegramRichText(input)
-	want := "<pre><code class=\"language-text\">hello</code></pre>"
+	want := "<pre><code>hello</code></pre>"
 	if got != want {
 		t.Fatalf("formatTelegramRichText() = %q, want %q", got, want)
 	}
@@ -58,7 +58,16 @@ func TestFormatTelegramRichTextCodeBlockWithoutLanguage(t *testing.T) {
 func TestFormatTelegramRichTextPreservesCodeClassHTML(t *testing.T) {
 	input := `<pre><code class="language-python">print("hi")</code></pre>`
 	got := formatTelegramRichText(input)
-	want := `<pre><code class="language-python">print(&#34;hi&#34;)</code></pre>`
+	want := `<pre><code>print(&#34;hi&#34;)</code></pre>`
+	if got != want {
+		t.Fatalf("formatTelegramRichText() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatTelegramRichTextStripsPreLanguageHTML(t *testing.T) {
+	input := `<pre language="c"><code>int main() {}</code></pre>`
+	got := formatTelegramRichText(input)
+	want := `<pre><code>int main() {}</code></pre>`
 	if got != want {
 		t.Fatalf("formatTelegramRichText() = %q, want %q", got, want)
 	}
