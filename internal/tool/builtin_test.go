@@ -485,6 +485,46 @@ func TestImageGenerateToolUsesConfiguredDefaults(t *testing.T) {
 	}
 }
 
+func TestImageGenerateToolSupportsMultipleInputPaths(t *testing.T) {
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider: "fake-image-generator",
+			Model:    "gpt-image-1.5",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("generated-image-bytes"), MimeType: "image/png"},
+			},
+		},
+	}
+
+	tmpDir := t.TempDir()
+	inputPath1 := filepath.Join(tmpDir, "input-1.png")
+	inputPath2 := filepath.Join(tmpDir, "input-2.png")
+	if err := os.WriteFile(inputPath1, []byte("image-one"), 0o644); err != nil {
+		t.Fatalf("write input 1: %v", err)
+	}
+	if err := os.WriteFile(inputPath2, []byte("image-two"), 0o644); err != nil {
+		t.Fatalf("write input 2: %v", err)
+	}
+
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	_, err := r.CallWithShellContext("image_generate", map[string]any{
+		"prompt":      "blend these two references",
+		"input_paths": []any{inputPath1, inputPath2},
+		"output_dir":  tmpDir,
+	}, &ShellContext{Cwd: tmpDir})
+	if err != nil {
+		t.Fatalf("image_generate call: %v", err)
+	}
+	if len(gen.lastReq.InputImages) != 2 {
+		t.Fatalf("expected 2 input images, got %d", len(gen.lastReq.InputImages))
+	}
+	if string(gen.lastReq.InputImages[0].Data) != "image-one" || string(gen.lastReq.InputImages[1].Data) != "image-two" {
+		t.Fatalf("unexpected input bytes: %#v", gen.lastReq.InputImages)
+	}
+}
+
 func TestTextToSpeechToolSavesOutput(t *testing.T) {
 	synth := &fakeSpeechSynthesizer{
 		result: &multimodal.SpeechSynthesisResult{
@@ -562,6 +602,44 @@ func TestTextToSpeechToolUsesConfiguredDefaults(t *testing.T) {
 	}
 	if synth.lastReq.Speed != 1.25 {
 		t.Fatalf("expected default speed, got %f", synth.lastReq.Speed)
+	}
+}
+
+func TestTextToSpeechToolGeneratesUniqueDefaultPaths(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{
+		result: &multimodal.SpeechSynthesisResult{
+			Provider: "fake-speech-synthesizer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Audio:    []byte("speech-bytes"),
+			MimeType: "audio/mpeg",
+		},
+	}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	tmpDir := t.TempDir()
+	call := func(text string) string {
+		out, err := r.CallWithShellContext("text_to_speech", map[string]any{
+			"text":       text,
+			"output_dir": tmpDir,
+		}, &ShellContext{Cwd: tmpDir})
+		if err != nil {
+			t.Fatalf("text_to_speech call: %v", err)
+		}
+		var payload struct {
+			Path string `json:"path"`
+		}
+		if err := json.Unmarshal([]byte(out), &payload); err != nil {
+			t.Fatalf("unmarshal tool output: %v", err)
+		}
+		return payload.Path
+	}
+
+	path1 := call("first audio")
+	path2 := call("second audio")
+	if path1 == path2 {
+		t.Fatalf("expected unique output paths, got %q and %q", path1, path2)
 	}
 }
 

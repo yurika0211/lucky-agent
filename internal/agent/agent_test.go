@@ -793,6 +793,24 @@ func (g *cronNotifyGateway) SendWithReply(ctx context.Context, chatID string, re
 }
 func (g *cronNotifyGateway) IsRunning() bool { return g.running }
 
+type staticChatProvider struct {
+	name    string
+	content string
+	err     error
+}
+
+func (p *staticChatProvider) Name() string { return p.name }
+func (p *staticChatProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &provider.Response{Content: p.content}, nil
+}
+func (p *staticChatProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
+	return nil, fmt.Errorf("unexpected ChatStream call")
+}
+func (p *staticChatProvider) Validate() error { return nil }
+
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
 func TestAgent_Tools(t *testing.T) {
@@ -2193,6 +2211,52 @@ func TestCronNotificationFallsBackToRecentTelegramTarget(t *testing.T) {
 	}
 	if len(gw.messages) == 0 {
 		t.Fatal("expected fallback telegram notification to be sent")
+	}
+}
+
+func TestFormatCronNotificationUsesProviderRewrite(t *testing.T) {
+	a := &Agent{
+		provider: &staticChatProvider{
+			name:    "static-chat",
+			content: "我刚帮你把这轮定时巡检处理完了，整体都很顺，唯一值得留意的是结果里提到的那条小波动。要不要我顺手继续帮你往下查一下？",
+		},
+	}
+
+	got := a.formatCronNotification(cronNotificationPayload{
+		JobID:     "job-1",
+		Mode:      "agent",
+		Command:   "巡检一下服务状态",
+		Outcome:   "succeeded",
+		RawResult: "服务状态正常，但 latency 有轻微波动。",
+	})
+	if !strings.Contains(got, "我刚帮你把这轮定时巡检处理完了") {
+		t.Fatalf("expected provider rewritten notification, got %q", got)
+	}
+}
+
+func TestFormatCronNotificationFallsBackNaturallyOnProviderError(t *testing.T) {
+	a := &Agent{
+		provider: &staticChatProvider{
+			name: "static-chat",
+			err:  fmt.Errorf("provider unavailable"),
+		},
+	}
+
+	got := a.formatCronNotification(cronNotificationPayload{
+		JobID:     "job-2",
+		Mode:      "shell",
+		Command:   "同步监控日志",
+		Outcome:   "failed",
+		RawResult: "连接上游接口超时",
+	})
+	if !strings.Contains(got, "同步监控日志") {
+		t.Fatalf("expected fallback to include command context, got %q", got)
+	}
+	if !strings.Contains(got, "连接上游接口超时") {
+		t.Fatalf("expected fallback to include raw failure, got %q", got)
+	}
+	if strings.Contains(got, "执行状态") {
+		t.Fatalf("expected natural fallback wording, got %q", got)
 	}
 }
 

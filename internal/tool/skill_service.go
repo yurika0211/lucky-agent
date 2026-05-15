@@ -45,6 +45,12 @@ func (s *SkillToolService) RegisterReadTool(r *Registry) {
 				Description: "Skill name to inspect before execution. Leave empty to list currently available skills.",
 				Required:    false,
 			},
+			"format": {
+				Type:        "string",
+				Description: "Response format: text or json. Defaults to text for backward compatibility.",
+				Required:    false,
+				Default:     "text",
+			},
 		},
 		Handler: s.HandleRead,
 	})
@@ -53,7 +59,24 @@ func (s *SkillToolService) RegisterReadTool(r *Registry) {
 // HandleRead reads a skill's SKILL.md or lists available skills.
 func (s *SkillToolService) HandleRead(args map[string]any) (string, error) {
 	name, _ := args["name"].(string)
+	format, _ := args["format"].(string)
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		format = "text"
+	}
+
 	if name == "" {
+		if format == "json" {
+			items := make([]map[string]any, 0, len(s.skills))
+			for _, skill := range s.skills {
+				items = append(items, skillReadMetadata(skill, ""))
+			}
+			return prettyStructuredValue(map[string]any{
+				"skills": items,
+				"count":  len(items),
+			})
+		}
+
 		var b strings.Builder
 		b.WriteString("Available skills:\n")
 		for _, skill := range s.skills {
@@ -69,6 +92,9 @@ func (s *SkillToolService) HandleRead(args map[string]any) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("read SKILL.md for %s: %w", name, err)
 			}
+			if format == "json" {
+				return prettyStructuredValue(skillReadMetadata(skill, string(data)))
+			}
 			return string(data), nil
 		}
 	}
@@ -80,10 +106,59 @@ func (s *SkillToolService) HandleRead(args map[string]any) (string, error) {
 			candidates = append(candidates, skill.Name)
 		}
 	}
+	if format == "json" {
+		return prettyStructuredValue(map[string]any{
+			"found":      false,
+			"name":       name,
+			"candidates": candidates,
+			"message": func() string {
+				if len(candidates) > 0 {
+					return fmt.Sprintf("Skill '%s' not found. Did you mean: %s?", name, strings.Join(candidates, ", "))
+				}
+				return fmt.Sprintf("Skill '%s' not found. Use skill_read without name to list all skills.", name)
+			}(),
+		})
+	}
 	if len(candidates) > 0 {
 		return fmt.Sprintf("Skill '%s' not found. Did you mean: %s?", name, strings.Join(candidates, ", ")), nil
 	}
 	return fmt.Sprintf("Skill '%s' not found. Use skill_read without name to list all skills.", name), nil
+}
+
+func skillReadMetadata(skill *SkillInfo, content string) map[string]any {
+	if skill == nil {
+		return map[string]any{}
+	}
+	toolItems := make([]map[string]any, 0, len(skill.Tools))
+	for _, toolDef := range skill.Tools {
+		toolItems = append(toolItems, map[string]any{
+			"name":            toolDef.Name,
+			"description":     toolDef.Description,
+			"expose_to_model": toolDef.ExposeToModel,
+			"command":         toolDef.Command,
+		})
+	}
+
+	summary := strings.TrimSpace(skill.Summary)
+	if summary == "" {
+		summary = strings.TrimSpace(skill.Description)
+	}
+
+	payload := map[string]any{
+		"found":         true,
+		"name":          skill.Name,
+		"aliases":       append([]string(nil), skill.Aliases...),
+		"description":   skill.Description,
+		"summary":       summary,
+		"dir":           skill.Dir,
+		"skill_md_path": filepath.Join(skill.Dir, "SKILL.md"),
+		"available":     skill.Available,
+		"tools":         toolItems,
+	}
+	if content != "" {
+		payload["content"] = content
+	}
+	return payload
 }
 
 func skillMatchesName(s *SkillInfo, name string) bool {

@@ -209,7 +209,7 @@ func formatImageAnalysisResult(result *multimodal.AnalysisResult) string {
 func ImageGenerateTool(generator multimodal.ImageGenerator, defaults ImageGenerationDefaults) *Tool {
 	return &Tool{
 		Name:         "image_generate",
-		Description:  "Generate an image from a text prompt, or transform an existing image when input_path, input_base64_data, or input_url is provided.",
+		Description:  "Generate an image from a text prompt, or transform one or more existing images when input_path/input_paths, input_base64_data/input_base64_datas, or input_url/input_urls are provided.",
 		Category:     CatBuiltin,
 		Source:       "builtin",
 		Permission:   PermApprove,
@@ -218,9 +218,13 @@ func ImageGenerateTool(generator multimodal.ImageGenerator, defaults ImageGenera
 		Parameters: map[string]Param{
 			"prompt":             {Type: "string", Description: "Text prompt describing the image to generate or the edit you want applied.", Required: true},
 			"input_path":         {Type: "string", Description: "Optional local input image path for image-to-image generation.", Required: false},
+			"input_paths":        {Type: "array", Description: "Optional list of local input image paths for multi-image generation.", Required: false},
 			"input_url":          {Type: "string", Description: "Optional remote input image URL for image-to-image generation.", Required: false},
+			"input_urls":         {Type: "array", Description: "Optional list of remote input image URLs for multi-image generation.", Required: false},
 			"input_base64_data":  {Type: "string", Description: "Optional base64-encoded input image for image-to-image generation.", Required: false},
+			"input_base64_datas": {Type: "array", Description: "Optional list of base64-encoded input images for multi-image generation.", Required: false},
 			"input_mime_type":    {Type: "string", Description: "Optional MIME type for base64 input, such as image/png.", Required: false},
+			"input_mime_types":   {Type: "array", Description: "Optional list of MIME types aligned with input_base64_datas.", Required: false},
 			"model":              {Type: "string", Description: "Optional image generation model override. Defaults to gpt-image-1.5.", Required: false},
 			"size":               {Type: "string", Description: "Optional size such as 1024x1024, 1536x1024, 1024x1536, or auto.", Required: false},
 			"quality":            {Type: "string", Description: "Optional quality such as low, medium, high, or auto.", Required: false},
@@ -287,14 +291,15 @@ func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDe
 		return nil, "", "", "", "", fmt.Errorf("prompt is required")
 	}
 
-	inputPath, _ := args["input_path"].(string)
-	inputURL, _ := args["input_url"].(string)
-	inputBase64, _ := args["input_base64_data"].(string)
+	inputPaths := collectStringArgs(args, "input_path", "input_paths")
+	inputURLs := collectStringArgs(args, "input_url", "input_urls")
+	inputBase64s := collectStringArgs(args, "input_base64_data", "input_base64_datas")
 	inputMimeType, _ := args["input_mime_type"].(string)
-	inputPath = strings.TrimSpace(inputPath)
-	inputURL = strings.TrimSpace(inputURL)
-	inputBase64 = strings.TrimSpace(inputBase64)
+	inputMimeTypes := collectStringArgs(args, "input_mime_types")
 	inputMimeType = strings.TrimSpace(inputMimeType)
+	if inputMimeType != "" && len(inputMimeTypes) == 0 {
+		inputMimeTypes = []string{inputMimeType}
+	}
 
 	outputPath, _ := args["output_path"].(string)
 	outputDir, _ := args["output_dir"].(string)
@@ -314,16 +319,6 @@ func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDe
 		return nil, "", "", "", "", fmt.Errorf("output_path can only be used when count is 1")
 	}
 
-	inputsProvided := 0
-	for _, value := range []string{inputPath, inputURL, inputBase64} {
-		if value != "" {
-			inputsProvided++
-		}
-	}
-	if inputsProvided > 1 {
-		return nil, "", "", "", "", fmt.Errorf("provide only one of input_path, input_url, or input_base64_data")
-	}
-
 	req := &multimodal.ImageGenerationRequest{
 		Prompt:            prompt,
 		Model:             firstNonEmptyString(asString(args["model"]), defaults.Model),
@@ -335,7 +330,7 @@ func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDe
 		Count:             count,
 	}
 
-	if inputPath != "" {
+	for _, inputPath := range inputPaths {
 		inputPath = resolveToolPath(baseDir, inputPath)
 		if err := validatePath(inputPath); err != nil {
 			return nil, "", "", "", "", err
@@ -344,46 +339,45 @@ func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDe
 		if err != nil {
 			return nil, "", "", "", "", fmt.Errorf("read input_path: %w", err)
 		}
-		if inputMimeType == "" {
-			inputMimeType = mime.TypeByExtension(strings.ToLower(filepath.Ext(inputPath)))
-		}
-		if inputMimeType == "" {
-			inputMimeType = http.DetectContentType(data)
+		pathMimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(inputPath)))
+		if pathMimeType == "" {
+			pathMimeType = http.DetectContentType(data)
 		}
 		req.InputImages = append(req.InputImages, multimodal.ImageInput{
 			Data:     data,
-			MimeType: inputMimeType,
+			MimeType: pathMimeType,
 			Filename: filepath.Base(inputPath),
 		})
 	}
 
-	if inputURL != "" {
+	for _, inputURL := range inputURLs {
 		data, detectedMimeType, err := downloadImageInput(inputURL)
 		if err != nil {
 			return nil, "", "", "", "", err
 		}
-		if inputMimeType == "" {
-			inputMimeType = detectedMimeType
-		}
 		req.InputImages = append(req.InputImages, multimodal.ImageInput{
 			Data:     data,
-			MimeType: inputMimeType,
+			MimeType: detectedMimeType,
 			Filename: filepath.Base(strings.Split(inputURL, "?")[0]),
 		})
 	}
 
-	if inputBase64 != "" {
+	for i, inputBase64 := range inputBase64s {
 		data, err := base64.StdEncoding.DecodeString(inputBase64)
 		if err != nil {
 			return nil, "", "", "", "", fmt.Errorf("decode input_base64_data: %w", err)
 		}
-		if inputMimeType == "" {
-			inputMimeType = http.DetectContentType(data)
+		currentMimeType := ""
+		if i < len(inputMimeTypes) {
+			currentMimeType = strings.TrimSpace(inputMimeTypes[i])
+		}
+		if currentMimeType == "" {
+			currentMimeType = http.DetectContentType(data)
 		}
 		req.InputImages = append(req.InputImages, multimodal.ImageInput{
 			Data:     data,
-			MimeType: inputMimeType,
-			Filename: "input" + extensionForOutputFormat(inputMimeType),
+			MimeType: currentMimeType,
+			Filename: fmt.Sprintf("input-%02d%s", i+1, extensionForOutputFormat(currentMimeType)),
 		})
 	}
 
@@ -540,6 +534,37 @@ func firstNonEmptyString(values ...string) string {
 	return ""
 }
 
+func collectStringArgs(args map[string]any, keys ...string) []string {
+	var out []string
+	for _, key := range keys {
+		raw, ok := args[key]
+		if !ok || raw == nil {
+			continue
+		}
+		switch v := raw.(type) {
+		case string:
+			if trimmed := strings.TrimSpace(v); trimmed != "" {
+				out = append(out, trimmed)
+			}
+		case []string:
+			for _, item := range v {
+				if trimmed := strings.TrimSpace(item); trimmed != "" {
+					out = append(out, trimmed)
+				}
+			}
+		case []any:
+			for _, item := range v {
+				if s, ok := item.(string); ok {
+					if trimmed := strings.TrimSpace(s); trimmed != "" {
+						out = append(out, trimmed)
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
 // TextToSpeechTool synthesizes speech audio from text and saves it to disk.
 func TextToSpeechTool(synthesizer multimodal.SpeechSynthesizer, defaults TTSDefaults) *Tool {
 	return &Tool{
@@ -634,7 +659,7 @@ func saveSynthesizedAudio(result *multimodal.SpeechSynthesisResult, outputPath, 
 		return "", fmt.Errorf("no synthesized audio to save")
 	}
 	if filenamePrefix == "" {
-		filenamePrefix = "tts-audio"
+		filenamePrefix = fmt.Sprintf("tts-audio-%d", time.Now().UnixNano())
 	}
 	if outputPath != "" {
 		resolved, err := validateResolvedOutputPath(baseDir, outputPath)
