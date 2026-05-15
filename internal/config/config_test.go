@@ -42,6 +42,24 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Autonomy.Enabled {
 		t.Errorf("expected autonomy.enabled false by default, got true")
 	}
+	if cfg.Multimodal.GenerationModel != "gpt-image-1.5" {
+		t.Errorf("expected multimodal.generation_model gpt-image-1.5, got %s", cfg.Multimodal.GenerationModel)
+	}
+	if cfg.Multimodal.GenerationSize != "1024x1024" {
+		t.Errorf("expected multimodal.generation_size 1024x1024, got %s", cfg.Multimodal.GenerationSize)
+	}
+	if cfg.Multimodal.GenerationOutputFormat != "png" {
+		t.Errorf("expected multimodal.generation_output_format png, got %s", cfg.Multimodal.GenerationOutputFormat)
+	}
+	if cfg.ImageGeneration.Provider != "openai" {
+		t.Errorf("expected image_generation.provider openai, got %s", cfg.ImageGeneration.Provider)
+	}
+	if cfg.ImageGeneration.APIBase != "https://api.openai.com/v1" {
+		t.Errorf("expected image_generation.api_base https://api.openai.com/v1, got %s", cfg.ImageGeneration.APIBase)
+	}
+	if cfg.ImageGeneration.AuthMode != "bearer" {
+		t.Errorf("expected image_generation.auth_mode bearer, got %s", cfg.ImageGeneration.AuthMode)
+	}
 }
 
 func TestManagerSetAndGet(t *testing.T) {
@@ -154,6 +172,21 @@ func TestManagerSetMultimodalImageProvider(t *testing.T) {
 	if err := mgr.Set("multimodal.image_model", "gpt-4.1-mini"); err != nil {
 		t.Fatalf("Set multimodal.image_model: %v", err)
 	}
+	if err := mgr.Set("multimodal.generation_model", "gpt-image-1"); err != nil {
+		t.Fatalf("Set multimodal.generation_model: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_size", "1536x1024"); err != nil {
+		t.Fatalf("Set multimodal.generation_size: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_quality", "high"); err != nil {
+		t.Fatalf("Set multimodal.generation_quality: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_background", "transparent"); err != nil {
+		t.Fatalf("Set multimodal.generation_background: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_output_format", "webp"); err != nil {
+		t.Fatalf("Set multimodal.generation_output_format: %v", err)
+	}
 	if err := mgr.Set("multimodal.transcription_model", "whisper-1"); err != nil {
 		t.Fatalf("Set multimodal.transcription_model: %v", err)
 	}
@@ -174,11 +207,81 @@ func TestManagerSetMultimodalImageProvider(t *testing.T) {
 	if cfg.Multimodal.ImageModel != "gpt-4.1-mini" {
 		t.Fatalf("expected gpt-4.1-mini, got %q", cfg.Multimodal.ImageModel)
 	}
+	if cfg.Multimodal.GenerationModel != "gpt-image-1" {
+		t.Fatalf("expected gpt-image-1, got %q", cfg.Multimodal.GenerationModel)
+	}
+	if cfg.Multimodal.GenerationSize != "1536x1024" {
+		t.Fatalf("expected 1536x1024, got %q", cfg.Multimodal.GenerationSize)
+	}
+	if cfg.Multimodal.GenerationQuality != "high" {
+		t.Fatalf("expected high, got %q", cfg.Multimodal.GenerationQuality)
+	}
+	if cfg.Multimodal.GenerationBackground != "transparent" {
+		t.Fatalf("expected transparent, got %q", cfg.Multimodal.GenerationBackground)
+	}
+	if cfg.Multimodal.GenerationOutputFormat != "webp" {
+		t.Fatalf("expected webp, got %q", cfg.Multimodal.GenerationOutputFormat)
+	}
 	if cfg.Multimodal.TranscriptionModel != "whisper-1" {
 		t.Fatalf("expected whisper-1, got %q", cfg.Multimodal.TranscriptionModel)
 	}
 	if cfg.Multimodal.ImageProvider != "openai-media" {
 		t.Fatalf("expected openai-media, got %q", cfg.Multimodal.ImageProvider)
+	}
+}
+
+func TestManagerSetImageGenerationConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("image_generation.provider", "gemini"); err != nil {
+		t.Fatalf("Set image_generation.provider: %v", err)
+	}
+	if err := mgr.Set("image_generation.api_key", "gen-key"); err != nil {
+		t.Fatalf("Set image_generation.api_key: %v", err)
+	}
+	if err := mgr.Set("image_generation.api_base", "https://api.shiokou.asia/v1"); err != nil {
+		t.Fatalf("Set image_generation.api_base: %v", err)
+	}
+	if err := mgr.Set("image_generation.auth_mode", "bearer"); err != nil {
+		t.Fatalf("Set image_generation.auth_mode: %v", err)
+	}
+	if err := mgr.Set("image_generation.model", "gemini-3.1-flash-image-preview"); err != nil {
+		t.Fatalf("Set image_generation.model: %v", err)
+	}
+	if err := mgr.Set("image_generation.size", "1024x1024"); err != nil {
+		t.Fatalf("Set image_generation.size: %v", err)
+	}
+	if err := mgr.Set("image_generation.quality", "auto"); err != nil {
+		t.Fatalf("Set image_generation.quality: %v", err)
+	}
+	if err := mgr.Set("image_generation.background", "auto"); err != nil {
+		t.Fatalf("Set image_generation.background: %v", err)
+	}
+	if err := mgr.Set("image_generation.output_format", "png"); err != nil {
+		t.Fatalf("Set image_generation.output_format: %v", err)
+	}
+	if err := mgr.Set("image_generation.count", "1"); err != nil {
+		t.Fatalf("Set image_generation.count: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.ImageGeneration.Provider != "gemini" {
+		t.Fatalf("expected gemini, got %q", cfg.ImageGeneration.Provider)
+	}
+	if cfg.ImageGeneration.APIKey != "gen-key" {
+		t.Fatalf("expected gen-key, got %q", cfg.ImageGeneration.APIKey)
+	}
+	if cfg.ImageGeneration.APIBase != "https://api.shiokou.asia/v1" {
+		t.Fatalf("expected https://api.shiokou.asia/v1, got %q", cfg.ImageGeneration.APIBase)
+	}
+	if cfg.ImageGeneration.AuthMode != "bearer" {
+		t.Fatalf("expected bearer, got %q", cfg.ImageGeneration.AuthMode)
+	}
+	if cfg.ImageGeneration.Model != "gemini-3.1-flash-image-preview" {
+		t.Fatalf("expected gemini model, got %q", cfg.ImageGeneration.Model)
 	}
 }
 

@@ -35,6 +35,9 @@ type Config struct {
 	// v0.95.0: 多模态配置
 	Multimodal MultimodalConfig `json:"multimodal,omitempty"`
 
+	// v0.96.0: 独立图片生成配置
+	ImageGeneration ImageGenerationConfig `json:"image_generation,omitempty"`
+
 	// v0.40.0: 流式输出模式 (native=真流式，simulated=非流式获取 + 模拟推送)
 	StreamMode string `json:"stream_mode,omitempty"`
 
@@ -90,12 +93,31 @@ type EmbeddingConfig struct {
 }
 
 type MultimodalConfig struct {
-	Provider           string `json:"provider,omitempty"`
-	APIKey             string `json:"api_key,omitempty"`
-	APIBase            string `json:"api_base,omitempty"`
-	ImageModel         string `json:"image_model,omitempty"`
-	TranscriptionModel string `json:"transcription_model,omitempty"`
-	ImageProvider      string `json:"image_provider,omitempty"`
+	Provider               string `json:"provider,omitempty"`
+	APIKey                 string `json:"api_key,omitempty"`
+	APIBase                string `json:"api_base,omitempty"`
+	ImageModel             string `json:"image_model,omitempty"`
+	GenerationModel        string `json:"generation_model,omitempty"`
+	GenerationSize         string `json:"generation_size,omitempty"`
+	GenerationQuality      string `json:"generation_quality,omitempty"`
+	GenerationBackground   string `json:"generation_background,omitempty"`
+	GenerationOutputFormat string `json:"generation_output_format,omitempty"`
+	TranscriptionModel     string `json:"transcription_model,omitempty"`
+	ImageProvider          string `json:"image_provider,omitempty"`
+}
+
+type ImageGenerationConfig struct {
+	Provider          string `json:"provider,omitempty"`
+	APIKey            string `json:"api_key,omitempty"`
+	APIBase           string `json:"api_base,omitempty"`
+	AuthMode          string `json:"auth_mode,omitempty"`
+	Model             string `json:"model,omitempty"`
+	Size              string `json:"size,omitempty"`
+	Quality           string `json:"quality,omitempty"`
+	Background        string `json:"background,omitempty"`
+	OutputFormat      string `json:"output_format,omitempty"`
+	OutputCompression int    `json:"output_compression,omitempty"`
+	Count             int    `json:"count,omitempty"`
 }
 
 // LimitsConfig 限制配置
@@ -403,6 +425,27 @@ func DefaultConfig() *Config {
 			Provider:   "brave",
 			MaxResults: 5,
 		},
+		Multimodal: MultimodalConfig{
+			Provider:               "openai",
+			ImageModel:             "gpt-5.4-mini",
+			GenerationModel:        "gpt-image-1.5",
+			GenerationSize:         "1024x1024",
+			GenerationQuality:      "auto",
+			GenerationBackground:   "auto",
+			GenerationOutputFormat: "png",
+			TranscriptionModel:     "whisper-1",
+		},
+		ImageGeneration: ImageGenerationConfig{
+			Provider:     "openai",
+			APIBase:      "https://api.openai.com/v1",
+			AuthMode:     "bearer",
+			Model:        "gpt-image-1.5",
+			Size:         "1024x1024",
+			Quality:      "auto",
+			Background:   "auto",
+			OutputFormat: "png",
+			Count:        1,
+		},
 		StreamMode: "native",
 		Memory: MemoryConfig{
 			ShortTermMaxTurns:   10,
@@ -538,6 +581,83 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.WebSearch.MaxResults <= 0 {
 		cfg.WebSearch.MaxResults = def.WebSearch.MaxResults
+	}
+	if cfg.Multimodal.Provider == "" {
+		cfg.Multimodal.Provider = def.Multimodal.Provider
+	}
+	if cfg.Multimodal.ImageModel == "" {
+		cfg.Multimodal.ImageModel = def.Multimodal.ImageModel
+	}
+	if cfg.Multimodal.GenerationModel == "" {
+		cfg.Multimodal.GenerationModel = def.Multimodal.GenerationModel
+	}
+	if cfg.Multimodal.GenerationSize == "" {
+		cfg.Multimodal.GenerationSize = def.Multimodal.GenerationSize
+	}
+	if cfg.Multimodal.GenerationQuality == "" {
+		cfg.Multimodal.GenerationQuality = def.Multimodal.GenerationQuality
+	}
+	if cfg.Multimodal.GenerationBackground == "" {
+		cfg.Multimodal.GenerationBackground = def.Multimodal.GenerationBackground
+	}
+	if cfg.Multimodal.GenerationOutputFormat == "" {
+		cfg.Multimodal.GenerationOutputFormat = def.Multimodal.GenerationOutputFormat
+	}
+	if cfg.Multimodal.TranscriptionModel == "" {
+		cfg.Multimodal.TranscriptionModel = def.Multimodal.TranscriptionModel
+	}
+	if cfg.ImageGeneration.Provider == "" {
+		cfg.ImageGeneration.Provider = def.ImageGeneration.Provider
+	}
+	if cfg.ImageGeneration.APIBase == "" {
+		cfg.ImageGeneration.APIBase = def.ImageGeneration.APIBase
+	}
+	if cfg.ImageGeneration.AuthMode == "" {
+		cfg.ImageGeneration.AuthMode = def.ImageGeneration.AuthMode
+	}
+	if cfg.ImageGeneration.Model == "" {
+		if cfg.Multimodal.GenerationModel != "" {
+			cfg.ImageGeneration.Model = cfg.Multimodal.GenerationModel
+		} else {
+			cfg.ImageGeneration.Model = def.ImageGeneration.Model
+		}
+	}
+	if cfg.ImageGeneration.Size == "" {
+		if cfg.Multimodal.GenerationSize != "" {
+			cfg.ImageGeneration.Size = cfg.Multimodal.GenerationSize
+		} else {
+			cfg.ImageGeneration.Size = def.ImageGeneration.Size
+		}
+	}
+	if cfg.ImageGeneration.Quality == "" {
+		if cfg.Multimodal.GenerationQuality != "" {
+			cfg.ImageGeneration.Quality = cfg.Multimodal.GenerationQuality
+		} else {
+			cfg.ImageGeneration.Quality = def.ImageGeneration.Quality
+		}
+	}
+	if cfg.ImageGeneration.Background == "" {
+		if cfg.Multimodal.GenerationBackground != "" {
+			cfg.ImageGeneration.Background = cfg.Multimodal.GenerationBackground
+		} else {
+			cfg.ImageGeneration.Background = def.ImageGeneration.Background
+		}
+	}
+	if cfg.ImageGeneration.OutputFormat == "" {
+		if cfg.Multimodal.GenerationOutputFormat != "" {
+			cfg.ImageGeneration.OutputFormat = cfg.Multimodal.GenerationOutputFormat
+		} else {
+			cfg.ImageGeneration.OutputFormat = def.ImageGeneration.OutputFormat
+		}
+	}
+	if cfg.ImageGeneration.APIKey == "" && cfg.ImageGeneration.Provider == "openai" && cfg.Multimodal.APIKey != "" {
+		cfg.ImageGeneration.APIKey = cfg.Multimodal.APIKey
+	}
+	if cfg.ImageGeneration.APIBase == def.ImageGeneration.APIBase && cfg.ImageGeneration.Provider == "openai" && cfg.Multimodal.APIBase != "" {
+		cfg.ImageGeneration.APIBase = cfg.Multimodal.APIBase
+	}
+	if cfg.ImageGeneration.Count <= 0 {
+		cfg.ImageGeneration.Count = def.ImageGeneration.Count
 	}
 	if cfg.StreamMode == "" {
 		cfg.StreamMode = def.StreamMode
@@ -833,10 +953,46 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Multimodal.APIBase = value
 	case "multimodal.image_model":
 		m.config.Multimodal.ImageModel = value
+	case "multimodal.generation_model":
+		m.config.Multimodal.GenerationModel = value
+	case "multimodal.generation_size":
+		m.config.Multimodal.GenerationSize = value
+	case "multimodal.generation_quality":
+		m.config.Multimodal.GenerationQuality = value
+	case "multimodal.generation_background":
+		m.config.Multimodal.GenerationBackground = value
+	case "multimodal.generation_output_format":
+		m.config.Multimodal.GenerationOutputFormat = value
 	case "multimodal.transcription_model":
 		m.config.Multimodal.TranscriptionModel = value
 	case "multimodal.image_provider":
 		m.config.Multimodal.ImageProvider = value
+	case "image_generation.provider":
+		m.config.ImageGeneration.Provider = value
+	case "image_generation.api_key":
+		m.config.ImageGeneration.APIKey = value
+	case "image_generation.api_base":
+		m.config.ImageGeneration.APIBase = value
+	case "image_generation.auth_mode":
+		m.config.ImageGeneration.AuthMode = value
+	case "image_generation.model":
+		m.config.ImageGeneration.Model = value
+	case "image_generation.size":
+		m.config.ImageGeneration.Size = value
+	case "image_generation.quality":
+		m.config.ImageGeneration.Quality = value
+	case "image_generation.background":
+		m.config.ImageGeneration.Background = value
+	case "image_generation.output_format":
+		m.config.ImageGeneration.OutputFormat = value
+	case "image_generation.output_compression":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.ImageGeneration.OutputCompression = n
+	case "image_generation.count":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.ImageGeneration.Count = n
 	case "soul_path":
 		m.config.SoulPath = value
 	case "max_tokens":
