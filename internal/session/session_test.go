@@ -63,10 +63,11 @@ func TestAddToolMessage(t *testing.T) {
 func TestAddProviderMessagePreservesToolCallFields(t *testing.T) {
 	s := NewSession("test-provider-message", t.TempDir())
 	s.AddProviderMessage(provider.Message{
-		Role:       "tool",
-		Content:    "42",
-		ToolCallID: "call_abc123",
-		Name:       "calculator",
+		Role:             "tool",
+		Content:          "42",
+		ReasoningContent: "hidden reasoning",
+		ToolCallID:       "call_abc123",
+		Name:             "calculator",
 	})
 
 	msgs := s.GetMessages()
@@ -78,6 +79,9 @@ func TestAddProviderMessagePreservesToolCallFields(t *testing.T) {
 	}
 	if msgs[0].Name != "calculator" {
 		t.Fatalf("expected name calculator, got %q", msgs[0].Name)
+	}
+	if msgs[0].ReasoningContent != "hidden reasoning" {
+		t.Fatalf("expected reasoning content to be preserved, got %q", msgs[0].ReasoningContent)
 	}
 }
 

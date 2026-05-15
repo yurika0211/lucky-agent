@@ -80,6 +80,23 @@ func TestCalculateCostFreeModel(t *testing.T) {
 	}
 }
 
+func TestCalculateCostDetailedUsesCachedPromptPriceWhenConfigured(t *testing.T) {
+	pt := NewPriceTable()
+	pt.Set(PriceEntry{
+		Provider:          "custom",
+		Model:             "cached-model",
+		PromptPrice:       0.01,
+		CachedPromptPrice: 0.002,
+		CompletionPrice:   0.03,
+	})
+
+	cost := pt.CalculateCostDetailed("custom", "cached-model", 1000, 600, 0, 0, 500)
+	expected := 0.4*0.01 + 0.6*0.002 + 0.5*0.03
+	if fmt.Sprintf("%.6f", cost) != fmt.Sprintf("%.6f", expected) {
+		t.Errorf("expected %f, got %f", expected, cost)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // CT-2: CostStore Tests
 // ---------------------------------------------------------------------------
@@ -97,6 +114,29 @@ func TestCostStoreRecord(t *testing.T) {
 	}
 	if rec.CostUSD <= 0 {
 		t.Error("expected non-zero cost")
+	}
+}
+
+func TestCostStoreRecordCallDetailed(t *testing.T) {
+	pt := NewPriceTable()
+	pt.Set(PriceEntry{
+		Provider:          "custom",
+		Model:             "cached-model",
+		PromptPrice:       0.01,
+		CachedPromptPrice: 0.002,
+		CompletionPrice:   0.03,
+	})
+	store := NewCostStore(pt)
+
+	rec := store.RecordCallDetailed("call-detailed", "custom", "cached-model", "sess-1", 1000, 600, 0, 0, 500)
+	if rec.CachedPromptTokens != 600 {
+		t.Fatalf("expected cached prompt tokens 600, got %d", rec.CachedPromptTokens)
+	}
+	if rec.TotalTokens != 1500 {
+		t.Fatalf("expected total tokens 1500, got %d", rec.TotalTokens)
+	}
+	if rec.CostUSD <= 0 {
+		t.Fatal("expected non-zero cost")
 	}
 }
 

@@ -1479,6 +1479,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	}
 
 	var content strings.Builder
+	var reasoning strings.Builder
 	streamFinishReason := ""
 	// 流式 tool_calls 增量拼接
 	var toolCallsAcc []streamToolCallAcc // 按 index 累积
@@ -1490,6 +1491,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
 			events <- ChatEvent{Type: ChatEventContent, Content: chunk.Content}
+		}
+		if chunk.ReasoningContent != "" {
+			reasoning.WriteString(chunk.ReasoningContent)
 		}
 		// 处理流式 tool_calls 增量
 		if len(chunk.ToolCallDeltas) > 0 {
@@ -1543,9 +1547,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 
 			// 将 assistant 消息加入历史
 			messages = append(messages, provider.Message{
-				Role:      "assistant",
-				Content:   content.String(),
-				ToolCalls: toolCalls,
+				Role:             "assistant",
+				Content:          content.String(),
+				ReasoningContent: reasoning.String(),
+				ToolCalls:        toolCalls,
 			})
 
 			emitChatToolCallEvents(events, toolCalls)
@@ -1677,9 +1682,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			return
 		}
 		messages = append(messages, provider.Message{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
+			Role:             "assistant",
+			Content:          resp.Content,
+			ReasoningContent: resp.ReasoningContent,
+			ToolCalls:        resp.ToolCalls,
 		})
 
 		emitChatToolCallEvents(events, resp.ToolCalls)

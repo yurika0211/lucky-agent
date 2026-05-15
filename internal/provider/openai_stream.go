@@ -46,27 +46,30 @@ type openaiChatRequest struct {
 
 // openaiMessage 是 OpenAI API 的消息格式
 type openaiMessage struct {
-	Role       string               `json:"role"`
-	Content    any                  `json:"content,omitempty"`
-	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"`
-	Name       string               `json:"name,omitempty"`
+	Role             string               `json:"role"`
+	Content          any                  `json:"content,omitempty"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	ToolCalls        []openaiToolCallResp `json:"tool_calls,omitempty"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	Name             string               `json:"name,omitempty"`
 }
 
 type openaiRequestMessage struct {
-	Role       string               `json:"role"`
-	Content    any                  `json:"content,omitempty"`
-	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"`
-	Name       string               `json:"name,omitempty"`
+	Role             string               `json:"role"`
+	Content          any                  `json:"content,omitempty"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	ToolCalls        []openaiToolCallResp `json:"tool_calls,omitempty"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	Name             string               `json:"name,omitempty"`
 }
 
 type openaiResponseMessage struct {
-	Role       string               `json:"role"`
-	Content    string               `json:"content,omitempty"`
-	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
-	ToolCallID string               `json:"tool_call_id,omitempty"`
-	Name       string               `json:"name,omitempty"`
+	Role             string               `json:"role"`
+	Content          string               `json:"content,omitempty"`
+	ReasoningContent string               `json:"reasoning_content,omitempty"`
+	ToolCalls        []openaiToolCallResp `json:"tool_calls,omitempty"`
+	ToolCallID       string               `json:"tool_call_id,omitempty"`
+	Name             string               `json:"name,omitempty"`
 }
 
 // openaiToolCallResp 是 OpenAI 响应中的工具调用格式
@@ -107,9 +110,10 @@ type openaiChoice struct {
 }
 
 type openaiDelta struct {
-	Role      string          `json:"role,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	ToolCalls []deltaToolCall `json:"tool_calls,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	ToolCalls        []deltaToolCall `json:"tool_calls,omitempty"`
 }
 
 type deltaToolCall struct {
@@ -123,9 +127,66 @@ type deltaToolCall struct {
 }
 
 type openaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	TotalTokens         int `json:"total_tokens"`
+	InputTokens         int `json:"input_tokens,omitempty"`
+	OutputTokens        int `json:"output_tokens,omitempty"`
+	PromptTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens,omitempty"`
+		TextTokens   int `json:"text_tokens,omitempty"`
+		AudioTokens  int `json:"audio_tokens,omitempty"`
+		ImageTokens  int `json:"image_tokens,omitempty"`
+	} `json:"prompt_tokens_details,omitempty"`
+	InputTokensDetails *struct {
+		CachedTokens int `json:"cached_tokens,omitempty"`
+	} `json:"input_tokens_details,omitempty"`
+	ClaudeCacheCreation5MTokens int `json:"claude_cache_creation_5_m_tokens,omitempty"`
+	ClaudeCacheCreation1HTokens int `json:"claude_cache_creation_1_h_tokens,omitempty"`
+}
+
+func convertOpenAIUsage(usage *openaiUsage) *UsageDetails {
+	if usage == nil {
+		return nil
+	}
+	out := &UsageDetails{
+		PromptTokens:          usage.PromptTokens,
+		CompletionTokens:      usage.CompletionTokens,
+		TotalTokens:           usage.TotalTokens,
+		InputTokens:           usage.InputTokens,
+		OutputTokens:          usage.OutputTokens,
+		CacheCreation5MTokens: usage.ClaudeCacheCreation5MTokens,
+		CacheCreation1HTokens: usage.ClaudeCacheCreation1HTokens,
+	}
+	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
+		out.CachedPromptTokens = usage.PromptTokensDetails.CachedTokens
+	}
+	if usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens > out.CachedPromptTokens {
+		out.CachedPromptTokens = usage.InputTokensDetails.CachedTokens
+	}
+	return out
+}
+
+func supportsToolChoice(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return true
+	}
+	if strings.HasPrefix(m, "deepseek") {
+		return false
+	}
+	return true
+}
+
+func supportsReasoningContent(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	if strings.HasPrefix(m, "deepseek") {
+		return true
+	}
+	return false
 }
 
 // openaiSSEEvent 是 SSE 事件
@@ -419,7 +480,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 		}
 	}
 
-	apiMessages, err := toOpenAIMessages(normalizedMessages)
+	apiMessages, err := toOpenAIMessages(normalizedMessages, cfg.LlmProvider.Model)
 	if err != nil {
 		return nil, fmt.Errorf("convert openai messages: %w", err)
 	}
@@ -444,10 +505,12 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 			})
 		}
 		reqBody.Tools = tools
-		if opts.ToolChoice != nil {
-			reqBody.ToolChoice = opts.ToolChoice
-		} else {
-			reqBody.ToolChoice = "auto"
+		if supportsToolChoice(cfg.LlmProvider.Model) {
+			if opts.ToolChoice != nil {
+				reqBody.ToolChoice = opts.ToolChoice
+			} else {
+				reqBody.ToolChoice = "auto"
+			}
 		}
 	}
 
@@ -488,12 +551,26 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 
 	choice := chatResp.Choices[0]
 	result := &Response{
-		Content:      choice.Message.Content,
-		FinishReason: choice.FinishReason,
-		Model:        cfg.LlmProvider.Model,
+		Content:          choice.Message.Content,
+		ReasoningContent: choice.Message.ReasoningContent,
+		FinishReason:     choice.FinishReason,
+		Model:            cfg.LlmProvider.Model,
 	}
 	if chatResp.Usage != nil {
 		result.TokensUsed = chatResp.Usage.TotalTokens
+		result.Usage = convertOpenAIUsage(chatResp.Usage)
+		if result.Usage != nil && (result.Usage.CachedPromptTokens > 0 || result.Usage.CacheCreation5MTokens > 0 || result.Usage.CacheCreation1HTokens > 0) {
+			log.Printf(
+				"[provider] cache usage observed: model=%s prompt=%d cached=%d cache_create_5m=%d cache_create_1h=%d completion=%d total=%d",
+				cfg.LlmProvider.Model,
+				result.Usage.PromptTokens,
+				result.Usage.CachedPromptTokens,
+				result.Usage.CacheCreation5MTokens,
+				result.Usage.CacheCreation1HTokens,
+				result.Usage.CompletionTokens,
+				result.Usage.TotalTokens,
+			)
+		}
 	}
 
 	// 解析工具调用
@@ -553,12 +630,16 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 	}
 
 	var content strings.Builder
+	var reasoning strings.Builder
 	var toolCalls []ToolCall
 	toolCallAcc := make(map[int]*deltaToolCall)
 
 	for chunk := range ch {
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
+		}
+		if chunk.ReasoningContent != "" {
+			reasoning.WriteString(chunk.ReasoningContent)
 		}
 		if len(chunk.ToolCallDeltas) > 0 {
 			for _, dtc := range chunk.ToolCallDeltas {
@@ -610,9 +691,10 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 	}
 
 	return &Response{
-		Content:   content.String(),
-		ToolCalls: toolCalls,
-		Model:     cfg.LlmProvider.Model,
+		Content:          content.String(),
+		ReasoningContent: reasoning.String(),
+		ToolCalls:        toolCalls,
+		Model:            cfg.LlmProvider.Model,
 	}, nil
 }
 
@@ -624,7 +706,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		log.Printf("[provider] normalized tool protocol messages (stream): before=%d after=%d", len(messages), len(normalizedMessages))
 	}
 
-	apiMessages, err := toOpenAIMessages(normalizedMessages)
+	apiMessages, err := toOpenAIMessages(normalizedMessages, cfg.LlmProvider.Model)
 	if err != nil {
 		return nil, fmt.Errorf("convert openai messages: %w", err)
 	}
@@ -649,10 +731,12 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 			})
 		}
 		reqBody.Tools = tools
-		if opts.ToolChoice != nil {
-			reqBody.ToolChoice = opts.ToolChoice
-		} else {
-			reqBody.ToolChoice = "auto"
+		if supportsToolChoice(cfg.LlmProvider.Model) {
+			if opts.ToolChoice != nil {
+				reqBody.ToolChoice = opts.ToolChoice
+			} else {
+				reqBody.ToolChoice = "auto"
+			}
 		}
 	}
 
@@ -724,6 +808,26 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 				continue
 			}
 
+			if chatResp.Usage != nil {
+				usage := convertOpenAIUsage(chatResp.Usage)
+				if usage != nil && (usage.CachedPromptTokens > 0 || usage.CacheCreation5MTokens > 0 || usage.CacheCreation1HTokens > 0) {
+					log.Printf(
+						"[provider] stream cache usage observed: model=%s prompt=%d cached=%d cache_create_5m=%d cache_create_1h=%d completion=%d total=%d",
+						cfg.LlmProvider.Model,
+						usage.PromptTokens,
+						usage.CachedPromptTokens,
+						usage.CacheCreation5MTokens,
+						usage.CacheCreation1HTokens,
+						usage.CompletionTokens,
+						usage.TotalTokens,
+					)
+				}
+				ch <- StreamChunk{
+					Model: cfg.LlmProvider.Model,
+					Usage: usage,
+				}
+			}
+
 			if len(chatResp.Choices) == 0 {
 				continue
 			}
@@ -738,6 +842,12 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 				ch <- StreamChunk{
 					Content: choice.Delta.Content,
 					Model:   cfg.LlmProvider.Model,
+				}
+			}
+			if choice.Delta != nil && choice.Delta.ReasoningContent != "" {
+				ch <- StreamChunk{
+					ReasoningContent: choice.Delta.ReasoningContent,
+					Model:            cfg.LlmProvider.Model,
 				}
 			}
 
@@ -778,8 +888,9 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 }
 
 // toOpenAIMessages 将通用 Message 转换为 OpenAI 格式
-func toOpenAIMessages(messages []Message) ([]openaiRequestMessage, error) {
+func toOpenAIMessages(messages []Message, model string) ([]openaiRequestMessage, error) {
 	result := make([]openaiRequestMessage, 0, len(messages))
+	includeReasoning := supportsReasoningContent(model)
 	for _, m := range messages {
 		// 兼容旧会话：tool 消息缺失 tool_call_id 时，不能以 role=tool 发送。
 		// 否则部分 API 网关会返回 400（Invalid input[*].call_id）。
@@ -808,6 +919,9 @@ func toOpenAIMessages(messages []Message) ([]openaiRequestMessage, error) {
 			Content:    content,
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
+		}
+		if includeReasoning && strings.TrimSpace(m.ReasoningContent) != "" {
+			msg.ReasoningContent = m.ReasoningContent
 		}
 		// v0.16.0: 处理 tool_calls（assistant 消息）
 		if len(m.ToolCalls) > 0 {

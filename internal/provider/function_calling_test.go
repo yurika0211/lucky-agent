@@ -63,7 +63,7 @@ func TestToOpenAIMessagesWithToolCalls(t *testing.T) {
 		{Role: "tool", Content: "3", ToolCallID: "call_1", Name: "add"},
 	}
 
-	result, err := toOpenAIMessages(messages)
+	result, err := toOpenAIMessages(messages, "")
 	if err != nil {
 		t.Fatalf("toOpenAIMessages() error = %v", err)
 	}
@@ -85,6 +85,42 @@ func TestToOpenAIMessagesWithToolCalls(t *testing.T) {
 	}
 	if result[2].Name != "add" {
 		t.Errorf("expected name 'add', got %s", result[2].Name)
+	}
+}
+
+func TestToOpenAIMessagesWithReasoningContentForDeepseek(t *testing.T) {
+	messages := []Message{
+		{Role: "assistant", Content: "", ReasoningContent: "internal reasoning", ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "add", Arguments: `{"a":1,"b":2}`},
+		}},
+	}
+
+	result, err := toOpenAIMessages(messages, "deepseek-reasoner")
+	if err != nil {
+		t.Fatalf("toOpenAIMessages() error = %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result))
+	}
+	if result[0].ReasoningContent != "internal reasoning" {
+		t.Fatalf("expected reasoning content to be preserved, got %q", result[0].ReasoningContent)
+	}
+}
+
+func TestToOpenAIMessagesOmitsReasoningContentForNonDeepseek(t *testing.T) {
+	messages := []Message{
+		{Role: "assistant", Content: "", ReasoningContent: "internal reasoning"},
+	}
+
+	result, err := toOpenAIMessages(messages, "gpt-5.4-mini")
+	if err != nil {
+		t.Fatalf("toOpenAIMessages() error = %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result))
+	}
+	if result[0].ReasoningContent != "" {
+		t.Fatalf("expected reasoning content to be omitted, got %q", result[0].ReasoningContent)
 	}
 }
 

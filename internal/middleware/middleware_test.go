@@ -165,6 +165,43 @@ func TestCostTrackingMiddleware(t *testing.T) {
 	}
 }
 
+func TestCostTrackingMiddlewareUsesProviderUsageDetails(t *testing.T) {
+	pt := cost.NewPriceTable()
+	store := cost.NewCostStore(pt)
+	mw := NewCostTrackingMiddleware(store, "sess-usage")
+
+	info := CallInfo{Provider: "openai", Model: "gpt-5.4-mini", StartTime: time.Now()}
+	_, err := mw.InterceptChat(context.Background(), info, func(ctx context.Context, info CallInfo) (*provider.Response, error) {
+		return &provider.Response{
+			Content:    "hello world",
+			TokensUsed: 1500,
+			Usage: &provider.UsageDetails{
+				PromptTokens:       1200,
+				CompletionTokens:   300,
+				TotalTokens:        1500,
+				CachedPromptTokens: 800,
+			},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	records := store.Recent(1)
+	if len(records) != 1 {
+		t.Fatalf("expected 1 record, got %d", len(records))
+	}
+	if records[0].PromptTokens != 1200 {
+		t.Fatalf("expected prompt tokens 1200, got %d", records[0].PromptTokens)
+	}
+	if records[0].CachedPromptTokens != 800 {
+		t.Fatalf("expected cached prompt tokens 800, got %d", records[0].CachedPromptTokens)
+	}
+	if records[0].CompletionTokens != 300 {
+		t.Fatalf("expected completion tokens 300, got %d", records[0].CompletionTokens)
+	}
+}
+
 func TestRetryMiddleware(t *testing.T) {
 	mw := NewRetryMiddleware(resilience.RetryConfig{
 		MaxAttempts:   3,

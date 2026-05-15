@@ -19,24 +19,30 @@ import (
 
 // CostRecord represents a single API call cost entry.
 type CostRecord struct {
-	ID               string            `json:"id"`
-	Timestamp        time.Time         `json:"timestamp"`
-	Provider         string            `json:"provider"`
-	Model            string            `json:"model"`
-	SessionID        string            `json:"sessionId,omitempty"`
-	PromptTokens     int               `json:"promptTokens"`
-	CompletionTokens int               `json:"completionTokens"`
-	TotalTokens      int               `json:"totalTokens"`
-	CostUSD          float64           `json:"costUsd"`
-	Metadata         map[string]string `json:"metadata,omitempty"`
+	ID                    string            `json:"id"`
+	Timestamp             time.Time         `json:"timestamp"`
+	Provider              string            `json:"provider"`
+	Model                 string            `json:"model"`
+	SessionID             string            `json:"sessionId,omitempty"`
+	PromptTokens          int               `json:"promptTokens"`
+	CachedPromptTokens    int               `json:"cachedPromptTokens,omitempty"`
+	CacheCreation5MTokens int               `json:"cacheCreation5mTokens,omitempty"`
+	CacheCreation1HTokens int               `json:"cacheCreation1hTokens,omitempty"`
+	CompletionTokens      int               `json:"completionTokens"`
+	TotalTokens           int               `json:"totalTokens"`
+	CostUSD               float64           `json:"costUsd"`
+	Metadata              map[string]string `json:"metadata,omitempty"`
 }
 
 // PriceEntry defines the pricing for a model.
 type PriceEntry struct {
-	Provider        string  `json:"provider" yaml:"provider"`
-	Model           string  `json:"model" yaml:"model"`
-	PromptPrice     float64 `json:"promptPrice" yaml:"promptPrice"`         // $/1K prompt tokens
-	CompletionPrice float64 `json:"completionPrice" yaml:"completionPrice"` // $/1K completion tokens
+	Provider             string  `json:"provider" yaml:"provider"`
+	Model                string  `json:"model" yaml:"model"`
+	PromptPrice          float64 `json:"promptPrice" yaml:"promptPrice"`                                 // $/1K prompt tokens
+	CachedPromptPrice    float64 `json:"cachedPromptPrice,omitempty" yaml:"cachedPromptPrice,omitempty"` // $/1K cached prompt tokens
+	CacheCreation5MPrice float64 `json:"cacheCreation5mPrice,omitempty" yaml:"cacheCreation5mPrice,omitempty"`
+	CacheCreation1HPrice float64 `json:"cacheCreation1hPrice,omitempty" yaml:"cacheCreation1hPrice,omitempty"`
+	CompletionPrice      float64 `json:"completionPrice" yaml:"completionPrice"` // $/1K completion tokens
 }
 
 // PriceTable maps "provider/model" to pricing.
@@ -104,12 +110,42 @@ func (pt *PriceTable) List() []PriceEntry {
 
 // CalculateCost computes the cost for a given token usage.
 func (pt *PriceTable) CalculateCost(provider, model string, promptTokens, completionTokens int) float64 {
+	return pt.CalculateCostDetailed(provider, model, promptTokens, 0, 0, 0, completionTokens)
+}
+
+// CalculateCostDetailed computes cost with cache-aware token splits when available.
+func (pt *PriceTable) CalculateCostDetailed(provider, model string, promptTokens, cachedPromptTokens, cacheCreation5MTokens, cacheCreation1HTokens, completionTokens int) float64 {
 	entry, ok := pt.Get(provider, model)
 	if !ok {
 		// Unknown model: estimate $0.002/1K tokens as fallback
 		return float64(promptTokens+completionTokens) * 0.002 / 1000
 	}
-	cost := float64(promptTokens)*entry.PromptPrice/1000 +
+
+	if cachedPromptTokens < 0 {
+		cachedPromptTokens = 0
+	}
+	if cachedPromptTokens > promptTokens {
+		cachedPromptTokens = promptTokens
+	}
+	uncachedPromptTokens := promptTokens - cachedPromptTokens
+
+	cachedPromptPrice := entry.CachedPromptPrice
+	if cachedPromptPrice <= 0 {
+		cachedPromptPrice = entry.PromptPrice
+	}
+	cacheCreation5MPrice := entry.CacheCreation5MPrice
+	if cacheCreation5MPrice <= 0 {
+		cacheCreation5MPrice = entry.PromptPrice
+	}
+	cacheCreation1HPrice := entry.CacheCreation1HPrice
+	if cacheCreation1HPrice <= 0 {
+		cacheCreation1HPrice = entry.PromptPrice
+	}
+
+	cost := float64(uncachedPromptTokens)*entry.PromptPrice/1000 +
+		float64(cachedPromptTokens)*cachedPromptPrice/1000 +
+		float64(cacheCreation5MTokens)*cacheCreation5MPrice/1000 +
+		float64(cacheCreation1HTokens)*cacheCreation1HPrice/1000 +
 		float64(completionTokens)*entry.CompletionPrice/1000
 	return cost
 }
@@ -120,15 +156,18 @@ func (pt *PriceTable) CalculateCost(provider, model string, promptTokens, comple
 
 // CostSummary is an aggregated cost summary.
 type CostSummary struct {
-	Provider         string  `json:"provider,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	SessionID        string  `json:"sessionId,omitempty"`
-	Period           string  `json:"period,omitempty"` // "today", "week", "month", "all"
-	TotalCalls       int     `json:"totalCalls"`
-	TotalTokens      int     `json:"totalTokens"`
-	PromptTokens     int     `json:"promptTokens"`
-	CompletionTokens int     `json:"completionTokens"`
-	TotalCostUSD     float64 `json:"totalCostUsd"`
+	Provider              string  `json:"provider,omitempty"`
+	Model                 string  `json:"model,omitempty"`
+	SessionID             string  `json:"sessionId,omitempty"`
+	Period                string  `json:"period,omitempty"` // "today", "week", "month", "all"
+	TotalCalls            int     `json:"totalCalls"`
+	TotalTokens           int     `json:"totalTokens"`
+	PromptTokens          int     `json:"promptTokens"`
+	CachedPromptTokens    int     `json:"cachedPromptTokens,omitempty"`
+	CacheCreation5MTokens int     `json:"cacheCreation5mTokens,omitempty"`
+	CacheCreation1HTokens int     `json:"cacheCreation1hTokens,omitempty"`
+	CompletionTokens      int     `json:"completionTokens"`
+	TotalCostUSD          float64 `json:"totalCostUsd"`
 }
 
 // CostStore stores and queries cost records.
@@ -161,7 +200,7 @@ func (s *CostStore) Record(rec CostRecord) error {
 
 	// Auto-calculate cost if not set
 	if rec.CostUSD == 0 && rec.TotalTokens > 0 {
-		rec.CostUSD = s.prices.CalculateCost(rec.Provider, rec.Model, rec.PromptTokens, rec.CompletionTokens)
+		rec.CostUSD = s.prices.CalculateCostDetailed(rec.Provider, rec.Model, rec.PromptTokens, rec.CachedPromptTokens, rec.CacheCreation5MTokens, rec.CacheCreation1HTokens, rec.CompletionTokens)
 	}
 
 	s.records = append(s.records, rec)
@@ -176,18 +215,26 @@ func (s *CostStore) Record(rec CostRecord) error {
 
 // RecordCall is a convenience method to record a call.
 func (s *CostStore) RecordCall(id, provider, model, sessionID string, promptTokens, completionTokens int) CostRecord {
+	return s.RecordCallDetailed(id, provider, model, sessionID, promptTokens, 0, 0, 0, completionTokens)
+}
+
+// RecordCallDetailed records a call with cache-aware token splits.
+func (s *CostStore) RecordCallDetailed(id, provider, model, sessionID string, promptTokens, cachedPromptTokens, cacheCreation5MTokens, cacheCreation1HTokens, completionTokens int) CostRecord {
 	total := promptTokens + completionTokens
-	cost := s.prices.CalculateCost(provider, model, promptTokens, completionTokens)
+	cost := s.prices.CalculateCostDetailed(provider, model, promptTokens, cachedPromptTokens, cacheCreation5MTokens, cacheCreation1HTokens, completionTokens)
 	rec := CostRecord{
-		ID:               id,
-		Timestamp:        time.Now(),
-		Provider:         provider,
-		Model:            model,
-		SessionID:        sessionID,
-		PromptTokens:     promptTokens,
-		CompletionTokens: completionTokens,
-		TotalTokens:      total,
-		CostUSD:          cost,
+		ID:                    id,
+		Timestamp:             time.Now(),
+		Provider:              provider,
+		Model:                 model,
+		SessionID:             sessionID,
+		PromptTokens:          promptTokens,
+		CachedPromptTokens:    cachedPromptTokens,
+		CacheCreation5MTokens: cacheCreation5MTokens,
+		CacheCreation1HTokens: cacheCreation1HTokens,
+		CompletionTokens:      completionTokens,
+		TotalTokens:           total,
+		CostUSD:               cost,
 	}
 	_ = s.Record(rec)
 	return rec
@@ -212,6 +259,9 @@ func (s *CostStore) Summary(opts SummaryOptions) CostSummary {
 		summary.TotalCalls++
 		summary.TotalTokens += r.TotalTokens
 		summary.PromptTokens += r.PromptTokens
+		summary.CachedPromptTokens += r.CachedPromptTokens
+		summary.CacheCreation5MTokens += r.CacheCreation5MTokens
+		summary.CacheCreation1HTokens += r.CacheCreation1HTokens
 		summary.CompletionTokens += r.CompletionTokens
 		summary.TotalCostUSD += r.CostUSD
 	}
@@ -236,6 +286,9 @@ func (s *CostStore) ByProvider(period string) map[string]CostSummary {
 		sum.TotalCalls++
 		sum.TotalTokens += r.TotalTokens
 		sum.PromptTokens += r.PromptTokens
+		sum.CachedPromptTokens += r.CachedPromptTokens
+		sum.CacheCreation5MTokens += r.CacheCreation5MTokens
+		sum.CacheCreation1HTokens += r.CacheCreation1HTokens
 		sum.CompletionTokens += r.CompletionTokens
 		sum.TotalCostUSD += r.CostUSD
 		result[r.Provider] = sum
@@ -261,6 +314,9 @@ func (s *CostStore) ByModel(period string) map[string]CostSummary {
 		sum.TotalCalls++
 		sum.TotalTokens += r.TotalTokens
 		sum.PromptTokens += r.PromptTokens
+		sum.CachedPromptTokens += r.CachedPromptTokens
+		sum.CacheCreation5MTokens += r.CacheCreation5MTokens
+		sum.CacheCreation1HTokens += r.CacheCreation1HTokens
 		sum.CompletionTokens += r.CompletionTokens
 		sum.TotalCostUSD += r.CostUSD
 		result[key] = sum

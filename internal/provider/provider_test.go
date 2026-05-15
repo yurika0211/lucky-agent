@@ -79,7 +79,7 @@ func TestToOpenAIMessages(t *testing.T) {
 		{Role: "system", Content: "You are helpful"},
 		{Role: "user", Content: "Hello"},
 	}
-	result, err := toOpenAIMessages(msgs)
+	result, err := toOpenAIMessages(msgs, "")
 	if err != nil {
 		t.Fatalf("toOpenAIMessages() error = %v", err)
 	}

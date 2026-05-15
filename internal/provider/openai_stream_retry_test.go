@@ -213,3 +213,275 @@ func TestCallOpenAIUsesStreamFirstForMiniModel(t *testing.T) {
 		t.Fatalf("expected non-stream not called, got %d", nonStreamCalls)
 	}
 }
+
+func TestCallOpenAIParsesCachedUsage(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{
+					"choices":[{"index":0,"message":{"role":"assistant","content":"ok","reasoning_content":"step-by-step"},"finish_reason":"stop"}],
+					"usage":{
+						"prompt_tokens":1200,
+						"completion_tokens":300,
+						"total_tokens":1500,
+						"input_tokens":1200,
+						"output_tokens":300,
+						"prompt_tokens_details":{"cached_tokens":800},
+						"claude_cache_creation_5_m_tokens":100,
+						"claude_cache_creation_1_h_tokens":50
+					}
+				}`)),
+				Request: req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+			Model:   "gpt-5.4-mini",
+		},
+	}
+
+	resp, err := callOpenAI(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, CallOptions{})
+	if err != nil {
+		t.Fatalf("callOpenAI returned error: %v", err)
+	}
+	if resp.Usage == nil {
+		t.Fatal("expected usage details")
+	}
+	if resp.Usage.CachedPromptTokens != 800 {
+		t.Fatalf("expected cached prompt tokens 800, got %d", resp.Usage.CachedPromptTokens)
+	}
+	if resp.Usage.CacheCreation5MTokens != 100 {
+		t.Fatalf("expected cache creation 5m tokens 100, got %d", resp.Usage.CacheCreation5MTokens)
+	}
+	if resp.Usage.CacheCreation1HTokens != 50 {
+		t.Fatalf("expected cache creation 1h tokens 50, got %d", resp.Usage.CacheCreation1HTokens)
+	}
+	if resp.ReasoningContent != "step-by-step" {
+		t.Fatalf("expected reasoning content to be parsed, got %q", resp.ReasoningContent)
+	}
+}
+
+func TestCallOpenAIStreamEmitsUsageChunk(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			sse := strings.Join([]string{
+				`data: {"choices":[{"index":0,"delta":{"reasoning_content":"first-reasoning"},"finish_reason":""}]}`,
+				`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":""}]}`,
+				`data: {"choices":[],"usage":{"prompt_tokens":900,"completion_tokens":100,"total_tokens":1000,"prompt_tokens_details":{"cached_tokens":600}}}`,
+				`data: [DONE]`,
+				"",
+			}, "\n")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(sse)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+			Model:   "gpt-5.4-mini",
+		},
+	}
+
+	ch, err := callOpenAIStream(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, CallOptions{})
+	if err != nil {
+		t.Fatalf("callOpenAIStream returned error: %v", err)
+	}
+
+	var sawUsage bool
+	var sawReasoning bool
+	for chunk := range ch {
+		if chunk.ReasoningContent != "" {
+			sawReasoning = true
+			if chunk.ReasoningContent != "first-reasoning" {
+				t.Fatalf("expected reasoning content first-reasoning, got %q", chunk.ReasoningContent)
+			}
+		}
+		if chunk.Usage != nil {
+			sawUsage = true
+			if chunk.Usage.CachedPromptTokens != 600 {
+				t.Fatalf("expected cached prompt tokens 600, got %d", chunk.Usage.CachedPromptTokens)
+			}
+		}
+	}
+	if !sawUsage {
+		t.Fatal("expected a usage chunk")
+	}
+	if !sawReasoning {
+		t.Fatal("expected a reasoning chunk")
+	}
+}
+
+func TestCallOpenAIOmitsToolChoiceForDeepseekModels(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	var capturedBody string
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			bodyBytes, _ := io.ReadAll(req.Body)
+			capturedBody = string(bodyBytes)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+			Model:   "deepseek-reasoner",
+		},
+	}
+
+	opts := CallOptions{
+		Tools: []map[string]any{
+			{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "ping",
+					"description": "test",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{},
+						"required":   []string{},
+					},
+				},
+			},
+		},
+		ToolChoice: "auto",
+	}
+
+	_, err := callOpenAI(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, opts)
+	if err != nil {
+		t.Fatalf("callOpenAI returned error: %v", err)
+	}
+	if !strings.Contains(capturedBody, `"tools"`) {
+		t.Fatalf("expected tools in request body, got %s", capturedBody)
+	}
+	if strings.Contains(capturedBody, `"tool_choice"`) {
+		t.Fatalf("expected tool_choice to be omitted for deepseek, got %s", capturedBody)
+	}
+}
+
+func TestCallOpenAIKeepsToolChoiceForOtherModels(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	var capturedBody string
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			bodyBytes, _ := io.ReadAll(req.Body)
+			capturedBody = string(bodyBytes)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+			Model:   "gpt-5.4-mini",
+		},
+	}
+
+	opts := CallOptions{
+		Tools: []map[string]any{
+			{
+				"type": "function",
+				"function": map[string]any{
+					"name":        "ping",
+					"description": "test",
+					"parameters": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{},
+						"required":   []string{},
+					},
+				},
+			},
+		},
+		ToolChoice: "auto",
+	}
+
+	_, err := callOpenAI(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, opts)
+	if err != nil {
+		t.Fatalf("callOpenAI returned error: %v", err)
+	}
+	if !strings.Contains(capturedBody, `"tool_choice":"auto"`) {
+		t.Fatalf("expected tool_choice to be preserved, got %s", capturedBody)
+	}
+}
+
+func TestCallOpenAIIncludesReasoningContentForDeepseekMessages(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	var capturedBody string
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			bodyBytes, _ := io.ReadAll(req.Body)
+			capturedBody = string(bodyBytes)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+			Model:   "deepseek-reasoner",
+		},
+	}
+
+	_, err := callOpenAI(context.Background(), cfg, []Message{
+		{Role: "assistant", Content: "", ReasoningContent: "preserve-me", ToolCalls: []ToolCall{{ID: "call_1", Name: "ping", Arguments: `{}`}}},
+		{Role: "tool", Content: "ok", ToolCallID: "call_1", Name: "ping"},
+	}, CallOptions{})
+	if err != nil {
+		t.Fatalf("callOpenAI returned error: %v", err)
+	}
+	if !strings.Contains(capturedBody, `"reasoning_content":"preserve-me"`) {
+		t.Fatalf("expected reasoning_content to be included, got %s", capturedBody)
+	}
+}

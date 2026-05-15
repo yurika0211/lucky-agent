@@ -561,15 +561,17 @@ func (a *Agent) processToolCallBatch(
 	}
 
 	messages = append(messages, provider.Message{
-		Role:      "assistant",
-		Content:   resp.Content,
-		ToolCalls: resp.ToolCalls,
+		Role:             "assistant",
+		Content:          resp.Content,
+		ReasoningContent: resp.ReasoningContent,
+		ToolCalls:        resp.ToolCalls,
 	})
 	if sess != nil {
 		sess.AddProviderMessage(provider.Message{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
+			Role:             "assistant",
+			Content:          resp.Content,
+			ReasoningContent: resp.ReasoningContent,
+			ToolCalls:        resp.ToolCalls,
 		})
 	}
 
