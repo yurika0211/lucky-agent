@@ -987,6 +987,10 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := s.Stats()
 	uptime := time.Since(stats.StartTime)
+	contextCache := map[string]any{}
+	if s.agent != nil {
+		contextCache = s.agent.ContextCacheStats()
+	}
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"total_requests": stats.TotalReqs,
@@ -995,6 +999,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"uptime":         uptime.String(),
 		"start_time":     stats.StartTime.Format(time.RFC3339),
 		"last_request":   stats.LastReqTime.Format(time.RFC3339),
+		"context_cache":  contextCache,
 		"version":        "v0.21.0",
 	})
 }

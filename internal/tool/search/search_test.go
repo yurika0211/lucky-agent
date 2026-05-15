@@ -91,14 +91,18 @@ func TestMockSearchEngine(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 type mockFetchEngine struct {
-	name   string
-	result *FetchResult
-	err    error
+	name    string
+	result  *FetchResult
+	err     error
+	onFetch func()
 }
 
 func (m *mockFetchEngine) Name() string { return m.name }
 
 func (m *mockFetchEngine) Fetch(ctx context.Context, rawURL string, maxChars int) (*FetchResult, error) {
+	if m.onFetch != nil {
+		m.onFetch()
+	}
 	if m.err != nil {
 		return nil, m.err
 	}
@@ -527,6 +531,69 @@ func TestManagerFetchURL(t *testing.T) {
 	}
 	if result.Content != "Hello world" {
 		t.Errorf("expected 'Hello world', got '%s'", result.Content)
+	}
+}
+
+func TestManagerFetchURLCached(t *testing.T) {
+	cfg := DefaultSearchConfig()
+	mgr := NewManager(cfg)
+
+	callCount := 0
+	mgr.fetchEngines = []FetchEngine{
+		&mockFetchEngine{
+			name: "mock-fetch",
+			result: &FetchResult{
+				Title:   "Example",
+				Content: "Hello world",
+				URL:     "https://example.com",
+				Source:  "mock-fetch",
+			},
+			onFetch: func() { callCount++ },
+		},
+	}
+
+	_, err := mgr.FetchURL(context.Background(), "https://example.com", 50000)
+	if err != nil {
+		t.Fatalf("unexpected error on first fetch: %v", err)
+	}
+	result, err := mgr.FetchURL(context.Background(), "https://example.com", 50000)
+	if err != nil {
+		t.Fatalf("unexpected error on cached fetch: %v", err)
+	}
+	if result.Content != "Hello world" {
+		t.Fatalf("expected cached content, got %q", result.Content)
+	}
+	if callCount != 1 {
+		t.Fatalf("expected fetch engine to run once, got %d", callCount)
+	}
+}
+
+func TestManagerFetchURLCacheSeparatesMaxChars(t *testing.T) {
+	cfg := DefaultSearchConfig()
+	mgr := NewManager(cfg)
+
+	callCount := 0
+	mgr.fetchEngines = []FetchEngine{
+		&mockFetchEngine{
+			name: "mock-fetch",
+			result: &FetchResult{
+				Title:   "Example",
+				Content: "Hello world",
+				URL:     "https://example.com",
+				Source:  "mock-fetch",
+			},
+			onFetch: func() { callCount++ },
+		},
+	}
+
+	if _, err := mgr.FetchURL(context.Background(), "https://example.com", 1000); err != nil {
+		t.Fatalf("unexpected error on first fetch: %v", err)
+	}
+	if _, err := mgr.FetchURL(context.Background(), "https://example.com", 2000); err != nil {
+		t.Fatalf("unexpected error on second fetch: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("expected separate cache entries for maxChars, got %d calls", callCount)
 	}
 }
 

@@ -252,6 +252,9 @@ func TestHandleStats(t *testing.T) {
 	if resp["version"] != "v0.21.0" {
 		t.Errorf("expected v0.21.0, got %v", resp["version"])
 	}
+	if _, ok := resp["context_cache"]; !ok {
+		t.Error("expected context_cache in response")
+	}
 }
 
 func TestHandleSoul(t *testing.T) {

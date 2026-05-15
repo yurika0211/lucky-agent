@@ -339,10 +339,29 @@ func (p *contextPlanner) cacheKey(sess *session.Session, userInput string) (uint
 		payload["session_id"] = sess.ID
 		payload["session_title"] = sess.Title
 		payload["session_message_count"] = sess.MessageCount()
-		payload["session_updated_at"] = sess.UpdatedAt.UnixNano()
+		payload["session_last_message_sig"] = sessionLastMessageSignature(sess)
 	}
 
 	return makeContextCacheKey(payload), true
+}
+
+func sessionLastMessageSignature(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	last := sess.LastMessage()
+	if last == nil {
+		return ""
+	}
+	payload := map[string]any{
+		"role":              last.Role,
+		"content":           last.Content,
+		"reasoning_content": last.ReasoningContent,
+		"tool_call_id":      last.ToolCallID,
+		"name":              last.Name,
+		"tool_calls":        last.ToolCalls,
+	}
+	return fmt.Sprintf("%x", makeContextCacheKey(payload))
 }
 
 /*

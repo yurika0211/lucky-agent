@@ -2377,6 +2377,22 @@ func (a *Agent) ContextStats(messages []contextx.Message) contextx.ContextStats 
 	return a.contextWin.Stats(messages)
 }
 
+// ContextCacheStats returns local context cache statistics.
+func (a *Agent) ContextCacheStats() map[string]any {
+	if a == nil || a.contextCache == nil {
+		return map[string]any{}
+	}
+	stats := a.contextCache.Stats()
+	return map[string]any{
+		"entries":   stats.Entries,
+		"hits":      stats.Hits,
+		"misses":    stats.Misses,
+		"evictions": stats.Evictions,
+		"expired":   stats.Expired,
+		"ttl":       stats.TTL.String(),
+	}
+}
+
 // RAG 返回 RAG 管理器
 func (a *Agent) RAG() *rag.RAGManager {
 	return a.ragManager
