@@ -653,24 +653,24 @@ func TestServerStats(t *testing.T) {
 	}
 }
 
-func TestEventTypeString(t *testing.T) {
+func TestChatEventTypeString(t *testing.T) {
 	tests := []struct {
-		input    agent.EventType
+		input    agent.ChatEventType
 		expected string
 	}{
-		{0, "reason"},   // EventReason
-		{1, "act"},      // EventAct
-		{2, "observe"},  // EventObserve
-		{3, "content"},  // EventContent
-		{4, "done"},     // EventDone
-		{5, "error"},    // EventError
+		{agent.ChatEventThinking, "reason"},
+		{agent.ChatEventToolCall, "act"},
+		{agent.ChatEventToolResult, "observe"},
+		{agent.ChatEventContent, "content"},
+		{agent.ChatEventDone, "done"},
+		{agent.ChatEventError, "error"},
 		{99, "unknown"}, // Unknown
 	}
 
 	for _, tt := range tests {
-		result := eventTypeString(tt.input)
+		result := chatEventTypeString(tt.input)
 		if result != tt.expected {
-			t.Errorf("eventTypeString(%d) = %s, want %s", tt.input, result, tt.expected)
+			t.Errorf("chatEventTypeString(%d) = %s, want %s", tt.input, result, tt.expected)
 		}
 	}
 }

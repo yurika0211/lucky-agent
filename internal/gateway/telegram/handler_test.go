@@ -193,6 +193,39 @@ func TestBuildUserTurnInputPreservesCurrentImage(t *testing.T) {
 	assert.Equal(t, "/tmp/example.jpg", input.Message.ContentParts[1].Image.FilePath)
 }
 
+func TestGenerateRoundProgressFeedbackIncludesPreviousUserFacingUpdate(t *testing.T) {
+	var gotObservations []string
+	h := &Handler{
+		chat: &mockAgentProvider{
+			progressFn: func(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+				gotObservations = append([]string(nil), observations...)
+				return "At this point, the retry is narrowing things down.", nil
+			},
+		},
+	}
+
+	progress := h.generateRoundProgressFeedback(
+		context.Background(),
+		nil,
+		"generate a flower image",
+		2,
+		[]string{"Tool call: retry image generation", "Tool result: previous attempt failed"},
+		[]string{"I've retried the image generation step."},
+		"I've retried the image generation step.",
+	)
+
+	assert.Equal(t, "At this point, the retry is narrowing things down.", progress)
+	require.Len(t, gotObservations, 3)
+	assert.Equal(t, "Previous user-facing update: I've retried the image generation step.", gotObservations[0])
+}
+
+func TestSmoothProgressSummaryAddsContinuityCueForRepeatedFirstPersonStart(t *testing.T) {
+	got := smoothProgressSummary("I've retried the image generation step and I'm waiting on the result.", 2, []string{
+		"I've started by checking the previous run.",
+	})
+	assert.Equal(t, "At this point, I've retried the image generation step and I'm waiting on the result.", got)
+}
+
 // TestHandleMessageCommand verifies command routing.
 func TestHandleMessageCommand(t *testing.T) {
 	msg := &gateway.Message{

@@ -20,9 +20,9 @@ type Services struct {
 }
 
 // NewServices creates a tool service container.
-func NewServices(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager) *Services {
+func NewServices(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager) *Services {
 	return &Services{
-		Builtin:   NewBuiltinToolService(searchCfg, defaultImageProvider, mediaProcessor),
+		Builtin:   NewBuiltinToolService(searchCfg, defaultImageProvider, mediaProcessor, imageGenerator, imageGenDefaults),
 		SearchCfg: searchCfg,
 		Memory:    NewMemoryToolService(mem),
 		RAG:       NewRAGToolService(ragMgr),

@@ -569,17 +569,6 @@ func TestLoopStateUnknown(t *testing.T) {
 	}
 }
 
-// --- EventType edge cases ---
-
-func TestEventTypeValues(t *testing.T) {
-	if EventReason != 0 || EventAct != 1 || EventObserve != 2 {
-		t.Errorf("unexpected EventType values: Reason=%d Act=%d Observe=%d", EventReason, EventAct, EventObserve)
-	}
-	if EventContent != 3 || EventDone != 4 || EventError != 5 {
-		t.Errorf("unexpected EventType values: Content=%d Done=%d Error=%d", EventContent, EventDone, EventError)
-	}
-}
-
 // --- Agent Getter 测试 ---
 
 func TestAgent_Getters(t *testing.T) {
@@ -1782,6 +1771,50 @@ func TestNewRegistersOpenAIMultimodalProviderFromDedicatedConfig(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected openai-media provider to be registered for image modality")
+	}
+}
+
+func TestResolveImageGenerationConfigPrefersDedicatedGeminiConfig(t *testing.T) {
+	cfg := &config.Config{
+		ImageGeneration: config.ImageGenerationConfig{
+			Provider: "gemini",
+			APIKey:   "gen-key",
+			APIBase:  "https://api.shiokou.asia/v1",
+			AuthMode: "bearer",
+			Model:    "gemini-3.1-flash-image-preview",
+		},
+	}
+
+	genCfg, ok := resolveImageGenerationConfig(cfg)
+	if !ok {
+		t.Fatal("expected image generation config to resolve")
+	}
+	if genCfg.Provider != "gemini" {
+		t.Fatalf("expected gemini provider, got %q", genCfg.Provider)
+	}
+	if genCfg.APIBase != "https://api.shiokou.asia/v1" {
+		t.Fatalf("expected gemini api base, got %q", genCfg.APIBase)
+	}
+}
+
+func TestResolveImageGenerationConfigPromotesLegacyGeminiModel(t *testing.T) {
+	cfg := &config.Config{
+		Multimodal: config.MultimodalConfig{
+			APIKey:          "legacy-key",
+			APIBase:         "https://api.shiokou.asia/v1",
+			GenerationModel: "gemini-3.1-flash-image-preview",
+		},
+	}
+
+	genCfg, ok := resolveImageGenerationConfig(cfg)
+	if !ok {
+		t.Fatal("expected legacy gemini config to resolve")
+	}
+	if genCfg.Provider != "gemini" {
+		t.Fatalf("expected gemini provider, got %q", genCfg.Provider)
+	}
+	if genCfg.APIBase != "https://api.shiokou.asia/v1" {
+		t.Fatalf("expected legacy api base, got %q", genCfg.APIBase)
 	}
 }
 

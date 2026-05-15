@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
@@ -315,9 +314,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		sess.AddProviderMessage(turnInput.Message)
 	}
 
-	// v0.16.0: 构建 function calling 工具定义
-	fcMgr := function.NewManager(a.tools)
-	callOpts := a.buildFunctionCallOptionsForInput(routingText, fcMgr.BuildTools())
+	callOpts := a.buildLoopCallOptions(routingText)
 
 	for i := 0; i < loopCfg.MaxIterations; i++ {
 		result.Iterations = i + 1
@@ -330,21 +327,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 
 		// Reason: 调用 LLM（带 function calling 支持）
 		loopCtx, cancel := context.WithTimeout(ctx, loopCfg.Timeout)
-		var resp *provider.Response
-		var err error
-		iterCallOpts := callOpts
-		iterCallOpts = relaxForcedSkillToolChoice(messages, iterCallOpts)
-		if loopState.forceSearchSynthesis {
-			iterCallOpts.Tools = nil
-			iterCallOpts.ToolChoice = "none"
-		}
-
-		// 尝试使用 FunctionCallingProvider 接口
-		if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(iterCallOpts.Tools) > 0 {
-			resp, err = fcProvider.ChatWithOptions(loopCtx, messages, iterCallOpts)
-		} else {
-			resp, err = a.provider.Chat(loopCtx, messages)
-		}
+		resp, err := a.chatLoopIteration(loopCtx, messages, callOpts, loopState.forceSearchSynthesis)
 		cancel()
 
 		if err != nil {
@@ -422,15 +405,6 @@ type loopRuntimeState struct {
 	detailedSearchEvidence   int
 	forceSearchSynthesis     bool
 	continuedResponse        strings.Builder
-}
-
-/*
-toolExecResult 表示一批工具调用中单个工具执行后的结果。
-*/
-type toolExecResult struct {
-	Index       int
-	ToolCall    toolCallLog
-	ToolMessage provider.Message
 }
 
 /*
@@ -599,102 +573,34 @@ func (a *Agent) processToolCallBatch(
 		})
 	}
 
-	allParallelSafe := true
-	for _, tc := range resp.ToolCalls {
-		if !a.isToolParallelSafe(tc.Name) {
-			allParallelSafe = false
-			break
+	executed := a.executeToolCallsOrdered(
+		resp.ToolCalls,
+		loopCfg.AutoApprove,
+		sess,
+		loopState.toolURLRepeatCount,
+		loopState.toolURLLastResult,
+		loopCfg.DuplicateFetchLimit,
+		false,
+	)
+
+	for _, execResult := range executed {
+		tcLog := toolCallLog{
+			Name:      execResult.ToolCall.Name,
+			Arguments: execResult.ToolCall.Arguments,
+			Result:    execResult.Result,
+			Duration:  execResult.Duration,
 		}
-	}
+		result.ToolCalls = append(result.ToolCalls, tcLog)
 
-	resultCh := make(chan toolExecResult, len(resp.ToolCalls))
-	if allParallelSafe {
-		for idx, tc := range resp.ToolCalls {
-			go func(idx int, tc provider.ToolCall) {
-				start := time.Now()
-				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, loopState.toolURLRepeatCount, loopState.toolURLLastResult, loopCfg.DuplicateFetchLimit)
-				duration := time.Since(start)
-
-				tcLog := toolCallLog{
-					Name:      tc.Name,
-					Arguments: tc.Arguments,
-					Duration:  duration,
-				}
-				if err != nil {
-					toolResult = fmt.Sprintf("Error: %v", err)
-					tcLog.Result = toolResult
-				} else {
-					tcLog.Result = toolResult
-				}
-
-				resultCh <- toolExecResult{
-					Index:    idx,
-					ToolCall: tcLog,
-					ToolMessage: provider.Message{
-						Role:       "tool",
-						Content:    toolResult,
-						ToolCallID: tc.ID,
-						Name:       tc.Name,
-					},
-				}
-			}(idx, tc)
+		contextToolMsg := provider.Message{
+			Role:       "tool",
+			Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence),
+			ToolCallID: execResult.ToolCall.ID,
+			Name:       execResult.ToolCall.Name,
 		}
-	} else {
-		for idx, tc := range resp.ToolCalls {
-			start := time.Now()
-			toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, loopState.toolURLRepeatCount, loopState.toolURLLastResult, loopCfg.DuplicateFetchLimit)
-			duration := time.Since(start)
-
-			tcLog := toolCallLog{
-				Name:      tc.Name,
-				Arguments: tc.Arguments,
-				Duration:  duration,
-			}
-			if err != nil {
-				toolResult = fmt.Sprintf("Error: %v", err)
-				tcLog.Result = toolResult
-			} else {
-				tcLog.Result = toolResult
-			}
-
-			resultCh <- toolExecResult{
-				Index:    idx,
-				ToolCall: tcLog,
-				ToolMessage: provider.Message{
-					Role:       "tool",
-					Content:    toolResult,
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
-				},
-			}
-		}
-	}
-
-	allResults := make([]toolExecResult, 0, len(resp.ToolCalls))
-	for i := 0; i < len(resp.ToolCalls); i++ {
-		allResults = append(allResults, <-resultCh)
-	}
-	sort.Slice(allResults, func(i, j int) bool {
-		return allResults[i].Index < allResults[j].Index
-	})
-
-	for _, r := range allResults {
-		result.ToolCalls = append(result.ToolCalls, r.ToolCall)
-		contextToolMsg := r.ToolMessage
-		contextToolMsg.Content = compactToolResultForContext(contextToolMsg.Name, contextToolMsg.Content)
-		loopState.toolCallLastResult[toolCallSignature(r.ToolCall.Name, r.ToolCall.Arguments)] = r.ToolCall.Result
-		if key := normalizedToolTarget(r.ToolCall.Name, r.ToolCall.Arguments); key != "" {
-			loopState.toolURLLastResult[key] = r.ToolCall.Result
-		}
-		if isUsefulSearchEvidence(r.ToolCall.Name, r.ToolCall.Result) {
-			loopState.successfulSearchEvidence++
-			if r.ToolCall.Name == "web_search" {
-				if loopState.detailedSearchEvidence >= 2 {
-					contextToolMsg.Content = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
-				} else {
-					loopState.detailedSearchEvidence++
-				}
-			}
+		loopState.toolCallLastResult[toolCallSignature(tcLog.Name, tcLog.Arguments)] = tcLog.Result
+		if key := normalizedToolTarget(tcLog.Name, tcLog.Arguments); key != "" {
+			loopState.toolURLLastResult[key] = tcLog.Result
 		}
 		messages = append(messages, contextToolMsg)
 		if sess != nil {
@@ -710,13 +616,7 @@ func (a *Agent) processToolCallBatch(
 		}
 	}
 
-	if !loopState.forceSearchSynthesis && shouldForceSearchSynthesis(loopState.successfulSearchEvidence, loopState.consecutiveToolOnlyIters) {
-		loopState.forceSearchSynthesis = true
-		messages = append(messages, provider.Message{
-			Role:    "user",
-			Content: searchSynthesisPrompt,
-		})
-	}
+	messages = maybeAppendSearchSynthesisMessage(messages, &loopState.forceSearchSynthesis, loopState.successfulSearchEvidence, loopState.consecutiveToolOnlyIters)
 
 	return messages, false, ""
 }
@@ -993,78 +893,6 @@ func buildFinalAnswerFilename(source string, now time.Time) string {
 }
 
 // RunLoopStream 执行流式 Agent Loop
-func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg LoopConfig) (<-chan StreamEvent, error) {
-	// 安全边界校验
-	sanitizeLoopConfig(&loopCfg)
-
-	events := make(chan StreamEvent, 128)
-
-	go func() {
-		defer close(events)
-
-		messages := a.buildContextMessages(ctx, nil, userInput, defaultContextBuildOptions())
-
-		// v0.16.0: 构建 function calling 工具定义
-		fcMgr := function.NewManager(a.tools)
-		callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
-
-		for i := 0; i < loopCfg.MaxIterations; i++ {
-			events <- StreamEvent{Type: EventReason, Iteration: i + 1}
-
-			// 流式调用（带 function calling 支持）
-			var ch <-chan provider.StreamChunk
-			var err error
-			if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
-				ch, err = fcProvider.ChatStreamWithOptions(ctx, messages, callOpts)
-			} else {
-				ch, err = a.provider.ChatStream(ctx, messages)
-			}
-			if err != nil {
-				events <- StreamEvent{Type: EventError, Error: err}
-				return
-			}
-
-			var content strings.Builder
-			for chunk := range ch {
-				if chunk.Content != "" {
-					content.WriteString(chunk.Content)
-					events <- StreamEvent{Type: EventContent, Content: chunk.Content}
-				}
-				if chunk.Done {
-					break
-				}
-			}
-
-			events <- StreamEvent{Type: EventDone, Content: content.String()}
-			return
-		}
-	}()
-
-	return events, nil
-}
-
-// StreamEvent 是流式事件
-/*
-StreamEvent 表示 RunLoopStream 对外暴露的流式事件。
-*/
-type StreamEvent struct {
-	Type      EventType
-	Content   string
-	Iteration int
-	Error     error
-}
-
-type EventType int
-
-const (
-	EventReason  EventType = iota // 推理阶段
-	EventAct                      // 行动阶段
-	EventObserve                  // 观察阶段
-	EventContent                  // 内容片段
-	EventDone                     // 完成
-	EventError                    // 错误
-)
-
 // executeTool 执行工具调用（通过 Gateway）
 /*
 executeTool 在无会话上下文时执行一次工具调用。

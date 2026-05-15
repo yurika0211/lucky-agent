@@ -1165,7 +1165,7 @@ func extractRoundNumber(thinking string) int {
 	return 0
 }
 
-func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, lastProgress string) string {
+func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, progressHistory []string, lastProgress string) string {
 	chat := h.chatService()
 	if len(observations) == 0 || chat == nil {
 		return ""
@@ -1173,7 +1173,16 @@ func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gatewa
 	summaryCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
-	summary, err := chat.ProgressFeedback(summaryCtx, userInput, round, observations)
+	progressObservations := append([]string(nil), observations...)
+	for _, prev := range progressHistory {
+		prev = strings.TrimSpace(prev)
+		if prev == "" {
+			continue
+		}
+		progressObservations = append([]string{"Previous user-facing update: " + prev}, progressObservations...)
+	}
+
+	summary, err := chat.ProgressFeedback(summaryCtx, userInput, round, progressObservations)
 	if err != nil {
 		return ""
 	}
@@ -1181,18 +1190,22 @@ func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gatewa
 	if summary == "" || summary == lastProgress {
 		return ""
 	}
-	return summary
+	return smoothProgressSummary(summary, round, progressHistory)
 }
 
-func (h *Handler) flushRoundProgress(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, lastProgress *string) {
-	h.flushRoundProgressWithEmitter(ctx, msg, userInput, round, observations, lastProgress, h.sendProgressMessage)
+func (h *Handler) flushRoundProgress(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, progressHistory *[]string, lastProgress *string) {
+	h.flushRoundProgressWithEmitter(ctx, msg, userInput, round, observations, progressHistory, lastProgress, h.sendProgressMessage)
 }
 
-func (h *Handler) flushRoundProgressWithEmitter(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, lastProgress *string, emit func(*gateway.Message, string)) {
+func (h *Handler) flushRoundProgressWithEmitter(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, progressHistory *[]string, lastProgress *string, emit func(*gateway.Message, string)) {
 	if !h.effectiveProgressSummaryWithLLM() {
 		return
 	}
-	progress := h.generateRoundProgressFeedback(ctx, msg, userInput, round, observations, strings.TrimSpace(*lastProgress))
+	var history []string
+	if progressHistory != nil {
+		history = append(history, (*progressHistory)...)
+	}
+	progress := h.generateRoundProgressFeedback(ctx, msg, userInput, round, observations, history, strings.TrimSpace(*lastProgress))
 	if progress == "" {
 		return
 	}
@@ -1201,6 +1214,7 @@ func (h *Handler) flushRoundProgressWithEmitter(ctx context.Context, msg *gatewa
 	}
 	emit(msg, formatTelegramProgressSummary(progress))
 	*lastProgress = progress
+	appendProgressHistory(progressHistory, progress)
 }
 
 func formatTelegramProgressSummary(progress string) string {
@@ -1209,6 +1223,61 @@ func formatTelegramProgressSummary(progress string) string {
 		return progress
 	}
 	return card
+}
+
+func appendProgressHistory(history *[]string, progress string) {
+	if history == nil {
+		return
+	}
+	progress = strings.TrimSpace(progress)
+	if progress == "" {
+		return
+	}
+	entries := append([]string(nil), (*history)...)
+	if len(entries) > 0 && strings.TrimSpace(entries[len(entries)-1]) == progress {
+		*history = entries
+		return
+	}
+	entries = append(entries, progress)
+	if len(entries) > 3 {
+		entries = entries[len(entries)-3:]
+	}
+	*history = entries
+}
+
+func smoothProgressSummary(summary string, round int, history []string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" || len(history) == 0 {
+		return summary
+	}
+	lower := strings.ToLower(summary)
+	switch {
+	case strings.HasPrefix(lower, "i've "),
+		strings.HasPrefix(lower, "i’m "),
+		strings.HasPrefix(lower, "i'm "),
+		strings.HasPrefix(lower, "i have "):
+		return continuityCue(round) + summary
+	case strings.HasPrefix(lower, "i've started"),
+		strings.HasPrefix(lower, "i started"),
+		strings.HasPrefix(lower, "i’m still"),
+		strings.HasPrefix(lower, "i'm still"):
+		return continuityCue(round) + summary
+	default:
+		return summary
+	}
+}
+
+func continuityCue(round int) string {
+	switch round % 4 {
+	case 0:
+		return "That suggests "
+	case 1:
+		return "So far, "
+	case 2:
+		return "At this point, "
+	default:
+		return "The latest result shows "
+	}
 }
 
 func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Message, response string) error {
@@ -1477,6 +1546,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	toolTraceSent := false
 	currentRound := 1
 	var roundObservations []string
+	var progressHistory []string
 	summaryMode := h.effectiveProgressSummaryWithLLM()
 
 	sentResult := runChatEventLoop(
@@ -1495,9 +1565,10 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 			case agent.ChatEventThinking:
 				if summaryMode {
 					if nextRound := extractRoundNumber(evt.Content); nextRound > currentRound {
-						if progress := h.generateRoundProgressFeedback(chatCtx, msg, routingText, currentRound, roundObservations, lastProgress); progress != "" {
+						if progress := h.generateRoundProgressFeedback(chatCtx, msg, routingText, currentRound, roundObservations, progressHistory, lastProgress); progress != "" {
 							emitProgress(formatTelegramProgressSummary(progress))
 							lastProgress = progress
+							appendProgressHistory(&progressHistory, progress)
 						}
 						roundObservations = nil
 						currentRound = nextRound
@@ -1546,7 +1617,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 
 			case agent.ChatEventDone:
 				if summaryMode {
-					h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &lastProgress, emitProgressForMsg)
+					h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress, emitProgressForMsg)
 					roundObservations = nil
 				}
 				if !toolTraceSent {
@@ -1589,7 +1660,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		switch {
 		case finalOutput != "":
 			if summaryMode {
-				h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &lastProgress, emitProgressForMsg)
+				h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress, emitProgressForMsg)
 			}
 			if !toolTraceSent {
 				if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
@@ -1652,6 +1723,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	summaryMode := narrativeMode && h.effectiveProgressSummaryWithLLM()
 	currentRound := 1
 	var roundObservations []string
+	var progressHistory []string
 
 	sentResult := runChatEventLoop(
 		chatCtx,
@@ -1670,9 +1742,10 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			case agent.ChatEventThinking:
 				if summaryMode {
 					if nextRound := extractRoundNumber(evt.Content); nextRound > currentRound {
-						if progress := h.generateRoundProgressFeedback(chatCtx, msg, routingText, currentRound, roundObservations, lastProgress); progress != "" {
+						if progress := h.generateRoundProgressFeedback(chatCtx, msg, routingText, currentRound, roundObservations, progressHistory, lastProgress); progress != "" {
 							emitProgress(formatTelegramProgressSummary(progress))
 							lastProgress = progress
+							appendProgressHistory(&progressHistory, progress)
 						}
 						roundObservations = nil
 						currentRound = nextRound
@@ -1745,7 +1818,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 
 			case agent.ChatEventDone:
 				if summaryMode {
-					h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &lastProgress)
+					h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress)
 					roundObservations = nil
 				}
 				if narrativeMode && !toolTraceSent {
@@ -1814,7 +1887,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	if !sentResult {
 		finalOutput := finalContent.String()
 		if summaryMode && finalOutput != "" {
-			h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &lastProgress)
+			h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress)
 		}
 		if narrativeMode && !toolTraceSent && finalOutput != "" {
 			if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {

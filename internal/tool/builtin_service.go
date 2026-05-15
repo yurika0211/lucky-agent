@@ -6,18 +6,18 @@ import "github.com/yurika0211/luckyharness/internal/multimodal"
 type BuiltinToolService struct {
 	searchCfg            *WebSearchConfig
 	mediaProcessor       *multimodal.Processor
+	imageGenerator       multimodal.ImageGenerator
+	imageGenDefaults     ImageGenerationDefaults
 	defaultImageProvider string
 }
 
 // NewBuiltinToolService creates a builtin tool service.
-func NewBuiltinToolService(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor ...*multimodal.Processor) *BuiltinToolService {
-	var processor *multimodal.Processor
-	if len(mediaProcessor) > 0 {
-		processor = mediaProcessor[0]
-	}
+func NewBuiltinToolService(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults) *BuiltinToolService {
 	return &BuiltinToolService{
 		searchCfg:            searchCfg,
-		mediaProcessor:       processor,
+		mediaProcessor:       mediaProcessor,
+		imageGenerator:       imageGenerator,
+		imageGenDefaults:     imageGenDefaults,
 		defaultImageProvider: defaultImageProvider,
 	}
 }
@@ -31,6 +31,9 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	r.Register(LegacyShellTool())
 	r.Register(FileReadTool())
 	r.Register(FileWriteTool())
+	r.Register(FileMkdirTool())
+	r.Register(FileMoveTool())
+	r.Register(FileDeleteTool())
 	r.Register(FilePatchTool())
 	r.Register(FileListTool())
 	r.Register(WebSearchTool(s.searchCfg))
@@ -38,6 +41,7 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	r.Register(CurrentTimeTool())
 	r.Register(CalculateTool())
 	r.Register(ImageAnalyzeTool(s.mediaProcessor, s.defaultImageProvider))
+	r.Register(ImageGenerateTool(s.imageGenerator, s.imageGenDefaults))
 	r.Register(LogTailTool())
 	r.Register(LogGrepTool())
 	r.Register(HTTPRequestTool())

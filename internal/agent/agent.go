@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +18,6 @@ import (
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/embedder"
-	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/memory"
@@ -465,6 +463,7 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		Proxy:      c.WebSearch.Proxy,
 	}
 	mediaProcessor := multimodal.NewProcessor()
+	var imageGenerator multimodal.ImageGenerator
 	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
 		multimodal.ModalityText,
 		multimodal.ModalityImage,
@@ -473,7 +472,8 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		multimodal.ModalityDocument,
 	), true)
 
-	if mmCfg, ok := resolveOpenAIMultimodalConfig(c); ok {
+	mmCfg, mmOK := resolveOpenAIMultimodalConfig(c)
+	if mmOK {
 		if openaiMedia, mediaErr := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
 			APIKey:             mmCfg.APIKey,
 			APIBase:            mmCfg.APIBase,
@@ -481,11 +481,43 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 			TranscriptionModel: mmCfg.TranscriptionModel,
 		}); mediaErr == nil {
 			_ = mediaProcessor.RegisterProvider(openaiMedia, true)
+			imageGenerator = openaiMedia
+		}
+	}
+
+	if genCfg, ok := resolveImageGenerationConfig(c); ok {
+		switch genCfg.Provider {
+		case "gemini":
+			if geminiGenerator, err := multimodal.NewGeminiImageProvider(multimodal.GeminiImageConfig{
+				APIKey:   genCfg.APIKey,
+				APIBase:  genCfg.APIBase,
+				AuthMode: genCfg.AuthMode,
+			}); err == nil {
+				imageGenerator = geminiGenerator
+			}
+		case "openai":
+			if openaiGenerator, err := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
+				APIKey:             genCfg.APIKey,
+				APIBase:            genCfg.APIBase,
+				ResponsesModel:     mmCfg.ImageModel,
+				TranscriptionModel: mmCfg.TranscriptionModel,
+			}); err == nil {
+				imageGenerator = openaiGenerator
+			}
 		}
 	}
 
 	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
-	toolServices := tool.NewServices(searchCfg, c.Multimodal.ImageProvider, mediaProcessor, mem, ragMgr, delegateMgr)
+	imageGenDefaults := tool.ImageGenerationDefaults{
+		Model:             strings.TrimSpace(c.ImageGeneration.Model),
+		Size:              strings.TrimSpace(c.ImageGeneration.Size),
+		Quality:           strings.TrimSpace(c.ImageGeneration.Quality),
+		Background:        strings.TrimSpace(c.ImageGeneration.Background),
+		OutputFormat:      strings.TrimSpace(c.ImageGeneration.OutputFormat),
+		OutputCompression: c.ImageGeneration.OutputCompression,
+		Count:             c.ImageGeneration.Count,
+	}
+	toolServices := tool.NewServices(searchCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, mem, ragMgr, delegateMgr)
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
@@ -532,6 +564,20 @@ type multimodalRuntimeConfig struct {
 	TranscriptionModel string
 }
 
+type imageGenerationRuntimeConfig struct {
+	Provider          string
+	APIKey            string
+	APIBase           string
+	AuthMode          string
+	Model             string
+	Size              string
+	Quality           string
+	Background        string
+	OutputFormat      string
+	OutputCompression int
+	Count             int
+}
+
 func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, bool) {
 	if c == nil {
 		return multimodalRuntimeConfig{}, false
@@ -575,6 +621,93 @@ func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, b
 	}
 
 	return multimodalRuntimeConfig{}, false
+}
+
+func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfig, bool) {
+	if c == nil {
+		return imageGenerationRuntimeConfig{}, false
+	}
+
+	cfg := imageGenerationRuntimeConfig{
+		Provider:          strings.ToLower(strings.TrimSpace(c.ImageGeneration.Provider)),
+		APIKey:            strings.TrimSpace(c.ImageGeneration.APIKey),
+		APIBase:           strings.TrimSpace(c.ImageGeneration.APIBase),
+		AuthMode:          strings.ToLower(strings.TrimSpace(c.ImageGeneration.AuthMode)),
+		Model:             strings.TrimSpace(c.ImageGeneration.Model),
+		Size:              strings.TrimSpace(c.ImageGeneration.Size),
+		Quality:           strings.TrimSpace(c.ImageGeneration.Quality),
+		Background:        strings.TrimSpace(c.ImageGeneration.Background),
+		OutputFormat:      strings.TrimSpace(c.ImageGeneration.OutputFormat),
+		OutputCompression: c.ImageGeneration.OutputCompression,
+		Count:             c.ImageGeneration.Count,
+	}
+	if cfg.Model == "" {
+		cfg.Model = strings.TrimSpace(c.Multimodal.GenerationModel)
+	}
+	if cfg.Size == "" {
+		cfg.Size = strings.TrimSpace(c.Multimodal.GenerationSize)
+	}
+	if cfg.Quality == "" {
+		cfg.Quality = strings.TrimSpace(c.Multimodal.GenerationQuality)
+	}
+	if cfg.Background == "" {
+		cfg.Background = strings.TrimSpace(c.Multimodal.GenerationBackground)
+	}
+	if cfg.OutputFormat == "" {
+		cfg.OutputFormat = strings.TrimSpace(c.Multimodal.GenerationOutputFormat)
+	}
+	if cfg.Provider == "" {
+		cfg.Provider = "openai"
+	}
+	if cfg.Provider == "openai" && looksLikeGeminiImageModel(cfg.Model) {
+		cfg.Provider = "gemini"
+	}
+	if cfg.AuthMode == "" {
+		cfg.AuthMode = "bearer"
+	}
+
+	if cfg.Provider == "openai" {
+		if cfg.APIKey == "" {
+			cfg.APIKey = strings.TrimSpace(c.Multimodal.APIKey)
+			if cfg.APIKey == "" {
+				cfg.APIKey = strings.TrimSpace(c.APIKey)
+			}
+		}
+		if cfg.APIBase == "" {
+			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
+			if cfg.APIBase == "" {
+				cfg.APIBase = strings.TrimSpace(c.APIBase)
+			}
+		}
+		if cfg.APIBase == "https://api.openai.com/v1" && strings.TrimSpace(c.Multimodal.APIBase) != "" {
+			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
+		}
+	}
+
+	if cfg.Provider == "gemini" {
+		if cfg.APIKey == "" {
+			cfg.APIKey = strings.TrimSpace(c.Multimodal.APIKey)
+			if cfg.APIKey == "" {
+				cfg.APIKey = strings.TrimSpace(c.APIKey)
+			}
+		}
+		if cfg.APIBase == "" || cfg.APIBase == "https://api.openai.com/v1" {
+			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://generativelanguage.googleapis.com/v1beta"
+			}
+		}
+	}
+
+	if cfg.APIKey == "" || cfg.APIBase == "" {
+		return imageGenerationRuntimeConfig{}, false
+	}
+	return cfg, true
+}
+
+func looksLikeGeminiImageModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "gemini") || strings.HasPrefix(model, "google/gemini")
 }
 
 // New 创建 Agent
@@ -738,6 +871,9 @@ Write in English.
 The update should sound like a human investigator thinking aloud in a compact way.
 It should read like a short natural reasoning paragraph, not like a checklist, template, or repeated report.
 
+If previous user-facing updates are provided, treat them as messages that the user has already seen. Continue naturally from them instead of restarting the narration from scratch.
+Prioritize what changed since the previous update.
+
 What to include when relevant:
 - what you have checked,
 - what that currently suggests,
@@ -748,7 +884,10 @@ What to include when relevant:
 Style requirements:
 - use 2 to 4 short connected sentences,
 - use natural transitions, but vary them across updates,
+- make the first sentence anchor to the newest change or signal, not to a generic restart,
 - do not start every update with the same pattern such as "I first checked...",
+- do not repeatedly open with first-person patterns like "I've...", "I have...", or "I'm..." unless there is a strong reason,
+- prefer continuity cues such as "So far,", "At this point,", "That suggests,", "The latest result shows,", or "This narrows it down because..." when they fit,
 - avoid rigid labels like "Verified", "Checking", "Uncertain", "Next",
 - avoid repeating the same rhetorical skeleton from one round to the next,
 - include brief causal links and small explanations, not just status labels,
@@ -759,12 +898,38 @@ Style requirements:
 - do not use rigid headings like "Verified:" or "Checking:" unless the user explicitly asked for a checklist.`
 
 	var userPrompt strings.Builder
+	var previousUpdates []string
+	var newObservations []string
+	for _, line := range observations {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "Previous user-facing update: ") {
+			previousUpdates = append(previousUpdates, strings.TrimPrefix(line, "Previous user-facing update: "))
+			continue
+		}
+		newObservations = append(newObservations, line)
+	}
+
 	userPrompt.WriteString("Original user request:\n")
 	userPrompt.WriteString(strings.TrimSpace(userInput))
 	userPrompt.WriteString("\n\nCurrent round:\n")
 	userPrompt.WriteString(fmt.Sprintf("%d", round))
-	userPrompt.WriteString("\n\nObserved progress so far:\n")
-	for _, line := range observations {
+	if len(previousUpdates) > 0 {
+		userPrompt.WriteString("\n\nPrevious user-facing updates already shown:\n")
+		for _, line := range previousUpdates {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			userPrompt.WriteString("- ")
+			userPrompt.WriteString(line)
+			userPrompt.WriteString("\n")
+		}
+	}
+	userPrompt.WriteString("\n\nNew observed progress since the last update:\n")
+	for _, line := range newObservations {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -773,7 +938,7 @@ Style requirements:
 		userPrompt.WriteString(line)
 		userPrompt.WriteString("\n")
 	}
-	userPrompt.WriteString("\nWrite a single progress update for the user.")
+	userPrompt.WriteString("\nWrite a single progress update for the user that clearly continues from the previous updates and focuses on what changed.")
 
 	resp, err := a.provider.Chat(ctx, []provider.Message{
 		{Role: "system", Content: systemPrompt},
@@ -1194,9 +1359,7 @@ func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string
 
 		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
 
-		// 构建 function calling 工具定义
-		fcMgr := function.NewManager(a.tools)
-		callOpts := a.buildFunctionCallOptionsForInput(routingText, fcMgr.BuildTools())
+		callOpts := a.buildLoopCallOptions(routingText)
 
 		loopCfg := DefaultLoopConfig()
 		cfg := a.cfg.Get()
@@ -1244,14 +1407,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		return
 	}
 
-	// 尝试流式调用
-	var ch <-chan provider.StreamChunk
-	var err error
-	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
-		ch, err = fcProvider.ChatStreamWithOptions(ctx, messages, callOpts)
-	} else {
-		ch, err = a.provider.ChatStream(ctx, messages)
-	}
+	ch, err := a.streamLoopIteration(ctx, messages, callOpts, state.forceSearchSynthesis)
 	if err != nil {
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
@@ -1327,122 +1483,31 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				ToolCalls: toolCalls,
 			})
 
-			// v0.44.0: 并发执行工具调用（无状态工具并行，有状态工具串行）
-			type streamToolResult struct {
-				Index       int
-				ToolCallID  string
-				ToolName    string
-				Result      string
-				ShortResult string
-			}
+			emitChatToolCallEvents(events, toolCalls)
+			executed := a.executeToolCallsOrdered(
+				toolCalls,
+				true,
+				sess,
+				state.toolURLRepeatCount,
+				state.toolURLLastResult,
+				state.duplicateFetchLimit,
+				true,
+			)
 
-			resultCh := make(chan streamToolResult, len(toolCalls))
-
-			// 分类：可并发 vs 必须串行
-			var parallelIdx []int
-			var serialIdx []int
-			for i, tc := range toolCalls {
-				if a.isToolParallelSafe(tc.Name) {
-					parallelIdx = append(parallelIdx, i)
-				} else {
-					serialIdx = append(serialIdx, i)
-				}
-			}
-
-			// 先发所有 ToolCall 事件（让用户看到进度）
-			for _, tc := range toolCalls {
-				shortArgs := tc.Arguments
-				if len(shortArgs) > 100 {
-					shortArgs = shortArgs[:97] + "..."
-				}
-				events <- ChatEvent{
-					Type:    ChatEventToolCall,
-					Name:    tc.Name,
-					Args:    shortArgs,
-					Content: fmt.Sprintf("🔧 %s", tc.Name),
-				}
-			}
-
-			// 并发执行无状态工具
-			for _, idx := range parallelIdx {
-				tc := toolCalls[idx]
-				go func(idx int, tc provider.ToolCall) {
-					toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
-					if err != nil {
-						toolResult = fmt.Sprintf("Error: %v", err)
-					}
-					shortResult := toolResult
-					if len(shortResult) > 200 {
-						shortResult = shortResult[:197] + "..."
-					}
-					resultCh <- streamToolResult{
-						Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
-						Result: toolResult, ShortResult: shortResult,
-					}
-				}(idx, tc)
-			}
-
-			// 串行执行有状态工具
-			for _, idx := range serialIdx {
-				tc := toolCalls[idx]
-				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
-				if err != nil {
-					toolResult = fmt.Sprintf("Error: %v", err)
-				}
-				shortResult := toolResult
-				if len(shortResult) > 200 {
-					shortResult = shortResult[:197] + "..."
-				}
-				resultCh <- streamToolResult{
-					Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
-					Result: toolResult, ShortResult: shortResult,
-				}
-			}
-
-			// 收集结果，按顺序
-			allResults := make([]streamToolResult, 0, len(toolCalls))
-			for i := 0; i < len(toolCalls); i++ {
-				allResults = append(allResults, <-resultCh)
-			}
-			sort.Slice(allResults, func(i, j int) bool {
-				return allResults[i].Index < allResults[j].Index
-			})
-
-			for _, r := range allResults {
-				events <- ChatEvent{
-					Type:    ChatEventToolResult,
-					Name:    r.ToolName,
-					Result:  r.ShortResult,
-					Content: fmt.Sprintf("📋 %s → %s", r.ToolName, r.ShortResult),
-				}
-				contextResult := compactToolResultForContext(r.ToolName, r.Result)
-				if isUsefulSearchEvidence(r.ToolName, r.Result) {
-					state.successfulSearchEvidence++
-					if r.ToolName == "web_search" {
-						if state.detailedSearchEvidence >= 2 {
-							contextResult = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
-						} else {
-							state.detailedSearchEvidence++
-						}
-					}
-				}
+			for _, execResult := range executed {
+				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
 				messages = append(messages, provider.Message{
 					Role:       "tool",
-					Content:    contextResult,
-					ToolCallID: r.ToolCallID,
-					Name:       r.ToolName,
+					Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence),
+					ToolCallID: execResult.ToolCall.ID,
+					Name:       execResult.ToolCall.Name,
 				})
-				if r.Index >= 0 && r.Index < len(toolCalls) {
-					state.rememberToolCallResult(r.ToolName, toolCalls[r.Index].Arguments, r.Result)
-				}
+				state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
 			}
 
 			// 裁剪上下文，继续下一轮
 			messages = a.fitContextWindow(messages)
-			if !state.forceSearchSynthesis && shouldForceSearchSynthesis(state.successfulSearchEvidence, state.consecutiveToolOnlyIters) {
-				state.forceSearchSynthesis = true
-				messages = append(messages, provider.Message{Role: "user", Content: searchSynthesisPrompt})
-			}
+			messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
 			if remaining <= 1 {
 				if state.hasContinuation() {
 					a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
@@ -1532,19 +1597,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		return
 	}
 
-	var resp *provider.Response
-	var err error
-	iterCallOpts := callOpts
-	iterCallOpts = relaxForcedSkillToolChoice(messages, iterCallOpts)
-	if state.forceSearchSynthesis {
-		iterCallOpts.Tools = nil
-		iterCallOpts.ToolChoice = "none"
-	}
-	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(iterCallOpts.Tools) > 0 {
-		resp, err = fcProvider.ChatWithOptions(ctx, messages, iterCallOpts)
-	} else {
-		resp, err = a.provider.Chat(ctx, messages)
-	}
+	resp, err := a.chatLoopIteration(ctx, messages, callOpts, state.forceSearchSynthesis)
 	if err != nil {
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
@@ -1564,121 +1617,31 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			ToolCalls: resp.ToolCalls,
 		})
 
-		// v0.44.0: 并发执行工具调用（无状态工具并行，有状态工具串行）
-		type simToolResult struct {
-			Index       int
-			ToolCallID  string
-			ToolName    string
-			Result      string
-			ShortResult string
-		}
+		emitChatToolCallEvents(events, resp.ToolCalls)
+		executed := a.executeToolCallsOrdered(
+			resp.ToolCalls,
+			true,
+			sess,
+			state.toolURLRepeatCount,
+			state.toolURLLastResult,
+			state.duplicateFetchLimit,
+			true,
+		)
 
-		simResultCh := make(chan simToolResult, len(resp.ToolCalls))
-
-		// 分类
-		var parallelIdx []int
-		var serialIdx []int
-		for i, tc := range resp.ToolCalls {
-			if a.isToolParallelSafe(tc.Name) {
-				parallelIdx = append(parallelIdx, i)
-			} else {
-				serialIdx = append(serialIdx, i)
-			}
-		}
-
-		// 先发所有 ToolCall 事件
-		for _, tc := range resp.ToolCalls {
-			shortArgs := tc.Arguments
-			if len(shortArgs) > 100 {
-				shortArgs = shortArgs[:97] + "..."
-			}
-			events <- ChatEvent{
-				Type:    ChatEventToolCall,
-				Name:    tc.Name,
-				Args:    shortArgs,
-				Content: fmt.Sprintf("🔧 %s", tc.Name),
-			}
-		}
-
-		// 并发执行无状态工具
-		for _, idx := range parallelIdx {
-			tc := resp.ToolCalls[idx]
-			go func(idx int, tc provider.ToolCall) {
-				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
-				if err != nil {
-					toolResult = fmt.Sprintf("Error: %v", err)
-				}
-				shortResult := toolResult
-				if len(shortResult) > 200 {
-					shortResult = shortResult[:197] + "..."
-				}
-				simResultCh <- simToolResult{
-					Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
-					Result: toolResult, ShortResult: shortResult,
-				}
-			}(idx, tc)
-		}
-
-		// 串行执行有状态工具
-		for _, idx := range serialIdx {
-			tc := resp.ToolCalls[idx]
-			toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
-			if err != nil {
-				toolResult = fmt.Sprintf("Error: %v", err)
-			}
-			shortResult := toolResult
-			if len(shortResult) > 200 {
-				shortResult = shortResult[:197] + "..."
-			}
-			simResultCh <- simToolResult{
-				Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
-				Result: toolResult, ShortResult: shortResult,
-			}
-		}
-
-		simResults := make([]simToolResult, 0, len(resp.ToolCalls))
-		for i := 0; i < len(resp.ToolCalls); i++ {
-			simResults = append(simResults, <-simResultCh)
-		}
-		sort.Slice(simResults, func(i, j int) bool {
-			return simResults[i].Index < simResults[j].Index
-		})
-
-		for _, r := range simResults {
-			events <- ChatEvent{
-				Type:    ChatEventToolResult,
-				Name:    r.ToolName,
-				Result:  r.ShortResult,
-				Content: fmt.Sprintf("📋 %s → %s", r.ToolName, r.ShortResult),
-			}
-			contextResult := compactToolResultForContext(r.ToolName, r.Result)
-			if isUsefulSearchEvidence(r.ToolName, r.Result) {
-				state.successfulSearchEvidence++
-				if r.ToolName == "web_search" {
-					if state.detailedSearchEvidence >= 2 {
-						contextResult = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
-					} else {
-						state.detailedSearchEvidence++
-					}
-				}
-			}
+		for _, execResult := range executed {
+			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
 			messages = append(messages, provider.Message{
 				Role:       "tool",
-				Content:    contextResult,
-				ToolCallID: r.ToolCallID,
-				Name:       r.ToolName,
+				Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence),
+				ToolCallID: execResult.ToolCall.ID,
+				Name:       execResult.ToolCall.Name,
 			})
-			if r.Index >= 0 && r.Index < len(resp.ToolCalls) {
-				state.rememberToolCallResult(r.ToolName, resp.ToolCalls[r.Index].Arguments, r.Result)
-			}
+			state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
 		}
 
 		// 裁剪上下文，递归继续
 		messages = a.fitContextWindow(messages)
-		if !state.forceSearchSynthesis && shouldForceSearchSynthesis(state.successfulSearchEvidence, state.consecutiveToolOnlyIters) {
-			state.forceSearchSynthesis = true
-			messages = append(messages, provider.Message{Role: "user", Content: searchSynthesisPrompt})
-		}
+		messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
 		if remaining <= 1 {
 			if state.hasContinuation() {
 				a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)

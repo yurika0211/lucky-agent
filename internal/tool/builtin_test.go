@@ -3,7 +3,11 @@ package tool
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +19,25 @@ import (
 )
 
 type namedImageTestProvider struct{}
+type fakeImageGenerator struct {
+	lastReq multimodal.ImageGenerationRequest
+	result  *multimodal.ImageGenerationResult
+}
+
+func (g *fakeImageGenerator) Name() string { return "fake-image-generator" }
+func (g *fakeImageGenerator) GenerateImage(ctx context.Context, req multimodal.ImageGenerationRequest) (*multimodal.ImageGenerationResult, error) {
+	g.lastReq = req
+	if g.result != nil {
+		return g.result, nil
+	}
+	return &multimodal.ImageGenerationResult{
+		Provider: "fake-image-generator",
+		Model:    "fake-model",
+		Images: []multimodal.GeneratedImage{
+			{Data: []byte("png-bytes"), MimeType: "image/png"},
+		},
+	}, nil
+}
 
 func (namedImageTestProvider) Name() string { return "named-image-provider" }
 func (namedImageTestProvider) SupportedModalities() []multimodal.Modality {
@@ -44,7 +67,7 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"terminal", "shell", "file_read", "file_write", "file_patch", "file_list", "web_search", "web_fetch", "current_time", "calculate", "image_analyze", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
+	expected := []string{"terminal", "shell", "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "current_time", "calculate", "image_analyze", "image_generate", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {
@@ -92,6 +115,71 @@ func TestCurrentTimeTool(t *testing.T) {
 	}
 	if result == "" {
 		t.Error("expected non-empty time result")
+	}
+}
+
+func TestCurrentTimeToolUsesNetworkTimeForLocation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/Asia/Shanghai" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"datetime":"2026-05-14T10:00:00+08:00"}`))
+	}))
+	defer server.Close()
+
+	oldClient := currentTimeHTTPClient
+	oldBase := currentTimeAPIBaseURL
+	currentTimeHTTPClient = server.Client()
+	currentTimeAPIBaseURL = server.URL
+	defer func() {
+		currentTimeHTTPClient = oldClient
+		currentTimeAPIBaseURL = oldBase
+	}()
+
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	result, err := r.Call("current_time", map[string]any{
+		"location": "北京",
+	})
+	if err != nil {
+		t.Fatalf("current_time call: %v", err)
+	}
+	if !strings.Contains(result, "Asia/Shanghai") {
+		t.Fatalf("expected timezone in result, got %q", result)
+	}
+	if !strings.Contains(result, "location: 北京") {
+		t.Fatalf("expected location label, got %q", result)
+	}
+}
+
+func TestCurrentTimeToolFallsBackToLocalOnNetworkFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	oldClient := currentTimeHTTPClient
+	oldBase := currentTimeAPIBaseURL
+	currentTimeHTTPClient = server.Client()
+	currentTimeAPIBaseURL = server.URL
+	defer func() {
+		currentTimeHTTPClient = oldClient
+		currentTimeAPIBaseURL = oldBase
+	}()
+
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	result, err := r.Call("current_time", map[string]any{
+		"location": "北京",
+	})
+	if err != nil {
+		t.Fatalf("current_time call: %v", err)
+	}
+	if !strings.Contains(result, "source: local") {
+		t.Fatalf("expected local fallback, got %q", result)
 	}
 }
 
@@ -278,6 +366,107 @@ func TestImageAnalyzeToolUsesConfiguredDefaultProvider(t *testing.T) {
 	}
 }
 
+func TestImageGenerateToolSavesOutputAndSupportsImageToImage(t *testing.T) {
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider:      "fake-image-generator",
+			Model:         "gpt-image-1.5",
+			RevisedPrompt: "refined prompt",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("generated-image-bytes"), MimeType: "image/png"},
+			},
+		},
+	}
+
+	tmpDir := t.TempDir()
+	inputPath := filepath.Join(tmpDir, "input.png")
+	if err := os.WriteFile(inputPath, []byte("input-image-bytes"), 0o644); err != nil {
+		t.Fatalf("write input image: %v", err)
+	}
+
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	result, err := r.CallWithShellContext("image_generate", map[string]any{
+		"prompt":        "turn this into a watercolor postcard",
+		"input_path":    inputPath,
+		"output_dir":    tmpDir,
+		"count":         1,
+		"output_format": "png",
+	}, &ShellContext{Cwd: tmpDir})
+	if err != nil {
+		t.Fatalf("image_generate call: %v", err)
+	}
+
+	if gen.lastReq.Prompt != "turn this into a watercolor postcard" {
+		t.Fatalf("unexpected prompt: %q", gen.lastReq.Prompt)
+	}
+	if len(gen.lastReq.InputImages) != 1 {
+		t.Fatalf("expected 1 input image, got %d", len(gen.lastReq.InputImages))
+	}
+	if string(gen.lastReq.InputImages[0].Data) != "input-image-bytes" {
+		t.Fatalf("unexpected input image bytes: %q", string(gen.lastReq.InputImages[0].Data))
+	}
+
+	var payload struct {
+		Paths []string `json:"paths"`
+		Model string   `json:"model"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal tool output: %v", err)
+	}
+	if payload.Model != "gpt-image-1.5" {
+		t.Fatalf("unexpected model in output: %q", payload.Model)
+	}
+	if len(payload.Paths) != 1 {
+		t.Fatalf("expected 1 saved path, got %d", len(payload.Paths))
+	}
+	written, err := os.ReadFile(payload.Paths[0])
+	if err != nil {
+		t.Fatalf("read generated output: %v", err)
+	}
+	if string(written) != "generated-image-bytes" {
+		t.Fatalf("unexpected written bytes: %q", string(written))
+	}
+}
+
+func TestImageGenerateToolUsesConfiguredDefaults(t *testing.T) {
+	gen := &fakeImageGenerator{}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{
+		Model:        "gpt-image-1.5",
+		Size:         "1536x1024",
+		Quality:      "high",
+		Background:   "transparent",
+		OutputFormat: "webp",
+	}))
+
+	tmpDir := t.TempDir()
+	_, err := r.CallWithShellContext("image_generate", map[string]any{
+		"prompt":     "a minimal poster",
+		"output_dir": tmpDir,
+	}, &ShellContext{Cwd: tmpDir})
+	if err != nil {
+		t.Fatalf("image_generate call: %v", err)
+	}
+
+	if gen.lastReq.Model != "gpt-image-1.5" {
+		t.Fatalf("expected default model, got %q", gen.lastReq.Model)
+	}
+	if gen.lastReq.Size != "1536x1024" {
+		t.Fatalf("expected default size, got %q", gen.lastReq.Size)
+	}
+	if gen.lastReq.Quality != "high" {
+		t.Fatalf("expected default quality, got %q", gen.lastReq.Quality)
+	}
+	if gen.lastReq.Background != "transparent" {
+		t.Fatalf("expected default background, got %q", gen.lastReq.Background)
+	}
+	if gen.lastReq.OutputFormat != "webp" {
+		t.Fatalf("expected default output format, got %q", gen.lastReq.OutputFormat)
+	}
+}
+
 func TestFileReadWriteTool(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -307,6 +496,87 @@ func TestFileReadWriteTool(t *testing.T) {
 	}
 	if readResult == "" {
 		t.Error("expected read result")
+	}
+}
+
+func TestFileMkdirMoveDeleteTools(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	root := filepath.Join(tmpDir, "ops")
+	nested := filepath.Join(root, "a", "b")
+
+	mkdirResult, err := r.Call("file_mkdir", map[string]any{
+		"path": nested,
+	})
+	if err != nil {
+		t.Fatalf("file_mkdir: %v", err)
+	}
+	if !strings.Contains(mkdirResult, "Created directory") {
+		t.Fatalf("unexpected mkdir result: %q", mkdirResult)
+	}
+
+	src := filepath.Join(nested, "note.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	dst := filepath.Join(root, "renamed.txt")
+
+	moveResult, err := r.Call("file_move", map[string]any{
+		"src": src,
+		"dst": dst,
+	})
+	if err != nil {
+		t.Fatalf("file_move: %v", err)
+	}
+	if !strings.Contains(moveResult, "Moved file") {
+		t.Fatalf("unexpected move result: %q", moveResult)
+	}
+	if _, err := os.Stat(dst); err != nil {
+		t.Fatalf("expected moved file at destination: %v", err)
+	}
+	if _, err := os.Stat(src); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected source to be gone, got %v", err)
+	}
+
+	deleteResult, err := r.Call("file_delete", map[string]any{
+		"path": dst,
+	})
+	if err != nil {
+		t.Fatalf("file_delete file: %v", err)
+	}
+	if !strings.Contains(deleteResult, "Deleted") {
+		t.Fatalf("unexpected delete result: %q", deleteResult)
+	}
+
+	_, err = r.Call("file_delete", map[string]any{
+		"path": root,
+	})
+	if err == nil {
+		t.Fatal("expected non-recursive directory delete to fail")
+	}
+
+	_, err = r.Call("file_delete", map[string]any{
+		"path":      root,
+		"recursive": true,
+	})
+	if err != nil {
+		t.Fatalf("file_delete recursive: %v", err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected root to be deleted, got %v", err)
+	}
+
+	missingResult, err := r.Call("file_delete", map[string]any{
+		"path":       root,
+		"missing_ok": true,
+	})
+	if err != nil {
+		t.Fatalf("file_delete missing_ok: %v", err)
+	}
+	if !strings.Contains(missingResult, "already absent") {
+		t.Fatalf("unexpected missing_ok result: %q", missingResult)
 	}
 }
 
@@ -398,6 +668,90 @@ func TestFilePatchToolErrors(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "occurrence") {
 		t.Fatalf("expected occurrence error, got %v", err)
+	}
+}
+
+func TestFilePatchToolDiffMode(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "patch-diff.txt")
+	if err := os.WriteFile(testFile, []byte("alpha\nbeta\ngamma\ndelta\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	result, err := r.Call("file_patch", map[string]any{
+		"path": testFile,
+		"diff": "@@\n alpha\n-beta\n+beta-2\n gamma\n@@\n gamma\n+gamma-half\n delta\n",
+	})
+	if err != nil {
+		t.Fatalf("file_patch diff: %v", err)
+	}
+	if !strings.Contains(result, "2 hunks") {
+		t.Fatalf("expected hunk count in result, got %q", result)
+	}
+
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if got := string(data); got != "alpha\nbeta-2\ngamma\ngamma-half\ndelta\n" {
+		t.Fatalf("unexpected diff patched content: %q", got)
+	}
+}
+
+func TestFilePatchToolUnifiedDiffHeaders(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "patch-unified.txt")
+	if err := os.WriteFile(testFile, []byte("one\ntwo\nthree\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	_, err := r.Call("file_patch", map[string]any{
+		"path": testFile,
+		"diff": "--- a/patch-unified.txt\n+++ b/patch-unified.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+two-updated\n three\n",
+	})
+	if err != nil {
+		t.Fatalf("file_patch unified diff: %v", err)
+	}
+
+	data, err := os.ReadFile(testFile)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if got := string(data); got != "one\ntwo-updated\nthree\n" {
+		t.Fatalf("unexpected unified diff content: %q", got)
+	}
+}
+
+func TestFilePatchToolDiffModeErrors(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "patch-diff-error.txt")
+	if err := os.WriteFile(testFile, []byte("one\ntwo\n"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	_, err := r.Call("file_patch", map[string]any{
+		"path": testFile,
+		"diff": "two\n+three\n",
+	})
+	if err == nil || !strings.Contains(err.Error(), "must start with space") {
+		t.Fatalf("expected invalid diff syntax error, got %v", err)
+	}
+
+	_, err = r.Call("file_patch", map[string]any{
+		"path": testFile,
+		"diff": "@@\n missing\n+three\n",
+	})
+	if err == nil || !strings.Contains(err.Error(), "did not match") {
+		t.Fatalf("expected missing hunk match error, got %v", err)
 	}
 }
 
@@ -563,6 +917,18 @@ func TestToolPermissions(t *testing.T) {
 	writePerm, _ := r.CheckPermission("file_write")
 	if writePerm != PermApprove {
 		t.Errorf("file_write should be approve, got %s", writePerm)
+	}
+	mkdirPerm, _ := r.CheckPermission("file_mkdir")
+	if mkdirPerm != PermApprove {
+		t.Errorf("file_mkdir should be approve, got %s", mkdirPerm)
+	}
+	movePerm, _ := r.CheckPermission("file_move")
+	if movePerm != PermApprove {
+		t.Errorf("file_move should be approve, got %s", movePerm)
+	}
+	deletePerm, _ := r.CheckPermission("file_delete")
+	if deletePerm != PermApprove {
+		t.Errorf("file_delete should be approve, got %s", deletePerm)
 	}
 	patchPerm, _ := r.CheckPermission("file_patch")
 	if patchPerm != PermApprove {
