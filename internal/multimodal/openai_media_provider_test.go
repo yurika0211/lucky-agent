@@ -194,3 +194,55 @@ func TestOpenAIMediaProviderGenerateImageEditUsesMultipart(t *testing.T) {
 		t.Fatalf("unexpected image payload: %+v", result.Images)
 	}
 }
+
+func TestOpenAITTSProviderSynthesizeSpeechUsesAudioSpeechAPI(t *testing.T) {
+	provider, err := NewOpenAITTSProvider(OpenAITTSConfig{
+		APIKey: "sk-test",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAITTSProvider returned error: %v", err)
+	}
+
+	var gotPath, gotUserAgent, gotContentType string
+	var gotBody string
+	provider.client = &http.Client{
+		Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			gotUserAgent = req.Header.Get("User-Agent")
+			gotContentType = req.Header.Get("Content-Type")
+			body, _ := io.ReadAll(req.Body)
+			gotBody = string(body)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("audio-bytes")),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	result, err := provider.SynthesizeSpeech(context.Background(), SpeechSynthesisRequest{
+		Text:   "hello world",
+		Model:  "gpt-4o-mini-tts",
+		Voice:  "alloy",
+		Format: "mp3",
+	})
+	if err != nil {
+		t.Fatalf("SynthesizeSpeech returned error: %v", err)
+	}
+	if gotPath != "/v1/audio/speech" {
+		t.Fatalf("path = %q, want /v1/audio/speech", gotPath)
+	}
+	if gotUserAgent != defaultOpenAIUserAgent {
+		t.Fatalf("user agent = %q, want %q", gotUserAgent, defaultOpenAIUserAgent)
+	}
+	if !strings.HasPrefix(gotContentType, "application/json") {
+		t.Fatalf("content type = %q", gotContentType)
+	}
+	if !strings.Contains(gotBody, `"input":"hello world"`) || !strings.Contains(gotBody, `"voice":"alloy"`) {
+		t.Fatalf("request body missing fields: %s", gotBody)
+	}
+	if string(result.Audio) != "audio-bytes" || result.MimeType != "audio/mpeg" {
+		t.Fatalf("unexpected speech payload: %+v", result)
+	}
+}

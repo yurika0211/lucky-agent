@@ -38,6 +38,9 @@ type Config struct {
 	// v0.96.0: 独立图片生成配置
 	ImageGeneration ImageGenerationConfig `json:"image_generation,omitempty"`
 
+	// v0.97.0: 独立 TTS 配置
+	TTS TTSConfig `json:"tts,omitempty"`
+
 	// v0.40.0: 流式输出模式 (native=真流式，simulated=非流式获取 + 模拟推送)
 	StreamMode string `json:"stream_mode,omitempty"`
 
@@ -118,6 +121,17 @@ type ImageGenerationConfig struct {
 	OutputFormat      string `json:"output_format,omitempty"`
 	OutputCompression int    `json:"output_compression,omitempty"`
 	Count             int    `json:"count,omitempty"`
+}
+
+type TTSConfig struct {
+	Provider string  `json:"provider,omitempty"`
+	APIKey   string  `json:"api_key,omitempty"`
+	APIBase  string  `json:"api_base,omitempty"`
+	AuthMode string  `json:"auth_mode,omitempty"`
+	Model    string  `json:"model,omitempty"`
+	Voice    string  `json:"voice,omitempty"`
+	Format   string  `json:"format,omitempty"`
+	Speed    float64 `json:"speed,omitempty"`
 }
 
 // LimitsConfig 限制配置
@@ -446,6 +460,15 @@ func DefaultConfig() *Config {
 			OutputFormat: "png",
 			Count:        1,
 		},
+		TTS: TTSConfig{
+			Provider: "openai",
+			APIBase:  "https://api.openai.com/v1",
+			AuthMode: "bearer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Format:   "mp3",
+			Speed:    1.0,
+		},
 		StreamMode: "native",
 		Memory: MemoryConfig{
 			ShortTermMaxTurns:   10,
@@ -658,6 +681,27 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.ImageGeneration.Count <= 0 {
 		cfg.ImageGeneration.Count = def.ImageGeneration.Count
+	}
+	if cfg.TTS.Provider == "" {
+		cfg.TTS.Provider = def.TTS.Provider
+	}
+	if cfg.TTS.APIBase == "" {
+		cfg.TTS.APIBase = def.TTS.APIBase
+	}
+	if cfg.TTS.AuthMode == "" {
+		cfg.TTS.AuthMode = def.TTS.AuthMode
+	}
+	if cfg.TTS.Model == "" {
+		cfg.TTS.Model = def.TTS.Model
+	}
+	if cfg.TTS.Voice == "" {
+		cfg.TTS.Voice = def.TTS.Voice
+	}
+	if cfg.TTS.Format == "" {
+		cfg.TTS.Format = def.TTS.Format
+	}
+	if cfg.TTS.Speed <= 0 {
+		cfg.TTS.Speed = def.TTS.Speed
 	}
 	if cfg.StreamMode == "" {
 		cfg.StreamMode = def.StreamMode
@@ -993,6 +1037,24 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.ImageGeneration.Count = n
+	case "tts.provider":
+		m.config.TTS.Provider = value
+	case "tts.api_key":
+		m.config.TTS.APIKey = value
+	case "tts.api_base":
+		m.config.TTS.APIBase = value
+	case "tts.auth_mode":
+		m.config.TTS.AuthMode = value
+	case "tts.model":
+		m.config.TTS.Model = value
+	case "tts.voice":
+		m.config.TTS.Voice = value
+	case "tts.format":
+		m.config.TTS.Format = value
+	case "tts.speed":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.TTS.Speed = f
 	case "soul_path":
 		m.config.SoulPath = value
 	case "max_tokens":

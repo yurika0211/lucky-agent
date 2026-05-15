@@ -35,6 +35,16 @@
     "output_compression": 0,
     "count": 1
   },
+  "tts": {
+    "provider": "openai",
+    "api_key": "",
+    "api_base": "https://api.openai.com/v1",
+    "auth_mode": "bearer",
+    "model": "gpt-4o-mini-tts",
+    "voice": "alloy",
+    "format": "mp3",
+    "speed": 1.0
+  },
   "soul_path": "/home/you/.luckyharness/SOUL.md",
   "max_tokens": 4096,
   "temperature": 0.7,

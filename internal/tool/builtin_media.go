@@ -27,6 +27,14 @@ type ImageGenerationDefaults struct {
 	Count             int
 }
 
+// TTSDefaults captures configurable defaults for the text_to_speech tool.
+type TTSDefaults struct {
+	Model  string
+	Voice  string
+	Format string
+	Speed  float64
+}
+
 // ImageAnalyzeTool analyzes images, screenshots, and simple documents through the multimodal processor.
 func ImageAnalyzeTool(processor *multimodal.Processor, defaultProvider string) *Tool {
 	return &Tool{
@@ -530,4 +538,224 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// TextToSpeechTool synthesizes speech audio from text and saves it to disk.
+func TextToSpeechTool(synthesizer multimodal.SpeechSynthesizer, defaults TTSDefaults) *Tool {
+	return &Tool{
+		Name:         "text_to_speech",
+		Description:  "Generate a speech audio file from input text. Useful for voiceovers, spoken summaries, and audio delivery.",
+		Category:     CatBuiltin,
+		Source:       "builtin",
+		Permission:   PermApprove,
+		ShellAware:   true,
+		ParallelSafe: false,
+		Parameters: map[string]Param{
+			"text":            {Type: "string", Description: "Text that should be spoken in the synthesized audio output.", Required: true},
+			"model":           {Type: "string", Description: "Optional TTS model override.", Required: false},
+			"voice":           {Type: "string", Description: "Optional voice name such as alloy, nova, shimmer, or a provider-specific voice ID.", Required: false},
+			"format":          {Type: "string", Description: "Optional audio format such as mp3, wav, opus, aac, or flac.", Required: false},
+			"speed":           {Type: "number", Description: "Optional playback speed multiplier. Defaults to 1.0.", Required: false},
+			"output_path":     {Type: "string", Description: "Optional destination file path for the generated audio.", Required: false},
+			"output_dir":      {Type: "string", Description: "Optional destination directory. Defaults to cwd when allowed, otherwise /tmp/luckyharness-audio.", Required: false},
+			"filename_prefix": {Type: "string", Description: "Optional output filename prefix when output_dir is used.", Required: false},
+		},
+		Handler: handleTextToSpeech(synthesizer, defaults),
+	}
+}
+
+func handleTextToSpeech(synthesizer multimodal.SpeechSynthesizer, defaults TTSDefaults) func(args map[string]any) (string, error) {
+	return func(args map[string]any) (string, error) {
+		if synthesizer == nil {
+			return "", fmt.Errorf("text-to-speech is not configured")
+		}
+		req, outputPath, outputDir, filenamePrefix, baseDir, err := buildSpeechSynthesisRequest(args, defaults)
+		if err != nil {
+			return "", err
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		result, err := synthesizer.SynthesizeSpeech(ctx, *req)
+		if err != nil {
+			return "", err
+		}
+		if result == nil || len(result.Audio) == 0 {
+			return "", fmt.Errorf("text-to-speech returned no audio")
+		}
+
+		savedPath, err := saveSynthesizedAudio(result, outputPath, outputDir, filenamePrefix, baseDir)
+		if err != nil {
+			return "", err
+		}
+
+		payload := map[string]any{
+			"provider": result.Provider,
+			"model":    result.Model,
+			"voice":    result.Voice,
+			"path":     savedPath,
+			"format":   speechFormatFromMimeType(result.MimeType),
+		}
+		if !result.CreatedAt.IsZero() {
+			payload["created_at"] = result.CreatedAt.Format(time.RFC3339)
+		}
+		if result.Metadata != nil && len(result.Metadata) > 0 {
+			payload["metadata"] = result.Metadata
+		}
+		return prettyStructuredValue(payload)
+	}
+}
+
+func buildSpeechSynthesisRequest(args map[string]any, defaults TTSDefaults) (*multimodal.SpeechSynthesisRequest, string, string, string, string, error) {
+	text, _ := args["text"].(string)
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, "", "", "", "", fmt.Errorf("text is required")
+	}
+
+	outputPath, _ := args["output_path"].(string)
+	outputDir, _ := args["output_dir"].(string)
+	filenamePrefix, _ := args["filename_prefix"].(string)
+	baseDir, _ := args["_cwd"].(string)
+
+	req := &multimodal.SpeechSynthesisRequest{
+		Text:   text,
+		Model:  firstNonEmptyString(asString(args["model"]), defaults.Model),
+		Voice:  firstNonEmptyString(asString(args["voice"]), defaults.Voice),
+		Format: normalizeTTSFormat(firstNonEmptyString(asString(args["format"]), defaults.Format)),
+		Speed:  speechSpeedArg(args, defaults.Speed),
+	}
+	return req, strings.TrimSpace(outputPath), strings.TrimSpace(outputDir), strings.TrimSpace(filenamePrefix), strings.TrimSpace(baseDir), nil
+}
+
+func saveSynthesizedAudio(result *multimodal.SpeechSynthesisResult, outputPath, outputDir, filenamePrefix, baseDir string) (string, error) {
+	if result == nil || len(result.Audio) == 0 {
+		return "", fmt.Errorf("no synthesized audio to save")
+	}
+	if filenamePrefix == "" {
+		filenamePrefix = "tts-audio"
+	}
+	if outputPath != "" {
+		resolved, err := validateResolvedOutputPath(baseDir, outputPath)
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
+			return "", fmt.Errorf("create output directory: %w", err)
+		}
+		if err := os.WriteFile(resolved, result.Audio, 0o644); err != nil {
+			return "", fmt.Errorf("write output file: %w", err)
+		}
+		return resolved, nil
+	}
+
+	dir, err := resolveGeneratedAudioDir(baseDir, outputDir)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create output_dir: %w", err)
+	}
+
+	filename := fmt.Sprintf("%s%s", filenamePrefix, extensionForSpeechFormat(result.MimeType))
+	path := filepath.Join(dir, filename)
+	if err := validatePath(path); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, result.Audio, 0o644); err != nil {
+		return "", fmt.Errorf("write synthesized audio: %w", err)
+	}
+	return path, nil
+}
+
+func resolveGeneratedAudioDir(baseDir, outputDir string) (string, error) {
+	if outputDir != "" {
+		return validateResolvedOutputPath(baseDir, outputDir)
+	}
+	candidates := []string{}
+	if strings.TrimSpace(baseDir) != "" {
+		candidates = append(candidates, filepath.Join(baseDir, "generated-audio"))
+	} else if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
+		candidates = append(candidates, filepath.Join(cwd, "generated-audio"))
+	}
+	candidates = append(candidates, filepath.Join(os.TempDir(), "luckyharness-audio"))
+	for _, candidate := range candidates {
+		if err := validatePath(candidate); err == nil {
+			return filepath.Clean(candidate), nil
+		}
+	}
+	return "", fmt.Errorf("no writable default output directory is allowed by the sandbox")
+}
+
+func speechSpeedArg(args map[string]any, def float64) float64 {
+	if def <= 0 {
+		def = 1.0
+	}
+	if raw, ok := args["speed"]; ok {
+		switch v := raw.(type) {
+		case float64:
+			if v > 0 {
+				return v
+			}
+		case int:
+			if v > 0 {
+				return float64(v)
+			}
+		}
+	}
+	return def
+}
+
+func extensionForSpeechFormat(value string) string {
+	switch normalizeTTSFormat(value) {
+	case "wav", "audio/wav":
+		return ".wav"
+	case "opus", "audio/opus":
+		return ".opus"
+	case "aac", "audio/aac":
+		return ".aac"
+	case "flac", "audio/flac":
+		return ".flac"
+	case "pcm", "audio/pcm":
+		return ".pcm"
+	default:
+		return ".mp3"
+	}
+}
+
+func normalizeTTSFormat(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "mp3", "audio/mpeg":
+		return "mp3"
+	case "wav", "audio/wav":
+		return "wav"
+	case "opus", "audio/opus", "ogg", "audio/ogg":
+		return "opus"
+	case "aac", "audio/aac":
+		return "aac"
+	case "flac", "audio/flac":
+		return "flac"
+	case "pcm", "pcm16", "audio/pcm":
+		return "pcm"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func speechFormatFromMimeType(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(mimeType)) {
+	case "audio/wav":
+		return "wav"
+	case "audio/opus":
+		return "opus"
+	case "audio/aac":
+		return "aac"
+	case "audio/flac":
+		return "flac"
+	case "audio/pcm":
+		return "pcm"
+	default:
+		return "mp3"
+	}
 }

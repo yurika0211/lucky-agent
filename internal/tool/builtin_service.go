@@ -8,16 +8,20 @@ type BuiltinToolService struct {
 	mediaProcessor       *multimodal.Processor
 	imageGenerator       multimodal.ImageGenerator
 	imageGenDefaults     ImageGenerationDefaults
+	speechSynthesizer    multimodal.SpeechSynthesizer
+	ttsDefaults          TTSDefaults
 	defaultImageProvider string
 }
 
 // NewBuiltinToolService creates a builtin tool service.
-func NewBuiltinToolService(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults) *BuiltinToolService {
+func NewBuiltinToolService(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults) *BuiltinToolService {
 	return &BuiltinToolService{
 		searchCfg:            searchCfg,
 		mediaProcessor:       mediaProcessor,
 		imageGenerator:       imageGenerator,
 		imageGenDefaults:     imageGenDefaults,
+		speechSynthesizer:    speechSynthesizer,
+		ttsDefaults:          ttsDefaults,
 		defaultImageProvider: defaultImageProvider,
 	}
 }
@@ -42,6 +46,7 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	r.Register(CalculateTool())
 	r.Register(ImageAnalyzeTool(s.mediaProcessor, s.defaultImageProvider))
 	r.Register(ImageGenerateTool(s.imageGenerator, s.imageGenDefaults))
+	r.Register(TextToSpeechTool(s.speechSynthesizer, s.ttsDefaults))
 	r.Register(LogTailTool())
 	r.Register(LogGrepTool())
 	r.Register(HTTPRequestTool())

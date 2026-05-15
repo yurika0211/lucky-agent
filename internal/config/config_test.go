@@ -60,6 +60,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.ImageGeneration.AuthMode != "bearer" {
 		t.Errorf("expected image_generation.auth_mode bearer, got %s", cfg.ImageGeneration.AuthMode)
 	}
+	if cfg.TTS.Model != "gpt-4o-mini-tts" {
+		t.Errorf("expected tts.model gpt-4o-mini-tts, got %s", cfg.TTS.Model)
+	}
+	if cfg.TTS.Voice != "alloy" {
+		t.Errorf("expected tts.voice alloy, got %s", cfg.TTS.Voice)
+	}
 }
 
 func TestManagerSetAndGet(t *testing.T) {
@@ -282,6 +288,46 @@ func TestManagerSetImageGenerationConfig(t *testing.T) {
 	}
 	if cfg.ImageGeneration.Model != "gemini-3.1-flash-image-preview" {
 		t.Fatalf("expected gemini model, got %q", cfg.ImageGeneration.Model)
+	}
+}
+
+func TestManagerSetTTSConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("tts.provider", "openai"); err != nil {
+		t.Fatalf("Set tts.provider: %v", err)
+	}
+	if err := mgr.Set("tts.api_key", "tts-key"); err != nil {
+		t.Fatalf("Set tts.api_key: %v", err)
+	}
+	if err := mgr.Set("tts.api_base", "https://speech.example/v1"); err != nil {
+		t.Fatalf("Set tts.api_base: %v", err)
+	}
+	if err := mgr.Set("tts.auth_mode", "bearer"); err != nil {
+		t.Fatalf("Set tts.auth_mode: %v", err)
+	}
+	if err := mgr.Set("tts.model", "gpt-4o-mini-tts"); err != nil {
+		t.Fatalf("Set tts.model: %v", err)
+	}
+	if err := mgr.Set("tts.voice", "alloy"); err != nil {
+		t.Fatalf("Set tts.voice: %v", err)
+	}
+	if err := mgr.Set("tts.format", "wav"); err != nil {
+		t.Fatalf("Set tts.format: %v", err)
+	}
+	if err := mgr.Set("tts.speed", "1.25"); err != nil {
+		t.Fatalf("Set tts.speed: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.TTS.APIKey != "tts-key" || cfg.TTS.APIBase != "https://speech.example/v1" {
+		t.Fatalf("unexpected tts config: %+v", cfg.TTS)
+	}
+	if cfg.TTS.Format != "wav" || cfg.TTS.Speed != 1.25 {
+		t.Fatalf("unexpected tts format/speed: %+v", cfg.TTS)
 	}
 }
 

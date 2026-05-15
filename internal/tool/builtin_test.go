@@ -23,6 +23,10 @@ type fakeImageGenerator struct {
 	lastReq multimodal.ImageGenerationRequest
 	result  *multimodal.ImageGenerationResult
 }
+type fakeSpeechSynthesizer struct {
+	lastReq multimodal.SpeechSynthesisRequest
+	result  *multimodal.SpeechSynthesisResult
+}
 
 func (g *fakeImageGenerator) Name() string { return "fake-image-generator" }
 func (g *fakeImageGenerator) GenerateImage(ctx context.Context, req multimodal.ImageGenerationRequest) (*multimodal.ImageGenerationResult, error) {
@@ -36,6 +40,20 @@ func (g *fakeImageGenerator) GenerateImage(ctx context.Context, req multimodal.I
 		Images: []multimodal.GeneratedImage{
 			{Data: []byte("png-bytes"), MimeType: "image/png"},
 		},
+	}, nil
+}
+func (s *fakeSpeechSynthesizer) Name() string { return "fake-speech-synthesizer" }
+func (s *fakeSpeechSynthesizer) SynthesizeSpeech(ctx context.Context, req multimodal.SpeechSynthesisRequest) (*multimodal.SpeechSynthesisResult, error) {
+	s.lastReq = req
+	if s.result != nil {
+		return s.result, nil
+	}
+	return &multimodal.SpeechSynthesisResult{
+		Provider: "fake-speech-synthesizer",
+		Model:    "fake-tts-model",
+		Voice:    "fake-voice",
+		Audio:    []byte("mp3-bytes"),
+		MimeType: "audio/mpeg",
 	}, nil
 }
 
@@ -67,7 +85,7 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"terminal", "shell", "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "current_time", "calculate", "image_analyze", "image_generate", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
+	expected := []string{"terminal", "shell", "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "current_time", "calculate", "image_analyze", "image_generate", "text_to_speech", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {
@@ -464,6 +482,86 @@ func TestImageGenerateToolUsesConfiguredDefaults(t *testing.T) {
 	}
 	if gen.lastReq.OutputFormat != "webp" {
 		t.Fatalf("expected default output format, got %q", gen.lastReq.OutputFormat)
+	}
+}
+
+func TestTextToSpeechToolSavesOutput(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{
+		result: &multimodal.SpeechSynthesisResult{
+			Provider: "fake-speech-synthesizer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Audio:    []byte("speech-bytes"),
+			MimeType: "audio/mpeg",
+		},
+	}
+	tmpDir := t.TempDir()
+
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	result, err := r.CallWithShellContext("text_to_speech", map[string]any{
+		"text":       "hello from luckyharness",
+		"output_dir": tmpDir,
+	}, &ShellContext{Cwd: tmpDir})
+	if err != nil {
+		t.Fatalf("text_to_speech call: %v", err)
+	}
+
+	if synth.lastReq.Text != "hello from luckyharness" {
+		t.Fatalf("unexpected text: %q", synth.lastReq.Text)
+	}
+
+	var payload struct {
+		Path  string `json:"path"`
+		Model string `json:"model"`
+		Voice string `json:"voice"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal tool output: %v", err)
+	}
+	if payload.Model != "gpt-4o-mini-tts" || payload.Voice != "alloy" {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	written, err := os.ReadFile(payload.Path)
+	if err != nil {
+		t.Fatalf("read synthesized output: %v", err)
+	}
+	if string(written) != "speech-bytes" {
+		t.Fatalf("unexpected written bytes: %q", string(written))
+	}
+}
+
+func TestTextToSpeechToolUsesConfiguredDefaults(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{
+		Model:  "gpt-4o-mini-tts",
+		Voice:  "alloy",
+		Format: "wav",
+		Speed:  1.25,
+	}))
+
+	tmpDir := t.TempDir()
+	_, err := r.CallWithShellContext("text_to_speech", map[string]any{
+		"text":       "test defaults",
+		"output_dir": tmpDir,
+	}, &ShellContext{Cwd: tmpDir})
+	if err != nil {
+		t.Fatalf("text_to_speech call: %v", err)
+	}
+
+	if synth.lastReq.Model != "gpt-4o-mini-tts" {
+		t.Fatalf("expected default model, got %q", synth.lastReq.Model)
+	}
+	if synth.lastReq.Voice != "alloy" {
+		t.Fatalf("expected default voice, got %q", synth.lastReq.Voice)
+	}
+	if synth.lastReq.Format != "wav" {
+		t.Fatalf("expected default format, got %q", synth.lastReq.Format)
+	}
+	if synth.lastReq.Speed != 1.25 {
+		t.Fatalf("expected default speed, got %f", synth.lastReq.Speed)
 	}
 }
 

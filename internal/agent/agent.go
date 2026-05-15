@@ -464,6 +464,7 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 	}
 	mediaProcessor := multimodal.NewProcessor()
 	var imageGenerator multimodal.ImageGenerator
+	var speechSynthesizer multimodal.SpeechSynthesizer
 	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
 		multimodal.ModalityText,
 		multimodal.ModalityImage,
@@ -507,6 +508,19 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		}
 	}
 
+	if ttsCfg, ok := resolveTTSConfig(c); ok {
+		switch ttsCfg.Provider {
+		case "openai":
+			if ttsProvider, err := multimodal.NewOpenAITTSProvider(multimodal.OpenAITTSConfig{
+				APIKey:   ttsCfg.APIKey,
+				APIBase:  ttsCfg.APIBase,
+				AuthMode: ttsCfg.AuthMode,
+			}); err == nil {
+				speechSynthesizer = ttsProvider
+			}
+		}
+	}
+
 	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
 	imageGenDefaults := tool.ImageGenerationDefaults{
 		Model:             strings.TrimSpace(c.ImageGeneration.Model),
@@ -517,7 +531,13 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		OutputCompression: c.ImageGeneration.OutputCompression,
 		Count:             c.ImageGeneration.Count,
 	}
-	toolServices := tool.NewServices(searchCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, mem, ragMgr, delegateMgr)
+	ttsDefaults := tool.TTSDefaults{
+		Model:  strings.TrimSpace(c.TTS.Model),
+		Voice:  strings.TrimSpace(c.TTS.Voice),
+		Format: strings.TrimSpace(c.TTS.Format),
+		Speed:  c.TTS.Speed,
+	}
+	toolServices := tool.NewServices(searchCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr)
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
@@ -576,6 +596,17 @@ type imageGenerationRuntimeConfig struct {
 	OutputFormat      string
 	OutputCompression int
 	Count             int
+}
+
+type ttsRuntimeConfig struct {
+	Provider string
+	APIKey   string
+	APIBase  string
+	AuthMode string
+	Model    string
+	Voice    string
+	Format   string
+	Speed    float64
 }
 
 func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, bool) {
@@ -708,6 +739,40 @@ func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfi
 func looksLikeGeminiImageModel(model string) bool {
 	model = strings.ToLower(strings.TrimSpace(model))
 	return strings.HasPrefix(model, "gemini") || strings.HasPrefix(model, "google/gemini")
+}
+
+func resolveTTSConfig(c *config.Config) (ttsRuntimeConfig, bool) {
+	if c == nil {
+		return ttsRuntimeConfig{}, false
+	}
+	cfg := ttsRuntimeConfig{
+		Provider: strings.ToLower(strings.TrimSpace(c.TTS.Provider)),
+		APIKey:   strings.TrimSpace(c.TTS.APIKey),
+		APIBase:  strings.TrimSpace(c.TTS.APIBase),
+		AuthMode: strings.ToLower(strings.TrimSpace(c.TTS.AuthMode)),
+		Model:    strings.TrimSpace(c.TTS.Model),
+		Voice:    strings.TrimSpace(c.TTS.Voice),
+		Format:   strings.TrimSpace(c.TTS.Format),
+		Speed:    c.TTS.Speed,
+	}
+	if cfg.Provider == "" {
+		cfg.Provider = "openai"
+	}
+	if cfg.AuthMode == "" {
+		cfg.AuthMode = "bearer"
+	}
+	if cfg.Provider == "openai" {
+		if cfg.APIKey == "" {
+			cfg.APIKey = strings.TrimSpace(c.APIKey)
+		}
+		if cfg.APIBase == "" {
+			cfg.APIBase = strings.TrimSpace(c.APIBase)
+		}
+	}
+	if cfg.APIKey == "" || cfg.APIBase == "" {
+		return ttsRuntimeConfig{}, false
+	}
+	return cfg, true
 }
 
 // New 创建 Agent

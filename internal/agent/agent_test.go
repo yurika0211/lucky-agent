@@ -1818,6 +1818,29 @@ func TestResolveImageGenerationConfigPromotesLegacyGeminiModel(t *testing.T) {
 	}
 }
 
+func TestResolveTTSConfigPrefersDedicatedConfig(t *testing.T) {
+	cfg := &config.Config{
+		TTS: config.TTSConfig{
+			Provider: "openai",
+			APIKey:   "tts-key",
+			APIBase:  "https://speech.example/v1",
+			AuthMode: "bearer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Format:   "mp3",
+			Speed:    1.1,
+		},
+	}
+
+	ttsCfg, ok := resolveTTSConfig(cfg)
+	if !ok {
+		t.Fatal("expected tts config to resolve")
+	}
+	if ttsCfg.APIBase != "https://speech.example/v1" || ttsCfg.Model != "gpt-4o-mini-tts" {
+		t.Fatalf("unexpected tts config: %+v", ttsCfg)
+	}
+}
+
 func TestAgent_SwitchModel_NoProvider(t *testing.T) {
 	// SwitchModel requires a fully initialized Agent with config manager
 	// Testing with nil config should not panic
