@@ -84,6 +84,18 @@ func TestTelegramProgressCards(t *testing.T) {
 		assert.Contains(t, got, "先看下 tasks 目录状态")
 	})
 
+	t.Run("summary card removes blank lines", func(t *testing.T) {
+		got := renderTelegramSummaryCard("First line\n\nSecond line")
+		assert.Contains(t, got, "First line\nSecond line")
+		assert.NotContains(t, got, "First line\n\nSecond line")
+	})
+
+	t.Run("history card joins without blank lines", func(t *testing.T) {
+		got := renderTelegramProgressHistoryCard([]string{"One", "Two"})
+		assert.Contains(t, got, "One\nTwo")
+		assert.NotContains(t, got, "One\n\nTwo")
+	})
+
 	t.Run("internal thinking marker is suppressed", func(t *testing.T) {
 		got := renderTelegramThinkingCard("Thinking... (round 2)")
 		assert.Equal(t, "", got)

@@ -26,7 +26,7 @@ func humanizeThinkingProgress(content string) string {
 }
 
 func renderTelegramThinkingCard(content string) string {
-	content = strings.TrimSpace(content)
+	content = compactProgressCardText(content)
 	if content == "" || isInternalThinkingProgress(content) {
 		return ""
 	}
@@ -34,7 +34,7 @@ func renderTelegramThinkingCard(content string) string {
 }
 
 func renderTelegramSummaryCard(summary string) string {
-	summary = strings.TrimSpace(summary)
+	summary = compactProgressCardText(summary)
 	if summary == "" {
 		return ""
 	}
@@ -44,7 +44,7 @@ func renderTelegramSummaryCard(summary string) string {
 func renderTelegramProgressHistoryCard(parts []string) string {
 	body := make([]string, 0, len(parts))
 	for _, part := range parts {
-		part = strings.TrimSpace(part)
+		part = compactProgressCardText(part)
 		if part == "" {
 			continue
 		}
@@ -53,7 +53,24 @@ func renderTelegramProgressHistoryCard(parts []string) string {
 	if len(body) == 0 {
 		return ""
 	}
-	return "<b>💭 Reasoning Trace</b>\n<blockquote expandable>" + strings.Join(body, "\n\n") + "</blockquote>"
+	return "<b>💭 Reasoning Trace</b>\n<blockquote expandable>" + strings.Join(body, "\n") + "</blockquote>"
+}
+
+func compactProgressCardText(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func renderTelegramToolTraceCard(steps []telegramToolTraceStep) string {
