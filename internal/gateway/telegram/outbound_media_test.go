@@ -153,6 +153,16 @@ func TestParseOutboundMediaResponseImplicitDocument(t *testing.T) {
 	}
 }
 
+func TestParseOutboundMediaResponseImplicitAudioDocument(t *testing.T) {
+	text, media := parseOutboundMediaResponse("/tmp/output.mp3")
+	if text != "" {
+		t.Fatalf("expected empty text, got %q", text)
+	}
+	if len(media) != 1 || media[0].Kind != outboundMediaDocument {
+		t.Fatalf("expected implicit audio document media, got %#v", media)
+	}
+}
+
 func TestResolveOutboundMediaResponseMediaTag(t *testing.T) {
 	text, media, err := resolveOutboundMediaResponse("已生成文件\nMEDIA:/tmp/report.pdf")
 	if err != nil {

@@ -32,7 +32,7 @@ var (
 	markdownLinkPattern     = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
 	fencedCodePattern       = regexp.MustCompile("(?s)```.*?```")
 	inlineCodePattern       = regexp.MustCompile("`[^`\n]+`")
-	localFilePattern        = regexp.MustCompile(`(?i)(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|pdf|txt|md|json|csv|docx?|xlsx?|pptx?|zip|rar|7z|svg|xml|html?|js|ts|py|go|ya?ml)\b`)
+	localFilePattern        = regexp.MustCompile(`(?i)(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp3|wav|opus|ogg|aac|flac|m4a|pdf|txt|md|json|csv|docx?|xlsx?|pptx?|zip|rar|7z|svg|xml|html?|js|ts|py|go|ya?ml)\b`)
 )
 
 func resolveOutboundMediaResponse(response string) (string, []outboundMedia, error) {
@@ -206,7 +206,7 @@ func inferMediaKind(source string) (outboundMediaKind, bool) {
 	switch ext {
 	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
 		return outboundMediaPhoto, true
-	case ".pdf", ".txt", ".md", ".json", ".csv", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z", ".svg", ".xml", ".html", ".htm", ".js", ".ts", ".py", ".go", ".yaml", ".yml":
+	case ".mp3", ".wav", ".opus", ".ogg", ".aac", ".flac", ".m4a", ".pdf", ".txt", ".md", ".json", ".csv", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z", ".svg", ".xml", ".html", ".htm", ".js", ".ts", ".py", ".go", ".yaml", ".yml":
 		return outboundMediaDocument, true
 	default:
 		return "", false
