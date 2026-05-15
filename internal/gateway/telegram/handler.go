@@ -21,7 +21,6 @@ import (
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
-	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -829,63 +828,7 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 		return agent.TextUserTurnInput(baseText)
 	}
 
-	parts := make([]provider.ContentPart, 0, len(attachments)+1)
-	if baseText != "" {
-		parts = append(parts, provider.ContentPart{Type: "text", Text: baseText})
-	}
-
-	imageCount := 0
-	for _, att := range attachments {
-		if att.Type != gateway.AttachmentImage {
-			return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
-		}
-		img := imagePartFromAttachment(att)
-		if img == nil {
-			return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
-		}
-		parts = append(parts, provider.ContentPart{Type: "image", Image: img})
-		imageCount++
-	}
-
-	if imageCount == 0 {
-		return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
-	}
-
-	routingText := baseText
-	if routingText == "" {
-		if imageCount == 1 {
-			routingText = "用户发送了一张图片，请结合图片回答。"
-		} else {
-			routingText = fmt.Sprintf("用户发送了 %d 张图片，请结合图片回答。", imageCount)
-		}
-	}
-
-	return (agent.UserTurnInput{
-		RoutingText: routingText,
-		Message: provider.Message{
-			Role:         "user",
-			Content:      routingText,
-			ContentParts: parts,
-		},
-	}).Normalize()
-}
-
-func imagePartFromAttachment(att gateway.Attachment) *provider.ImagePart {
-	if strings.TrimSpace(att.FilePath) != "" {
-		return &provider.ImagePart{
-			FilePath: att.FilePath,
-			MimeType: att.MimeType,
-			Detail:   "auto",
-		}
-	}
-	if strings.TrimSpace(att.FileURL) != "" {
-		return &provider.ImagePart{
-			URL:      att.FileURL,
-			MimeType: att.MimeType,
-			Detail:   "auto",
-		}
-	}
-	return nil
+	return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
 }
 
 func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {

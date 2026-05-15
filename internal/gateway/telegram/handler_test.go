@@ -173,7 +173,7 @@ func TestDequeueChatRequestFIFO(t *testing.T) {
 	assert.False(t, ok3)
 }
 
-func TestBuildUserTurnInputPreservesCurrentImage(t *testing.T) {
+func TestBuildUserTurnInputRoutesImagesThroughAttachmentAnalysisPath(t *testing.T) {
 	h := &Handler{}
 	input := h.buildUserTurnInput(context.Background(), "看这张图", []gateway.Attachment{
 		{
@@ -185,12 +185,10 @@ func TestBuildUserTurnInputPreservesCurrentImage(t *testing.T) {
 	})
 
 	require.Equal(t, "user", input.Message.Role)
-	require.Equal(t, "看这张图", input.RoutingText)
-	require.Len(t, input.Message.ContentParts, 2)
-	assert.Equal(t, "text", input.Message.ContentParts[0].Type)
-	assert.Equal(t, "看这张图", input.Message.ContentParts[0].Text)
-	require.NotNil(t, input.Message.ContentParts[1].Image)
-	assert.Equal(t, "/tmp/example.jpg", input.Message.ContentParts[1].Image.FilePath)
+	require.Empty(t, input.Message.ContentParts)
+	assert.Contains(t, input.RoutingText, "看这张图")
+	assert.Contains(t, input.RoutingText, "[Multimedia Attachments]")
+	assert.Contains(t, input.RoutingText, "example.jpg")
 }
 
 func TestGenerateRoundProgressFeedbackIncludesPreviousUserFacingUpdate(t *testing.T) {
