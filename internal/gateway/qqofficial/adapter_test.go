@@ -1,7 +1,9 @@
 package qqofficial
 
 import (
+	"context"
 	"encoding/json"
+	"os"
 	"testing"
 
 	"github.com/yurika0211/luckyharness/internal/gateway"
@@ -98,5 +100,81 @@ func TestAccessTokenResponseUnmarshalExpiresInNumber(t *testing.T) {
 	}
 	if resp.AccessToken != "abc" || resp.ExpiresIn != 7200 {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestBuildUserTurnInputRoutesAttachmentsThroughTextPath(t *testing.T) {
+	h := NewHandler(NewAdapter(DefaultConfig()), nil)
+	input := h.buildUserTurnInput(context.Background(), "看一下附件", []gateway.Attachment{
+		{
+			Type:     gateway.AttachmentImage,
+			FilePath: "/tmp/example.jpg",
+			FileName: "example.jpg",
+			MimeType: "image/jpeg",
+		},
+	})
+
+	if input.Message.Role != "user" {
+		t.Fatalf("expected user role, got %q", input.Message.Role)
+	}
+	if len(input.Message.ContentParts) != 0 {
+		t.Fatalf("expected no content parts, got %#v", input.Message.ContentParts)
+	}
+	if input.RoutingText == "" {
+		t.Fatal("expected non-empty routing text")
+	}
+	if got := input.RoutingText; got == "看一下附件" {
+		t.Fatalf("expected attachment description to be appended, got %q", got)
+	}
+}
+
+func TestQQProgressHelpers(t *testing.T) {
+	if got := qqThinkingMessage("Thinking... (round 2)", 2); got == "" {
+		t.Fatal("expected non-empty thinking message")
+	}
+	if got := qqToolCallMessage("web_search", `{"query":"abc"}`); got == "" {
+		t.Fatal("expected non-empty tool call message")
+	}
+	if got := qqToolResultMessage("web_search", "found results"); got == "" {
+		t.Fatal("expected non-empty tool result message")
+	}
+}
+
+func TestSendStreamReturnsSenderWhenRunning(t *testing.T) {
+	a := NewAdapter(DefaultConfig())
+	a.running = true
+
+	sender, err := a.SendStream(context.Background(), "c2c:user-1", "msg-1")
+	if err != nil {
+		t.Fatalf("SendStream error = %v", err)
+	}
+	if sender == nil {
+		t.Fatal("expected non-nil sender")
+	}
+	if sender.MessageID() != "msg-1" {
+		t.Fatalf("expected message id msg-1, got %q", sender.MessageID())
+	}
+}
+
+func TestResolveOutboundMediaResponse(t *testing.T) {
+	tmpDir := t.TempDir()
+	img := tmpDir + "/a.png"
+	doc := tmpDir + "/b.pdf"
+	if err := os.WriteFile(img, []byte("img"), 0o644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	if err := os.WriteFile(doc, []byte("doc"), 0o644); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+
+	text, media, err := resolveOutboundMediaResponse("图片如下\nMEDIA:" + img + "\nMEDIA:" + doc)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse error = %v", err)
+	}
+	if text != "图片如下" {
+		t.Fatalf("unexpected text %q", text)
+	}
+	if len(media) != 2 {
+		t.Fatalf("expected 2 media items, got %d", len(media))
 	}
 }
