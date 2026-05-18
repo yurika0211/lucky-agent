@@ -23,9 +23,36 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 			},
 			"category": {
 				Type:        "string",
-				Description: "Optional category such as identity, preference, project, knowledge, or conversation.",
+				Description: "Optional category such as identity, preference, project, health, rule, location, plan, knowledge, or conversation.",
 				Required:    false,
 				Default:     "conversation",
+			},
+			"tier": {
+				Type:        "string",
+				Description: "Optional memory tier: short, medium, or long. Overrides long_term when provided.",
+				Required:    false,
+				Default:     "medium",
+			},
+			"importance": {
+				Type:        "number",
+				Description: "Optional importance from 0.0 to 1.0. Use high values for durable constraints.",
+				Required:    false,
+				Default:     0.5,
+			},
+			"tags": {
+				Type:        "array",
+				Description: "Optional short tags for filtering, for example health, family, tool-routing.",
+				Required:    false,
+			},
+			"links": {
+				Type:        "array",
+				Description: "Optional Obsidian wikilink targets such as Daughter, Pollen Allergy, Outdoor Plan, Weather Forecast, or Air Quality.",
+				Required:    false,
+			},
+			"aliases": {
+				Type:        "array",
+				Description: "Optional aliases that should retrieve this memory, including Chinese or English synonyms.",
+				Required:    false,
 			},
 			"long_term": {
 				Type:        "boolean",
