@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -113,6 +114,7 @@ type outgoingMessagePayload struct {
 	Content  string                `json:"content,omitempty"`
 	MsgType  int                   `json:"msg_type"`
 	MsgID    string                `json:"msg_id,omitempty"`
+	MsgSeq   int                   `json:"msg_seq,omitempty"`
 	Media    *outgoingMessageMedia `json:"media,omitempty"`
 	FileName string                `json:"file_name,omitempty"`
 }
@@ -148,6 +150,7 @@ type Adapter struct {
 	tokenExpiry time.Time
 	seq         int64
 	sessionID   string
+	replySeq    atomic.Uint32
 }
 
 type qqStreamSender struct {
@@ -537,6 +540,7 @@ func (a *Adapter) sendMessage(ctx context.Context, endpoint, replyMsgID, message
 		Content: strings.TrimSpace(message),
 		MsgType: 0,
 		MsgID:   strings.TrimSpace(replyMsgID),
+		MsgSeq:  a.nextReplyMsgSeq(replyMsgID),
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -579,6 +583,7 @@ func (a *Adapter) sendRichMessage(ctx context.Context, endpoint, replyMsgID, fil
 	payload := outgoingMessagePayload{
 		MsgType: 7,
 		MsgID:   strings.TrimSpace(replyMsgID),
+		MsgSeq:  a.nextReplyMsgSeq(replyMsgID),
 		Media: &outgoingMessageMedia{
 			FileInfo: fileInfo,
 		},
@@ -682,6 +687,13 @@ func (a *Adapter) uploadMedia(ctx context.Context, scope, targetID, source strin
 		return "", fmt.Errorf("qqofficial: upload media returned empty file_info")
 	}
 	return result.FileInfo, nil
+}
+
+func (a *Adapter) nextReplyMsgSeq(replyMsgID string) int {
+	if strings.TrimSpace(replyMsgID) == "" {
+		return 0
+	}
+	return int(a.replySeq.Add(1))
 }
 
 func buildIntentBits(names []string) int {

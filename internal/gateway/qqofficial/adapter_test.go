@@ -3,8 +3,12 @@ package qqofficial
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
@@ -100,6 +104,58 @@ func TestAccessTokenResponseUnmarshalExpiresInNumber(t *testing.T) {
 	}
 	if resp.AccessToken != "abc" || resp.ExpiresIn != 7200 {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestSendWithReplyUsesIncrementingMsgSeq(t *testing.T) {
+	var mu sync.Mutex
+	var payloads []outgoingMessagePayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/users/user-1/messages" {
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+		var payload outgoingMessagePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "decode payload: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mu.Lock()
+		payloads = append(payloads, payload)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a := NewAdapter(Config{
+		AppID:      "app-id",
+		AppSecret:  "app-secret",
+		APIBaseURL: server.URL,
+	})
+	a.accessToken = "token"
+	a.tokenExpiry = time.Now().Add(time.Hour)
+
+	if err := a.SendWithReply(context.Background(), "c2c:user-1", "msg-1", "first"); err != nil {
+		t.Fatalf("first SendWithReply error = %v", err)
+	}
+	if err := a.SendWithReply(context.Background(), "c2c:user-1", "msg-1", "second"); err != nil {
+		t.Fatalf("second SendWithReply error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(payloads) != 2 {
+		t.Fatalf("expected 2 payloads, got %d", len(payloads))
+	}
+	if payloads[0].MsgID != "msg-1" || payloads[1].MsgID != "msg-1" {
+		t.Fatalf("unexpected msg_id values: %#v", payloads)
+	}
+	if payloads[0].MsgSeq == 0 || payloads[1].MsgSeq == 0 {
+		t.Fatalf("expected msg_seq to be set: %#v", payloads)
+	}
+	if payloads[0].MsgSeq == payloads[1].MsgSeq {
+		t.Fatalf("expected msg_seq to increment, got %#v", payloads)
 	}
 }
 
