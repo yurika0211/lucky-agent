@@ -77,9 +77,9 @@ func (o *OpenAIMediaProvider) Analyze(ctx context.Context, input *Input) (*Analy
 
 	switch input.Modality {
 	case ModalityImage:
-		return o.analyzeWithResponses(ctx, input, "Describe this image for an AI assistant. Extract visible text, summarize the scene, and keep the result concise but informative.")
+		return o.analyzeVision(ctx, input, "Describe this image for an AI assistant. Extract visible text, summarize the scene, and keep the result concise but informative.")
 	case ModalityDocument:
-		return o.analyzeWithResponses(ctx, input, "Read this document and extract the most important information for an AI assistant. Summarize the document, preserve critical facts, and quote key text snippets only when necessary.")
+		return o.analyzeVision(ctx, input, "Read this document and extract the most important information for an AI assistant. Summarize the document, preserve critical facts, and quote key text snippets only when necessary.")
 	case ModalityAudio:
 		return o.transcribeAudio(ctx, input)
 	default:
@@ -173,6 +173,26 @@ func applyOpenAIMediaHeaders(req *http.Request, apiKey, contentType string) {
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", defaultOpenAIUserAgent)
+}
+
+func (o *OpenAIMediaProvider) analyzeVision(ctx context.Context, input *Input, prompt string) (*AnalysisResult, error) {
+	result, err := o.analyzeWithResponses(ctx, input, prompt)
+	if err == nil {
+		return result, nil
+	}
+	if ctx.Err() != nil {
+		return nil, err
+	}
+
+	fallback, fallbackErr := o.analyzeWithChatCompletions(ctx, input, prompt)
+	if fallbackErr == nil {
+		if fallback.Metadata == nil {
+			fallback.Metadata = make(map[string]string)
+		}
+		fallback.Metadata["fallback_from"] = "openai-responses"
+		return fallback, nil
+	}
+	return nil, fmt.Errorf("responses analysis failed: %w; chat completions fallback failed: %v", err, fallbackErr)
 }
 
 func (o *OpenAIMediaProvider) generateImageFromPrompt(ctx context.Context, req ImageGenerationRequest) (*ImageGenerationResult, error) {
@@ -375,6 +395,72 @@ func (o *OpenAIMediaProvider) analyzeWithResponses(ctx context.Context, input *I
 	}, nil
 }
 
+func (o *OpenAIMediaProvider) analyzeWithChatCompletions(ctx context.Context, input *Input, prompt string) (*AnalysisResult, error) {
+	contentItem, err := o.buildChatCompletionContentItem(input)
+	if err != nil {
+		return nil, err
+	}
+
+	reqBody := map[string]any{
+		"model": o.responsesModel,
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type": "text",
+						"text": prompt,
+					},
+					contentItem,
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat completions request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiBase+"/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("create chat completions request: %w", err)
+	}
+	applyOpenAIMediaHeaders(req, o.apiKey, "application/json")
+
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send chat completions request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read chat completions response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("chat completions api error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	text := extractChatCompletionsOutputText(body)
+	if text == "" {
+		return nil, fmt.Errorf("chat completions api returned empty output")
+	}
+
+	return &AnalysisResult{
+		InputID:    input.ID,
+		Modality:   input.Modality,
+		Text:       text,
+		Summary:    truncateString(text, 240),
+		Labels:     []string{string(input.Modality), "openai"},
+		Confidence: 0.85,
+		Metadata: map[string]string{
+			"model":  o.responsesModel,
+			"source": "openai-chat-completions",
+		},
+	}, nil
+}
+
 func (o *OpenAIMediaProvider) transcribeAudio(ctx context.Context, input *Input) (*AnalysisResult, error) {
 	data, err := o.resolveInputData(input)
 	if err != nil {
@@ -497,6 +583,37 @@ func (o *OpenAIMediaProvider) buildResponsesContentItem(input *Input) (map[strin
 	return nil, fmt.Errorf("unsupported modality %q", input.Modality)
 }
 
+func (o *OpenAIMediaProvider) buildChatCompletionContentItem(input *Input) (map[string]any, error) {
+	switch input.Modality {
+	case ModalityImage:
+		imageURL := strings.TrimSpace(input.URL)
+		if imageURL == "" {
+			data, err := o.resolveInputData(input)
+			if err != nil {
+				return nil, err
+			}
+			if len(data) == 0 {
+				return nil, fmt.Errorf("image input requires url or data")
+			}
+			mimeType := strings.TrimSpace(input.MimeType)
+			if mimeType == "" {
+				mimeType = http.DetectContentType(data)
+			}
+			imageURL = fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
+		}
+		return map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url":    imageURL,
+				"detail": "auto",
+			},
+		}, nil
+	case ModalityDocument:
+		return nil, fmt.Errorf("chat completions fallback does not support document modality")
+	}
+	return nil, fmt.Errorf("unsupported modality %q", input.Modality)
+}
+
 func (o *OpenAIMediaProvider) resolveInputData(input *Input) ([]byte, error) {
 	if len(input.Data) > 0 {
 		return input.Data, nil
@@ -543,6 +660,50 @@ func extractResponsesOutputText(body []byte) string {
 		}
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func extractChatCompletionsOutputText(body []byte) string {
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Choices) == 0 {
+		return ""
+	}
+	return extractTextFromRawContent(payload.Choices[0].Message.Content)
+}
+
+func extractTextFromRawContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part.Text) == "" {
+			continue
+		}
+		if part.Type == "" || strings.Contains(part.Type, "text") {
+			out = append(out, strings.TrimSpace(part.Text))
+		}
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
 }
 
 func extractTranscriptionText(body []byte) string {

@@ -51,6 +51,69 @@ func TestOpenAIMediaProviderResponsesSetsUserAgent(t *testing.T) {
 	}
 }
 
+func TestOpenAIMediaProviderAnalyzeImageFallsBackToChatCompletions(t *testing.T) {
+	provider, err := NewOpenAIMediaProvider(OpenAIMediaConfig{
+		APIKey:         "sk-test",
+		ResponsesModel: "vision-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIMediaProvider returned error: %v", err)
+	}
+
+	var paths []string
+	var chatBody string
+	provider.client = &http.Client{
+		Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+			paths = append(paths, req.URL.Path)
+			body, _ := io.ReadAll(req.Body)
+			if req.URL.Path == "/v1/chat/completions" {
+				chatBody = string(body)
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"chart summary"}}]}`)),
+					Request:    req,
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"error":"responses unavailable"}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	result, err := provider.Analyze(context.Background(), &Input{
+		ID:       "img-1",
+		Modality: ModalityImage,
+		MimeType: "image/png",
+		Data:     []byte("png"),
+	})
+	if err != nil {
+		t.Fatalf("Analyze returned error: %v", err)
+	}
+
+	if strings.Join(paths, ",") != "/v1/responses,/v1/chat/completions" {
+		t.Fatalf("paths = %v, want responses then chat completions", paths)
+	}
+	if !strings.Contains(chatBody, `"model":"vision-model"`) {
+		t.Fatalf("chat completion body missing model: %s", chatBody)
+	}
+	if !strings.Contains(chatBody, `"type":"image_url"`) {
+		t.Fatalf("chat completion body missing image_url part: %s", chatBody)
+	}
+	if result.Text != "chart summary" {
+		t.Fatalf("text = %q, want chart summary", result.Text)
+	}
+	if result.Metadata["source"] != "openai-chat-completions" {
+		t.Fatalf("source = %q, want openai-chat-completions", result.Metadata["source"])
+	}
+	if result.Metadata["fallback_from"] != "openai-responses" {
+		t.Fatalf("fallback_from = %q, want openai-responses", result.Metadata["fallback_from"])
+	}
+}
+
 func TestOpenAIMediaProviderTranscriptionSetsUserAgent(t *testing.T) {
 	provider, err := NewOpenAIMediaProvider(OpenAIMediaConfig{
 		APIKey: "sk-test",
