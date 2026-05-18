@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -462,14 +463,75 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 	if len(results) == 0 {
 		return provider.Message{}
 	}
-	limit := utils.MinInt(4, len(results))
+	results = prioritizeMemoryForContext(results)
+	limit := utils.MinInt(6, len(results))
 	lines := make([]string, 0, limit)
 	for i := 0; i < limit; i++ {
 		e := results[i]
-		lines = append(lines, fmt.Sprintf("- [%s/%s] %s", e.Category, e.Tier.String(), truncate(e.Content, 120)))
+		graphHint := memoryGraphHint(e)
+		lines = append(lines, fmt.Sprintf("- [%s/%s%s] %s", e.Category, e.Tier.String(), graphHint, truncate(e.Content, 140)))
 	}
-	content := "[Working Memory]\n" + strings.Join(lines, "\n")
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(96, p.budget.Memory/2))}
+	content := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved before tool planning. Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked.\n" + strings.Join(lines, "\n")
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(160, p.budget.Memory/2))}
+}
+
+func memoryGraphHint(e memory.Entry) string {
+	var parts []string
+	if len(e.Links) > 0 {
+		parts = append(parts, "links="+strings.Join(limitStrings(e.Links, 4), ","))
+	}
+	if e.Path != "" {
+		ref := e.Path
+		if e.BlockID != "" {
+			ref += "#" + e.BlockID
+		}
+		parts = append(parts, "ref="+ref)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
+}
+
+func limitStrings(values []string, limit int) []string {
+	if limit <= 0 || len(values) <= limit {
+		return values
+	}
+	return values[:limit]
+}
+
+func prioritizeMemoryForContext(entries []memory.Entry) []memory.Entry {
+	if len(entries) <= 1 {
+		return entries
+	}
+	out := append([]memory.Entry(nil), entries...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return memoryContextRank(out[i]) > memoryContextRank(out[j])
+	})
+	return out
+}
+
+func memoryContextRank(e memory.Entry) int {
+	rank := 0
+	switch e.Tier {
+	case memory.TierLong:
+		rank += 300
+	case memory.TierMedium:
+		rank += 200
+	case memory.TierShort:
+		rank += 100
+	}
+	switch strings.ToLower(strings.TrimSpace(e.Category)) {
+	case "health", "rule", "identity", "preference", "location", "project", "plan":
+		rank += 40
+	case "conversation":
+		rank -= 25
+	}
+	if strings.HasPrefix(strings.TrimSpace(e.Content), "User:") || strings.HasPrefix(strings.TrimSpace(e.Content), "Assistant:") {
+		rank -= 30
+	}
+	rank += int(e.Importance * 20)
+	return rank
 }
 
 /*

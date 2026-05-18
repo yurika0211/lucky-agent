@@ -300,6 +300,41 @@ func TestToContextMessages_MemoryPriority(t *testing.T) {
 	}
 }
 
+func TestContextPlannerInjectsMemoryGateForDaughterOutdoorPrompt(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	if err := a.memory.SaveWithTierAndTags("My [[Daughter]] has [[Pollen Allergy]].", "health", memory.TierLong, 0.98, []string{"health"}); err != nil {
+		t.Fatalf("save allergy: %v", err)
+	}
+	if err := a.memory.SaveWithTierAndTags("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", memory.TierLong, 0.92, []string{"tool-routing"}); err != nil {
+		t.Fatalf("save rule: %v", err)
+	}
+
+	planner := newContextPlanner(a, defaultContextBuildOptions())
+	messages := planner.Build(context.Background(), newTestSession(t), "今天下午适合和女儿出门吗")
+	joined := providerMessagesContent(messages)
+	for _, want := range []string{
+		"[Working Memory",
+		"Mandatory Memory Gate",
+		"Pollen Allergy",
+		"Weather Forecast",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected context to contain %q:\n%s", want, joined)
+		}
+	}
+}
+
+func providerMessagesContent(messages []provider.Message) string {
+	var b strings.Builder
+	for _, msg := range messages {
+		if msg.Content != "" {
+			b.WriteString(msg.Content)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
 func TestFromContextMessages(t *testing.T) {
 	a := &Agent{}
 	original := []provider.Message{
