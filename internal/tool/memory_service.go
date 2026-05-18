@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/utils"
@@ -50,8 +51,30 @@ func (s *MemoryToolService) HandleRemember(args map[string]any) (string, error) 
 	tags := stringSliceArg(args["tags"])
 	links := stringSliceArg(args["links"])
 	aliases := stringSliceArg(args["aliases"])
+	opts := memory.SaveOptions{
+		Tags:       tags,
+		Links:      links,
+		Aliases:    aliases,
+		Status:     stringArg(args["status"]),
+		StateKey:   stringArg(args["state_key"]),
+		StateValue: stringArg(args["state_value"]),
+		Supersedes: stringSliceArg(args["supersedes"]),
+	}
+	if confidence, ok := numberArg(args["confidence"]); ok {
+		opts.Confidence = clamp01(confidence)
+	}
+	if validFrom, ok, err := timeArg(args["valid_from"]); err != nil {
+		return "", err
+	} else if ok {
+		opts.ValidFrom = validFrom
+	}
+	if validUntil, ok, err := timeArg(args["valid_until"]); err != nil {
+		return "", err
+	} else if ok {
+		opts.ValidUntil = &validUntil
+	}
 
-	if err := s.store.SaveWithMetadata(content, category, tier, importance, tags, links, aliases); err != nil {
+	if err := s.store.SaveWithOptions(content, category, tier, importance, opts); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("✅ 已保存为%s记忆 [%s]: %s", memoryTierLabel(tier), category, utils.Truncate(content, 80)), nil
@@ -151,6 +174,27 @@ func numberArg(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func stringArg(v any) string {
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(s)
+	}
+	return ""
+}
+
+func timeArg(v any) (time.Time, bool, error) {
+	raw := stringArg(v)
+	if raw == "" {
+		return time.Time{}, false, nil
+	}
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		parsed, err := time.Parse(layout, raw)
+		if err == nil {
+			return parsed, true, nil
+		}
+	}
+	return time.Time{}, false, fmt.Errorf("invalid time %q: use RFC3339 or YYYY-MM-DD", raw)
 }
 
 func stringSliceArg(v any) []string {

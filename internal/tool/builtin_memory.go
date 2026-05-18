@@ -54,6 +54,42 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 				Description: "Optional aliases that should retrieve this memory, including Chinese or English synonyms.",
 				Required:    false,
 			},
+			"status": {
+				Type:        "string",
+				Description: "Optional temporal status: active, superseded, archived, or conflict.",
+				Required:    false,
+				Default:     "active",
+			},
+			"state_key": {
+				Type:        "string",
+				Description: "Optional stable key for facts that can change over time, for example family.daughter.pollen_allergy.",
+				Required:    false,
+			},
+			"state_value": {
+				Type:        "string",
+				Description: "Optional current value for state_key, for example active, resolved, unknown, or mild.",
+				Required:    false,
+			},
+			"confidence": {
+				Type:        "number",
+				Description: "Optional confidence from 0.0 to 1.0 for temporal state resolution.",
+				Required:    false,
+			},
+			"supersedes": {
+				Type:        "array",
+				Description: "Optional memory IDs this note replaces.",
+				Required:    false,
+			},
+			"valid_from": {
+				Type:        "string",
+				Description: "Optional RFC3339 or YYYY-MM-DD start date for when this memory becomes valid.",
+				Required:    false,
+			},
+			"valid_until": {
+				Type:        "string",
+				Description: "Optional RFC3339 or YYYY-MM-DD end date after which this memory is no longer valid.",
+				Required:    false,
+			},
 			"long_term": {
 				Type:        "boolean",
 				Description: "Set true only for durable core facts like identity, strong preferences, or long-lived project constraints.",

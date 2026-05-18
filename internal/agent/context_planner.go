@@ -459,7 +459,8 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 	if strings.TrimSpace(query) == "" {
 		return provider.Message{}
 	}
-	results := p.agent.memory.Search(query)
+	route := p.agent.memory.Route(query)
+	results := route.Entries
 	if len(results) == 0 {
 		return provider.Message{}
 	}
@@ -471,8 +472,39 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 		graphHint := memoryGraphHint(e)
 		lines = append(lines, fmt.Sprintf("- [%s/%s%s] %s", e.Category, e.Tier.String(), graphHint, truncate(e.Content, 140)))
 	}
-	content := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved before tool planning. Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked.\n" + strings.Join(lines, "\n")
+	routeLines := memoryRouteLines(route)
+	content := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved before tool planning. Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked.\n"
+	if len(routeLines) > 0 {
+		content += "\n[Memory Router]\n" + strings.Join(routeLines, "\n") + "\n\n"
+	}
+	content += strings.Join(lines, "\n")
 	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(160, p.budget.Memory/2))}
+}
+
+func memoryRouteLines(route memory.RouteAnalysis) []string {
+	var lines []string
+	if len(route.RequiredTools) > 0 {
+		lines = append(lines, "- Required tools before final answer: "+strings.Join(route.RequiredTools, ", "))
+	}
+	if len(route.RiskFlags) > 0 {
+		lines = append(lines, "- Risk flags: "+strings.Join(route.RiskFlags, ", "))
+	}
+	if len(route.Constraints) > 0 {
+		lines = append(lines, "- Answer constraints: "+strings.Join(limitStrings(route.Constraints, 5), " | "))
+	}
+	if len(route.SuggestedSearches) > 0 {
+		lines = append(lines, "- Suggested web_search queries: "+strings.Join(limitStrings(route.SuggestedSearches, 4), " | "))
+	}
+	if len(route.Clarifications) > 0 {
+		lines = append(lines, "- Clarify if needed: "+strings.Join(limitStrings(route.Clarifications, 3), " | "))
+	}
+	if len(route.TemporalNotes) > 0 {
+		lines = append(lines, "- Temporal resolution: "+strings.Join(limitStrings(route.TemporalNotes, 3), " | "))
+	}
+	if len(route.EvidenceRefs) > 0 {
+		lines = append(lines, "- Memory refs: "+strings.Join(limitStrings(route.EvidenceRefs, 5), " | "))
+	}
+	return lines
 }
 
 func memoryGraphHint(e memory.Entry) string {

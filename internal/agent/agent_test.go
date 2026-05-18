@@ -315,6 +315,9 @@ func TestContextPlannerInjectsMemoryGateForDaughterOutdoorPrompt(t *testing.T) {
 	for _, want := range []string{
 		"[Working Memory",
 		"Mandatory Memory Gate",
+		"[Memory Router]",
+		"Required tools before final answer: current_time, web_search",
+		"child_health_outdoor_plan",
 		"Pollen Allergy",
 		"Weather Forecast",
 	} {

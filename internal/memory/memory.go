@@ -58,8 +58,12 @@ type Entry struct {
 	Status      string     `json:"status,omitempty"`     // active/superseded/archived/conflict
 	ValidFrom   time.Time  `json:"valid_from,omitempty"`
 	ValidUntil  *time.Time `json:"valid_until,omitempty"`
-	Links       []string   `json:"links,omitempty"`    // Obsidian wikilinks referenced by this note
-	Aliases     []string   `json:"aliases,omitempty"`  // Obsidian note aliases / concept aliases
+	Links       []string   `json:"links,omitempty"`     // Obsidian wikilinks referenced by this note
+	Aliases     []string   `json:"aliases,omitempty"`   // Obsidian note aliases / concept aliases
+	StateKey    string     `json:"state_key,omitempty"` // Stable key for temporal state resolution
+	StateValue  string     `json:"state_value,omitempty"`
+	Confidence  float64    `json:"confidence,omitempty"`
+	Supersedes  []string   `json:"supersedes,omitempty"`
 	BlockID     string     `json:"block_id,omitempty"` // Stable Obsidian block id for exact references
 	Path        string     `json:"path,omitempty"`     // Path relative to the memory vault
 }
@@ -118,6 +122,40 @@ type GraphIndex struct {
 	Names     map[string][]string // normalized note/block aliases -> entry IDs
 }
 
+// RouteAnalysis turns retrieved memories into action-facing routing signals.
+// The Markdown notes remain the source of truth; this is a deterministic layer
+// that helps the agent convert graph recall into tool and answer constraints.
+type RouteAnalysis struct {
+	Query             string   `json:"query"`
+	Entries           []Entry  `json:"entries"`
+	RequiredTools     []string `json:"required_tools,omitempty"`
+	SuggestedSearches []string `json:"suggested_searches,omitempty"`
+	RiskFlags         []string `json:"risk_flags,omitempty"`
+	Constraints       []string `json:"constraints,omitempty"`
+	Clarifications    []string `json:"clarifications,omitempty"`
+	TemporalNotes     []string `json:"temporal_notes,omitempty"`
+	EvidenceRefs      []string `json:"evidence_refs,omitempty"`
+	SupersededRefs    []string `json:"superseded_refs,omitempty"`
+	ConflictRefs      []string `json:"conflict_refs,omitempty"`
+	ExpiredRefs       []string `json:"expired_refs,omitempty"`
+	FutureRefs        []string `json:"future_refs,omitempty"`
+}
+
+// SaveOptions carries optional Obsidian and temporal-state metadata.
+type SaveOptions struct {
+	Tags       []string
+	Links      []string
+	Aliases    []string
+	Status     string
+	ValidFrom  time.Time
+	ValidUntil *time.Time
+	ExpiresAt  *time.Time
+	StateKey   string
+	StateValue string
+	Confidence float64
+	Supersedes []string
+}
+
 // NewStore 创建记忆存储
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -152,6 +190,11 @@ func (s *Store) SaveWithTierAndTags(content, category string, tier Tier, importa
 
 // SaveWithMetadata saves a memory note with Obsidian graph metadata.
 func (s *Store) SaveWithMetadata(content, category string, tier Tier, importance float64, tags, links, aliases []string) error {
+	return s.SaveWithOptions(content, category, tier, importance, SaveOptions{Tags: tags, Links: links, Aliases: aliases})
+}
+
+// SaveWithOptions saves a memory note with graph and temporal-state metadata.
+func (s *Store) SaveWithOptions(content, category string, tier Tier, importance float64, opts SaveOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -162,14 +205,14 @@ func (s *Store) SaveWithMetadata(content, category string, tier Tier, importance
 			strings.EqualFold(e.Category, category) {
 			// 已存在：更新访问时间和标签，但不重复写入
 			e.AccessedAt = time.Now()
-			if len(tags) > 0 {
-				e.Tags = mergeTags(e.Tags, tags)
+			if len(opts.Tags) > 0 {
+				e.Tags = mergeTags(e.Tags, opts.Tags)
 			}
-			if len(links) > 0 {
-				e.Links = normalizeLinks(append(e.Links, links...))
+			if len(opts.Links) > 0 {
+				e.Links = normalizeLinks(append(e.Links, opts.Links...))
 			}
-			if len(aliases) > 0 {
-				e.Aliases = dedupSlice(append(e.Aliases, aliases...))
+			if len(opts.Aliases) > 0 {
+				e.Aliases = dedupSlice(append(e.Aliases, opts.Aliases...))
 			}
 			// 如果新层级更高，提升
 			if tier > e.Tier {
@@ -182,8 +225,32 @@ func (s *Store) SaveWithMetadata(content, category string, tier Tier, importance
 			if e.Status == "" {
 				e.Status = "active"
 			}
+			if opts.Status != "" {
+				e.Status = strings.TrimSpace(opts.Status)
+			}
 			if e.ValidFrom.IsZero() {
 				e.ValidFrom = e.CreatedAt
+			}
+			if !opts.ValidFrom.IsZero() {
+				e.ValidFrom = opts.ValidFrom
+			}
+			if opts.ValidUntil != nil {
+				e.ValidUntil = opts.ValidUntil
+			}
+			if opts.ExpiresAt != nil {
+				e.ExpiresAt = opts.ExpiresAt
+			}
+			if strings.TrimSpace(opts.StateKey) != "" {
+				e.StateKey = strings.TrimSpace(opts.StateKey)
+			}
+			if strings.TrimSpace(opts.StateValue) != "" {
+				e.StateValue = strings.TrimSpace(opts.StateValue)
+			}
+			if opts.Confidence > 0 {
+				e.Confidence = clampFloat(opts.Confidence, 0, 1)
+			}
+			if len(opts.Supersedes) > 0 {
+				e.Supersedes = dedupSlice(append(e.Supersedes, opts.Supersedes...))
 			}
 			e.Links = normalizeLinks(append(e.Links, extractWikiLinks(e.Content)...))
 			e.Aliases = dedupSlice(e.Aliases)
@@ -192,6 +259,14 @@ func (s *Store) SaveWithMetadata(content, category string, tier Tier, importance
 	}
 
 	now := time.Now()
+	status := strings.TrimSpace(opts.Status)
+	if status == "" {
+		status = "active"
+	}
+	validFrom := opts.ValidFrom
+	if validFrom.IsZero() {
+		validFrom = now
+	}
 	entry := &Entry{
 		ID:         s.generateID(),
 		Content:    content,
@@ -200,13 +275,19 @@ func (s *Store) SaveWithMetadata(content, category string, tier Tier, importance
 		Importance: importance,
 		CreatedAt:  now,
 		AccessedAt: now,
-		Tags:       tags,
-		Aliases:    dedupSlice(aliases),
-		Status:     "active",
-		ValidFrom:  now,
+		Tags:       opts.Tags,
+		Aliases:    dedupSlice(opts.Aliases),
+		ExpiresAt:  opts.ExpiresAt,
+		Status:     status,
+		ValidFrom:  validFrom,
+		ValidUntil: opts.ValidUntil,
+		StateKey:   strings.TrimSpace(opts.StateKey),
+		StateValue: strings.TrimSpace(opts.StateValue),
+		Confidence: clampFloat(opts.Confidence, 0, 1),
+		Supersedes: dedupSlice(opts.Supersedes),
 	}
 	entry.BlockID = blockIDForEntry(entry.ID)
-	entry.Links = normalizeLinks(append(links, extractWikiLinks(content)...))
+	entry.Links = normalizeLinks(append(opts.Links, extractWikiLinks(content)...))
 	s.entries[entry.ID] = entry
 	return s.persist()
 }
@@ -459,6 +540,160 @@ func (s *Store) Search(query string) []Entry {
 	_ = s.persist()
 
 	return results
+}
+
+// Route searches memory and derives deterministic tool/answer constraints.
+func (s *Store) Route(query string) RouteAnalysis {
+	entries := s.Search(query)
+	route := RouteAnalysis{
+		Query:   strings.TrimSpace(query),
+		Entries: entries,
+	}
+	if len(entries) == 0 {
+		return route
+	}
+	resolution := s.ResolveTemporal(query, entries)
+	entries = resolution.Entries
+	route.Entries = entries
+	route.TemporalNotes = resolution.Notes
+	route.SupersededRefs = resolution.SupersededRefs
+	route.ConflictRefs = resolution.ConflictRefs
+	route.ExpiredRefs = resolution.ExpiredRefs
+	route.FutureRefs = resolution.FutureRefs
+
+	text := routeAnalysisText(query, entries)
+	hasOutdoor := routeTextHasAny(text, "outdoor plan", "outdoor", "park", "公园", "户外", "出门", "外出", "踏青", "郊游")
+	hasChild := routeTextHasAny(text, "daughter", "child", "kid", "女儿", "孩子", "小孩", "儿童", "小朋友")
+	hasPollen := routeTextHasAny(text, "pollen allergy", "pollen", "hay fever", "allergy", "花粉", "花粉过敏", "花粉症", "过敏")
+	pollenInactive := routeStateInactive(entries, "pollen")
+	hasActivePollenRisk := hasPollen && !pollenInactive
+	hasWeather := routeTextHasAny(text, "weather forecast", "weather", "forecast", "天气", "气温", "风力", "下雨")
+	hasAirQuality := routeTextHasAny(text, "air quality", "aqi", "pm2.5", "空气质量", "空气", "雾霾")
+	location := routeLocationHint(query, entries)
+
+	if hasChild {
+		route.RiskFlags = append(route.RiskFlags, "child_or_family_context")
+		route.Constraints = append(route.Constraints, "Apply family/child-related memories when judging this request.")
+	}
+	if pollenInactive {
+		route.RiskFlags = append(route.RiskFlags, "pollen_allergy_inactive_or_resolved")
+		route.Constraints = append(route.Constraints, "Latest temporal memory says the pollen-allergy state is inactive/resolved; do not apply older allergy risk unless new evidence contradicts it.")
+	}
+	if hasActivePollenRisk {
+		route.RiskFlags = append(route.RiskFlags, "pollen_allergy")
+		route.Constraints = append(route.Constraints, "Account for the remembered pollen allergy risk before recommending outdoor activity.")
+	}
+	if hasOutdoor {
+		route.RiskFlags = append(route.RiskFlags, "outdoor_exposure")
+	}
+	if hasOutdoor && hasChild && hasActivePollenRisk {
+		route.RiskFlags = append(route.RiskFlags, "child_health_outdoor_plan")
+		route.RequiredTools = append(route.RequiredTools, "current_time", "web_search")
+		route.Constraints = append(route.Constraints,
+			"Before the final answer, check current or forecast conditions relevant to outdoor exposure.",
+			"Include pollen exposure, wind/weather, and air quality uncertainty in the recommendation.",
+		)
+		route.SuggestedSearches = append(route.SuggestedSearches,
+			routeSearchQuery(location, "weather forecast wind outdoor afternoon"),
+			routeSearchQuery(location, "pollen forecast allergy level"),
+			routeSearchQuery(location, "air quality AQI PM2.5"),
+		)
+	}
+	if hasWeather && hasOutdoor {
+		route.RequiredTools = append(route.RequiredTools, "current_time", "web_search")
+		route.Constraints = append(route.Constraints, "Use live or forecast weather instead of relying only on static memory.")
+	}
+	if hasAirQuality && hasOutdoor {
+		route.RequiredTools = append(route.RequiredTools, "web_search")
+		route.Constraints = append(route.Constraints, "Check air quality when outdoor health risk is part of the request.")
+	}
+	if hasOutdoor && location == "" {
+		route.Clarifications = append(route.Clarifications, "Ask for the city or area if no remembered or user-provided location is available.")
+	} else if location != "" {
+		route.Constraints = append(route.Constraints, "Use location hint: "+location+". If the user provides another location, prefer the current user-provided location.")
+	}
+
+	route.RequiredTools = dedupSlice(route.RequiredTools)
+	route.SuggestedSearches = dedupSlice(route.SuggestedSearches)
+	route.RiskFlags = dedupSlice(route.RiskFlags)
+	route.Constraints = dedupSlice(route.Constraints)
+	route.Clarifications = dedupSlice(route.Clarifications)
+	route.EvidenceRefs = routeEvidenceRefs(entries, 6)
+	return route
+}
+
+// TemporalResolution is the deterministic current-state view for recalled memories.
+type TemporalResolution struct {
+	Entries        []Entry
+	Notes          []string
+	SupersededRefs []string
+	ConflictRefs   []string
+	ExpiredRefs    []string
+	FutureRefs     []string
+}
+
+// ResolveTemporal keeps the current memory state and reports inactive/conflict notes.
+func (s *Store) ResolveTemporal(query string, activeEntries []Entry) TemporalResolution {
+	now := time.Now()
+	resolution := TemporalResolution{
+		Entries: append([]Entry(nil), activeEntries...),
+	}
+	if len(activeEntries) == 0 {
+		return resolution
+	}
+
+	selected, notes, superseded := resolveActiveTemporalEntries(activeEntries)
+	resolution.Entries = selected
+	resolution.Notes = append(resolution.Notes, notes...)
+	resolution.SupersededRefs = append(resolution.SupersededRefs, superseded...)
+
+	queryLower := strings.ToLower(query)
+	queryTerms := extractQueryTerms(queryLower)
+	activeIDs := make(map[string]bool, len(activeEntries))
+	activeLinks := make(map[string]bool)
+	activeStateKeys := make(map[string]bool)
+	for _, e := range activeEntries {
+		activeIDs[e.ID] = true
+		if e.StateKey != "" {
+			activeStateKeys[strings.ToLower(e.StateKey)] = true
+		}
+		for _, link := range e.Links {
+			activeLinks[graphKey(link)] = true
+		}
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for id, e := range s.entries {
+		if activeIDs[id] || e == nil {
+			continue
+		}
+		if !temporalCandidateMatches(e, queryLower, queryTerms, activeLinks, activeStateKeys) {
+			continue
+		}
+		ref := refForEntry(e)
+		switch temporalInactiveReason(e, now) {
+		case "conflict":
+			resolution.ConflictRefs = append(resolution.ConflictRefs, ref)
+			resolution.Notes = append(resolution.Notes, "Conflict memory present: "+ref+". Do not silently merge it with active memories.")
+		case "superseded":
+			resolution.SupersededRefs = append(resolution.SupersededRefs, ref)
+			resolution.Notes = append(resolution.Notes, "Superseded memory ignored: "+ref+".")
+		case "expired":
+			resolution.ExpiredRefs = append(resolution.ExpiredRefs, ref)
+			resolution.Notes = append(resolution.Notes, "Expired memory ignored: "+ref+".")
+		case "future":
+			resolution.FutureRefs = append(resolution.FutureRefs, ref)
+			resolution.Notes = append(resolution.Notes, "Future-dated memory not yet active: "+ref+".")
+		}
+	}
+
+	resolution.Notes = dedupSlice(resolution.Notes)
+	resolution.SupersededRefs = dedupSlice(resolution.SupersededRefs)
+	resolution.ConflictRefs = dedupSlice(resolution.ConflictRefs)
+	resolution.ExpiredRefs = dedupSlice(resolution.ExpiredRefs)
+	resolution.FutureRefs = dedupSlice(resolution.FutureRefs)
+	return resolution
 }
 
 // Recent 返回最近的 N 条记忆（按权重排序）
@@ -822,6 +1057,16 @@ func max(a, b float64) float64 {
 	return b
 }
 
+func clampFloat(v, min, max float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > max {
+		return max
+	}
+	return v
+}
+
 type memoryNoteFrontmatter struct {
 	ID          string     `yaml:"id"`
 	Type        string     `yaml:"type"`
@@ -839,6 +1084,10 @@ type memoryNoteFrontmatter struct {
 	ValidUntil  *time.Time `yaml:"valid_until,omitempty"`
 	Links       []string   `yaml:"links,omitempty"`
 	Aliases     []string   `yaml:"aliases,omitempty"`
+	StateKey    string     `yaml:"state_key,omitempty"`
+	StateValue  string     `yaml:"state_value,omitempty"`
+	Confidence  float64    `yaml:"confidence,omitempty"`
+	Supersedes  []string   `yaml:"supersedes,omitempty"`
 	BlockID     string     `yaml:"block_id,omitempty"`
 }
 
@@ -900,6 +1149,12 @@ func normalizeEntryForNote(e *Entry) {
 	}
 	e.Tags = dedupSlice(e.Tags)
 	e.Aliases = dedupSlice(e.Aliases)
+	e.Supersedes = dedupSlice(e.Supersedes)
+	e.StateKey = strings.TrimSpace(e.StateKey)
+	e.StateValue = strings.TrimSpace(e.StateValue)
+	if e.Confidence < 0 || e.Confidence > 1 {
+		e.Confidence = clampFloat(e.Confidence, 0, 1)
+	}
 	e.Links = normalizeLinks(append(e.Links, extractWikiLinks(e.Content)...))
 }
 
@@ -1007,6 +1262,10 @@ func renderMemoryNote(e *Entry) string {
 		ValidUntil:  e.ValidUntil,
 		Links:       e.Links,
 		Aliases:     e.Aliases,
+		StateKey:    e.StateKey,
+		StateValue:  e.StateValue,
+		Confidence:  e.Confidence,
+		Supersedes:  e.Supersedes,
 		BlockID:     e.BlockID,
 	}
 	yml, _ := yaml.Marshal(fm)
@@ -1079,6 +1338,10 @@ func parseMemoryNote(path, root string) (*Entry, bool, error) {
 		ValidUntil:  fm.ValidUntil,
 		Links:       normalizeLinks(append(fm.Links, extractWikiLinks(content)...)),
 		Aliases:     dedupSlice(fm.Aliases),
+		StateKey:    fm.StateKey,
+		StateValue:  fm.StateValue,
+		Confidence:  fm.Confidence,
+		Supersedes:  dedupSlice(fm.Supersedes),
 		BlockID:     fm.BlockID,
 		Path:        filepath.ToSlash(rel),
 	}
@@ -1355,6 +1618,262 @@ func memoryMatchScore(e *Entry, queryLower string, queryTerms []string) float64 
 		}
 	}
 	return matchScore
+}
+
+func resolveActiveTemporalEntries(entries []Entry) ([]Entry, []string, []string) {
+	if len(entries) <= 1 {
+		return entries, nil, nil
+	}
+	latestByState := make(map[string]Entry)
+	explicitSuperseded := make(map[string]string)
+	for _, e := range entries {
+		stateKey := strings.ToLower(strings.TrimSpace(e.StateKey))
+		if stateKey != "" {
+			if current, ok := latestByState[stateKey]; !ok || temporalEntryAfter(e, current) {
+				latestByState[stateKey] = e
+			}
+		}
+		for _, id := range e.Supersedes {
+			id = strings.TrimSpace(id)
+			if id != "" {
+				explicitSuperseded[id] = refForEntry(&e)
+			}
+		}
+	}
+
+	selected := make([]Entry, 0, len(entries))
+	var notes []string
+	var supersededRefs []string
+	for _, e := range entries {
+		ref := refForEntry(&e)
+		if by, ok := explicitSuperseded[e.ID]; ok {
+			supersededRefs = append(supersededRefs, ref)
+			notes = append(notes, "Superseded memory ignored: "+ref+"; replaced by "+by+".")
+			continue
+		}
+		stateKey := strings.ToLower(strings.TrimSpace(e.StateKey))
+		if stateKey != "" {
+			latest := latestByState[stateKey]
+			if latest.ID != e.ID {
+				supersededRefs = append(supersededRefs, ref)
+				notes = append(notes, "For state "+stateKey+", prefer latest memory "+refForEntry(&latest)+" over older memory "+ref+".")
+				continue
+			}
+		}
+		selected = append(selected, e)
+	}
+	return selected, dedupSlice(notes), dedupSlice(supersededRefs)
+}
+
+func temporalEntryAfter(a, b Entry) bool {
+	at := entryTemporalTime(a)
+	bt := entryTemporalTime(b)
+	if !at.Equal(bt) {
+		return at.After(bt)
+	}
+	if a.Confidence != b.Confidence {
+		return a.Confidence > b.Confidence
+	}
+	if a.Importance != b.Importance {
+		return a.Importance > b.Importance
+	}
+	return a.CreatedAt.After(b.CreatedAt)
+}
+
+func entryTemporalTime(e Entry) time.Time {
+	if !e.ValidFrom.IsZero() {
+		return e.ValidFrom
+	}
+	return e.CreatedAt
+}
+
+func temporalCandidateMatches(e *Entry, queryLower string, queryTerms []string, activeLinks, activeStateKeys map[string]bool) bool {
+	if e == nil {
+		return false
+	}
+	if e.StateKey != "" && activeStateKeys[strings.ToLower(e.StateKey)] {
+		return true
+	}
+	if memoryMatchScore(e, queryLower, queryTerms) > 0 {
+		return true
+	}
+	for _, link := range e.Links {
+		if activeLinks[graphKey(link)] {
+			return true
+		}
+	}
+	return false
+}
+
+func temporalInactiveReason(e *Entry, now time.Time) string {
+	if e == nil {
+		return ""
+	}
+	status := strings.ToLower(strings.TrimSpace(e.Status))
+	switch status {
+	case "conflict":
+		return "conflict"
+	case "superseded":
+		return "superseded"
+	}
+	if !e.ValidFrom.IsZero() && e.ValidFrom.After(now) {
+		return "future"
+	}
+	if e.ValidUntil != nil && !e.ValidUntil.After(now) {
+		return "expired"
+	}
+	if e.ExpiresAt != nil && !e.ExpiresAt.After(now) {
+		return "expired"
+	}
+	return ""
+}
+
+func refForEntry(e *Entry) string {
+	if e == nil {
+		return ""
+	}
+	ref := e.ID
+	if e.Path != "" {
+		ref = e.Path
+		if e.BlockID != "" {
+			ref += "#" + e.BlockID
+		}
+	}
+	return ref
+}
+
+func routeAnalysisText(query string, entries []Entry) string {
+	var b strings.Builder
+	b.WriteString(strings.ToLower(query))
+	for _, e := range entries {
+		b.WriteByte('\n')
+		b.WriteString(strings.ToLower(e.Content))
+		b.WriteByte('\n')
+		b.WriteString(strings.ToLower(e.Category))
+		for _, tag := range e.Tags {
+			b.WriteByte(' ')
+			b.WriteString(strings.ToLower(tag))
+		}
+		for _, link := range e.Links {
+			b.WriteByte(' ')
+			b.WriteString(strings.ToLower(link))
+		}
+		for _, alias := range e.Aliases {
+			b.WriteByte(' ')
+			b.WriteString(strings.ToLower(alias))
+		}
+	}
+	return b.String()
+}
+
+func routeTextHasAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		needle = strings.ToLower(strings.TrimSpace(needle))
+		if needle != "" && strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func routeStateInactive(entries []Entry, keyNeedle string) bool {
+	keyNeedle = strings.ToLower(strings.TrimSpace(keyNeedle))
+	if keyNeedle == "" {
+		return false
+	}
+	for _, e := range entries {
+		key := strings.ToLower(e.StateKey + " " + strings.Join(e.Links, " ") + " " + e.Content)
+		if !strings.Contains(key, keyNeedle) {
+			continue
+		}
+		value := strings.ToLower(strings.TrimSpace(e.StateValue))
+		switch value {
+		case "resolved", "inactive", "none", "negative", "false", "no", "无", "已缓解", "已解除":
+			return true
+		}
+	}
+	return false
+}
+
+func routeLocationHint(query string, entries []Entry) string {
+	queryLower := strings.ToLower(query)
+	switch {
+	case strings.Contains(query, "上海") || strings.Contains(queryLower, "shanghai"):
+		return "Shanghai"
+	case strings.Contains(query, "北京") || strings.Contains(queryLower, "beijing"):
+		return "Beijing"
+	case strings.Contains(query, "杭州") || strings.Contains(queryLower, "hangzhou"):
+		return "Hangzhou"
+	case strings.Contains(query, "深圳") || strings.Contains(queryLower, "shenzhen"):
+		return "Shenzhen"
+	case strings.Contains(query, "广州") || strings.Contains(queryLower, "guangzhou"):
+		return "Guangzhou"
+	}
+	for _, e := range entries {
+		if strings.EqualFold(strings.TrimSpace(e.Category), "location") {
+			if loc := firstKnownLocation(append(e.Links, append(e.Aliases, e.Content)...)); loc != "" {
+				return loc
+			}
+		}
+	}
+	return firstKnownLocationFromEntries(entries)
+}
+
+func firstKnownLocationFromEntries(entries []Entry) string {
+	for _, e := range entries {
+		if loc := firstKnownLocation(append(e.Links, append(e.Aliases, e.Content)...)); loc != "" {
+			return loc
+		}
+	}
+	return ""
+}
+
+func firstKnownLocation(values []string) string {
+	for _, value := range values {
+		lower := strings.ToLower(value)
+		switch {
+		case strings.Contains(value, "上海") || strings.Contains(lower, "shanghai"):
+			return "Shanghai"
+		case strings.Contains(value, "北京") || strings.Contains(lower, "beijing"):
+			return "Beijing"
+		case strings.Contains(value, "杭州") || strings.Contains(lower, "hangzhou"):
+			return "Hangzhou"
+		case strings.Contains(value, "深圳") || strings.Contains(lower, "shenzhen"):
+			return "Shenzhen"
+		case strings.Contains(value, "广州") || strings.Contains(lower, "guangzhou"):
+			return "Guangzhou"
+		}
+	}
+	return ""
+}
+
+func routeSearchQuery(location, topic string) string {
+	topic = strings.TrimSpace(topic)
+	if location == "" {
+		return topic
+	}
+	return strings.TrimSpace(location + " " + topic)
+}
+
+func routeEvidenceRefs(entries []Entry, limit int) []string {
+	if limit <= 0 || len(entries) == 0 {
+		return nil
+	}
+	capacity := limit
+	if len(entries) < capacity {
+		capacity = len(entries)
+	}
+	refs := make([]string, 0, capacity)
+	for _, e := range entries {
+		ref := refForEntry(&e)
+		if ref != "" {
+			refs = append(refs, ref)
+		}
+		if len(refs) >= limit {
+			break
+		}
+	}
+	return dedupSlice(refs)
 }
 
 func graphKey(raw string) string {
