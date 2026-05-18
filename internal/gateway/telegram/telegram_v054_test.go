@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -719,14 +720,41 @@ func TestV054SendTypingLoopInvalidChatID(t *testing.T) {
 // ============================================================
 
 func TestV054ReactToMessageWithMockBot(t *testing.T) {
-	adapter, server, err := newAdapterWithMockBot()
+	reactionSeen := make(chan url.Values, 1)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMessageReaction") {
+			_ = r.ParseForm()
+			reactionSeen <- r.Form
+		}
+		return defaultMockBotResponse(r)
+	})
 	if err != nil {
-		t.Fatalf("failed to create adapter: %v", err)
+		t.Fatalf("failed to create mock bot: %v", err)
 	}
-	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.botUsername = "testbot"
+	adapter.running = true
 
 	adapter.ReactToMessage("12345", "1", "👍")
-	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case form := <-reactionSeen:
+		if got := form.Get("chat_id"); got != "12345" {
+			t.Fatalf("chat_id = %q, want 12345", got)
+		}
+		if got := form.Get("message_id"); got != "1" {
+			t.Fatalf("message_id = %q, want 1", got)
+		}
+		if got := form.Get("reaction"); !strings.Contains(got, `"emoji":"👍"`) {
+			t.Fatalf("reaction = %q, want thumbs-up emoji payload", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected setMessageReaction request")
+	}
 }
 
 func TestV054ReactToMessageNilBot(t *testing.T) {
@@ -762,13 +790,36 @@ func TestV054ReactToMessageInvalidMessageID(t *testing.T) {
 // ============================================================
 
 func TestV054CallSetMessageReactionWithMockBot(t *testing.T) {
-	adapter, server, err := newAdapterWithMockBot()
+	reactionSeen := make(chan url.Values, 1)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMessageReaction") {
+			_ = r.ParseForm()
+			reactionSeen <- r.Form
+		}
+		return defaultMockBotResponse(r)
+	})
 	if err != nil {
-		t.Fatalf("failed to create adapter: %v", err)
+		t.Fatalf("failed to create mock bot: %v", err)
 	}
-	defer server.Close()
 
-	adapter.callSetMessageReaction(12345, 1, "👍")
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.botUsername = "testbot"
+	adapter.running = true
+
+	if err := adapter.callSetMessageReaction(12345, 1, "👍"); err != nil {
+		t.Fatalf("callSetMessageReaction error = %v", err)
+	}
+	select {
+	case form := <-reactionSeen:
+		if got := form.Get("chat_id"); got != "12345" {
+			t.Fatalf("chat_id = %q, want 12345", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected setMessageReaction request")
+	}
 }
 
 // ============================================================

@@ -429,9 +429,13 @@ func (a *Adapter) sendTypingOnce(chatID int64) {
 }
 
 // ReactToMessage 给消息添加 emoji reaction（👍 等）
-// 使用 Telegram Bot API setMessageReaction（v5.5.1 不支持，直接 HTTP 调用）
+// 使用 Telegram Bot API setMessageReaction（v5.5.1 未封装，复用 bot HTTP client 调用）
 func (a *Adapter) ReactToMessage(chatID string, messageID string, emoji string) {
 	if a.bot == nil {
+		return
+	}
+	emoji = strings.TrimSpace(emoji)
+	if emoji == "" {
 		return
 	}
 
@@ -444,27 +448,29 @@ func (a *Adapter) ReactToMessage(chatID string, messageID string, emoji string) 
 		return
 	}
 
-	// 直接调 Telegram Bot API setMessageReaction
+	// best-effort，不阻塞消息处理主路径。
 	go a.callSetMessageReaction(chatIDInt, msgIDInt, emoji)
 }
 
 // callSetMessageReaction 调用 Telegram setMessageReaction API
-func (a *Adapter) callSetMessageReaction(chatID int64, messageID int, emoji string) {
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/setMessageReaction", a.bot.Token)
-
-	payload := strings.NewReader(fmt.Sprintf(
-		`{"chat_id":%d,"message_id":%d,"reaction":[{"type":"emoji","emoji":"%s"}]}`,
-		chatID, messageID, emoji,
-	))
-
-	resp, err := http.Post(apiURL, "application/json", payload)
-	if err != nil {
-		return
+func (a *Adapter) callSetMessageReaction(chatID int64, messageID int, emoji string) error {
+	if a.bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
 	}
-	defer resp.Body.Close()
-
-	// best-effort，不处理响应
-	_ = resp
+	params := tgbotapi.Params{
+		"chat_id":    strconv.FormatInt(chatID, 10),
+		"message_id": strconv.Itoa(messageID),
+	}
+	if err := params.AddInterface("reaction", []map[string]string{
+		{
+			"type":  "emoji",
+			"emoji": emoji,
+		},
+	}); err != nil {
+		return err
+	}
+	_, err := a.bot.MakeRequest("setMessageReaction", params)
+	return err
 }
 
 // callTelegramAPI 调用 Telegram Bot API 的通用方法
