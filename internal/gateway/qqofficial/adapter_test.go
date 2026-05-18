@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -193,6 +194,50 @@ func TestQQProgressHelpers(t *testing.T) {
 	}
 	if got := qqToolResultMessage("web_search", "found results"); got == "" {
 		t.Fatal("expected non-empty tool result message")
+	}
+}
+
+func TestQQProgressTraceBuildsPublicSummary(t *testing.T) {
+	trace := newQQProgressTrace()
+	trace.AddThinking("Thinking... (round 1)", 1)
+	trace.AddToolCall("web_search", `{"query":"abc"}`)
+	trace.AddToolResult("web_search", strings.Repeat("result ", 80))
+
+	got := trace.Message()
+	if !strings.Contains(got, "本轮公开执行轨迹") {
+		t.Fatalf("expected public trace title, got %q", got)
+	}
+	if !strings.Contains(got, "web_search") {
+		t.Fatalf("expected tool name in trace, got %q", got)
+	}
+	if strings.Contains(got, "Thinking...") {
+		t.Fatalf("trace should not expose raw thinking marker, got %q", got)
+	}
+	if !strings.Contains(got, "不包含模型隐藏推理") {
+		t.Fatalf("expected hidden reasoning disclaimer, got %q", got)
+	}
+}
+
+func TestQQProgressTraceOmitsTrivialThinkingOnlyTrace(t *testing.T) {
+	trace := newQQProgressTrace()
+	trace.AddThinking("Thinking... (round 1)", 1)
+
+	if got := trace.Message(); got != "" {
+		t.Fatalf("expected empty trace for trivial thinking-only turn, got %q", got)
+	}
+}
+
+func TestSplitQQMessageChunks(t *testing.T) {
+	long := strings.Repeat("你", qqProgressTraceChunkLimit+20)
+	chunks := splitQQMessageChunks(long, qqProgressTraceChunkLimit)
+
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if qqRuneLen(chunk) > qqProgressTraceChunkLimit {
+			t.Fatalf("chunk exceeds limit: %d", qqRuneLen(chunk))
+		}
 	}
 }
 

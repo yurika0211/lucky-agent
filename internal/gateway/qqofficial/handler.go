@@ -859,6 +859,32 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 	return nil
 }
 
+func (h *Handler) sendAssistantResponseWithTrace(ctx context.Context, msg *gateway.Message, response string, trace *qqProgressTrace) error {
+	if err := h.sendAssistantResponse(ctx, msg, response); err != nil {
+		return err
+	}
+	if err := h.sendProgressTrace(ctx, msg, trace); err != nil {
+		fmt.Printf("[qqofficial] warning: failed to send progress trace: %v\n", err)
+	}
+	return nil
+}
+
+func (h *Handler) sendProgressTrace(ctx context.Context, msg *gateway.Message, trace *qqProgressTrace) error {
+	if trace == nil {
+		return nil
+	}
+	text := trace.Message()
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	for _, chunk := range splitQQMessageChunks(text, qqProgressTraceChunkLimit) {
+		if err := h.reply(ctx, msg, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (h *Handler) handleChatStream(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
 	if h.agent == nil {
 		return fmt.Errorf("qqofficial: agent not initialized")
@@ -889,6 +915,7 @@ func (h *Handler) handleChatStream(ctx context.Context, msg *gateway.Message, in
 
 	var finalContent strings.Builder
 	currentRound := 1
+	trace := newQQProgressTrace()
 
 	for {
 		select {
@@ -905,18 +932,22 @@ func (h *Handler) handleChatStream(ctx context.Context, msg *gateway.Message, in
 				if out == "" {
 					out = "我这边暂时还没有整理出可发送的结果。"
 				}
-				return h.sendAssistantResponse(context.Background(), msg, out)
+				return h.sendAssistantResponseWithTrace(context.Background(), msg, out, trace)
 			}
 			switch evt.Type {
 			case agent.ChatEventThinking:
 				if nextRound := extractQQRoundNumber(evt.Content); nextRound > currentRound {
 					currentRound = nextRound
 				}
+				trace.AddThinking(evt.Content, currentRound)
 				h.sendProgress(context.Background(), msg, qqThinkingMessage(evt.Content, currentRound))
 			case agent.ChatEventToolCall:
+				trace.AddToolCall(evt.Name, evt.Args)
 				h.sendProgress(context.Background(), msg, qqToolCallMessage(evt.Name, evt.Args))
 			case agent.ChatEventToolResult:
-				h.sendProgress(context.Background(), msg, qqToolResultMessage(evt.Name, evt.Result))
+				result := qqToolResultText(evt)
+				trace.AddToolResult(evt.Name, result)
+				h.sendProgress(context.Background(), msg, qqToolResultMessage(evt.Name, result))
 			case agent.ChatEventContent:
 				finalContent.WriteString(evt.Content)
 			case agent.ChatEventDone:
@@ -927,7 +958,7 @@ func (h *Handler) handleChatStream(ctx context.Context, msg *gateway.Message, in
 				if out == "" {
 					out = "我这边暂时还没有整理出可发送的结果。"
 				}
-				return h.sendAssistantResponse(context.Background(), msg, out)
+				return h.sendAssistantResponseWithTrace(context.Background(), msg, out, trace)
 			case agent.ChatEventError:
 				if isTaskTimeoutError(evt.Err) {
 					h.sendProgress(context.Background(), msg, "⏱ 请求超时")
@@ -951,6 +982,13 @@ func extractQQRoundNumber(thinking string) int {
 	return 0
 }
 
+func qqToolResultText(evt agent.ChatEvent) string {
+	if strings.TrimSpace(evt.Result) != "" {
+		return evt.Result
+	}
+	return evt.Content
+}
+
 func qqThinkingMessage(raw string, round int) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -960,6 +998,9 @@ func qqThinkingMessage(raw string, round int) string {
 		return "我先帮你看一下这个问题。"
 	}
 	if round > 1 {
+		if extractQQRoundNumber(raw) > 0 || strings.EqualFold(raw, "Thinking...") {
+			return fmt.Sprintf("我继续往下处理了，现在在看第 %d 轮结果。", round)
+		}
 		return fmt.Sprintf("我继续往下处理了，现在在看第 %d 轮：%s", round, raw)
 	}
 	return "我先帮你看一下这个问题。"
@@ -987,6 +1028,166 @@ func qqToolResultMessage(name, result string) string {
 		return fmt.Sprintf("`%s` 已经返回结果了。", name)
 	}
 	return fmt.Sprintf("`%s` 这边已经有结果了，我先记下来：%s", name, result)
+}
+
+const (
+	qqProgressTraceMaxEntries = 18
+	qqProgressTraceChunkLimit = 1800
+)
+
+type qqProgressTrace struct {
+	entries   []string
+	seen      map[string]struct{}
+	hasTool   bool
+	truncated bool
+}
+
+func newQQProgressTrace() *qqProgressTrace {
+	return &qqProgressTrace{
+		seen: make(map[string]struct{}),
+	}
+}
+
+func (t *qqProgressTrace) AddThinking(_ string, round int) {
+	if t == nil {
+		return
+	}
+	if round > 1 {
+		t.add(fmt.Sprintf("进入第 %d 轮整理和校验。", round))
+		return
+	}
+	t.add("开始分析用户请求。")
+}
+
+func (t *qqProgressTrace) AddToolCall(name, args string) {
+	if t == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	args = qqCompactTraceText(args, 180)
+	t.hasTool = true
+	if name == "" {
+		name = "unknown"
+	}
+	if args == "" {
+		t.add(fmt.Sprintf("调用工具 `%s`。", name))
+		return
+	}
+	t.add(fmt.Sprintf("调用工具 `%s`，参数摘要：%s", name, args))
+}
+
+func (t *qqProgressTrace) AddToolResult(name, result string) {
+	if t == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	result = qqCompactTraceText(result, 220)
+	t.hasTool = true
+	if name == "" {
+		name = "unknown"
+	}
+	if result == "" {
+		t.add(fmt.Sprintf("工具 `%s` 返回完成。", name))
+		return
+	}
+	t.add(fmt.Sprintf("工具 `%s` 返回摘要：%s", name, result))
+}
+
+func (t *qqProgressTrace) add(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if _, ok := t.seen[line]; ok {
+		return
+	}
+	if len(t.entries) >= qqProgressTraceMaxEntries {
+		t.truncated = true
+		return
+	}
+	t.seen[line] = struct{}{}
+	t.entries = append(t.entries, line)
+}
+
+func (t *qqProgressTrace) Message() string {
+	if t == nil || len(t.entries) == 0 {
+		return ""
+	}
+	if !t.hasTool && len(t.entries) <= 1 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("本轮公开执行轨迹：\n")
+	for i, entry := range t.entries {
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, entry))
+	}
+	if t.truncated {
+		sb.WriteString(fmt.Sprintf("%d. 后续步骤已省略，只保留关键轨迹。\n", len(t.entries)+1))
+	}
+	sb.WriteString("\n说明：这是可公开的进度和工具摘要，不包含模型隐藏推理。")
+	return strings.TrimSpace(sb.String())
+}
+
+func qqCompactTraceText(text string, maxLen int) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if text == "" {
+		return ""
+	}
+	return utils.TruncateKeepLength(text, maxLen)
+}
+
+func splitQQMessageChunks(text string, limit int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if limit <= 0 || qqRuneLen(text) <= limit {
+		return []string{text}
+	}
+
+	var chunks []string
+	var current strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		for qqRuneLen(line) > limit {
+			if strings.TrimSpace(current.String()) != "" {
+				chunks = append(chunks, strings.TrimSpace(current.String()))
+				current.Reset()
+			}
+			head, tail := splitRunes(line, limit)
+			chunks = append(chunks, strings.TrimSpace(head))
+			line = tail
+		}
+
+		extra := qqRuneLen(line)
+		if current.Len() > 0 {
+			extra++
+		}
+		if current.Len() > 0 && qqRuneLen(current.String())+extra > limit {
+			chunks = append(chunks, strings.TrimSpace(current.String()))
+			current.Reset()
+		}
+		if current.Len() > 0 {
+			current.WriteByte('\n')
+		}
+		current.WriteString(line)
+	}
+	if strings.TrimSpace(current.String()) != "" {
+		chunks = append(chunks, strings.TrimSpace(current.String()))
+	}
+	return chunks
+}
+
+func splitRunes(text string, limit int) (string, string) {
+	runes := []rune(text)
+	if limit >= len(runes) {
+		return text, ""
+	}
+	return string(runes[:limit]), string(runes[limit:])
+}
+
+func qqRuneLen(text string) int {
+	return len([]rune(text))
 }
 
 func isTaskTimeoutError(err error) bool {
