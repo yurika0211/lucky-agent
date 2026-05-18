@@ -110,7 +110,15 @@ go run ./cmd/lh init
 ├── mission.md
 ├── sessions/
 ├── memory/
-│   └── midterm/
+│   ├── 00_Index/
+│   ├── 10_Profile/
+│   ├── 20_Projects/
+│   ├── 30_Sessions/
+│   ├── 40_Decisions/
+│   ├── 50_Facts/
+│   ├── 60_Rules/
+│   ├── 70_Trajectories/
+│   └── 90_Archive/
 ├── logs/
 ├── skills/
 ├── tokens/

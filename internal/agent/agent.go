@@ -374,7 +374,7 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	if midTermMaxSummaries <= 0 {
 		midTermMaxSummaries = 100
 	}
-	midTerm, err := memory.NewMidTermStore(cfg.HomeDir()+"/memory/midterm", midTermMaxSummaries)
+	midTerm, err := memory.NewMidTermStore(filepath.Join(cfg.HomeDir(), "memory", "30_Sessions"), midTermMaxSummaries)
 	if err != nil {
 		return memoryRuntime{}, fmt.Errorf("init midterm store: %w", err)
 	}
