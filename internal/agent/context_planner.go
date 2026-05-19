@@ -473,7 +473,11 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 		lines = append(lines, fmt.Sprintf("- [%s/%s%s] %s", e.Category, e.Tier.String(), graphHint, truncate(e.Content, 140)))
 	}
 	routeLines := memoryRouteLines(route)
-	content := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved before tool planning. Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked.\n"
+	content := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
+	if vault := p.agent.memoryVaultPath(); vault != "" {
+		content += " at " + vault
+	}
+	content += ". Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked.\n"
 	if len(routeLines) > 0 {
 		content += "\n[Memory Router]\n" + strings.Join(routeLines, "\n") + "\n\n"
 	}

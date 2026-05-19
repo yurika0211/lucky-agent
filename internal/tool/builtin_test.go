@@ -993,6 +993,9 @@ func TestMemoryToolServiceRememberAndRecall(t *testing.T) {
 	if !strings.Contains(result, "已保存") {
 		t.Fatalf("unexpected remember result: %q", result)
 	}
+	if !strings.Contains(result, dir) || !strings.Contains(result, "Markdown 记忆库") {
+		t.Fatalf("expected remember result to identify markdown memory vault, got %q", result)
+	}
 
 	recall, err := svc.HandleRecall(map[string]any{"query": "Python"})
 	if err != nil {
@@ -1000,6 +1003,9 @@ func TestMemoryToolServiceRememberAndRecall(t *testing.T) {
 	}
 	if !strings.Contains(recall, "Python") {
 		t.Fatalf("unexpected recall result: %q", recall)
+	}
+	if !strings.Contains(recall, "LuckyHarness Obsidian-compatible Markdown vault") || !strings.Contains(recall, "memory.md/memory.json") {
+		t.Fatalf("expected recall result to identify authoritative memory source, got %q", recall)
 	}
 }
 

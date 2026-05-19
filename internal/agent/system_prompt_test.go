@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -101,6 +102,45 @@ func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Convergence rule: stop once the success condition is satisfied.") {
 		t.Fatalf("expected manual content in prompt, got %q", prompt)
+	}
+}
+
+func TestBuildSystemPromptPinsLuckyHarnessMarkdownMemoryVault(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	memStore, err := memory.NewStore(filepath.Join(mgr.HomeDir(), "memory"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	reg := tool.NewRegistry()
+	reg.Register(tool.RecallTool(nil))
+
+	a := &Agent{
+		cfg:    mgr,
+		soul:   soul.Default(),
+		memory: memStore,
+		tools:  reg,
+	}
+
+	prompt := a.buildSystemPrompt(nil)
+	for _, want := range []string{
+		filepath.Join(mgr.HomeDir(), "memory"),
+		"Obsidian-compatible Markdown",
+		"does not require an external Obsidian app vault",
+		"Legacy root files such as memory.md or memory.json are not authoritative",
+		"RAG SQLite storage is not the memory source of truth",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected memory policy to contain %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "~/Documents/Obsidian Vault is required") ||
+		strings.Contains(prompt, "OBSIDIAN_VAULT_PATH is required") ||
+		strings.Contains(prompt, "luckyharness.db is the memory source") {
+		t.Fatalf("prompt contains legacy/external-vault memory claim:\n%s", prompt)
 	}
 }
 

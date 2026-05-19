@@ -11,7 +11,7 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 	}
 	return &Tool{
 		Name:        "remember",
-		Description: "Persist stable user facts, preferences, recurring project context, or other reusable conclusions that should help future conversations.",
+		Description: "Persist stable user facts, preferences, recurring project context, or reusable conclusions into the LuckyHarness Obsidian-compatible Markdown memory vault.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto,
@@ -111,7 +111,7 @@ func RecallTool(handler func(args map[string]any) (string, error)) *Tool {
 	}
 	return &Tool{
 		Name:        "recall",
-		Description: "Search saved memory for durable user preferences, prior project facts, or previously stored conclusions before asking again or guessing.",
+		Description: "Search the LuckyHarness Obsidian-compatible Markdown memory vault for durable user preferences, prior project facts, or stored conclusions before asking again or guessing.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto,

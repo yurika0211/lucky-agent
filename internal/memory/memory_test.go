@@ -117,6 +117,48 @@ func TestObsidianVaultPersistenceWritesNotes(t *testing.T) {
 	}
 }
 
+func TestLegacyRootMemoryFilesAreArchived(t *testing.T) {
+	dir := t.TempDir()
+	legacyFiles := map[string]string{
+		"memory.md":   "# LuckyHarness Memory\n\n```json\n[]\n```\n",
+		"memory.json": "[]",
+		"memory.txt":  "old memory line\n",
+	}
+	for name, body := range legacyFiles {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if s.Count() != 0 {
+		t.Fatalf("expected legacy files not to load as memory entries, got %d", s.Count())
+	}
+	for name := range legacyFiles {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("expected root legacy file %s to be archived, stat err=%v", name, err)
+		}
+	}
+	archived, err := filepath.Glob(filepath.Join(dir, "90_Archive", "legacy-*"))
+	if err != nil {
+		t.Fatalf("glob archive: %v", err)
+	}
+	if len(archived) != len(legacyFiles) {
+		t.Fatalf("expected %d archived legacy files, got %d: %v", len(legacyFiles), len(archived), archived)
+	}
+	readme := filepath.Join(dir, "00_Index", "LuckyHarness Memory Vault.md")
+	raw, err := os.ReadFile(readme)
+	if err != nil {
+		t.Fatalf("read vault readme: %v", err)
+	}
+	if !strings.Contains(string(raw), "durable memory source of truth") || !strings.Contains(string(raw), "OBSIDIAN_VAULT_PATH is not required") {
+		t.Fatalf("unexpected vault readme:\n%s", raw)
+	}
+}
+
 func TestSearchPropagatesAcrossSharedWikilinks(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStore(dir)

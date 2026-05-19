@@ -187,7 +187,11 @@ If multiple skills seem relevant:
 }
 
 func (a *Agent) buildMemoryRAGPolicyPromptBlock() string {
-	return `Memory and retrieval policy:
+	memoryVault := a.memoryVaultPath()
+	if memoryVault == "" {
+		memoryVault = "~/.luckyharness/memory"
+	}
+	return fmt.Sprintf(`Memory and retrieval policy:
 
 Treat memory and RAG as different evidence layers.
 
@@ -196,6 +200,14 @@ Memory is for:
 - recurring project facts,
 - stable operating constraints,
 - reusable conclusions worth remembering.
+
+LuckyHarness memory source of truth:
+- The durable memory vault is %s.
+- The vault is Obsidian-compatible Markdown: typed .md notes with YAML frontmatter, wikilinks, tags, aliases, temporal state fields, and block IDs.
+- This does not require an external Obsidian app vault, ~/Documents/Obsidian Vault, .obsidian, or OBSIDIAN_VAULT_PATH.
+- Do not infer that LuckyHarness memory is absent because a conventional Obsidian vault path is missing.
+- Legacy root files such as memory.md or memory.json are not authoritative for durable memory. RAG SQLite storage is not the memory source of truth.
+- Prefer the recall tool or typed notes under the memory vault categories when answering questions about stored memory.
 
 RAG is for:
 - indexed documents,
@@ -214,7 +226,21 @@ Persistence discipline:
 - do not persist transient failures or low-value noise as durable knowledge.
 
 When retrieval is weak, reformulate the query around identifiers, unique facts, filenames, or concepts.
-If memory, RAG, and local state disagree, verify against the most direct source of truth and explain the conflict.`
+If memory, RAG, and local state disagree, verify against the most direct source of truth and explain the conflict.`, memoryVault)
+}
+
+func (a *Agent) memoryVaultPath() string {
+	if a != nil && a.memory != nil {
+		if dir := strings.TrimSpace(a.memory.Dir()); dir != "" {
+			return dir
+		}
+	}
+	if a != nil && a.cfg != nil {
+		if homeDir := strings.TrimSpace(a.cfg.HomeDir()); homeDir != "" {
+			return filepath.Join(homeDir, "memory")
+		}
+	}
+	return ""
 }
 
 func (a *Agent) buildSupplementaryContextIntroBlock() string {

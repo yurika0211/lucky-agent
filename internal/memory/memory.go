@@ -615,11 +615,39 @@ func (s *Store) Route(query string) RouteAnalysis {
 
 	route.RequiredTools = dedupSlice(route.RequiredTools)
 	route.SuggestedSearches = dedupSlice(route.SuggestedSearches)
-	route.RiskFlags = dedupSlice(route.RiskFlags)
+	route.RiskFlags = prioritizeRiskFlags(dedupSlice(route.RiskFlags))
 	route.Constraints = dedupSlice(route.Constraints)
 	route.Clarifications = dedupSlice(route.Clarifications)
 	route.EvidenceRefs = routeEvidenceRefs(entries, 6)
 	return route
+}
+
+func prioritizeRiskFlags(flags []string) []string {
+	if len(flags) <= 1 {
+		return flags
+	}
+	out := append([]string(nil), flags...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return riskFlagRank(out[i]) > riskFlagRank(out[j])
+	})
+	return out
+}
+
+func riskFlagRank(flag string) int {
+	switch strings.ToLower(strings.TrimSpace(flag)) {
+	case "child_health_outdoor_plan":
+		return 100
+	case "pollen_allergy":
+		return 80
+	case "pollen_allergy_inactive_or_resolved":
+		return 75
+	case "outdoor_exposure":
+		return 60
+	case "child_or_family_context":
+		return 50
+	default:
+		return 0
+	}
 }
 
 // TemporalResolution is the deterministic current-state view for recalled memories.
@@ -969,6 +997,14 @@ func (s *Store) Count() int {
 	return len(s.entries)
 }
 
+// Dir returns the root directory of the LuckyHarness memory vault.
+func (s *Store) Dir() string {
+	if s == nil {
+		return ""
+	}
+	return s.dir
+}
+
 // --- 内部方法 ---
 
 type entryScore struct {
@@ -983,6 +1019,9 @@ func (s *Store) generateID() string {
 
 func (s *Store) load() error {
 	if err := s.ensureVaultDirs(); err != nil {
+		return err
+	}
+	if err := s.archiveLegacyRootFiles(); err != nil {
 		return err
 	}
 
@@ -1124,7 +1163,70 @@ func (s *Store) ensureVaultDirs() error {
 			return fmt.Errorf("create memory vault dir %s: %w", dir, err)
 		}
 	}
+	if err := s.ensureVaultReadme(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) ensureVaultReadme() error {
+	path := filepath.Join(s.dir, "00_Index", "LuckyHarness Memory Vault.md")
+	if st, err := os.Stat(path); err == nil && !st.IsDir() {
+		return nil
+	}
+	body := strings.TrimSpace(`# LuckyHarness Memory Vault
+
+This directory is the LuckyHarness durable memory source of truth.
+
+- Memory notes are Obsidian-compatible Markdown files under the category folders.
+- Authoritative memory notes use YAML frontmatter with type: memory.
+- Wikilinks, tags, aliases, temporal state fields, and block IDs are part of the memory graph.
+- Root-level legacy files such as memory.md, memory.json, and memory.txt are not authoritative memory.
+- The RAG SQLite database is for indexed documents, not durable user memory.
+- An external Obsidian app vault, .obsidian directory, or OBSIDIAN_VAULT_PATH is not required for LuckyHarness memory.
+`) + "\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		return fmt.Errorf("write memory vault readme: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) archiveLegacyRootFiles() error {
+	for _, name := range []string{"memory.md", "memory.json", "memory.txt"} {
+		path := filepath.Join(s.dir, name)
+		st, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("stat legacy memory file %s: %w", path, err)
+		}
+		if st.IsDir() {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(path), ".md") {
+			if _, ok, err := parseMemoryNote(path, s.dir); err != nil {
+				return fmt.Errorf("parse legacy memory candidate %s: %w", path, err)
+			} else if ok {
+				continue
+			}
+		}
+		target := filepath.Join(s.dir, "90_Archive", archiveNameForLegacyFile(name, st.ModTime()))
+		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
+			return fmt.Errorf("create legacy memory archive dir: %w", err)
+		}
+		if err := os.Rename(path, target); err != nil {
+			return fmt.Errorf("archive legacy memory file %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func archiveNameForLegacyFile(name string, modTime time.Time) string {
+	if modTime.IsZero() {
+		modTime = time.Now()
+	}
+	return fmt.Sprintf("legacy-%s-%s", modTime.Format("20060102-150405"), name)
 }
 
 func normalizeEntryForNote(e *Entry) {
