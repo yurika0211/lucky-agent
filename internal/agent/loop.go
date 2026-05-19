@@ -329,6 +329,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		}
 	}
 	loopState := newLoopRuntimeState()
+	memoryGate := a.buildMemoryToolGate(routingText, loopCfg.DisabledTools)
 
 	// 构建初始消息
 	messages := a.buildContextMessagesForInput(ctx, sess, turnInput, defaultContextBuildOptions())
@@ -363,12 +364,24 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		if len(resp.ToolCalls) > 0 {
 			var finalized bool
 			var finalResponse string
-			messages, finalized, finalResponse = a.processToolCallBatch(resp, loopCfg, result, sess, messages, loopState)
+			messages, finalized, finalResponse = a.processToolCallBatch(resp, loopCfg, result, sess, messages, loopState, memoryGate)
 			if finalized {
+				if updatedMessages, enforced := a.executeMemoryGateForLoop(memoryGate, loopCfg, result, sess, messages, loopState); enforced {
+					messages = updatedMessages
+					continue
+				}
 				finalize(finalResponse)
 				return result, nil
 			}
+			if updatedMessages, enforced := a.executeMemoryGateForLoop(memoryGate, loopCfg, result, sess, messages, loopState); enforced {
+				messages = updatedMessages
+			}
 			continue // 继续循环，让 LLM 处理工具结果
+		}
+
+		if updatedMessages, enforced := a.executeMemoryGateForLoop(memoryGate, loopCfg, result, sess, messages, loopState); enforced {
+			messages = updatedMessages
+			continue
 		}
 
 		var finalized bool
@@ -384,6 +397,17 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	if strings.TrimSpace(loopState.continuedResponse.String()) != "" {
 		finalize(strings.TrimSpace(loopState.continuedResponse.String()) + lengthTruncatedNotice)
 		return result, nil
+	}
+
+	if memoryGate != nil && (memoryGate.shouldBlockFinal() || len(memoryGate.attemptedTools()) > 0) {
+		result.Response = memoryGate.incompleteMessage()
+		result.State = StateDone
+		if sess != nil {
+			if saveErr := sess.Save(); saveErr != nil {
+				logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
+			}
+		}
+		return result, fmt.Errorf("memory gate did not produce final synthesis")
 	}
 
 	// 达到最大循环次数
@@ -524,6 +548,7 @@ func (a *Agent) processToolCallBatch(
 	sess *session.Session,
 	messages []provider.Message,
 	loopState *loopRuntimeState,
+	memoryGate *memoryToolGate,
 ) (updatedMessages []provider.Message, finalized bool, finalResponse string) {
 	logger.Info("agent loop tool call batch",
 		"session_id", func() string {
@@ -609,6 +634,9 @@ func (a *Agent) processToolCallBatch(
 	)
 
 	for _, execResult := range executed {
+		if memoryGate != nil {
+			memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
+		}
 		tcLog := toolCallLog{
 			Name:      execResult.ToolCall.Name,
 			Arguments: execResult.ToolCall.Arguments,

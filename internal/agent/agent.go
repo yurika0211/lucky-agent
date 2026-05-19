@@ -1365,6 +1365,7 @@ type streamConvergenceState struct {
 	toolOnlyIterationLimit   int
 	duplicateFetchLimit      int
 	disabledTools            []string
+	memoryGate               *memoryToolGate
 }
 
 /*
@@ -1503,6 +1504,7 @@ func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string
 			toolOnlyIterationLimit: loopCfg.ToolOnlyIterationLimit,
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
 			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
+			memoryGate:             a.buildMemoryToolGate(routingText, loopCfg.DisabledTools),
 		}
 
 		// 🧠 思考阶段（第一轮）
@@ -1532,6 +1534,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		state = &streamConvergenceState{}
 	}
 	if remaining <= 0 {
+		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+			a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+			return
+		}
 		if state.hasContinuation() {
 			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 			return
@@ -1559,6 +1565,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		}
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
+			if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+				continue
+			}
 			full := content.String()
 			pending := full[emittedContentBytes:]
 			if shouldHoldPotentialTextToolCallStream(full) || shouldHoldPotentialTextToolCallStream(pending) {
@@ -1624,6 +1633,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 
 		if len(toolCalls) > 0 {
 			if shouldStop, repeatedSigs := state.trackToolCallPattern(toolCalls, assistantContent); shouldStop {
+				if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+					return
+				}
 				a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
 				return
 			}
@@ -1648,6 +1660,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			)
 
 			for _, execResult := range executed {
+				if state.memoryGate != nil {
+					state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
+				}
 				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
 				messages = append(messages, provider.Message{
 					Role:       "tool",
@@ -1661,6 +1676,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			// 裁剪上下文，继续下一轮
 			messages = a.fitContextWindow(messages)
 			messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
+			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+				return
+			}
 			if remaining <= 1 {
 				if state.hasContinuation() {
 					a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
@@ -1682,6 +1700,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	if hadTextToolCalls {
 		response = assistantContent
 		emittedContentBytes = 0
+	}
+	if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+		return
 	}
 	if len(response) > emittedContentBytes {
 		events <- ChatEvent{Type: ChatEventContent, Content: response[emittedContentBytes:]}
@@ -1749,6 +1770,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		state = &streamConvergenceState{}
 	}
 	if remaining <= 0 {
+		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+			a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+			return
+		}
 		if state.hasContinuation() {
 			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 			return
@@ -1769,6 +1794,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		state.emptyResponseRetries = 0
 		state.lengthRecoveryCount = 0
 		if shouldStop, repeatedSigs := state.trackToolCallPattern(resp.ToolCalls, resp.Content); shouldStop {
+			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+				return
+			}
 			a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
 			return
 		}
@@ -1791,6 +1819,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		)
 
 		for _, execResult := range executed {
+			if state.memoryGate != nil {
+				state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
+			}
 			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
 			messages = append(messages, provider.Message{
 				Role:       "tool",
@@ -1804,6 +1835,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		// 裁剪上下文，递归继续
 		messages = a.fitContextWindow(messages)
 		messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
+		if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+			return
+		}
 		if remaining <= 1 {
 			if state.hasContinuation() {
 				a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
@@ -1821,6 +1855,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	// 纯文本回复，模拟流式推送
 	response := resp.Content
 	clean := strings.TrimSpace(response)
+	if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+		return
+	}
 
 	// 空回复恢复
 	if clean == "" {
