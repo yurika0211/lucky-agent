@@ -21,11 +21,59 @@ type AgentExecutor interface {
 	NewSession(title string) string
 }
 
-// LoopConfig mirrors agent.LoopConfig to avoid import cycle.
+// LoopConfig carries agent loop limits without importing the agent package.
 type LoopConfig struct {
-	MaxIterations int
-	Timeout       time.Duration
-	AutoApprove   bool
+	MaxIterations          int
+	Timeout                time.Duration
+	AutoApprove            bool
+	AutoApproveSet         bool
+	RepeatToolCallLimit    int
+	ToolOnlyIterationLimit int
+	DuplicateFetchLimit    int
+	DisabledTools          []string
+}
+
+// DefaultWorkerLoopConfig returns the default loop limits for autonomy workers.
+func DefaultWorkerLoopConfig() LoopConfig {
+	return LoopConfig{
+		MaxIterations:          10,
+		Timeout:                120 * time.Second,
+		AutoApprove:            true,
+		AutoApproveSet:         true,
+		RepeatToolCallLimit:    3,
+		ToolOnlyIterationLimit: 3,
+		DuplicateFetchLimit:    1,
+		DisabledTools:          []string{"autonomy"},
+	}
+}
+
+func normalizeWorkerLoopConfig(cfg LoopConfig) LoopConfig {
+	def := DefaultWorkerLoopConfig()
+	if cfg.MaxIterations <= 0 {
+		cfg.MaxIterations = def.MaxIterations
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = def.Timeout
+	}
+	if !cfg.AutoApproveSet {
+		cfg.AutoApprove = def.AutoApprove
+		cfg.AutoApproveSet = true
+	}
+	if cfg.RepeatToolCallLimit <= 0 {
+		cfg.RepeatToolCallLimit = def.RepeatToolCallLimit
+	}
+	if cfg.ToolOnlyIterationLimit <= 0 {
+		cfg.ToolOnlyIterationLimit = def.ToolOnlyIterationLimit
+	}
+	if cfg.DuplicateFetchLimit <= 0 {
+		cfg.DuplicateFetchLimit = def.DuplicateFetchLimit
+	}
+	if cfg.DisabledTools == nil {
+		cfg.DisabledTools = append([]string(nil), def.DisabledTools...)
+	} else {
+		cfg.DisabledTools = append([]string{}, cfg.DisabledTools...)
+	}
+	return cfg
 }
 
 // LoopResult mirrors agent.LoopResult to avoid import cycle.
@@ -67,6 +115,7 @@ type Worker struct {
 	Executor    AgentExecutor
 	SessionID   string
 	CurrentTask *QueueTask
+	LoopConfig  LoopConfig
 
 	mu        sync.RWMutex
 	startedAt time.Time
@@ -78,6 +127,7 @@ type WorkerConfig struct {
 	ID           string
 	SystemPrompt string // optional override for worker's system prompt
 	MaxTokens    int    // max tokens per task (0 = use agent default)
+	LoopConfig   LoopConfig
 }
 
 // NewWorker creates a new worker bound to an agent executor.
@@ -85,10 +135,11 @@ func NewWorker(cfg WorkerConfig, executor AgentExecutor) *Worker {
 	sessionID := executor.NewSession(fmt.Sprintf("worker-%s", cfg.ID))
 
 	w := &Worker{
-		ID:        cfg.ID,
-		State:     WorkerIdle,
-		Executor:  executor,
-		SessionID: sessionID,
+		ID:         cfg.ID,
+		State:      WorkerIdle,
+		Executor:   executor,
+		SessionID:  sessionID,
+		LoopConfig: normalizeWorkerLoopConfig(cfg.LoopConfig),
 	}
 
 	return w
@@ -121,11 +172,7 @@ func (w *Worker) Execute(ctx context.Context, task *QueueTask) *WorkerResult {
 	}
 
 	// Execute through Agent Loop with session isolation
-	loopCfg := LoopConfig{
-		MaxIterations: 10,
-		Timeout:       120 * time.Second,
-		AutoApprove:   true, // workers auto-approve tool calls
-	}
+	loopCfg := normalizeWorkerLoopConfig(w.LoopConfig)
 
 	w.mu.RLock()
 	executor := w.Executor
@@ -205,6 +252,7 @@ type PoolConfig struct {
 	QueueBuffer int           // task queue buffer size (default: 64)
 	AutoScale   bool          // auto-scale workers based on queue depth
 	MinWorkers  int           // minimum workers when auto-scaling (default: 1)
+	WorkerLoop  LoopConfig    // agent loop limits used by workers
 }
 
 // DefaultPoolConfig returns sensible defaults.
@@ -215,6 +263,7 @@ func DefaultPoolConfig() PoolConfig {
 		QueueBuffer: 64,
 		AutoScale:   false,
 		MinWorkers:  1,
+		WorkerLoop:  DefaultWorkerLoopConfig(),
 	}
 }
 
@@ -246,6 +295,10 @@ type WorkerPool struct {
 
 // NewWorkerPool creates a new worker pool.
 func NewWorkerPool(cfg PoolConfig, executor AgentExecutor, queue *TaskQueue) *WorkerPool {
+	if cfg.QueueBuffer <= 0 {
+		cfg.QueueBuffer = 64
+	}
+	cfg.WorkerLoop = normalizeWorkerLoopConfig(cfg.WorkerLoop)
 	return &WorkerPool{
 		config:   cfg,
 		executor: executor,
@@ -305,12 +358,13 @@ func (p *WorkerPool) spawnWorker(ctx context.Context) *Worker {
 	id := fmt.Sprintf("worker-%d", p.nextID.Add(1))
 	var worker *Worker
 	if p.executor != nil {
-		worker = NewWorker(WorkerConfig{ID: id}, p.executor)
+		worker = NewWorker(WorkerConfig{ID: id, LoopConfig: p.config.WorkerLoop}, p.executor)
 	} else {
 		// No executor yet, create placeholder
 		worker = &Worker{
-			ID:    id,
-			State: WorkerIdle,
+			ID:         id,
+			State:      WorkerIdle,
+			LoopConfig: p.config.WorkerLoop,
 		}
 	}
 	worker.startedAt = time.Now()

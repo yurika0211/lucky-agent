@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/function"
@@ -12,9 +13,48 @@ import (
 )
 
 // buildLoopCallOptions constructs the model-visible tool schema for one user input.
-func (a *Agent) buildLoopCallOptions(userInput string) provider.CallOptions {
+func (a *Agent) buildLoopCallOptions(userInput string, loopCfg LoopConfig) provider.CallOptions {
 	fcMgr := function.NewManager(a.tools)
-	return a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
+	opts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
+	opts.Tools = filterFunctionTools(opts.Tools, loopCfg.DisabledTools)
+	if len(opts.Tools) == 0 {
+		opts.ToolChoice = "none"
+	}
+	return opts
+}
+
+func filterFunctionTools(tools []map[string]any, disabled []string) []map[string]any {
+	if len(tools) == 0 || len(disabled) == 0 {
+		return tools
+	}
+	disabledSet := make(map[string]struct{}, len(disabled))
+	for _, name := range disabled {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			disabledSet[name] = struct{}{}
+		}
+	}
+	if len(disabledSet) == 0 {
+		return tools
+	}
+
+	filtered := make([]map[string]any, 0, len(tools))
+	for _, t := range tools {
+		if _, blocked := disabledSet[functionToolNameFromSchema(t)]; blocked {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	return filtered
+}
+
+func functionToolNameFromSchema(tool map[string]any) string {
+	fn, ok := tool["function"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := fn["name"].(string)
+	return strings.TrimSpace(name)
 }
 
 func prepareLoopCallOptions(messages []provider.Message, base provider.CallOptions, forceSearchSynthesis bool) provider.CallOptions {

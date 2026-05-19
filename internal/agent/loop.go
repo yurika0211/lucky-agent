@@ -67,6 +67,7 @@ type LoopConfig struct {
 	RepeatToolCallLimit    int           // 相同工具签名重复上限
 	ToolOnlyIterationLimit int           // 连续纯工具轮次上限
 	DuplicateFetchLimit    int           // 同一 URL 抓取上限
+	DisabledTools          []string      // 本轮对模型隐藏的工具名
 }
 
 // DefaultLoopConfig 返回默认 Loop 配置
@@ -118,6 +119,27 @@ func sanitizeLoopConfig(cfg *LoopConfig) {
 	if cfg.DuplicateFetchLimit <= 0 {
 		cfg.DuplicateFetchLimit = 1
 	}
+	cfg.DisabledTools = normalizeToolNameList(cfg.DisabledTools)
+}
+
+func normalizeToolNameList(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(names))
+	normalized := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	return normalized
 }
 
 /*
@@ -314,7 +336,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		sess.AddProviderMessage(turnInput.Message)
 	}
 
-	callOpts := a.buildLoopCallOptions(routingText)
+	callOpts := a.buildLoopCallOptions(routingText, loopCfg)
 
 	for i := 0; i < loopCfg.MaxIterations; i++ {
 		result.Iterations = i + 1

@@ -575,8 +575,44 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		metrics:        metrics.NewMetrics(),
 		mediaProcessor: mediaProcessor,
 		cronEngine:     cronEngine,
-		autonomyKit:    autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), nil),
+		autonomyKit:    autonomy.NewAutonomyKit(buildAutonomyRuntimeConfig(c), nil),
 	}
+}
+
+func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
+	cfg := autonomy.DefaultAutonomyConfig()
+	if c == nil {
+		return cfg
+	}
+	worker := c.Autonomy.Worker
+	loop := autonomy.DefaultWorkerLoopConfig()
+	if worker.MaxIterations > 0 {
+		loop.MaxIterations = worker.MaxIterations
+	}
+	if worker.TimeoutSeconds > 0 {
+		loop.Timeout = time.Duration(worker.TimeoutSeconds) * time.Second
+	}
+	if worker.AutoApprove != nil {
+		loop.AutoApprove = *worker.AutoApprove
+		loop.AutoApproveSet = true
+	}
+	if worker.RepeatToolCallLimit > 0 {
+		loop.RepeatToolCallLimit = worker.RepeatToolCallLimit
+	}
+	if worker.ToolOnlyIterationLimit > 0 {
+		loop.ToolOnlyIterationLimit = worker.ToolOnlyIterationLimit
+	}
+	if worker.DuplicateFetchLimit > 0 {
+		loop.DuplicateFetchLimit = worker.DuplicateFetchLimit
+	}
+	if worker.DisabledTools != nil {
+		loop.DisabledTools = append([]string{}, worker.DisabledTools...)
+	}
+	cfg.Pool.WorkerLoop = loop
+	if worker.TimeoutSeconds > 0 {
+		cfg.Pool.TaskTimeout = time.Duration(worker.TimeoutSeconds) * time.Second
+	}
+	return cfg
 }
 
 type multimodalRuntimeConfig struct {
@@ -1452,15 +1488,15 @@ func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string
 	go func() {
 		defer close(events)
 
-		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
-
-		callOpts := a.buildLoopCallOptions(routingText)
-
 		loopCfg := DefaultLoopConfig()
 		cfg := a.cfg.Get()
 		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 		loopCfg.AutoApprove = true
 		sanitizeLoopConfig(&loopCfg)
+
+		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
+		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
+
 		state := &streamConvergenceState{
 			repeatToolCallLimit:    loopCfg.RepeatToolCallLimit,
 			toolOnlyIterationLimit: loopCfg.ToolOnlyIterationLimit,
@@ -2286,9 +2322,13 @@ func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID
 	}
 
 	loopCfg := LoopConfig{
-		MaxIterations: cfg.MaxIterations,
-		Timeout:       cfg.Timeout,
-		AutoApprove:   cfg.AutoApprove,
+		MaxIterations:          cfg.MaxIterations,
+		Timeout:                cfg.Timeout,
+		AutoApprove:            cfg.AutoApprove,
+		RepeatToolCallLimit:    cfg.RepeatToolCallLimit,
+		ToolOnlyIterationLimit: cfg.ToolOnlyIterationLimit,
+		DuplicateFetchLimit:    cfg.DuplicateFetchLimit,
+		DisabledTools:          append([]string(nil), cfg.DisabledTools...),
 	}
 
 	result, err := a.agent.RunLoopWithSession(ctx, sess, userInput, loopCfg)

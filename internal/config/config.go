@@ -216,9 +216,21 @@ type DashboardConfig struct {
 	Addr string `json:"addr,omitempty"`
 }
 
+// AutonomyWorkerConfig 自主 worker 配置
+type AutonomyWorkerConfig struct {
+	MaxIterations          int      `json:"max_iterations,omitempty"`
+	TimeoutSeconds         int      `json:"timeout_seconds,omitempty"`
+	AutoApprove            *bool    `json:"auto_approve,omitempty"`
+	RepeatToolCallLimit    int      `json:"repeat_tool_call_limit,omitempty"`
+	ToolOnlyIterationLimit int      `json:"tool_only_iteration_limit,omitempty"`
+	DuplicateFetchLimit    int      `json:"duplicate_fetch_limit,omitempty"`
+	DisabledTools          []string `json:"disabled_tools,omitempty"`
+}
+
 // AutonomyConfig 自主工作套件配置
 type AutonomyConfig struct {
-	Enabled bool `json:"enabled,omitempty"`
+	Enabled bool                 `json:"enabled,omitempty"`
+	Worker  AutonomyWorkerConfig `json:"worker,omitempty"`
 }
 
 // MsgGatewayConfig 消息网关配置
@@ -538,6 +550,15 @@ func DefaultConfig() *Config {
 		},
 		Autonomy: AutonomyConfig{
 			Enabled: false,
+			Worker: AutonomyWorkerConfig{
+				MaxIterations:          10,
+				TimeoutSeconds:         120,
+				AutoApprove:            boolPtr(true),
+				RepeatToolCallLimit:    3,
+				ToolOnlyIterationLimit: 3,
+				DuplicateFetchLimit:    1,
+				DisabledTools:          []string{"autonomy"},
+			},
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
@@ -805,6 +826,27 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit <= 0 {
 		cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit = def.Agent.SimpleLocalInspection.ToolOnlyIterationLimit
 	}
+	if cfg.Autonomy.Worker.MaxIterations <= 0 {
+		cfg.Autonomy.Worker.MaxIterations = def.Autonomy.Worker.MaxIterations
+	}
+	if cfg.Autonomy.Worker.TimeoutSeconds <= 0 {
+		cfg.Autonomy.Worker.TimeoutSeconds = def.Autonomy.Worker.TimeoutSeconds
+	}
+	if cfg.Autonomy.Worker.RepeatToolCallLimit <= 0 {
+		cfg.Autonomy.Worker.RepeatToolCallLimit = def.Autonomy.Worker.RepeatToolCallLimit
+	}
+	if cfg.Autonomy.Worker.ToolOnlyIterationLimit <= 0 {
+		cfg.Autonomy.Worker.ToolOnlyIterationLimit = def.Autonomy.Worker.ToolOnlyIterationLimit
+	}
+	if cfg.Autonomy.Worker.DuplicateFetchLimit <= 0 {
+		cfg.Autonomy.Worker.DuplicateFetchLimit = def.Autonomy.Worker.DuplicateFetchLimit
+	}
+	if cfg.Autonomy.Worker.AutoApprove == nil {
+		cfg.Autonomy.Worker.AutoApprove = def.Autonomy.Worker.AutoApprove
+	}
+	if cfg.Autonomy.Worker.DisabledTools == nil {
+		cfg.Autonomy.Worker.DisabledTools = append([]string(nil), def.Autonomy.Worker.DisabledTools...)
+	}
 
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = def.Server.Addr
@@ -872,6 +914,13 @@ func cloneConfig(in *Config) *Config {
 	cp.Fallbacks = append([]FallbackEntry(nil), in.Fallbacks...)
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
+	if in.Autonomy.Worker.AutoApprove != nil {
+		v := *in.Autonomy.Worker.AutoApprove
+		cp.Autonomy.Worker.AutoApprove = &v
+	}
+	if in.Autonomy.Worker.DisabledTools != nil {
+		cp.Autonomy.Worker.DisabledTools = append([]string{}, in.Autonomy.Worker.DisabledTools...)
+	}
 	return &cp
 }
 
@@ -1142,6 +1191,31 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Dashboard.Addr = value
 	case "autonomy.enabled":
 		m.config.Autonomy.Enabled = parseBool(value)
+	case "autonomy.worker.max_iterations":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.MaxIterations = n
+	case "autonomy.worker.timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.TimeoutSeconds = n
+	case "autonomy.worker.auto_approve":
+		v := parseBool(value)
+		m.config.Autonomy.Worker.AutoApprove = &v
+	case "autonomy.worker.repeat_tool_call_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.RepeatToolCallLimit = n
+	case "autonomy.worker.tool_only_iteration_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.ToolOnlyIterationLimit = n
+	case "autonomy.worker.duplicate_fetch_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.DuplicateFetchLimit = n
+	case "autonomy.worker.disabled_tools":
+		m.config.Autonomy.Worker.DisabledTools = splitCSV(value)
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":
@@ -1314,6 +1388,10 @@ func parseBool(s string) bool {
 	default:
 		return false
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func splitCSV(s string) []string {

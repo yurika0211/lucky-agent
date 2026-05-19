@@ -42,6 +42,27 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Autonomy.Enabled {
 		t.Errorf("expected autonomy.enabled false by default, got true")
 	}
+	if cfg.Autonomy.Worker.MaxIterations != 10 {
+		t.Errorf("expected autonomy.worker.max_iterations 10, got %d", cfg.Autonomy.Worker.MaxIterations)
+	}
+	if cfg.Autonomy.Worker.TimeoutSeconds != 120 {
+		t.Errorf("expected autonomy.worker.timeout_seconds 120, got %d", cfg.Autonomy.Worker.TimeoutSeconds)
+	}
+	if cfg.Autonomy.Worker.AutoApprove == nil || !*cfg.Autonomy.Worker.AutoApprove {
+		t.Errorf("expected autonomy.worker.auto_approve true")
+	}
+	if cfg.Autonomy.Worker.RepeatToolCallLimit != 3 {
+		t.Errorf("expected autonomy.worker.repeat_tool_call_limit 3, got %d", cfg.Autonomy.Worker.RepeatToolCallLimit)
+	}
+	if cfg.Autonomy.Worker.ToolOnlyIterationLimit != 3 {
+		t.Errorf("expected autonomy.worker.tool_only_iteration_limit 3, got %d", cfg.Autonomy.Worker.ToolOnlyIterationLimit)
+	}
+	if cfg.Autonomy.Worker.DuplicateFetchLimit != 1 {
+		t.Errorf("expected autonomy.worker.duplicate_fetch_limit 1, got %d", cfg.Autonomy.Worker.DuplicateFetchLimit)
+	}
+	if len(cfg.Autonomy.Worker.DisabledTools) != 1 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" {
+		t.Errorf("expected autonomy.worker.disabled_tools [autonomy], got %v", cfg.Autonomy.Worker.DisabledTools)
+	}
 	if cfg.Multimodal.GenerationModel != "gpt-image-1.5" {
 		t.Errorf("expected multimodal.generation_model gpt-image-1.5, got %s", cfg.Multimodal.GenerationModel)
 	}
@@ -157,6 +178,77 @@ func TestManagerSetAutonomyEnabled(t *testing.T) {
 	cfg := mgr.Get()
 	if !cfg.Autonomy.Enabled {
 		t.Fatalf("expected autonomy.enabled to be true")
+	}
+}
+
+func TestManagerSetAutonomyWorkerConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("autonomy.worker.max_iterations", "25"); err != nil {
+		t.Fatalf("Set autonomy.worker.max_iterations: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.timeout_seconds", "240"); err != nil {
+		t.Fatalf("Set autonomy.worker.timeout_seconds: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.auto_approve", "false"); err != nil {
+		t.Fatalf("Set autonomy.worker.auto_approve: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.repeat_tool_call_limit", "5"); err != nil {
+		t.Fatalf("Set autonomy.worker.repeat_tool_call_limit: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.tool_only_iteration_limit", "6"); err != nil {
+		t.Fatalf("Set autonomy.worker.tool_only_iteration_limit: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.duplicate_fetch_limit", "2"); err != nil {
+		t.Fatalf("Set autonomy.worker.duplicate_fetch_limit: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.disabled_tools", "autonomy,cron_add"); err != nil {
+		t.Fatalf("Set autonomy.worker.disabled_tools: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Autonomy.Worker.MaxIterations != 25 {
+		t.Fatalf("expected 25, got %d", cfg.Autonomy.Worker.MaxIterations)
+	}
+	if cfg.Autonomy.Worker.TimeoutSeconds != 240 {
+		t.Fatalf("expected 240, got %d", cfg.Autonomy.Worker.TimeoutSeconds)
+	}
+	if cfg.Autonomy.Worker.AutoApprove == nil || *cfg.Autonomy.Worker.AutoApprove {
+		t.Fatalf("expected auto_approve false, got %#v", cfg.Autonomy.Worker.AutoApprove)
+	}
+	if cfg.Autonomy.Worker.RepeatToolCallLimit != 5 {
+		t.Fatalf("expected 5, got %d", cfg.Autonomy.Worker.RepeatToolCallLimit)
+	}
+	if cfg.Autonomy.Worker.ToolOnlyIterationLimit != 6 {
+		t.Fatalf("expected 6, got %d", cfg.Autonomy.Worker.ToolOnlyIterationLimit)
+	}
+	if cfg.Autonomy.Worker.DuplicateFetchLimit != 2 {
+		t.Fatalf("expected 2, got %d", cfg.Autonomy.Worker.DuplicateFetchLimit)
+	}
+	if len(cfg.Autonomy.Worker.DisabledTools) != 2 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" || cfg.Autonomy.Worker.DisabledTools[1] != "cron_add" {
+		t.Fatalf("unexpected disabled tools: %v", cfg.Autonomy.Worker.DisabledTools)
+	}
+}
+
+func TestManagerSetAutonomyWorkerDisabledToolsCanBeCleared(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("autonomy.worker.disabled_tools", ""); err != nil {
+		t.Fatalf("Set autonomy.worker.disabled_tools: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Autonomy.Worker.DisabledTools == nil {
+		t.Fatal("expected explicit empty disabled tools to be preserved")
+	}
+	if len(cfg.Autonomy.Worker.DisabledTools) != 0 {
+		t.Fatalf("expected disabled tools to be empty, got %v", cfg.Autonomy.Worker.DisabledTools)
 	}
 }
 

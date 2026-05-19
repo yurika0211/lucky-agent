@@ -1439,6 +1439,62 @@ func TestAgentStartAutonomyNowBypassesDisabledConfig(t *testing.T) {
 	}
 }
 
+func TestBuildAutonomyRuntimeConfigUsesWorkerConfig(t *testing.T) {
+	autoApprove := false
+	cfg := &config.Config{
+		Autonomy: config.AutonomyConfig{
+			Worker: config.AutonomyWorkerConfig{
+				MaxIterations:          25,
+				TimeoutSeconds:         240,
+				AutoApprove:            &autoApprove,
+				RepeatToolCallLimit:    5,
+				ToolOnlyIterationLimit: 6,
+				DuplicateFetchLimit:    2,
+				DisabledTools:          []string{"autonomy", "cron_add"},
+			},
+		},
+	}
+
+	got := buildAutonomyRuntimeConfig(cfg)
+	if got.Pool.WorkerLoop.MaxIterations != 25 {
+		t.Fatalf("expected max iterations 25, got %d", got.Pool.WorkerLoop.MaxIterations)
+	}
+	if got.Pool.WorkerLoop.Timeout != 240*time.Second {
+		t.Fatalf("expected worker timeout 240s, got %s", got.Pool.WorkerLoop.Timeout)
+	}
+	if got.Pool.WorkerLoop.AutoApprove {
+		t.Fatal("expected auto approve false")
+	}
+	if !got.Pool.WorkerLoop.AutoApproveSet {
+		t.Fatal("expected auto approve to be marked configured")
+	}
+	if got.Pool.WorkerLoop.RepeatToolCallLimit != 5 {
+		t.Fatalf("expected repeat limit 5, got %d", got.Pool.WorkerLoop.RepeatToolCallLimit)
+	}
+	if got.Pool.WorkerLoop.ToolOnlyIterationLimit != 6 {
+		t.Fatalf("expected tool-only limit 6, got %d", got.Pool.WorkerLoop.ToolOnlyIterationLimit)
+	}
+	if got.Pool.WorkerLoop.DuplicateFetchLimit != 2 {
+		t.Fatalf("expected duplicate fetch limit 2, got %d", got.Pool.WorkerLoop.DuplicateFetchLimit)
+	}
+	if len(got.Pool.WorkerLoop.DisabledTools) != 2 || got.Pool.WorkerLoop.DisabledTools[0] != "autonomy" || got.Pool.WorkerLoop.DisabledTools[1] != "cron_add" {
+		t.Fatalf("unexpected disabled tools: %v", got.Pool.WorkerLoop.DisabledTools)
+	}
+}
+
+func TestBuildAutonomyRuntimeConfigAllowsEmptyDisabledTools(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Autonomy.Worker.DisabledTools = []string{}
+
+	got := buildAutonomyRuntimeConfig(cfg)
+	if got.Pool.WorkerLoop.DisabledTools == nil {
+		t.Fatal("expected explicit empty disabled tools to be preserved")
+	}
+	if len(got.Pool.WorkerLoop.DisabledTools) != 0 {
+		t.Fatalf("expected disabled tools to be empty, got %v", got.Pool.WorkerLoop.DisabledTools)
+	}
+}
+
 func TestAutonomyWorkerCompletionNotifiesRecentChat(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)

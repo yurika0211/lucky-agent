@@ -48,6 +48,21 @@ func TestDefaultLoopConfig(t *testing.T) {
 	}
 }
 
+func TestFilterFunctionTools(t *testing.T) {
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "autonomy"}},
+		{"type": "function", "function": map[string]any{"name": "shell"}},
+	}
+
+	got := filterFunctionTools(tools, []string{"autonomy"})
+	if len(got) != 1 {
+		t.Fatalf("expected one tool after filtering, got %d", len(got))
+	}
+	if functionToolNameFromSchema(got[0]) != "shell" {
+		t.Fatalf("expected shell tool to remain, got %#v", got[0])
+	}
+}
+
 func TestApplySimpleTaskLoopTuningDefaults(t *testing.T) {
 	loopCfg := LoopConfig{
 		MaxIterations:          10,

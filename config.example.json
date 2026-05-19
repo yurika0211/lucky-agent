@@ -138,7 +138,18 @@
     "addr": ":8765"
   },
   "autonomy": {
-    "enabled": false
+    "enabled": false,
+    "worker": {
+      "max_iterations": 10,
+      "timeout_seconds": 120,
+      "auto_approve": true,
+      "repeat_tool_call_limit": 3,
+      "tool_only_iteration_limit": 3,
+      "duplicate_fetch_limit": 1,
+      "disabled_tools": [
+        "autonomy"
+      ]
+    }
   },
   "msg_gateway": {
     "platform": "telegram",

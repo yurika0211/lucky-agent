@@ -624,6 +624,9 @@ func TestNewWorker(t *testing.T) {
 	if info.State != WorkerIdle {
 		t.Errorf("expected idle state, got %s", info.State)
 	}
+	if !worker.LoopConfig.AutoApprove {
+		t.Error("expected default worker auto approve")
+	}
 }
 
 func TestWorkerPoolStartStop(t *testing.T) {
@@ -968,14 +971,24 @@ func TestToolHeartbeatTrigger(t *testing.T) {
 type mockAgentExecutor struct {
 	mu       sync.Mutex
 	sessions []string
+	lastCfg  LoopConfig
 }
 
 func (m *mockAgentExecutor) RunLoopWithSession(ctx context.Context, sessionID string, userInput string, cfg LoopConfig) (*LoopResult, error) {
+	m.mu.Lock()
+	m.lastCfg = cfg
+	m.mu.Unlock()
 	return &LoopResult{
 		Response:   "mock response",
 		TokensUsed: 100,
 		Iterations: 1,
 	}, nil
+}
+
+func (m *mockAgentExecutor) LastConfig() LoopConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastCfg
 }
 
 func (m *mockAgentExecutor) NewSession(title string) string {
@@ -998,6 +1011,55 @@ func TestWorkerTaskCount(t *testing.T) {
 	// Initial count should be 0
 	if worker.TaskCount() != 0 {
 		t.Errorf("expected initial task count 0, got %d", worker.TaskCount())
+	}
+}
+
+func TestWorkerUsesConfiguredLoopLimits(t *testing.T) {
+	executor := &mockAgentExecutor{}
+	cfg := WorkerConfig{
+		ID: "configured-worker",
+		LoopConfig: LoopConfig{
+			MaxIterations:          25,
+			Timeout:                4 * time.Minute,
+			AutoApprove:            false,
+			AutoApproveSet:         true,
+			RepeatToolCallLimit:    6,
+			ToolOnlyIterationLimit: 7,
+			DuplicateFetchLimit:    2,
+			DisabledTools:          []string{"autonomy", "cron_add"},
+		},
+	}
+	worker := NewWorker(cfg, executor)
+
+	result := worker.Execute(context.Background(), &QueueTask{
+		ID:    "task-1",
+		Title: "configured task",
+	})
+	if result.Error != nil {
+		t.Fatalf("Execute returned error: %v", result.Error)
+	}
+
+	got := executor.LastConfig()
+	if got.MaxIterations != 25 {
+		t.Fatalf("expected max iterations 25, got %d", got.MaxIterations)
+	}
+	if got.Timeout != 4*time.Minute {
+		t.Fatalf("expected timeout 4m, got %s", got.Timeout)
+	}
+	if got.AutoApprove {
+		t.Fatalf("expected auto approve false")
+	}
+	if got.RepeatToolCallLimit != 6 {
+		t.Fatalf("expected repeat limit 6, got %d", got.RepeatToolCallLimit)
+	}
+	if got.ToolOnlyIterationLimit != 7 {
+		t.Fatalf("expected tool-only limit 7, got %d", got.ToolOnlyIterationLimit)
+	}
+	if got.DuplicateFetchLimit != 2 {
+		t.Fatalf("expected duplicate fetch limit 2, got %d", got.DuplicateFetchLimit)
+	}
+	if len(got.DisabledTools) != 2 || got.DisabledTools[0] != "autonomy" || got.DisabledTools[1] != "cron_add" {
+		t.Fatalf("unexpected disabled tools: %v", got.DisabledTools)
 	}
 }
 
