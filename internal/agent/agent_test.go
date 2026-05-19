@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/autonomy"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/cron"
@@ -1435,6 +1436,48 @@ func TestAgentStartAutonomyNowBypassesDisabledConfig(t *testing.T) {
 	}
 	if !a.Autonomy().Status().Started {
 		t.Fatal("StartAutonomyNow should force-start autonomy")
+	}
+}
+
+func TestAutonomyWorkerCompletionNotifiesRecentChat(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &mockProvider{name: "test-mock"}
+
+	gm := msggateway.NewGatewayManager()
+	gw := &cronNotifyGateway{name: "telegram", running: true}
+	if err := gm.Register(gw); err != nil {
+		t.Fatalf("register gateway: %v", err)
+	}
+	a.msgGateway = gm
+	a.RecordRecentChatTarget("telegram", "12345", "77")
+
+	if err := a.StartAutonomyNow(context.Background()); err != nil {
+		t.Fatalf("StartAutonomyNow() error = %v", err)
+	}
+	a.Autonomy().AddTask("worker completion report", "Return a short result.", autonomy.PriorityNormal, nil)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(gw.messages) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(gw.messages) == 0 {
+		t.Fatal("expected worker completion notification")
+	}
+	if !strings.Contains(gw.messages[0], "worker completion report") || !strings.Contains(gw.messages[0], "mock") {
+		t.Fatalf("unexpected worker notification: %q", gw.messages[0])
 	}
 }
 

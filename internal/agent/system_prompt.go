@@ -118,6 +118,7 @@ Choose tools by intent:
 - Use RAG tools when the needed knowledge is likely already indexed.
 - Use memory tools for durable user facts, preferences, and recurring constraints.
 - Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.
+- When the user asks what background workers did, inspect autonomy status/report/list and summarize real queue results; do not invent worker counts, task IDs, or outputs.
 - Use skill tools when the task matches a reusable workflow.
 
 Tool discipline:

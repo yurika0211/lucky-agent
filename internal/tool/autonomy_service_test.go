@@ -115,6 +115,28 @@ func TestAutonomyToolServiceWorkerScaling(t *testing.T) {
 	}
 }
 
+func TestAutonomyToolServiceReportIncludesWorkerOutput(t *testing.T) {
+	kit := autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), nil)
+	svc := NewAutonomyToolService(kit)
+
+	task := kit.AddTask("background digest", "Summarize worker output", autonomy.PriorityNormal, []string{"report"})
+	if err := kit.Queue().Complete(task.ID, "worker finished the digest"); err != nil {
+		t.Fatalf("complete task: %v", err)
+	}
+
+	out, err := svc.HandleAutonomy(map[string]any{
+		"action": "report",
+		"state":  "done",
+		"limit":  1,
+	})
+	if err != nil {
+		t.Fatalf("HandleAutonomy(report): %v", err)
+	}
+	if !strings.Contains(out, "worker finished the digest") {
+		t.Fatalf("expected worker result in report, got %q", out)
+	}
+}
+
 func stringSliceContains(items []string, needle string) bool {
 	for _, item := range items {
 		if item == needle {

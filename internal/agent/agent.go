@@ -86,45 +86,47 @@ type supportRuntime struct {
 
 // Agent 是 LuckyHarness 的核心 Agent
 type Agent struct {
-	cfg                *config.Manager
-	soul               *soul.Soul
-	tmplMgr            *soul.TemplateManager  // SOUL 模板管理器
-	provider           provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
-	registry           *provider.Registry     // provider 注册表
-	catalog            *provider.ModelCatalog // 模型目录
-	tokenStore         *provider.TokenStore   // token 存储
-	memory             *memory.Store
-	shortTerm          *memory.ShortTermBuffer // 短期记忆滑动窗口
-	midTerm            *memory.MidTermStore    // 中期会话摘要存储
-	sessions           *session.Manager
-	tools              *tool.Registry
-	gateway            *tool.Gateway           // 统一工具网关
-	msgGateway         *gateway.GatewayManager // 消息平台网关
-	mcpClient          *tool.MCPClient         // MCP 客户端
-	delegate           *tool.DelegateManager   // 子代理委派管理器
-	contextWin         *contextx.ContextWindow // 上下文窗口管理器
-	contextEst         *contextx.TokenEstimator
-	ragManager         *rag.RAGManager         // RAG 知识库管理器
-	ragPersist         *rag.Persistence        // RAG 持久化
-	streamIndexer      *rag.StreamIndexer      // 流式索引器
-	embedderReg        *embedder.Registry      // 嵌入模型注册表
-	collabReg          *collab.Registry        // Agent 协作注册表
-	collabMgr          *collab.DelegateManager // 协作任务管理器
-	skills             []*tool.SkillInfo       // 已加载的 skill 列表
-	skillRegistry      *tool.SkillRegistry
-	metrics            *metrics.Metrics // 指标收集器
-	cronEngine         *cron.Engine     // 定时任务引擎
-	cronStore          *cron.Store
-	autonomy           *autonomy.AutonomyKit // 自主工作套件
-	heartbeatSvc       *appheartbeat.Service
-	heartbeatMu        sync.Mutex
-	heartbeatSessionID string
-	recentTarget       recentChatTarget
-	contextCache       *contextMessageCache
-	mediaProcessor     *multimodal.Processor
-	chatCount          int // 对话计数，用于触发自动摘要
-	activeModel        string
-	activeAPIBase      string
+	cfg                   *config.Manager
+	soul                  *soul.Soul
+	tmplMgr               *soul.TemplateManager  // SOUL 模板管理器
+	provider              provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	registry              *provider.Registry     // provider 注册表
+	catalog               *provider.ModelCatalog // 模型目录
+	tokenStore            *provider.TokenStore   // token 存储
+	memory                *memory.Store
+	shortTerm             *memory.ShortTermBuffer // 短期记忆滑动窗口
+	midTerm               *memory.MidTermStore    // 中期会话摘要存储
+	sessions              *session.Manager
+	tools                 *tool.Registry
+	gateway               *tool.Gateway           // 统一工具网关
+	msgGateway            *gateway.GatewayManager // 消息平台网关
+	mcpClient             *tool.MCPClient         // MCP 客户端
+	delegate              *tool.DelegateManager   // 子代理委派管理器
+	contextWin            *contextx.ContextWindow // 上下文窗口管理器
+	contextEst            *contextx.TokenEstimator
+	ragManager            *rag.RAGManager         // RAG 知识库管理器
+	ragPersist            *rag.Persistence        // RAG 持久化
+	streamIndexer         *rag.StreamIndexer      // 流式索引器
+	embedderReg           *embedder.Registry      // 嵌入模型注册表
+	collabReg             *collab.Registry        // Agent 协作注册表
+	collabMgr             *collab.DelegateManager // 协作任务管理器
+	skills                []*tool.SkillInfo       // 已加载的 skill 列表
+	skillRegistry         *tool.SkillRegistry
+	metrics               *metrics.Metrics // 指标收集器
+	cronEngine            *cron.Engine     // 定时任务引擎
+	cronStore             *cron.Store
+	autonomy              *autonomy.AutonomyKit // 自主工作套件
+	autonomyResultsMu     sync.Mutex
+	autonomyResultsCancel context.CancelFunc
+	heartbeatSvc          *appheartbeat.Service
+	heartbeatMu           sync.Mutex
+	heartbeatSessionID    string
+	recentTarget          recentChatTarget
+	contextCache          *contextMessageCache
+	mediaProcessor        *multimodal.Processor
+	chatCount             int // 对话计数，用于触发自动摘要
+	activeModel           string
+	activeAPIBase         string
 }
 
 /*
@@ -2249,6 +2251,7 @@ func (a *Agent) startAutonomy(ctx context.Context, force bool) error {
 	a.autonomy.SetExecutor(executor)
 
 	if a.autonomy.Status().Started {
+		a.startAutonomyResultReporter()
 		return nil
 	}
 
@@ -2258,6 +2261,7 @@ func (a *Agent) startAutonomy(ctx context.Context, force bool) error {
 		}
 		return err
 	}
+	a.startAutonomyResultReporter()
 
 	return nil
 }
@@ -2467,6 +2471,7 @@ func (a *Agent) Close() error {
 	var firstErr error
 
 	if a.autonomy != nil && a.autonomy.Status().Started {
+		a.stopAutonomyResultReporter()
 		if err := a.autonomy.Stop(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("stop autonomy: %w", err)
 		}

@@ -44,12 +44,12 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 
 	r.Register(&Tool{
 		Name:        "autonomy",
-		Description: "High-level autonomy manager. Use it to enqueue background tasks, inspect the autonomy queue and workers, or trigger the autonomy heartbeat when the user asks for deferred, proactive, or background work.",
+		Description: "High-level autonomy manager. Use it to enqueue background tasks, inspect the autonomy queue and workers, or report worker outputs when the user asks for deferred, proactive, or background work.",
 		Category:    CatDelegate,
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
-			"action":      {Type: "string", Description: "Action: status, add, list, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers", Required: true},
+			"action":      {Type: "string", Description: "Action: status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers", Required: true},
 			"title":       {Type: "string", Description: "Task title for action=add", Required: false},
 			"description": {Type: "string", Description: "Task details for action=add", Required: false},
 			"priority":    {Type: "string", Description: "Task priority for action=add: low, normal, high, critical", Required: false, Default: "normal"},
@@ -57,6 +57,7 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 			"state":       {Type: "string", Description: "Filter for action=list: ready, in_progress, blocked, done", Required: false},
 			"task_id":     {Type: "string", Description: "Task ID for update, complete, fail, block, unblock, or spawn", Required: false},
 			"count":       {Type: "number", Description: "Worker count for scale_up, scale_down, or set_workers", Required: false},
+			"limit":       {Type: "number", Description: "Maximum tasks to return for action=report", Required: false},
 			"result":      {Type: "string", Description: "Completion result for action=complete", Required: false},
 			"error":       {Type: "string", Description: "Error message for action=fail", Required: false},
 			"reason":      {Type: "string", Description: "Block reason for action=block", Required: false},
@@ -168,6 +169,8 @@ func (s *AutonomyToolService) HandleAutonomy(args map[string]any) (string, error
 		return s.HandleQueueAdd(args)
 	case "list", "queue", "queue_list":
 		return s.HandleQueueList(args)
+	case "report", "outputs", "results":
+		return s.HandleReport(args)
 	case "update", "queue_update":
 		return s.HandleQueueUpdate(args)
 	case "complete", "fail", "block", "unblock":
@@ -187,7 +190,7 @@ func (s *AutonomyToolService) HandleAutonomy(args map[string]any) (string, error
 	case "set_workers", "workers_set":
 		return s.HandleSetWorkers(args)
 	default:
-		return "", fmt.Errorf("invalid autonomy action %q (use status, add, list, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers)", action)
+		return "", fmt.Errorf("invalid autonomy action %q (use status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers)", action)
 	}
 }
 
@@ -200,6 +203,10 @@ func (s *AutonomyToolService) HandleQueueAdd(args map[string]any) (string, error
 
 func (s *AutonomyToolService) HandleQueueList(args map[string]any) (string, error) {
 	return s.tools.HandleQueueList(args)
+}
+
+func (s *AutonomyToolService) HandleReport(args map[string]any) (string, error) {
+	return s.tools.HandleReport(args)
 }
 
 func (s *AutonomyToolService) HandleQueueUpdate(args map[string]any) (string, error) {
