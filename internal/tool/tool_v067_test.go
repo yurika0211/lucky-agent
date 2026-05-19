@@ -4,13 +4,22 @@
 package tool
 
 import (
+	"os"
 	"testing"
 )
 
 // v0.67.0: tool 包测试补全 - 覆盖搜索相关 0% 函数
 
+func skipLiveSearchTest(t *testing.T) {
+	t.Helper()
+	if os.Getenv("LH_RUN_LIVE_SEARCH_TESTS") != "1" {
+		t.Skip("set LH_RUN_LIVE_SEARCH_TESTS=1 to run live web search tests")
+	}
+}
+
 // TestHandleWebSearch 测试 handleWebSearch 函数
 func TestHandleWebSearch(t *testing.T) {
+	skipLiveSearchTest(t)
 	cfg := &WebSearchConfig{
 		Provider:   "brave",
 		MaxResults: 5,
@@ -27,6 +36,7 @@ func TestHandleWebSearch(t *testing.T) {
 
 // TestHandleDeepSearch 测试 handleDeepSearch 函数
 func TestHandleDeepSearch(t *testing.T) {
+	skipLiveSearchTest(t)
 	cfg := &WebSearchConfig{
 		Provider:   "brave",
 		MaxResults: 5,
@@ -39,6 +49,7 @@ func TestHandleDeepSearch(t *testing.T) {
 
 // TestSearchWithBrave 测试 searchWithBrave 函数
 func TestSearchWithBrave(t *testing.T) {
+	skipLiveSearchTest(t)
 	cfg := &WebSearchConfig{
 		MaxResults: 5,
 	}
@@ -51,6 +62,7 @@ func TestSearchWithBrave(t *testing.T) {
 
 // TestSearchWithDDGS 测试 searchWithDDGS 函数
 func TestSearchWithDDGS(t *testing.T) {
+	skipLiveSearchTest(t)
 	// 测试 DuckDuckGo 搜索
 	_, err := searchWithDDGS("test query", 5)
 	// DDGS 可能不需要 API key
@@ -59,6 +71,7 @@ func TestSearchWithDDGS(t *testing.T) {
 
 // TestSearchWithDDGLite 测试 searchWithDDGLite 函数
 func TestSearchWithDDGLite(t *testing.T) {
+	skipLiveSearchTest(t)
 	// 测试 DuckDuckGo Lite 搜索
 	_, err := searchWithDDGLite("test query", 5)
 	_ = err
@@ -66,6 +79,7 @@ func TestSearchWithDDGLite(t *testing.T) {
 
 // TestSearchWithSearXNG 测试 searchWithSearXNG 函数
 func TestSearchWithSearXNG(t *testing.T) {
+	skipLiveSearchTest(t)
 	cfg := &WebSearchConfig{
 		MaxResults: 5,
 	}
@@ -135,7 +149,7 @@ func TestValidateFetchURL(t *testing.T) {
 	}{
 		{"https://example.com", false},
 		{"http://example.com", false},
-		{"ftp://example.com", true},  // 不支持的协议
+		{"ftp://example.com", true},   // 不支持的协议
 		{"javascript:alert(1)", true}, // 危险协议
 		{"//example.com", true},       // 缺少协议
 		{"https://127.0.0.1", true},   // 回环地址
@@ -143,7 +157,7 @@ func TestValidateFetchURL(t *testing.T) {
 		{"https://192.168.1.1", true}, // 私有地址
 		{"https://169.254.1.1", true}, // 链路本地
 		{"https://0.0.0.0", true},     // 未指定地址
-		{"", true},                     // 空 URL
+		{"", true},                    // 空 URL
 	}
 
 	for _, tt := range tests {

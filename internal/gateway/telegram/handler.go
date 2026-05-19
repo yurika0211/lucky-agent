@@ -1456,7 +1456,9 @@ func runChatEventLoop(
 // 中间步骤和最终结论都作为独立消息发送，保证“结论在最后”。
 func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput, sessionID string) error {
 	routingText := input.RoutingText
-	emitProgress := h.newProgressCardUpdater(msg)
+	emitProgress := func(text string) {
+		h.sendProgressMessageHTML(msg, text)
+	}
 	emitProgressForMsg := func(_ *gateway.Message, text string) {
 		emitProgress(text)
 	}

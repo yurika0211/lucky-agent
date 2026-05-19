@@ -145,8 +145,8 @@ func TestShouldPreferStreamFirst(t *testing.T) {
 	if !shouldPreferStreamFirst("gpt-5.4-mini") {
 		t.Fatal("expected gpt-5.4-mini to prefer stream-first")
 	}
-	if shouldPreferStreamFirst("gpt-5.4-mini") {
-		t.Fatal("did not expect gpt-5.4-mini to prefer stream-first")
+	if shouldPreferStreamFirst("gpt-4-turbo") {
+		t.Fatal("did not expect gpt-4-turbo to prefer stream-first")
 	}
 }
 

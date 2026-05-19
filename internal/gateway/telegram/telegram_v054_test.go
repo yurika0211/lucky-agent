@@ -44,6 +44,10 @@ func (c *mockBotClient) Do(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("mock bot client: nil handler")
 	}
 	result := c.handler(req)
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+		_ = req.Body.Close()
+	}
 	body, err := json.Marshal(result)
 	if err != nil {
 		return nil, err
@@ -833,9 +837,13 @@ func TestV054CallTelegramAPIWithMockBot(t *testing.T) {
 	}
 	defer server.Close()
 
-	// callTelegramAPI 有 bug：body 未分配空间，Read 会失败
-	// 但不应该 panic
-	_, _ = adapter.callTelegramAPI("getMe", nil)
+	body, err := adapter.callTelegramAPI("getMe", nil)
+	if err != nil {
+		t.Fatalf("callTelegramAPI error = %v", err)
+	}
+	if len(body) == 0 {
+		t.Fatal("expected callTelegramAPI response body")
+	}
 }
 
 // ============================================================
@@ -3879,6 +3887,7 @@ func TestV054HandleChatNarrativeStreamHidesInternalProgressMarkers(t *testing.T)
 		chatStreamTimeout:         defaultChatStreamTimeout,
 		progressAsMessages:        true,
 		progressAsNaturalLanguage: true,
+		progressSummaryWithLLM:    true,
 	}
 
 	msg := &gateway.Message{

@@ -64,9 +64,9 @@ func NewPriceTable() *PriceTable {
 func (pt *PriceTable) loadDefaults() {
 	defaults := []PriceEntry{
 		{Provider: "openai", Model: "gpt-5.4-mini", PromptPrice: 0.0025, CompletionPrice: 0.01},
-		{Provider: "openai", Model: "gpt-5.4-mini", PromptPrice: 0.00015, CompletionPrice: 0.0006},
-		{Provider: "openai", Model: "gpt-5.4-mini", PromptPrice: 0.01, CompletionPrice: 0.03},
-		{Provider: "openai", Model: "gpt-5.4-mini", PromptPrice: 0.0005, CompletionPrice: 0.0015},
+		{Provider: "openai", Model: "gpt-4o-mini", PromptPrice: 0.00015, CompletionPrice: 0.0006},
+		{Provider: "openai", Model: "gpt-4-turbo", PromptPrice: 0.01, CompletionPrice: 0.03},
+		{Provider: "openai", Model: "gpt-3.5-turbo", PromptPrice: 0.0005, CompletionPrice: 0.0015},
 		{Provider: "anthropic", Model: "claude-3.5-sonnet", PromptPrice: 0.003, CompletionPrice: 0.015},
 		{Provider: "anthropic", Model: "claude-3-opus", PromptPrice: 0.015, CompletionPrice: 0.075},
 		{Provider: "anthropic", Model: "claude-3-haiku", PromptPrice: 0.00025, CompletionPrice: 0.00125},

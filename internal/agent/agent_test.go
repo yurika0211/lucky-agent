@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -806,6 +807,7 @@ func (p *loopingFunctionProvider) ChatStreamWithOptions(ctx context.Context, mes
 }
 
 type cronNotifyGateway struct {
+	mu       sync.Mutex
 	name     string
 	running  bool
 	messages []string
@@ -813,25 +815,44 @@ type cronNotifyGateway struct {
 
 func (g *cronNotifyGateway) Name() string { return g.name }
 func (g *cronNotifyGateway) Start(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.running = true
 	return nil
 }
 
 func (g *cronNotifyGateway) Stop() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.running = false
 	return nil
 }
 
 func (g *cronNotifyGateway) Send(ctx context.Context, chatID string, message string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.messages = append(g.messages, message)
 	return nil
 }
 
 func (g *cronNotifyGateway) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.messages = append(g.messages, message)
 	return nil
 }
-func (g *cronNotifyGateway) IsRunning() bool { return g.running }
+
+func (g *cronNotifyGateway) IsRunning() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.running
+}
+
+func (g *cronNotifyGateway) messageSnapshot() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.messages...)
+}
 
 type staticChatProvider struct {
 	name    string
@@ -1523,17 +1544,19 @@ func TestAutonomyWorkerCompletionNotifiesRecentChat(t *testing.T) {
 	a.Autonomy().AddTask("worker completion report", "Return a short result.", autonomy.PriorityNormal, nil)
 
 	deadline := time.Now().Add(3 * time.Second)
+	var messages []string
 	for time.Now().Before(deadline) {
-		if len(gw.messages) > 0 {
+		messages = gw.messageSnapshot()
+		if len(messages) > 0 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if len(gw.messages) == 0 {
+	if len(messages) == 0 {
 		t.Fatal("expected worker completion notification")
 	}
-	if !strings.Contains(gw.messages[0], "worker completion report") || !strings.Contains(gw.messages[0], "mock") {
-		t.Fatalf("unexpected worker notification: %q", gw.messages[0])
+	if !strings.Contains(messages[0], "worker completion report") || !strings.Contains(messages[0], "mock") {
+		t.Fatalf("unexpected worker notification: %q", messages[0])
 	}
 }
 
@@ -2353,7 +2376,7 @@ func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
 	if err := job.Task(); err != nil {
 		t.Fatalf("agent cron task error = %v", err)
 	}
-	if len(gw.messages) == 0 {
+	if len(gw.messageSnapshot()) == 0 {
 		t.Fatal("expected telegram notification to be sent")
 	}
 }
@@ -2396,7 +2419,7 @@ func TestCronNotificationFallsBackToRecentTelegramTarget(t *testing.T) {
 	if err := job.Task(); err != nil {
 		t.Fatalf("agent cron task error = %v", err)
 	}
-	if len(gw.messages) == 0 {
+	if len(gw.messageSnapshot()) == 0 {
 		t.Fatal("expected fallback telegram notification to be sent")
 	}
 }

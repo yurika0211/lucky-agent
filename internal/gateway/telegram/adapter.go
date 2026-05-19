@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -475,18 +476,20 @@ func (a *Adapter) callSetMessageReaction(chatID int64, messageID int, emoji stri
 
 // callTelegramAPI 调用 Telegram Bot API 的通用方法
 func (a *Adapter) callTelegramAPI(method string, params url.Values) ([]byte, error) {
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/%s", a.bot.Token, method)
-	resp, err := http.PostForm(apiURL, params)
+	if a.bot == nil {
+		return nil, fmt.Errorf("telegram: bot is not initialized")
+	}
+	apiParams := tgbotapi.Params{}
+	for key, values := range params {
+		if len(values) > 0 {
+			apiParams[key] = values[0]
+		}
+	}
+	resp, err := a.bot.MakeRequest(method, apiParams)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	var body []byte
-	if _, err := resp.Body.Read(body); err != nil {
-		return nil, err
-	}
-	return body, nil
+	return json.Marshal(resp)
 }
 
 // SendStream implements gateway.StreamGateway.
@@ -979,7 +982,13 @@ func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
 		return
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	var client interface {
+		Do(*http.Request) (*http.Response, error)
+	} = http.DefaultClient
+	if a.bot != nil && a.bot.Client != nil {
+		client = a.bot.Client
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
