@@ -117,6 +117,7 @@ Choose tools by intent:
 - Use web/search tools for external or recent information.
 - Use RAG tools when the needed knowledge is likely already indexed.
 - Use memory tools for durable user facts, preferences, and recurring constraints.
+- Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.
 - Use skill tools when the task matches a reusable workflow.
 
 Tool discipline:

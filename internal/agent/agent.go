@@ -838,6 +838,13 @@ func New(cfg *config.Manager) (*Agent, error) {
 	})
 	a.collabMgr = collab.NewDelegateManager(a.collabReg, nil)
 
+	autonomyQueuePath := filepath.Join(cfg.HomeDir(), "runtime", "autonomy_queue.json")
+	if restored, restoreErr := supportRT.autonomyKit.EnablePersistence(autonomyQueuePath); restoreErr != nil {
+		fmt.Printf("[autonomy] restore failed: %v\n", restoreErr)
+	} else if restored > 0 {
+		fmt.Printf("[autonomy] restored %d queued tasks\n", restored)
+	}
+
 	supportRT.toolServices.Cron = tool.NewCronToolService(
 		supportRT.cronEngine,
 		a.saveCronJobs,
@@ -845,7 +852,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 			return a.buildCronTask(id, cronTaskMode(mode), command, metadata)
 		},
 	)
-	supportRT.toolServices.Autonomy = tool.NewAutonomyToolService(supportRT.autonomyKit)
+	supportRT.toolServices.Autonomy = tool.NewAutonomyToolService(supportRT.autonomyKit, func() error {
+		return a.StartAutonomyNow(context.Background())
+	})
 	supportRT.toolServices.Heartbeat = tool.NewHeartbeatToolService(a.handleHeartbeatTrigger, a.handleHeartbeatStatus)
 	supportRT.toolServices.RegisterCoreTools(supportRT.tools)
 
@@ -2204,10 +2213,21 @@ func (a *Agent) Autonomy() *autonomy.AutonomyKit {
 // StartAutonomy 启动自主工作套件（WorkerPool + HeartbeatEngine）。
 // Autonomy 是进程级后台组件，不应绑定到单次请求的取消信号。
 func (a *Agent) StartAutonomy(ctx context.Context) error {
+	return a.startAutonomy(ctx, false)
+}
+
+// StartAutonomyNow explicitly starts autonomy even when autonomy.enabled is
+// false. This is used by the model-visible autonomy tool: an explicit tool call
+// is treated as direct intent to use the autonomy runtime for this process.
+func (a *Agent) StartAutonomyNow(ctx context.Context) error {
+	return a.startAutonomy(ctx, true)
+}
+
+func (a *Agent) startAutonomy(ctx context.Context, force bool) error {
 	if a.autonomy == nil {
 		return fmt.Errorf("autonomy kit not initialized")
 	}
-	if a.cfg != nil {
+	if !force && a.cfg != nil {
 		cfg := a.cfg.Get()
 		enabled := cfg.Autonomy.Enabled
 		if !enabled {

@@ -47,7 +47,10 @@ func (td *ToolDefinitions) HandleQueueAdd(args map[string]any) (string, error) {
 		}
 	}
 
-	task := td.kit.AddTask(title, description, priority, tags)
+	task, err := td.kit.AddTaskWithError(title, description, priority, tags)
+	if err != nil {
+		return "", err
+	}
 
 	result, _ := json.Marshal(map[string]any{
 		"task_id":  task.ID,
@@ -204,12 +207,12 @@ func (td *ToolDefinitions) HandleWorkerList(args map[string]any) (string, error)
 	stats := td.kit.Pool().Stats()
 
 	result, _ := json.Marshal(map[string]any{
-		"workers":       workers,
-		"total":         stats.WorkerCount,
-		"idle":          stats.IdleWorkers,
-		"busy":          stats.BusyWorkers,
-		"total_tasks":   stats.TotalTasks,
-		"failed_tasks":  stats.FailedTasks,
+		"workers":      workers,
+		"total":        stats.WorkerCount,
+		"idle":         stats.IdleWorkers,
+		"busy":         stats.BusyWorkers,
+		"total_tasks":  stats.TotalTasks,
+		"failed_tasks": stats.FailedTasks,
 	})
 
 	return string(result), nil

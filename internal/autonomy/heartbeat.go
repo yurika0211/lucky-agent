@@ -360,6 +360,14 @@ func (ak *AutonomyKit) Queue() *TaskQueue {
 	return ak.queue
 }
 
+// EnablePersistence loads and enables durable queue state.
+func (ak *AutonomyKit) EnablePersistence(path string) (int, error) {
+	if ak == nil || ak.queue == nil {
+		return 0, nil
+	}
+	return ak.queue.EnablePersistence(path)
+}
+
 // Pool returns the worker pool.
 func (ak *AutonomyKit) Pool() *WorkerPool {
 	return ak.pool
@@ -384,6 +392,48 @@ func (ak *AutonomyKit) AddTask(title, description string, priority TaskPriority,
 	return ak.queue.Add(title, description, priority, tags)
 }
 
+// AddTaskWithError adds a task and surfaces persistence failures.
+func (ak *AutonomyKit) AddTaskWithError(title, description string, priority TaskPriority, tags []string) (*QueueTask, error) {
+	return ak.queue.AddWithError(title, description, priority, tags)
+}
+
+// ScaleUp adds workers to the pool.
+func (ak *AutonomyKit) ScaleUp(ctx context.Context, count int) error {
+	if ak == nil || ak.pool == nil {
+		return fmt.Errorf("autonomy kit not initialized")
+	}
+	return ak.pool.ScaleUp(ctx, count)
+}
+
+// ScaleDown removes up to count idle workers from the pool.
+func (ak *AutonomyKit) ScaleDown(count int) int {
+	if ak == nil || ak.pool == nil {
+		return 0
+	}
+	return ak.pool.ScaleDown(count)
+}
+
+// SetWorkerCount adjusts the pool toward an absolute worker count.
+func (ak *AutonomyKit) SetWorkerCount(ctx context.Context, count int) (int, error) {
+	if ak == nil || ak.pool == nil {
+		return 0, fmt.Errorf("autonomy kit not initialized")
+	}
+	if count < 0 {
+		return 0, fmt.Errorf("worker count must be non-negative")
+	}
+	current := ak.pool.Stats().WorkerCount
+	if count > current {
+		if err := ak.pool.ScaleUp(ctx, count-current); err != nil {
+			return ak.pool.Stats().WorkerCount, err
+		}
+		return ak.pool.Stats().WorkerCount, nil
+	}
+	if count < current {
+		ak.pool.ScaleDown(current - count)
+	}
+	return ak.pool.Stats().WorkerCount, nil
+}
+
 // Status returns the overall autonomy kit status.
 func (ak *AutonomyKit) Status() AutonomyStatus {
 	ak.mu.RLock()
@@ -401,6 +451,7 @@ func (ak *AutonomyKit) Status() AutonomyStatus {
 		QueueDone:       done,
 		PoolStats:       poolStats,
 		LastHeartbeat:   ak.heartbeat.LastBeat(),
+		QueueStore:      ak.queue.PersistencePath(),
 	}
 }
 
@@ -413,4 +464,5 @@ type AutonomyStatus struct {
 	QueueDone       int       `json:"queue_done"`
 	PoolStats       PoolStats `json:"pool_stats"`
 	LastHeartbeat   time.Time `json:"last_heartbeat"`
+	QueueStore      string    `json:"queue_store,omitempty"`
 }

@@ -3,6 +3,7 @@ package autonomy
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -495,6 +496,72 @@ func TestTaskQueueCleanDone(t *testing.T) {
 	}
 }
 
+func TestTaskQueuePersistenceRestoresTasks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "autonomy_queue.json")
+
+	q := NewTaskQueue(16)
+	if restored, err := q.EnablePersistence(path); err != nil {
+		t.Fatalf("EnablePersistence: %v", err)
+	} else if restored != 0 {
+		t.Fatalf("expected no restored tasks, got %d", restored)
+	}
+	task, err := q.AddWithError("Persistent task", "survive restart", PriorityHigh, []string{"persist"})
+	if err != nil {
+		t.Fatalf("AddWithError: %v", err)
+	}
+	if err := q.Block(task.ID, "waiting"); err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+
+	reloaded := NewTaskQueue(16)
+	restored, err := reloaded.EnablePersistence(path)
+	if err != nil {
+		t.Fatalf("reload EnablePersistence: %v", err)
+	}
+	if restored != 1 {
+		t.Fatalf("expected one restored task, got %d", restored)
+	}
+	got, ok := reloaded.Get(task.ID)
+	if !ok {
+		t.Fatalf("restored task %s not found", task.ID)
+	}
+	if got.State != TaskBlocked || got.BlockReason != "waiting" {
+		t.Fatalf("unexpected restored state: %#v", got)
+	}
+}
+
+func TestTaskQueuePersistenceRestoresInterruptedTasksAsReady(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "autonomy_queue.json")
+
+	q := NewTaskQueue(16)
+	if _, err := q.EnablePersistence(path); err != nil {
+		t.Fatalf("EnablePersistence: %v", err)
+	}
+	task, err := q.AddWithError("Interrupted task", "", PriorityNormal, nil)
+	if err != nil {
+		t.Fatalf("AddWithError: %v", err)
+	}
+	pulled := q.Pull("worker-1")
+	if pulled == nil || pulled.ID != task.ID {
+		t.Fatalf("expected task to be pulled, got %#v", pulled)
+	}
+
+	reloaded := NewTaskQueue(16)
+	if _, err := reloaded.EnablePersistence(path); err != nil {
+		t.Fatalf("reload EnablePersistence: %v", err)
+	}
+	got, ok := reloaded.Get(task.ID)
+	if !ok {
+		t.Fatalf("restored task %s not found", task.ID)
+	}
+	if got.State != TaskReady {
+		t.Fatalf("expected interrupted task to restore as ready, got %s", got.State)
+	}
+	if got.AssignedTo != "" || !got.StartedAt.IsZero() {
+		t.Fatalf("expected assignment to be cleared, got %#v", got)
+	}
+}
+
 func TestTaskQueueListByState(t *testing.T) {
 	q := NewTaskQueue(16)
 
@@ -899,7 +966,7 @@ func TestToolHeartbeatTrigger(t *testing.T) {
 
 // mockAgentExecutor implements AgentExecutor for testing
 type mockAgentExecutor struct {
-	mu sync.Mutex
+	mu       sync.Mutex
 	sessions []string
 }
 

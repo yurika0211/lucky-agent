@@ -1408,6 +1408,55 @@ func TestAgentStartAutonomy(t *testing.T) {
 	}
 }
 
+func TestAgentStartAutonomyNowBypassesDisabledConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	if a.Autonomy().Status().Started {
+		t.Fatal("autonomy should be stopped by default")
+	}
+	if err := a.StartAutonomy(context.Background()); err != nil {
+		t.Fatalf("StartAutonomy() error = %v", err)
+	}
+	if a.Autonomy().Status().Started {
+		t.Fatal("StartAutonomy should respect disabled config")
+	}
+	if err := a.StartAutonomyNow(context.Background()); err != nil {
+		t.Fatalf("StartAutonomyNow() error = %v", err)
+	}
+	if !a.Autonomy().Status().Started {
+		t.Fatal("StartAutonomyNow should force-start autonomy")
+	}
+}
+
+func TestAgentConfiguresAutonomyQueuePersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	want := filepath.Join(tmpDir, "runtime", "autonomy_queue.json")
+	if got := a.Autonomy().Status().QueueStore; got != want {
+		t.Fatalf("expected autonomy queue store %q, got %q", want, got)
+	}
+}
+
 func TestAgentLoadSkills(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)
