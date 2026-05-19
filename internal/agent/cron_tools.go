@@ -40,6 +40,14 @@ const cronNotificationSystemPrompt = `【后台任务汇报设定】
 - 如果执行失败，要说清楚卡在哪里，但仍然保持自然语气。
 - 不要杜撰不存在的结果。`
 
+var cronAgentDisabledTools = []string{
+	"cron",
+	"cron_add",
+	"cron_remove",
+	"cron_pause",
+	"cron_resume",
+}
+
 type cronNotificationPayload struct {
 	JobID     string
 	Mode      string
@@ -110,6 +118,7 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, meta
 				ApplyAgentLoopConfig(&runCfg, cfg.Agent)
 			}
 			runCfg.AutoApprove = true
+			runCfg.DisabledTools = append(runCfg.DisabledTools, cronAgentDisabledTools...)
 
 			sessionID := strings.TrimSpace(metadata["session_id"])
 			var sess *session.Session

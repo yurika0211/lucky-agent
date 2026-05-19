@@ -1364,6 +1364,7 @@ type streamConvergenceState struct {
 	repeatToolCallLimit      int
 	toolOnlyIterationLimit   int
 	duplicateFetchLimit      int
+	disabledTools            []string
 }
 
 /*
@@ -1501,6 +1502,7 @@ func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string
 			repeatToolCallLimit:    loopCfg.RepeatToolCallLimit,
 			toolOnlyIterationLimit: loopCfg.ToolOnlyIterationLimit,
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
+			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
 		}
 
 		// 🧠 思考阶段（第一轮）
@@ -1546,6 +1548,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 
 	var content strings.Builder
 	var reasoning strings.Builder
+	emittedContentBytes := 0
 	streamFinishReason := ""
 	// 流式 tool_calls 增量拼接
 	var toolCallsAcc []streamToolCallAcc // 按 index 累积
@@ -1556,7 +1559,15 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		}
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
-			events <- ChatEvent{Type: ChatEventContent, Content: chunk.Content}
+			full := content.String()
+			pending := full[emittedContentBytes:]
+			if shouldHoldPotentialTextToolCallStream(full) || shouldHoldPotentialTextToolCallStream(pending) {
+				continue
+			}
+			if len(full) > emittedContentBytes {
+				events <- ChatEvent{Type: ChatEventContent, Content: pending}
+				emittedContentBytes = len(full)
+			}
 		}
 		if chunk.ReasoningContent != "" {
 			reasoning.WriteString(chunk.ReasoningContent)
@@ -1585,11 +1596,16 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		}
 	}
 
+	response := content.String()
+	assistantContent, textToolCalls := extractTextToolCalls(response)
+	hadTextToolCalls := len(textToolCalls) > 0
+	textToolCalls = filterProviderToolCalls(textToolCalls, state.disabledTools)
+
 	// 如果有累积的 tool_calls，处理它们
-	if len(toolCallsAcc) > 0 {
+	if len(toolCallsAcc) > 0 || len(textToolCalls) > 0 {
 		state.emptyResponseRetries = 0
 		state.lengthRecoveryCount = 0
-		toolCalls := make([]provider.ToolCall, 0, len(toolCallsAcc))
+		toolCalls := make([]provider.ToolCall, 0, len(toolCallsAcc)+len(textToolCalls))
 		for _, acc := range toolCallsAcc {
 			if acc.name != "" {
 				// v0.55.1: 如果 ID 为空，生成唯一 call_id
@@ -1604,9 +1620,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				})
 			}
 		}
+		toolCalls = append(toolCalls, textToolCalls...)
 
 		if len(toolCalls) > 0 {
-			if shouldStop, repeatedSigs := state.trackToolCallPattern(toolCalls, content.String()); shouldStop {
+			if shouldStop, repeatedSigs := state.trackToolCallPattern(toolCalls, assistantContent); shouldStop {
 				a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
 				return
 			}
@@ -1614,7 +1631,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			// 将 assistant 消息加入历史
 			messages = append(messages, provider.Message{
 				Role:             "assistant",
-				Content:          content.String(),
+				Content:          assistantContent,
 				ReasoningContent: reasoning.String(),
 				ToolCalls:        toolCalls,
 			})
@@ -1662,7 +1679,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	}
 
 	// 没有工具调用，纯文本回复（已在流式中逐 chunk 推送了）
-	response := content.String()
+	if hadTextToolCalls {
+		response = assistantContent
+		emittedContentBytes = 0
+	}
+	if len(response) > emittedContentBytes {
+		events <- ChatEvent{Type: ChatEventContent, Content: response[emittedContentBytes:]}
+		emittedContentBytes = len(response)
+	}
 	clean := strings.TrimSpace(response)
 
 	// 空回复恢复
@@ -1738,6 +1762,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
+	applyTextToolCallsToResponse(resp, state.disabledTools)
 
 	// 有工具调用 → 展示过程 → 执行 → 继续循环
 	if len(resp.ToolCalls) > 0 {

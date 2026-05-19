@@ -33,3 +33,21 @@ func TestSanitizeToolProtocolOutput_FallbackWhenOnlyProtocolRemains(t *testing.T
 		t.Fatalf("expected fallback, got %q", got)
 	}
 }
+
+func TestSanitizeToolProtocolOutput_RemovesDSMLToolCalls(t *testing.T) {
+	in := `before
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="web_search">
+<｜｜DSML｜｜parameter name="query" string="true">test</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>
+after`
+
+	got := SanitizeToolProtocolOutput(in)
+	if !strings.Contains(got, "before") || !strings.Contains(got, "after") {
+		t.Fatalf("expected surrounding text to remain, got %q", got)
+	}
+	if strings.Contains(got, "DSML") || strings.Contains(got, "web_search") {
+		t.Fatalf("expected DSML protocol to be removed, got %q", got)
+	}
+}

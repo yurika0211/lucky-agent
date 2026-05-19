@@ -357,6 +357,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		}
 
 		result.TokensUsed += resp.TokensUsed
+		applyTextToolCallsToResponse(resp, loopCfg.DisabledTools)
 
 		// 检查是否有工具调用
 		if len(resp.ToolCalls) > 0 {
