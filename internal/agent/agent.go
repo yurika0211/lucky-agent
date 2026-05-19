@@ -1207,11 +1207,30 @@ func (a *Agent) chatStreamSimpleInput(ctx context.Context, sess *session.Session
 
 // ChatStream 执行流式对话
 func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provider.StreamChunk, error) {
-	a.maybeRouteModel(userInput)
 	sess := a.sessions.New()
-	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
-
-	return a.provider.ChatStream(ctx, messages)
+	events, err := a.ChatWithSessionStream(ctx, sess.ID, userInput)
+	if err != nil {
+		return nil, err
+	}
+	chunks := make(chan provider.StreamChunk, 64)
+	go func() {
+		defer close(chunks)
+		for evt := range events {
+			switch evt.Type {
+			case ChatEventContent:
+				if evt.Content != "" {
+					chunks <- provider.StreamChunk{Content: evt.Content}
+				}
+			case ChatEventDone:
+				chunks <- provider.StreamChunk{Done: true, FinishReason: "stop"}
+				return
+			case ChatEventError:
+				chunks <- provider.StreamChunk{Done: true, FinishReason: "error"}
+				return
+			}
+		}
+	}()
+	return chunks, nil
 }
 
 /*

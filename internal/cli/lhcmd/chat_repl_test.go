@@ -41,8 +41,8 @@ func TestHandleCronCommandAddsExecutableShellJob(t *testing.T) {
 	}
 	defer a.Close()
 
-	engine := cron.NewEngine()
-	store := cron.NewStore(filepath.Join(tmpDir, "cron_jobs.json"))
+	engine := a.CronEngine()
+	store := a.CronStore()
 	handled := handleCronCommand("add shell-job 每小时 echo hello-cron", engine, store, a, agent.DefaultLoopConfig())
 	if !handled {
 		t.Fatal("expected command to be handled")
@@ -57,6 +57,38 @@ func TestHandleCronCommandAddsExecutableShellJob(t *testing.T) {
 	}
 	if err := job.Task(); err != nil {
 		t.Fatalf("shell job task() error = %v", err)
+	}
+}
+
+func TestHandleCronCommandAgentJobUsesAgentCronService(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+	a, err := agent.New(cfg)
+	if err != nil {
+		t.Fatalf("agent.New() error = %v", err)
+	}
+	defer a.Close()
+
+	handled := handleCronCommand("add agent-job 每小时 agent: summarize yesterday logs", a.CronEngine(), a.CronStore(), a, agent.DefaultLoopConfig())
+	if !handled {
+		t.Fatal("expected command to be handled")
+	}
+
+	job, ok := a.CronEngine().GetJob("agent-job")
+	if !ok {
+		t.Fatal("expected agent-job to exist")
+	}
+	if got := job.Metadata["mode"]; got != string(cronTaskAgent) {
+		t.Fatalf("expected agent mode metadata, got %q", got)
+	}
+	if got := job.Metadata["command"]; got != "summarize yesterday logs" {
+		t.Fatalf("expected command without agent prefix, got %q", got)
+	}
+	if got := job.Metadata["session_id"]; got != "cron-agent-job" {
+		t.Fatalf("expected unified agent cron session_id, got %q", got)
 	}
 }
 

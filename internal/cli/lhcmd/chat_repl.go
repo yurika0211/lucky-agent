@@ -515,7 +515,7 @@ func tierEmoji(t memory.Tier) string {
 }
 
 // handleCronCommand 处理 /cron 命令
-func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *agent.Agent, loopCfg agent.LoopConfig) bool {
+func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *agent.Agent, _ agent.LoopConfig) bool {
 	parts := strings.Fields(arg)
 	if len(parts) == 0 {
 		fmt.Println("用法: /cron <add|list|remove|pause|resume|start|stop> [args]")
@@ -534,32 +534,29 @@ func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *ag
 			return true
 		}
 
-		task := buildCronTask(spec, a, loopCfg)
-		meta := map[string]string{
-			"mode":          string(spec.Mode),
-			"command":       spec.Command,
-			"schedule_text": spec.ScheduleText,
+		if a == nil || a.Tools() == nil {
+			fmt.Println("❌ agent cron service is not initialized")
+			return true
+		}
+		args := map[string]any{
+			"id":       spec.ID,
+			"schedule": spec.ScheduleText,
+			"mode":     string(spec.Mode),
+			"command":  spec.Payload,
 		}
 		if spec.Platform != "" {
-			meta["platform"] = spec.Platform
+			args["platform"] = spec.Platform
 		}
 		if spec.ChatID != "" {
-			meta["chatID"] = spec.ChatID
+			args["chat_id"] = spec.ChatID
 		}
 		if spec.ReplyToMsgID != "" {
-			meta["replyToMsgID"] = spec.ReplyToMsgID
+			args["reply_to_message_id"] = spec.ReplyToMsgID
 		}
-		if err := engine.AddJobWithMeta(spec.ID, "Cron: "+spec.ID, spec.Command, spec.Schedule, task, meta); err != nil {
+		if _, err := a.Tools().Call("cron_add", args); err != nil {
 			fmt.Printf("❌ %v\n", err)
 		} else {
-			if !engine.IsRunning() {
-				engine.Start()
-				fmt.Println("▶️ 调度引擎已自动启动")
-			}
 			fmt.Printf("✅ 定时任务已添加: %s (%s) [%s]\n", spec.ID, spec.Schedule, spec.Mode)
-			if err := saveCronStore(store, engine); err != nil {
-				fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
-			}
 		}
 
 	case "list":
@@ -597,13 +594,10 @@ func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *ag
 			fmt.Println("用法: /cron remove <id>")
 			return true
 		}
-		if err := engine.RemoveJob(parts[1]); err != nil {
+		if err := callCronMutationTool(a, "cron_remove", map[string]any{"id": parts[1]}); err != nil {
 			fmt.Printf("❌ %v\n", err)
 		} else {
 			fmt.Printf("✅ 定时任务已移除: %s\n", parts[1])
-			if err := saveCronStore(store, engine); err != nil {
-				fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
-			}
 		}
 
 	case "pause":
@@ -611,13 +605,10 @@ func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *ag
 			fmt.Println("用法: /cron pause <id>")
 			return true
 		}
-		if err := engine.PauseJob(parts[1]); err != nil {
+		if err := callCronMutationTool(a, "cron_pause", map[string]any{"id": parts[1]}); err != nil {
 			fmt.Printf("❌ %v\n", err)
 		} else {
 			fmt.Printf("⏸️ 定时任务已暂停: %s\n", parts[1])
-			if err := saveCronStore(store, engine); err != nil {
-				fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
-			}
 		}
 
 	case "resume":
@@ -625,13 +616,10 @@ func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *ag
 			fmt.Println("用法: /cron resume <id>")
 			return true
 		}
-		if err := engine.ResumeJob(parts[1]); err != nil {
+		if err := callCronMutationTool(a, "cron_resume", map[string]any{"id": parts[1]}); err != nil {
 			fmt.Printf("❌ %v\n", err)
 		} else {
 			fmt.Printf("▶️ 定时任务已恢复: %s\n", parts[1])
-			if err := saveCronStore(store, engine); err != nil {
-				fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
-			}
 		}
 
 	case "start":
@@ -653,6 +641,14 @@ func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *ag
 		fmt.Println("用法: /cron <add|list|remove|pause|resume|start|stop> [args]")
 	}
 	return true
+}
+
+func callCronMutationTool(a *agent.Agent, name string, args map[string]any) error {
+	if a == nil || a.Tools() == nil {
+		return fmt.Errorf("agent cron service is not initialized")
+	}
+	_, err := a.Tools().Call(name, args)
+	return err
 }
 
 func saveCronStore(store *cron.Store, engine *cron.Engine) error {
@@ -781,81 +777,6 @@ func parseCronNotificationTarget(command string) (platform, chatID, replyToMsgID
 		return "", "", "", command
 	}
 	return platform, chatID, replyToMsgID, strings.TrimSpace(rest)
-}
-
-func buildCronTask(spec *cronAddSpec, a *agent.Agent, loopCfg agent.LoopConfig) func() error {
-	return func() error {
-		fmt.Printf("\n⏰ [cron:%s] %s\n", spec.ID, spec.Command)
-
-		switch spec.Mode {
-		case cronTaskAgent:
-			if a == nil {
-				return fmt.Errorf("agent is not initialized")
-			}
-
-			runCfg := loopCfg
-			runCfg.AutoApprove = true
-
-			sess := a.Sessions().NewWithTitle("cron-" + spec.ID)
-			result, err := a.RunLoopWithSession(context.Background(), sess, spec.Payload, runCfg)
-			if err != nil {
-				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", spec.ID, err.Error()))
-				return err
-			}
-			if strings.TrimSpace(result.Response) != "" {
-				fmt.Println(result.Response)
-				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行结果:\n\n%s", spec.ID, strings.TrimSpace(result.Response)))
-			}
-			return nil
-
-		default:
-			if a == nil || a.Gateway() == nil {
-				return fmt.Errorf("agent gateway is not initialized")
-			}
-
-			res, err := a.Gateway().Execute("shell", map[string]any{
-				"command": spec.Payload,
-				"timeout": 300,
-			}, "")
-			if res != nil && strings.TrimSpace(res.Output) != "" {
-				fmt.Println(res.Output)
-				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行结果:\n\n%s", spec.ID, strings.TrimSpace(res.Output)))
-			}
-			if err != nil {
-				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", spec.ID, err.Error()))
-				return err
-			}
-			if res != nil && strings.Contains(res.Output, "[exit code:") {
-				sendCronNotification(a, spec, fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: shell command exited with non-zero status", spec.ID))
-				return fmt.Errorf("shell command exited with non-zero status")
-			}
-			return nil
-		}
-	}
-}
-
-func sendCronNotification(a *agent.Agent, spec *cronAddSpec, message string) {
-	if a == nil || spec == nil || strings.TrimSpace(message) == "" {
-		return
-	}
-	if spec.Platform == "" || spec.ChatID == "" {
-		return
-	}
-	gm := a.MsgGateway()
-	if gm == nil {
-		return
-	}
-	gw, ok := gm.Get(spec.Platform)
-	if !ok || gw == nil || !gw.IsRunning() {
-		return
-	}
-	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if spec.ReplyToMsgID != "" {
-		_ = gw.SendWithReply(sendCtx, spec.ChatID, spec.ReplyToMsgID, message)
-		return
-	}
-	_ = gw.Send(sendCtx, spec.ChatID, message)
 }
 
 // handleWatchCommand 处理 /watch 命令

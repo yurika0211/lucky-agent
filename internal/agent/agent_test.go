@@ -2299,6 +2299,42 @@ func TestFormatCronNotificationFallsBackNaturallyOnProviderError(t *testing.T) {
 	}
 }
 
+func TestChatStreamUsesAgentEventLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("stream_mode", "simulated")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &staticChatProvider{name: "static-chat", content: "streamed through loop"}
+
+	ch, err := a.ChatStream(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+
+	var got strings.Builder
+	done := false
+	for chunk := range ch {
+		got.WriteString(chunk.Content)
+		if chunk.Done {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("expected done chunk")
+	}
+	if strings.TrimSpace(got.String()) != "streamed through loop" {
+		t.Fatalf("unexpected stream content %q", got.String())
+	}
+}
+
 func TestCronToolsPersistAcrossAgentRestart(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)
