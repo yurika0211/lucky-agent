@@ -413,6 +413,47 @@ func TestV054SendStreamWithReplyTo(t *testing.T) {
 	stream.Finish()
 }
 
+func TestV054SendStreamFallsBackWhenReplyTargetIsInvalid(t *testing.T) {
+	var replyIDs []string
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "sendMessage") {
+			_ = r.ParseForm()
+			replyID := r.Form.Get("reply_to_message_id")
+			replyIDs = append(replyIDs, replyID)
+			if replyID != "" {
+				return map[string]any{
+					"ok":          false,
+					"description": "Bad Request: message to be replied not found",
+				}
+			}
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.running = true
+
+	stream, err := adapter.SendStream(context.Background(), "12345", "10")
+	if err != nil {
+		t.Fatalf("expected fallback SendStream to succeed, got: %v", err)
+	}
+	if stream == nil {
+		t.Fatal("expected non-nil stream")
+	}
+	if len(replyIDs) != 2 {
+		t.Fatalf("expected sendMessage retry without reply, got reply ids %#v", replyIDs)
+	}
+	if replyIDs[0] != "10" || replyIDs[1] != "" {
+		t.Fatalf("expected first send with reply and second without reply, got %#v", replyIDs)
+	}
+}
+
 // ============================================================
 // StreamSender 边界测试
 // ============================================================
@@ -3833,10 +3874,15 @@ func TestV054HandleChatStreamNaturalProgressFinalOnly(t *testing.T) {
 
 func TestV054HandleChatNarrativeStreamHidesInternalProgressMarkers(t *testing.T) {
 	var sentTexts []string
+	var editedTexts []string
 	bot, err := newMockBot(func(r *http.Request) map[string]any {
 		if containsMethod(r.URL.Path, "sendMessage") {
 			_ = r.ParseForm()
 			sentTexts = append(sentTexts, r.Form.Get("text"))
+		}
+		if containsMethod(r.URL.Path, "editMessageText") {
+			_ = r.ParseForm()
+			editedTexts = append(editedTexts, r.Form.Get("text"))
 		}
 		return defaultMockBotResponse(r)
 	})
@@ -3904,14 +3950,146 @@ func TestV054HandleChatNarrativeStreamHidesInternalProgressMarkers(t *testing.T)
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	if len(sentTexts) != 2 {
-		t.Fatalf("expected one progress message and one final message, got %d: %#v", len(sentTexts), sentTexts)
+	if len(sentTexts) != 3 {
+		t.Fatalf("expected progress placeholder, tool trace, and final message, got %d: %#v", len(sentTexts), sentTexts)
 	}
-	if strings.Contains(sentTexts[0], "Thinking...") || strings.Contains(sentTexts[0], "content") {
-		t.Fatalf("expected progress message to hide internal markers, got %q", sentTexts[0])
+	if sentTexts[0] != "🧠 Thinking..." {
+		t.Fatalf("expected editable progress placeholder, got %q", sentTexts[0])
 	}
-	if sentTexts[1] != "最终答案" {
-		t.Fatalf("expected final answer only, got %q", sentTexts[1])
+	if !strings.Contains(sentTexts[1], "Tool Trace") {
+		t.Fatalf("expected separate tool trace message, got %q", sentTexts[1])
+	}
+	if sentTexts[2] != "最终答案" {
+		t.Fatalf("expected final answer only, got %q", sentTexts[2])
+	}
+	if len(editedTexts) < 1 {
+		t.Fatalf("expected progress card edits, got %d: %#v", len(editedTexts), editedTexts)
+	}
+	lastEdit := editedTexts[len(editedTexts)-1]
+	if strings.Contains(lastEdit, "Thinking...") || strings.Contains(lastEdit, "content") {
+		t.Fatalf("expected progress card to hide internal markers, got %q", lastEdit)
+	}
+	if !strings.Contains(lastEdit, "Reasoning Trace") {
+		t.Fatalf("expected progress card edit to contain reasoning trace, got %q", lastEdit)
+	}
+	if strings.Contains(lastEdit, "Tool Trace") {
+		t.Fatalf("expected tool trace to stay in its own message, got %q", lastEdit)
+	}
+}
+
+func TestV054HandleChatNarrativeStreamAggregatesReasoningTraceIntoOneBubble(t *testing.T) {
+	var sentTexts []string
+	var editedTexts []string
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		_ = r.ParseForm()
+		if containsMethod(r.URL.Path, "sendMessage") {
+			sentTexts = append(sentTexts, r.Form.Get("text"))
+		}
+		if containsMethod(r.URL.Path, "editMessageText") {
+			editedTexts = append(editedTexts, r.Form.Get("text"))
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.botUsername = "testbot"
+	adapter.running = true
+
+	sessMgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+
+	mockAgent := &mockAgentProvider{
+		sessions: sessMgr,
+		configSnap: agentConfigSnapshot{
+			ProgressAsMessages:        true,
+			ProgressAsNaturalLanguage: true,
+			ProgressSummaryWithLLM:    true,
+		},
+		chatStreamIn: func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			ch := make(chan agent.ChatEvent, 9)
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "skill_run", Args: `{"skill_name":"alpha"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "skill_run", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 2)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "skill_run", Args: `{"skill_name":"beta"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "skill_run", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 3)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "最终答案"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "最终答案"}
+			close(ch)
+			return ch, nil
+		},
+		progressFn: func(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+			return fmt.Sprintf("progress round %d", round), nil
+		},
+		toolsVal:   tool.NewRegistry(),
+		skillsVal:  []*tool.SkillInfo{},
+		cronEngine: cron.NewEngine(),
+		metricsVal: metrics.NewMetrics(),
+	}
+
+	handler := &Handler{
+		adapter:                   adapter,
+		agent:                     mockAgent,
+		chat:                      mockAgent,
+		sessions:                  make(map[string]string),
+		chatStreamTimeout:         defaultChatStreamTimeout,
+		progressAsMessages:        true,
+		progressAsNaturalLanguage: true,
+		progressSummaryWithLLM:    true,
+	}
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "帮我处理一下",
+	}
+
+	if err := handler.handleChat(context.Background(), msg, agent.TextUserTurnInput("帮我处理一下")); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	var reasoningSendCount int
+	for _, text := range sentTexts {
+		if strings.Contains(text, "Reasoning Trace") {
+			reasoningSendCount++
+		}
+	}
+	if reasoningSendCount != 0 {
+		t.Fatalf("expected no separate reasoning trace sendMessage calls, got %d in %#v", reasoningSendCount, sentTexts)
+	}
+	var toolTraceSendCount int
+	for _, text := range sentTexts {
+		if strings.Contains(text, "Tool Trace") {
+			toolTraceSendCount++
+		}
+	}
+	if toolTraceSendCount != 1 {
+		t.Fatalf("expected one separate tool trace message, got %d in %#v", toolTraceSendCount, sentTexts)
+	}
+	if len(editedTexts) < 2 {
+		t.Fatalf("expected repeated edits to the same progress card, got %#v", editedTexts)
+	}
+	lastEdit := editedTexts[len(editedTexts)-1]
+	if !strings.Contains(lastEdit, "progress round 1") || !strings.Contains(lastEdit, "progress round 2") {
+		t.Fatalf("expected final progress edit to contain both updates, got %q", lastEdit)
+	}
+	if strings.Contains(lastEdit, "Tool Trace") {
+		t.Fatalf("expected tool trace to stay out of reasoning card, got %q", lastEdit)
+	}
+	if strings.Count(lastEdit, "<blockquote expandable>") != 1 {
+		t.Fatalf("expected one expandable blockquote in aggregated card, got %q", lastEdit)
 	}
 }
 

@@ -517,6 +517,10 @@ func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID st
 	}
 
 	sent, err := a.bot.Send(msg)
+	if err != nil && replyToID > 0 {
+		msg.ReplyToMessageID = 0
+		sent, err = a.bot.Send(msg)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("telegram: send stream initial: %w", err)
 	}

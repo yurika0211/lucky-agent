@@ -1023,6 +1023,7 @@ func (h *Handler) newProgressCardUpdater(msg *gateway.Message) func(string) {
 	var sender gateway.StreamSender
 	var stream *telegramStreamSender
 	var parts []string
+	fallbackSent := false
 
 	return func(text string) {
 		text = strings.TrimSpace(text)
@@ -1038,7 +1039,7 @@ func (h *Handler) newProgressCardUpdater(msg *gateway.Message) func(string) {
 		if strings.TrimSpace(combined) == "" {
 			return
 		}
-		if stream == nil {
+		if stream == nil && sender == nil && !fallbackSent {
 			sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
 
@@ -1059,7 +1060,10 @@ func (h *Handler) newProgressCardUpdater(msg *gateway.Message) func(string) {
 			_ = sender.Finish()
 			return
 		}
-		h.sendProgressMessage(msg, combined)
+		if !fallbackSent {
+			h.sendProgressMessage(msg, combined)
+			fallbackSent = true
+		}
 	}
 }
 
@@ -1456,9 +1460,7 @@ func runChatEventLoop(
 // 中间步骤和最终结论都作为独立消息发送，保证“结论在最后”。
 func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput, sessionID string) error {
 	routingText := input.RoutingText
-	emitProgress := func(text string) {
-		h.sendProgressMessageHTML(msg, text)
-	}
+	emitProgress := h.newProgressCardUpdater(msg)
 	emitProgressForMsg := func(_ *gateway.Message, text string) {
 		emitProgress(text)
 	}

@@ -116,14 +116,15 @@ func TestTelegramProgressCards(t *testing.T) {
 		assert.Contains(t, got, "Done · 2 tools")
 	})
 
-	t.Run("tool trace hides internal skill tools", func(t *testing.T) {
+	t.Run("tool trace keeps executable skill tools compact", func(t *testing.T) {
 		got := renderTelegramToolTraceCard([]telegramToolTraceStep{
 			{Name: "skill_obsidian_run", Args: `{"name":"vault"}`, Result: "ok", Success: true},
 			{Name: "skill_read", Args: `{"name":"obsidian"}`, Result: "ok", Success: true},
 		})
-		assert.NotContains(t, got, "skill_obsidian_run")
+		assert.Contains(t, got, "skill_obsidian_run")
 		assert.Contains(t, got, "skill_read")
 		assert.Contains(t, got, "[1]")
-		assert.Contains(t, got, "Done · 1 tools")
+		assert.Contains(t, got, "[2]")
+		assert.Contains(t, got, "Done · 2 tools")
 	})
 }
