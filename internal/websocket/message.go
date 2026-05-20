@@ -12,14 +12,15 @@ type MessageType string
 
 const (
 	// 客户端 → 服务端
-	TypeChat       MessageType = "chat"        // 聊天消息
-	TypeStreamAck  MessageType = "stream_ack"   // 流式确认
-	TypePing       MessageType = "ping"         // 心跳 ping
-	TypeReconnect  MessageType = "reconnect"     // 断线重连
+	TypeChat      MessageType = "chat"       // 聊天消息
+	TypeStreamAck MessageType = "stream_ack" // 流式确认
+	TypePing      MessageType = "ping"       // 心跳 ping
+	TypeReconnect MessageType = "reconnect"  // 断线重连
 
 	// 服务端 → 客户端
 	TypeStreamChunk MessageType = "stream_chunk" // 流式输出块
-	TypeStreamEnd   MessageType = "stream_end"  // 流式输出结束
+	TypeStreamEnd   MessageType = "stream_end"   // 流式输出结束
+	TypeReasoning   MessageType = "reasoning"    // 推理/思考摘要
 	TypeToolCall    MessageType = "tool_call"    // 工具调用通知
 	TypeToolResult  MessageType = "tool_result"  // 工具调用结果
 	TypeStatus      MessageType = "status"       // 状态更新
@@ -32,7 +33,7 @@ type Message struct {
 	Type      MessageType     `json:"type"`
 	SessionID string          `json:"session_id,omitempty"`
 	ID        string          `json:"id,omitempty"`        // 消息唯一 ID
-	ParentID string          `json:"parent_id,omitempty"`  // 回复的消息 ID
+	ParentID  string          `json:"parent_id,omitempty"` // 回复的消息 ID
 	Timestamp time.Time       `json:"timestamp"`
 	Data      json.RawMessage `json:"data"`
 }
@@ -57,18 +58,36 @@ type StreamEndData struct {
 	Iterations   int    `json:"iterations"`
 }
 
+// ReasoningData 推理摘要数据
+type ReasoningData struct {
+	Summary string `json:"summary"`
+	Round   int    `json:"round,omitempty"`
+	Stage   string `json:"stage,omitempty"` // "start" | "continue" | "update"
+}
+
 // ToolCallData 工具调用通知数据
 type ToolCallData struct {
-	Name   string                 `json:"name"`
-	Params map[string]interface{}  `json:"params"`
-	Phase  string                 `json:"phase"` // "start" | "progress" | "end"
+	Name       string                 `json:"name"`
+	Params     map[string]interface{} `json:"params,omitempty"`
+	Args       string                 `json:"args,omitempty"`
+	Display    string                 `json:"display,omitempty"`
+	Phase      string                 `json:"phase"` // "start" | "progress" | "end"
+	Round      int                    `json:"round,omitempty"`
+	GroupID    string                 `json:"group_id,omitempty"`
+	StepID     string                 `json:"step_id,omitempty"`
+	Visibility string                 `json:"visibility,omitempty"` // "visible" | "compact" | "hidden"
 }
 
 // ToolResultData 工具调用结果数据
 type ToolResultData struct {
-	Name    string `json:"name"`
-	Success bool   `json:"success"`
-	Output  string `json:"output"`
+	Name       string `json:"name"`
+	Success    bool   `json:"success"`
+	Output     string `json:"output"`
+	Display    string `json:"display,omitempty"`
+	Round      int    `json:"round,omitempty"`
+	GroupID    string `json:"group_id,omitempty"`
+	StepID     string `json:"step_id,omitempty"`
+	Visibility string `json:"visibility,omitempty"` // "visible" | "compact" | "hidden"
 }
 
 // StatusData 状态更新数据

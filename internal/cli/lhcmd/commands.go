@@ -312,6 +312,82 @@ func getAgent() (*agent.Agent, error) {
 	return agent.New(mgr)
 }
 
+type msgGatewayStartOptions struct {
+	StartAll    bool
+	Platform    string
+	Token       string
+	QQAppID     string
+	QQAppSecret string
+	QQSandbox   bool
+}
+
+func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGatewayStartOptions {
+	opts := msgGatewayStartOptions{}
+	if cmd == nil {
+		return opts
+	}
+
+	opts.StartAll, _ = cmd.Flags().GetBool("all")
+	if !cmd.Flags().Changed("all") && cfg != nil {
+		opts.StartAll = cfg.MsgGateway.StartAll
+	}
+
+	opts.Platform, _ = cmd.Flags().GetString("platform")
+	if !cmd.Flags().Changed("platform") && cfg != nil && cfg.MsgGateway.Platform != "" {
+		opts.Platform = cfg.MsgGateway.Platform
+	}
+
+	opts.Token, _ = cmd.Flags().GetString("token")
+	if !cmd.Flags().Changed("token") && cfg != nil {
+		if cfg.MsgGateway.Telegram.Token != "" {
+			opts.Token = cfg.MsgGateway.Telegram.Token
+		} else if cfg.MsgGateway.Token != "" {
+			opts.Token = cfg.MsgGateway.Token
+		}
+	}
+
+	opts.QQAppID, _ = cmd.Flags().GetString("qq-appid")
+	if !cmd.Flags().Changed("qq-appid") && cfg != nil {
+		opts.QQAppID = cfg.MsgGateway.QQOfficial.AppID
+	}
+
+	opts.QQAppSecret, _ = cmd.Flags().GetString("qq-appsecret")
+	if !cmd.Flags().Changed("qq-appsecret") && cfg != nil {
+		opts.QQAppSecret = cfg.MsgGateway.QQOfficial.AppSecret
+	}
+
+	opts.QQSandbox, _ = cmd.Flags().GetBool("qq-sandbox")
+	if !cmd.Flags().Changed("qq-sandbox") && cfg != nil {
+		opts.QQSandbox = cfg.MsgGateway.QQOfficial.Sandbox
+	}
+
+	return opts
+}
+
+func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
+	if opts.StartAll {
+		return nil
+	}
+
+	switch opts.Platform {
+	case "telegram":
+		if strings.TrimSpace(opts.Token) == "" {
+			return fmt.Errorf("telegram 需要 --token 参数（或在 config.json 里设置 msg_gateway.telegram.token）")
+		}
+	case "qqofficial":
+		if strings.TrimSpace(opts.QQAppID) == "" || strings.TrimSpace(opts.QQAppSecret) == "" {
+			return fmt.Errorf("qqofficial 需要 --qq-appid 和 --qq-appsecret（或在 config.json 里设置 msg_gateway.qqofficial.app_id / app_secret）")
+		}
+	default:
+		if opts.Platform == "" {
+			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
+		}
+		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial)", opts.Platform)
+	}
+
+	return nil
+}
+
 func runServe(cmd *cobra.Command, args []string) error {
 	a, err := getAgent()
 	if err != nil {
@@ -362,11 +438,23 @@ func runServe(cmd *cobra.Command, args []string) error {
 }
 
 func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
-	a, err := getAgent()
+	mgr, err := config.NewManager()
 	if err != nil {
 		return err
 	}
-	cfg := a.Config().Get()
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	opts := resolveMsgGatewayStartOptions(cmd, cfg)
+	if err := validateMsgGatewayStartOptions(opts); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return err
+	}
 
 	gm := a.MsgGateway()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -384,11 +472,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		})
 	}
 
-	startAll, _ := cmd.Flags().GetBool("all")
-	if !cmd.Flags().Changed("all") {
-		startAll = cfg.MsgGateway.StartAll
-	}
-	if startAll {
+	if opts.StartAll {
 		if err := gm.StartAll(ctx); err != nil {
 			return err
 		}
@@ -400,38 +484,10 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	platform, _ := cmd.Flags().GetString("platform")
-	if !cmd.Flags().Changed("platform") && cfg.MsgGateway.Platform != "" {
-		platform = cfg.MsgGateway.Platform
-	}
-	token, _ := cmd.Flags().GetString("token")
-	if !cmd.Flags().Changed("token") {
-		if cfg.MsgGateway.Telegram.Token != "" {
-			token = cfg.MsgGateway.Telegram.Token
-		} else if cfg.MsgGateway.Token != "" {
-			token = cfg.MsgGateway.Token
-		}
-	}
-	qqAppID, _ := cmd.Flags().GetString("qq-appid")
-	if !cmd.Flags().Changed("qq-appid") {
-		qqAppID = cfg.MsgGateway.QQOfficial.AppID
-	}
-	qqAppSecret, _ := cmd.Flags().GetString("qq-appsecret")
-	if !cmd.Flags().Changed("qq-appsecret") {
-		qqAppSecret = cfg.MsgGateway.QQOfficial.AppSecret
-	}
-	qqSandbox, _ := cmd.Flags().GetBool("qq-sandbox")
-	if !cmd.Flags().Changed("qq-sandbox") {
-		qqSandbox = cfg.MsgGateway.QQOfficial.Sandbox
-	}
-
-	switch platform {
+	switch opts.Platform {
 	case "telegram":
-		if token == "" {
-			return fmt.Errorf("telegram 需要 --token 参数（或在 config.json 里设置 msg_gateway.telegram.token）")
-		}
 		tgAdapter := telegram.NewAdapter(telegram.Config{
-			Token: token,
+			Token: opts.Token,
 			Proxy: cfg.MsgGateway.Telegram.Proxy,
 		})
 		handler := telegram.NewHandler(tgAdapter, a)
@@ -466,13 +522,10 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		}()
 		fmt.Println("Telegram 网关已启动")
 	case "qqofficial":
-		if strings.TrimSpace(qqAppID) == "" || strings.TrimSpace(qqAppSecret) == "" {
-			return fmt.Errorf("qqofficial 需要 --qq-appid 和 --qq-appsecret（或在 config.json 里设置 msg_gateway.qqofficial.app_id / app_secret）")
-		}
 		qqAdapter := qqofficial.NewAdapter(qqofficial.Config{
-			AppID:         qqAppID,
-			AppSecret:     qqAppSecret,
-			Sandbox:       qqSandbox,
+			AppID:         opts.QQAppID,
+			AppSecret:     opts.QQAppSecret,
+			Sandbox:       opts.QQSandbox,
 			APIBaseURL:    cfg.MsgGateway.QQOfficial.APIBaseURL,
 			GatewayURL:    cfg.MsgGateway.QQOfficial.GatewayURL,
 			AllowedChats:  append([]string(nil), cfg.MsgGateway.QQOfficial.AllowedChats...),
@@ -495,10 +548,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		}
 		fmt.Println("QQ 官方机器人网关已启动")
 	default:
-		if platform == "" {
-			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
-		}
-		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial)", platform)
+		return validateMsgGatewayStartOptions(opts)
 	}
 
 	sigCh := make(chan os.Signal, 1)

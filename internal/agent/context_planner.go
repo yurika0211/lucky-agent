@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -110,10 +111,23 @@ func newContextPlanner(a *Agent, options contextBuildOptions) *contextPlanner {
 Build 根据当前请求、会话和预算生成最终上下文消息序列。
 */
 func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userInput string) []provider.Message {
-	if key, ok := p.cacheKey(sess, userInput); ok && p.agent != nil && p.agent.contextCache != nil {
-		if cached, entry, hit := p.agent.contextCache.Get(key); hit {
-			p.logContextReport("cache_hit", key, entry)
-			return cached
+	return p.BuildInput(ctx, sess, TextUserTurnInput(userInput))
+}
+
+/*
+BuildInput 根据结构化用户输入、会话和预算生成最终上下文消息序列。
+*/
+func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, input UserTurnInput) []provider.Message {
+	input = input.Normalize()
+	routingText := input.RoutingText
+	allowCache := len(input.Message.ContentParts) == 0
+
+	if allowCache {
+		if key, ok := p.cacheKey(sess, routingText); ok && p.agent != nil && p.agent.contextCache != nil {
+			if cached, entry, hit := p.agent.contextCache.Get(key); hit {
+				p.logContextReport("cache_hit", key, entry)
+				return cached
+			}
 		}
 	}
 
@@ -138,38 +152,55 @@ func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userI
 		messages = append(messages, provider.Message{Role: "system", Content: systemContent})
 	}
 	if p.agent != nil {
-		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHint(userInput)); skillHint != "" {
+		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHint(routingText)); skillHint != "" {
 			messages = append(messages, provider.Message{Role: "system", Content: skillHint})
 		}
 	}
 
-	messages = append(messages, p.buildMemoryMessages(userInput)...)
+	messages = append(messages, p.buildMemoryMessages(routingText)...)
 	if p.options.IncludeRAG {
-		if ragMsg := p.buildRAGMessage(ctx, userInput); ragMsg.Content != "" {
+		if ragMsg := p.buildRAGMessage(ctx, routingText); ragMsg.Content != "" {
 			messages = append(messages, ragMsg)
 		}
 	}
 	if p.options.IncludeHistory && sess != nil {
 		messages = append(messages, p.buildHistoryMessages(sess)...)
 	}
-	messages = append(messages, provider.Message{Role: "user", Content: userInput})
 
 	if p.agent == nil {
-		return messages
+		return append(messages, input.Message)
 	}
-	messages = p.agent.fitContextWindow(messages)
+
+	// Reserve budget for the current turn using routing text, then append the
+	// structured payload after trimming older context. This preserves current-round
+	// image parts without rewriting the window manager yet.
+	provisional := append(append([]provider.Message(nil), messages...), provider.Message{
+		Role:    "user",
+		Content: routingText,
+	})
+	provisional = p.agent.fitContextWindow(provisional)
+	if n := len(provisional); n > 0 {
+		last := provisional[n-1]
+		if last.Role == "user" && strings.TrimSpace(last.Content) == routingText {
+			provisional = provisional[:n-1]
+		}
+	}
+	messages = append(provisional, input.Message)
+
 	report := p.buildContextReport(messages)
-	if key, ok := p.cacheKey(sess, userInput); ok && p.agent.contextCache != nil {
-		p.agent.contextCache.Set(key, contextCacheEntry{
-			messages:     messages,
-			totalTokens:  report.totalTokens,
-			bucketTokens: report.bucketTokens,
-		})
-		p.logContextReport("cache_store", key, contextCacheEntry{
-			messages:     messages,
-			totalTokens:  report.totalTokens,
-			bucketTokens: report.bucketTokens,
-		})
+	if allowCache {
+		if key, ok := p.cacheKey(sess, routingText); ok && p.agent.contextCache != nil {
+			p.agent.contextCache.Set(key, contextCacheEntry{
+				messages:     messages,
+				totalTokens:  report.totalTokens,
+				bucketTokens: report.bucketTokens,
+			})
+			p.logContextReport("cache_store", key, contextCacheEntry{
+				messages:     messages,
+				totalTokens:  report.totalTokens,
+				bucketTokens: report.bucketTokens,
+			})
+		}
 	}
 	return messages
 }
@@ -309,10 +340,29 @@ func (p *contextPlanner) cacheKey(sess *session.Session, userInput string) (uint
 		payload["session_id"] = sess.ID
 		payload["session_title"] = sess.Title
 		payload["session_message_count"] = sess.MessageCount()
-		payload["session_updated_at"] = sess.UpdatedAt.UnixNano()
+		payload["session_last_message_sig"] = sessionLastMessageSignature(sess)
 	}
 
 	return makeContextCacheKey(payload), true
+}
+
+func sessionLastMessageSignature(sess *session.Session) string {
+	if sess == nil {
+		return ""
+	}
+	last := sess.LastMessage()
+	if last == nil {
+		return ""
+	}
+	payload := map[string]any{
+		"role":              last.Role,
+		"content":           last.Content,
+		"reasoning_content": last.ReasoningContent,
+		"tool_call_id":      last.ToolCallID,
+		"name":              last.Name,
+		"tool_calls":        last.ToolCalls,
+	}
+	return fmt.Sprintf("%x", makeContextCacheKey(payload))
 }
 
 /*
@@ -409,18 +459,115 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 	if strings.TrimSpace(query) == "" {
 		return provider.Message{}
 	}
-	results := p.agent.memory.Search(query)
+	route := p.agent.memory.Route(query)
+	results := route.Entries
 	if len(results) == 0 {
 		return provider.Message{}
 	}
-	limit := utils.MinInt(4, len(results))
+	results = prioritizeMemoryForContext(results)
+	limit := utils.MinInt(6, len(results))
 	lines := make([]string, 0, limit)
 	for i := 0; i < limit; i++ {
 		e := results[i]
-		lines = append(lines, fmt.Sprintf("- [%s/%s] %s", e.Category, e.Tier.String(), truncate(e.Content, 120)))
+		graphHint := memoryGraphHint(e)
+		lines = append(lines, fmt.Sprintf("- [%s/%s%s] %s", e.Category, e.Tier.String(), graphHint, truncate(e.Content, 140)))
 	}
-	content := "[Working Memory]\n" + strings.Join(lines, "\n")
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(96, p.budget.Memory/2))}
+	routeLines := memoryRouteLines(route)
+	content := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
+	if vault := p.agent.memoryVaultPath(); vault != "" {
+		content += " at " + vault
+	}
+	content += ". Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked.\n"
+	if len(routeLines) > 0 {
+		content += "\n[Memory Router]\n" + strings.Join(routeLines, "\n") + "\n\n"
+	}
+	content += strings.Join(lines, "\n")
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(160, p.budget.Memory/2))}
+}
+
+func memoryRouteLines(route memory.RouteAnalysis) []string {
+	var lines []string
+	if len(route.RequiredTools) > 0 {
+		lines = append(lines, "- Required tools before final answer: "+strings.Join(route.RequiredTools, ", "))
+	}
+	if len(route.RiskFlags) > 0 {
+		lines = append(lines, "- Risk flags: "+strings.Join(route.RiskFlags, ", "))
+	}
+	if len(route.Constraints) > 0 {
+		lines = append(lines, "- Answer constraints: "+strings.Join(limitStrings(route.Constraints, 5), " | "))
+	}
+	if len(route.SuggestedSearches) > 0 {
+		lines = append(lines, "- Suggested web_search queries: "+strings.Join(limitStrings(route.SuggestedSearches, 4), " | "))
+	}
+	if len(route.Clarifications) > 0 {
+		lines = append(lines, "- Clarify if needed: "+strings.Join(limitStrings(route.Clarifications, 3), " | "))
+	}
+	if len(route.TemporalNotes) > 0 {
+		lines = append(lines, "- Temporal resolution: "+strings.Join(limitStrings(route.TemporalNotes, 3), " | "))
+	}
+	if len(route.EvidenceRefs) > 0 {
+		lines = append(lines, "- Memory refs: "+strings.Join(limitStrings(route.EvidenceRefs, 5), " | "))
+	}
+	return lines
+}
+
+func memoryGraphHint(e memory.Entry) string {
+	var parts []string
+	if len(e.Links) > 0 {
+		parts = append(parts, "links="+strings.Join(limitStrings(e.Links, 4), ","))
+	}
+	if e.Path != "" {
+		ref := e.Path
+		if e.BlockID != "" {
+			ref += "#" + e.BlockID
+		}
+		parts = append(parts, "ref="+ref)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " " + strings.Join(parts, " ")
+}
+
+func limitStrings(values []string, limit int) []string {
+	if limit <= 0 || len(values) <= limit {
+		return values
+	}
+	return values[:limit]
+}
+
+func prioritizeMemoryForContext(entries []memory.Entry) []memory.Entry {
+	if len(entries) <= 1 {
+		return entries
+	}
+	out := append([]memory.Entry(nil), entries...)
+	sort.SliceStable(out, func(i, j int) bool {
+		return memoryContextRank(out[i]) > memoryContextRank(out[j])
+	})
+	return out
+}
+
+func memoryContextRank(e memory.Entry) int {
+	rank := 0
+	switch e.Tier {
+	case memory.TierLong:
+		rank += 300
+	case memory.TierMedium:
+		rank += 200
+	case memory.TierShort:
+		rank += 100
+	}
+	switch strings.ToLower(strings.TrimSpace(e.Category)) {
+	case "health", "rule", "identity", "preference", "location", "project", "plan":
+		rank += 40
+	case "conversation":
+		rank -= 25
+	}
+	if strings.HasPrefix(strings.TrimSpace(e.Content), "User:") || strings.HasPrefix(strings.TrimSpace(e.Content), "Assistant:") {
+		rank -= 30
+	}
+	rank += int(e.Importance * 20)
+	return rank
 }
 
 /*
@@ -663,6 +810,9 @@ func (p *contextPlanner) persistCompressedSummary(sess *session.Session, message
 compactHistoryMessage 对历史消息做必要的压缩与清洗。
 */
 func (p *contextPlanner) compactHistoryMessage(msg provider.Message) provider.Message {
+	if len(msg.ContentParts) > 0 {
+		msg.ContentParts = nil
+	}
 	if msg.Role == "tool" {
 		msg.Content = compactToolResultForContext(msg.Name, msg.Content)
 		return msg

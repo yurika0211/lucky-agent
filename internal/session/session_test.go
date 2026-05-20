@@ -63,10 +63,11 @@ func TestAddToolMessage(t *testing.T) {
 func TestAddProviderMessagePreservesToolCallFields(t *testing.T) {
 	s := NewSession("test-provider-message", t.TempDir())
 	s.AddProviderMessage(provider.Message{
-		Role:       "tool",
-		Content:    "42",
-		ToolCallID: "call_abc123",
-		Name:       "calculator",
+		Role:             "tool",
+		Content:          "42",
+		ReasoningContent: "hidden reasoning",
+		ToolCallID:       "call_abc123",
+		Name:             "calculator",
 	})
 
 	msgs := s.GetMessages()
@@ -78,6 +79,9 @@ func TestAddProviderMessagePreservesToolCallFields(t *testing.T) {
 	}
 	if msgs[0].Name != "calculator" {
 		t.Fatalf("expected name calculator, got %q", msgs[0].Name)
+	}
+	if msgs[0].ReasoningContent != "hidden reasoning" {
+		t.Fatalf("expected reasoning content to be preserved, got %q", msgs[0].ReasoningContent)
 	}
 }
 
@@ -177,6 +181,23 @@ func TestManagerNewWithTitle(t *testing.T) {
 	s := m.NewWithTitle("My Session")
 	if s.Title != "My Session" {
 		t.Errorf("expected 'My Session', got '%s'", s.Title)
+	}
+}
+
+func TestManagerEnsure(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.Ensure("ws-session")
+	if s1.ID != "ws-session" {
+		t.Fatalf("expected ensured session ID ws-session, got %q", s1.ID)
+	}
+
+	s2 := m.Ensure("ws-session")
+	if s1 != s2 {
+		t.Fatal("expected Ensure to return the existing session instance")
 	}
 }
 

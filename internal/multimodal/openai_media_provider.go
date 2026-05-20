@@ -17,6 +17,7 @@ import (
 )
 
 const defaultOpenAIUserAgent = "luckyharness"
+const defaultOpenAIImageGenerationModel = "gpt-image-1.5"
 
 type OpenAIMediaConfig struct {
 	APIKey             string
@@ -44,7 +45,7 @@ func NewOpenAIMediaProvider(cfg OpenAIMediaConfig) (*OpenAIMediaProvider, error)
 	}
 	cfg.APIBase = strings.TrimRight(cfg.APIBase, "/")
 	if cfg.ResponsesModel == "" {
-		cfg.ResponsesModel = "gpt-4o"
+		cfg.ResponsesModel = "gpt-5.4-mini"
 	}
 	if cfg.TranscriptionModel == "" {
 		cfg.TranscriptionModel = "whisper-1"
@@ -76,9 +77,9 @@ func (o *OpenAIMediaProvider) Analyze(ctx context.Context, input *Input) (*Analy
 
 	switch input.Modality {
 	case ModalityImage:
-		return o.analyzeWithResponses(ctx, input, "Describe this image for an AI assistant. Extract visible text, summarize the scene, and keep the result concise but informative.")
+		return o.analyzeVision(ctx, input, "Describe this image for an AI assistant. Extract visible text, summarize the scene, and keep the result concise but informative.")
 	case ModalityDocument:
-		return o.analyzeWithResponses(ctx, input, "Read this document and extract the most important information for an AI assistant. Summarize the document, preserve critical facts, and quote key text snippets only when necessary.")
+		return o.analyzeVision(ctx, input, "Read this document and extract the most important information for an AI assistant. Summarize the document, preserve critical facts, and quote key text snippets only when necessary.")
 	case ModalityAudio:
 		return o.transcribeAudio(ctx, input)
 	default:
@@ -112,10 +113,220 @@ func (o *OpenAIMediaProvider) Validate() error {
 	return nil
 }
 
+func (o *OpenAIMediaProvider) GenerateImage(ctx context.Context, req ImageGenerationRequest) (*ImageGenerationResult, error) {
+	if strings.TrimSpace(req.Prompt) == "" {
+		return nil, fmt.Errorf("image generation prompt is required")
+	}
+
+	model := strings.TrimSpace(req.Model)
+	if model == "" {
+		model = defaultOpenAIImageGenerationModel
+	}
+
+	count := req.Count
+	if count <= 0 {
+		count = 1
+	}
+	if count > 10 {
+		count = 10
+	}
+
+	outputFormat := strings.ToLower(strings.TrimSpace(req.OutputFormat))
+	if outputFormat == "" {
+		outputFormat = "png"
+	}
+
+	size := strings.TrimSpace(req.Size)
+	if size == "" {
+		size = "1024x1024"
+	}
+
+	quality := strings.TrimSpace(req.Quality)
+	if quality == "" {
+		quality = "auto"
+	}
+
+	background := strings.TrimSpace(req.Background)
+	if background == "" {
+		background = "auto"
+	}
+
+	normalized := ImageGenerationRequest{
+		Prompt:            strings.TrimSpace(req.Prompt),
+		Model:             model,
+		Size:              size,
+		Quality:           quality,
+		Background:        background,
+		OutputFormat:      outputFormat,
+		OutputCompression: req.OutputCompression,
+		Count:             count,
+		InputImages:       req.InputImages,
+	}
+
+	if len(normalized.InputImages) > 0 {
+		return o.generateImageEdit(ctx, normalized)
+	}
+	return o.generateImageFromPrompt(ctx, normalized)
+}
+
 func applyOpenAIMediaHeaders(req *http.Request, apiKey, contentType string) {
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Content-Type", contentType)
 	req.Header.Set("User-Agent", defaultOpenAIUserAgent)
+}
+
+func (o *OpenAIMediaProvider) analyzeVision(ctx context.Context, input *Input, prompt string) (*AnalysisResult, error) {
+	result, err := o.analyzeWithResponses(ctx, input, prompt)
+	if err == nil {
+		return result, nil
+	}
+	if ctx.Err() != nil {
+		return nil, err
+	}
+
+	fallback, fallbackErr := o.analyzeWithChatCompletions(ctx, input, prompt)
+	if fallbackErr == nil {
+		if fallback.Metadata == nil {
+			fallback.Metadata = make(map[string]string)
+		}
+		fallback.Metadata["fallback_from"] = "openai-responses"
+		return fallback, nil
+	}
+	return nil, fmt.Errorf("responses analysis failed: %w; chat completions fallback failed: %v", err, fallbackErr)
+}
+
+func (o *OpenAIMediaProvider) generateImageFromPrompt(ctx context.Context, req ImageGenerationRequest) (*ImageGenerationResult, error) {
+	reqBody := map[string]any{
+		"model":         req.Model,
+		"prompt":        req.Prompt,
+		"size":          req.Size,
+		"quality":       req.Quality,
+		"background":    req.Background,
+		"output_format": req.OutputFormat,
+		"n":             req.Count,
+	}
+	if req.OutputCompression > 0 && req.OutputCompression <= 100 && req.OutputFormat != "png" {
+		reqBody["output_compression"] = req.OutputCompression
+	}
+
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal image generation request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiBase+"/images/generations", bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("create image generation request: %w", err)
+	}
+	applyOpenAIMediaHeaders(httpReq, o.apiKey, "application/json")
+
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("send image generation request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read image generation response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("image generation api error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	return parseGeneratedImages(body, req.OutputFormat, req.Model)
+}
+
+func (o *OpenAIMediaProvider) generateImageEdit(ctx context.Context, req ImageGenerationRequest) (*ImageGenerationResult, error) {
+	result, err := o.generateImageEditWithField(ctx, req, "image[]")
+	if err == nil {
+		return result, nil
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "api error 400") {
+		return nil, err
+	}
+	return o.generateImageEditWithField(ctx, req, "image")
+}
+
+func (o *OpenAIMediaProvider) generateImageEditWithField(ctx context.Context, req ImageGenerationRequest, fieldName string) (*ImageGenerationResult, error) {
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	writeField := func(name, value string) error {
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		if err := writer.WriteField(name, value); err != nil {
+			return fmt.Errorf("write %s field: %w", name, err)
+		}
+		return nil
+	}
+
+	if err := writeField("model", req.Model); err != nil {
+		return nil, err
+	}
+	if err := writeField("prompt", req.Prompt); err != nil {
+		return nil, err
+	}
+	if err := writeField("size", req.Size); err != nil {
+		return nil, err
+	}
+	if err := writeField("quality", req.Quality); err != nil {
+		return nil, err
+	}
+	if err := writeField("background", req.Background); err != nil {
+		return nil, err
+	}
+	if err := writeField("output_format", req.OutputFormat); err != nil {
+		return nil, err
+	}
+	if req.OutputCompression > 0 && req.OutputCompression <= 100 && req.OutputFormat != "png" {
+		if err := writeField("output_compression", fmt.Sprintf("%d", req.OutputCompression)); err != nil {
+			return nil, err
+		}
+	}
+	if err := writeField("n", fmt.Sprintf("%d", req.Count)); err != nil {
+		return nil, err
+	}
+
+	for i, image := range req.InputImages {
+		filename := strings.TrimSpace(image.Filename)
+		if filename == "" {
+			filename = fmt.Sprintf("image-%d%s", i+1, extensionForMime(image.MimeType))
+		}
+		part, err := writer.CreateFormFile(fieldName, filename)
+		if err != nil {
+			return nil, fmt.Errorf("create image part: %w", err)
+		}
+		if _, err := part.Write(image.Data); err != nil {
+			return nil, fmt.Errorf("write image part: %w", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiBase+"/images/edits", &body)
+	if err != nil {
+		return nil, fmt.Errorf("create image edit request: %w", err)
+	}
+	applyOpenAIMediaHeaders(httpReq, o.apiKey, writer.FormDataContentType())
+
+	resp, err := o.client.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("send image edit request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read image edit response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("image edit api error %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	return parseGeneratedImages(respBody, req.OutputFormat, req.Model)
 }
 
 func (o *OpenAIMediaProvider) analyzeWithResponses(ctx context.Context, input *Input, prompt string) (*AnalysisResult, error) {
@@ -180,6 +391,72 @@ func (o *OpenAIMediaProvider) analyzeWithResponses(ctx context.Context, input *I
 		Metadata: map[string]string{
 			"model":  o.responsesModel,
 			"source": "openai-responses",
+		},
+	}, nil
+}
+
+func (o *OpenAIMediaProvider) analyzeWithChatCompletions(ctx context.Context, input *Input, prompt string) (*AnalysisResult, error) {
+	contentItem, err := o.buildChatCompletionContentItem(input)
+	if err != nil {
+		return nil, err
+	}
+
+	reqBody := map[string]any{
+		"model": o.responsesModel,
+		"messages": []map[string]any{
+			{
+				"role": "user",
+				"content": []map[string]any{
+					{
+						"type": "text",
+						"text": prompt,
+					},
+					contentItem,
+				},
+			},
+		},
+	}
+
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal chat completions request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.apiBase+"/chat/completions", bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("create chat completions request: %w", err)
+	}
+	applyOpenAIMediaHeaders(req, o.apiKey, "application/json")
+
+	resp, err := o.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send chat completions request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read chat completions response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("chat completions api error %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	text := extractChatCompletionsOutputText(body)
+	if text == "" {
+		return nil, fmt.Errorf("chat completions api returned empty output")
+	}
+
+	return &AnalysisResult{
+		InputID:    input.ID,
+		Modality:   input.Modality,
+		Text:       text,
+		Summary:    truncateString(text, 240),
+		Labels:     []string{string(input.Modality), "openai"},
+		Confidence: 0.85,
+		Metadata: map[string]string{
+			"model":  o.responsesModel,
+			"source": "openai-chat-completions",
 		},
 	}, nil
 }
@@ -306,6 +583,37 @@ func (o *OpenAIMediaProvider) buildResponsesContentItem(input *Input) (map[strin
 	return nil, fmt.Errorf("unsupported modality %q", input.Modality)
 }
 
+func (o *OpenAIMediaProvider) buildChatCompletionContentItem(input *Input) (map[string]any, error) {
+	switch input.Modality {
+	case ModalityImage:
+		imageURL := strings.TrimSpace(input.URL)
+		if imageURL == "" {
+			data, err := o.resolveInputData(input)
+			if err != nil {
+				return nil, err
+			}
+			if len(data) == 0 {
+				return nil, fmt.Errorf("image input requires url or data")
+			}
+			mimeType := strings.TrimSpace(input.MimeType)
+			if mimeType == "" {
+				mimeType = http.DetectContentType(data)
+			}
+			imageURL = fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
+		}
+		return map[string]any{
+			"type": "image_url",
+			"image_url": map[string]any{
+				"url":    imageURL,
+				"detail": "auto",
+			},
+		}, nil
+	case ModalityDocument:
+		return nil, fmt.Errorf("chat completions fallback does not support document modality")
+	}
+	return nil, fmt.Errorf("unsupported modality %q", input.Modality)
+}
+
 func (o *OpenAIMediaProvider) resolveInputData(input *Input) ([]byte, error) {
 	if len(input.Data) > 0 {
 		return input.Data, nil
@@ -354,6 +662,50 @@ func extractResponsesOutputText(body []byte) string {
 	return strings.TrimSpace(strings.Join(parts, "\n"))
 }
 
+func extractChatCompletionsOutputText(body []byte) string {
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Choices) == 0 {
+		return ""
+	}
+	return extractTextFromRawContent(payload.Choices[0].Message.Content)
+}
+
+func extractTextFromRawContent(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return strings.TrimSpace(text)
+	}
+
+	var parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if strings.TrimSpace(part.Text) == "" {
+			continue
+		}
+		if part.Type == "" || strings.Contains(part.Type, "text") {
+			out = append(out, strings.TrimSpace(part.Text))
+		}
+	}
+	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
 func extractTranscriptionText(body []byte) string {
 	var payload struct {
 		Text string `json:"text"`
@@ -362,6 +714,68 @@ func extractTranscriptionText(body []byte) string {
 		return strings.TrimSpace(payload.Text)
 	}
 	return strings.TrimSpace(string(body))
+}
+
+func parseGeneratedImages(body []byte, outputFormat, model string) (*ImageGenerationResult, error) {
+	var payload struct {
+		Created       int64  `json:"created"`
+		RevisedPrompt string `json:"revised_prompt"`
+		Data          []struct {
+			B64JSON       string `json:"b64_json"`
+			RevisedPrompt string `json:"revised_prompt"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("decode image generation response: %w", err)
+	}
+	if len(payload.Data) == 0 {
+		return nil, fmt.Errorf("image generation api returned no images")
+	}
+
+	result := &ImageGenerationResult{
+		Provider:      "openai-media",
+		Model:         model,
+		RevisedPrompt: strings.TrimSpace(payload.RevisedPrompt),
+		Metadata: map[string]string{
+			"source": "openai-images",
+		},
+	}
+	if payload.Created > 0 {
+		result.CreatedAt = time.Unix(payload.Created, 0).UTC()
+	}
+
+	mimeType := mimeTypeForOutputFormat(outputFormat)
+	for _, item := range payload.Data {
+		raw := strings.TrimSpace(item.B64JSON)
+		if raw == "" {
+			return nil, fmt.Errorf("image generation api returned empty image data")
+		}
+		data, err := base64.StdEncoding.DecodeString(raw)
+		if err != nil {
+			return nil, fmt.Errorf("decode generated image: %w", err)
+		}
+		result.Images = append(result.Images, GeneratedImage{
+			Data:          data,
+			MimeType:      mimeType,
+			RevisedPrompt: strings.TrimSpace(item.RevisedPrompt),
+		})
+	}
+
+	if result.RevisedPrompt == "" && len(result.Images) > 0 {
+		result.RevisedPrompt = result.Images[0].RevisedPrompt
+	}
+	return result, nil
+}
+
+func mimeTypeForOutputFormat(format string) string {
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "jpeg", "jpg":
+		return "image/jpeg"
+	case "webp":
+		return "image/webp"
+	default:
+		return "image/png"
+	}
 }
 
 func extensionForMime(mimeType string) string {

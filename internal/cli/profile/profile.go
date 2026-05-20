@@ -40,8 +40,8 @@ func DefaultProfile(name string) *Profile {
 		Name:        name,
 		Description: "Default LuckyHarness profile",
 		Provider:    "openai",
-		Model:       "gpt-4o",
-		MaxTokens:   4096,
+		Model:       "gpt-5.4-mini",
+		MaxTokens:   40960,
 		Temperature: 0.7,
 		Env:         make(map[string]string),
 	}
@@ -64,7 +64,7 @@ func NewManager(homeDir string) (*Manager, error) {
 
 	// 确保目录存在
 	profilesDir := filepath.Join(homeDir, "profiles")
-	if err := os.MkdirAll(profilesDir, 0700); err != nil {
+	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create profiles dir: %w", err)
 	}
 
@@ -137,7 +137,7 @@ func (m *Manager) loadAll() error {
 // saveProfile 保存单个 profile 到磁盘
 func (m *Manager) saveProfile(p *Profile) error {
 	profilesDir := filepath.Join(m.homeDir, "profiles")
-	if err := os.MkdirAll(profilesDir, 0700); err != nil {
+	if err := os.MkdirAll(profilesDir, 0o700); err != nil {
 		return fmt.Errorf("create profiles dir: %w", err)
 	}
 
@@ -147,7 +147,7 @@ func (m *Manager) saveProfile(p *Profile) error {
 	}
 
 	path := filepath.Join(profilesDir, p.Name+".yaml")
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		return fmt.Errorf("write profile: %w", err)
 	}
 
@@ -179,7 +179,7 @@ func (m *Manager) Create(name, description string) (*Profile, error) {
 	// 初始化 profile 数据目录
 	profileDir := m.profileDataDir(name)
 	for _, sub := range []string{"sessions", "memory", "logs", "skills"} {
-		if err := os.MkdirAll(filepath.Join(profileDir, sub), 0700); err != nil {
+		if err := os.MkdirAll(filepath.Join(profileDir, sub), 0o700); err != nil {
 			return nil, fmt.Errorf("create %s: %w", sub, err)
 		}
 	}
@@ -230,7 +230,7 @@ func (m *Manager) Switch(name string) error {
 
 	// 持久化活跃标记
 	activeFile := filepath.Join(m.homeDir, ".active_profile")
-	if err := os.WriteFile(activeFile, []byte(name), 0600); err != nil {
+	if err := os.WriteFile(activeFile, []byte(name), 0o600); err != nil {
 		return fmt.Errorf("write active profile: %w", err)
 	}
 

@@ -7,14 +7,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/autonomy"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/cron"
 	msggateway "github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/multimodal"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
@@ -299,6 +302,45 @@ func TestToContextMessages_MemoryPriority(t *testing.T) {
 	}
 }
 
+func TestContextPlannerInjectsMemoryGateForDaughterOutdoorPrompt(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	if err := a.memory.SaveWithTierAndTags("My [[Daughter]] has [[Pollen Allergy]].", "health", memory.TierLong, 0.98, []string{"health"}); err != nil {
+		t.Fatalf("save allergy: %v", err)
+	}
+	if err := a.memory.SaveWithTierAndTags("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", memory.TierLong, 0.92, []string{"tool-routing"}); err != nil {
+		t.Fatalf("save rule: %v", err)
+	}
+
+	planner := newContextPlanner(a, defaultContextBuildOptions())
+	messages := planner.Build(context.Background(), newTestSession(t), "今天下午适合和女儿出门吗")
+	joined := providerMessagesContent(messages)
+	for _, want := range []string{
+		"[Working Memory",
+		"Mandatory Memory Gate",
+		"LuckyHarness Obsidian-compatible Markdown memory vault",
+		"[Memory Router]",
+		"Required tools before final answer: current_time, web_search",
+		"child_health_outdoor_plan",
+		"Pollen Allergy",
+		"Weather Forecast",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected context to contain %q:\n%s", want, joined)
+		}
+	}
+}
+
+func providerMessagesContent(messages []provider.Message) string {
+	var b strings.Builder
+	for _, msg := range messages {
+		if msg.Content != "" {
+			b.WriteString(msg.Content)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
 func TestFromContextMessages(t *testing.T) {
 	a := &Agent{}
 	original := []provider.Message{
@@ -568,17 +610,6 @@ func TestLoopStateUnknown(t *testing.T) {
 	}
 }
 
-// --- EventType edge cases ---
-
-func TestEventTypeValues(t *testing.T) {
-	if EventReason != 0 || EventAct != 1 || EventObserve != 2 {
-		t.Errorf("unexpected EventType values: Reason=%d Act=%d Observe=%d", EventReason, EventAct, EventObserve)
-	}
-	if EventContent != 3 || EventDone != 4 || EventError != 5 {
-		t.Errorf("unexpected EventType values: Content=%d Done=%d Error=%d", EventContent, EventDone, EventError)
-	}
-}
-
 // --- Agent Getter 测试 ---
 
 func TestAgent_Getters(t *testing.T) {
@@ -725,7 +756,6 @@ func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Messa
 }
 func (m *mockProvider) Validate() error { return nil }
 
-
 // errorProvider returns errors for all calls, used to test error handling
 type errorProvider struct{}
 
@@ -733,6 +763,7 @@ func (e *errorProvider) Name() string { return "error-mock" }
 func (e *errorProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
 	return nil, fmt.Errorf("mock provider error: no API key available")
 }
+
 func (e *errorProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
 	return nil, fmt.Errorf("mock provider error: no API key available")
 }
@@ -776,6 +807,7 @@ func (p *loopingFunctionProvider) ChatStreamWithOptions(ctx context.Context, mes
 }
 
 type cronNotifyGateway struct {
+	mu       sync.Mutex
 	name     string
 	running  bool
 	messages []string
@@ -783,25 +815,62 @@ type cronNotifyGateway struct {
 
 func (g *cronNotifyGateway) Name() string { return g.name }
 func (g *cronNotifyGateway) Start(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.running = true
 	return nil
 }
 
 func (g *cronNotifyGateway) Stop() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.running = false
 	return nil
 }
 
 func (g *cronNotifyGateway) Send(ctx context.Context, chatID string, message string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.messages = append(g.messages, message)
 	return nil
 }
 
 func (g *cronNotifyGateway) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	g.messages = append(g.messages, message)
 	return nil
 }
-func (g *cronNotifyGateway) IsRunning() bool { return g.running }
+
+func (g *cronNotifyGateway) IsRunning() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.running
+}
+
+func (g *cronNotifyGateway) messageSnapshot() []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]string(nil), g.messages...)
+}
+
+type staticChatProvider struct {
+	name    string
+	content string
+	err     error
+}
+
+func (p *staticChatProvider) Name() string { return p.name }
+func (p *staticChatProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	if p.err != nil {
+		return nil, p.err
+	}
+	return &provider.Response{Content: p.content}, nil
+}
+func (p *staticChatProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
+	return nil, fmt.Errorf("unexpected ChatStream call")
+}
+func (p *staticChatProvider) Validate() error { return nil }
 
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
@@ -1255,7 +1324,7 @@ func TestAgentSwitchModel(t *testing.T) {
 	}
 
 	// Switch to a different model
-	err = a.SwitchModel("gpt-4o")
+	err = a.SwitchModel("gpt-5.4-mini")
 	if err != nil {
 		t.Errorf("SwitchModel() error = %v", err)
 	}
@@ -1361,6 +1430,155 @@ func TestAgentStartAutonomy(t *testing.T) {
 	}
 }
 
+func TestAgentStartAutonomyNowBypassesDisabledConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	if a.Autonomy().Status().Started {
+		t.Fatal("autonomy should be stopped by default")
+	}
+	if err := a.StartAutonomy(context.Background()); err != nil {
+		t.Fatalf("StartAutonomy() error = %v", err)
+	}
+	if a.Autonomy().Status().Started {
+		t.Fatal("StartAutonomy should respect disabled config")
+	}
+	if err := a.StartAutonomyNow(context.Background()); err != nil {
+		t.Fatalf("StartAutonomyNow() error = %v", err)
+	}
+	if !a.Autonomy().Status().Started {
+		t.Fatal("StartAutonomyNow should force-start autonomy")
+	}
+}
+
+func TestBuildAutonomyRuntimeConfigUsesWorkerConfig(t *testing.T) {
+	autoApprove := false
+	cfg := &config.Config{
+		Autonomy: config.AutonomyConfig{
+			Worker: config.AutonomyWorkerConfig{
+				MaxIterations:          25,
+				TimeoutSeconds:         240,
+				AutoApprove:            &autoApprove,
+				RepeatToolCallLimit:    5,
+				ToolOnlyIterationLimit: 6,
+				DuplicateFetchLimit:    2,
+				DisabledTools:          []string{"autonomy", "cron_add"},
+			},
+		},
+	}
+
+	got := buildAutonomyRuntimeConfig(cfg)
+	if got.Pool.WorkerLoop.MaxIterations != 25 {
+		t.Fatalf("expected max iterations 25, got %d", got.Pool.WorkerLoop.MaxIterations)
+	}
+	if got.Pool.WorkerLoop.Timeout != 240*time.Second {
+		t.Fatalf("expected worker timeout 240s, got %s", got.Pool.WorkerLoop.Timeout)
+	}
+	if got.Pool.WorkerLoop.AutoApprove {
+		t.Fatal("expected auto approve false")
+	}
+	if !got.Pool.WorkerLoop.AutoApproveSet {
+		t.Fatal("expected auto approve to be marked configured")
+	}
+	if got.Pool.WorkerLoop.RepeatToolCallLimit != 5 {
+		t.Fatalf("expected repeat limit 5, got %d", got.Pool.WorkerLoop.RepeatToolCallLimit)
+	}
+	if got.Pool.WorkerLoop.ToolOnlyIterationLimit != 6 {
+		t.Fatalf("expected tool-only limit 6, got %d", got.Pool.WorkerLoop.ToolOnlyIterationLimit)
+	}
+	if got.Pool.WorkerLoop.DuplicateFetchLimit != 2 {
+		t.Fatalf("expected duplicate fetch limit 2, got %d", got.Pool.WorkerLoop.DuplicateFetchLimit)
+	}
+	if len(got.Pool.WorkerLoop.DisabledTools) != 2 || got.Pool.WorkerLoop.DisabledTools[0] != "autonomy" || got.Pool.WorkerLoop.DisabledTools[1] != "cron_add" {
+		t.Fatalf("unexpected disabled tools: %v", got.Pool.WorkerLoop.DisabledTools)
+	}
+}
+
+func TestBuildAutonomyRuntimeConfigAllowsEmptyDisabledTools(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Autonomy.Worker.DisabledTools = []string{}
+
+	got := buildAutonomyRuntimeConfig(cfg)
+	if got.Pool.WorkerLoop.DisabledTools == nil {
+		t.Fatal("expected explicit empty disabled tools to be preserved")
+	}
+	if len(got.Pool.WorkerLoop.DisabledTools) != 0 {
+		t.Fatalf("expected disabled tools to be empty, got %v", got.Pool.WorkerLoop.DisabledTools)
+	}
+}
+
+func TestAutonomyWorkerCompletionNotifiesRecentChat(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &mockProvider{name: "test-mock"}
+
+	gm := msggateway.NewGatewayManager()
+	gw := &cronNotifyGateway{name: "telegram", running: true}
+	if err := gm.Register(gw); err != nil {
+		t.Fatalf("register gateway: %v", err)
+	}
+	a.msgGateway = gm
+	a.RecordRecentChatTarget("telegram", "12345", "77")
+
+	if err := a.StartAutonomyNow(context.Background()); err != nil {
+		t.Fatalf("StartAutonomyNow() error = %v", err)
+	}
+	a.Autonomy().AddTask("worker completion report", "Return a short result.", autonomy.PriorityNormal, nil)
+
+	deadline := time.Now().Add(3 * time.Second)
+	var messages []string
+	for time.Now().Before(deadline) {
+		messages = gw.messageSnapshot()
+		if len(messages) > 0 {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if len(messages) == 0 {
+		t.Fatal("expected worker completion notification")
+	}
+	if !strings.Contains(messages[0], "worker completion report") || !strings.Contains(messages[0], "mock") {
+		t.Fatalf("unexpected worker notification: %q", messages[0])
+	}
+}
+
+func TestAgentConfiguresAutonomyQueuePersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	want := filepath.Join(tmpDir, "runtime", "autonomy_queue.json")
+	if got := a.Autonomy().Status().QueueStore; got != want {
+		t.Fatalf("expected autonomy queue store %q, got %q", want, got)
+	}
+}
+
 func TestAgentLoadSkills(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)
@@ -1375,6 +1593,50 @@ func TestAgentLoadSkills(t *testing.T) {
 
 	// LoadSkills with empty directory should not panic
 	a.LoadSkills(filepath.Join(tmpDir, "skills"))
+}
+
+func TestAgentLoadSkillsUsesRegistryLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillsDir := filepath.Join(tmpDir, "skills")
+	skillDir := filepath.Join(skillsDir, "script-skill")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# script-skill\n\nDesc.\n\n## Tools\n\n- `echo`: Echo\n"), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "echo.sh"), []byte("echo agent-skill\n"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	a := &Agent{tools: tool.NewRegistry()}
+	count, err := a.LoadSkills(skillsDir)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 skill, got %d", count)
+	}
+	if a.SkillRegistry() == nil {
+		t.Fatal("expected skill registry to be initialized")
+	}
+
+	registered, ok := a.Tools().Get("skill_script-skill_echo")
+	if !ok {
+		t.Fatal("expected skill tool to be registered")
+	}
+	if !registered.Enabled {
+		t.Fatal("expected skill tool to be enabled after lifecycle activation")
+	}
+
+	out, err := a.Tools().Call("skill_script-skill_echo", nil)
+	if err != nil {
+		t.Fatalf("call skill tool: %v", err)
+	}
+	if out != "agent-skill\n" {
+		t.Fatalf("expected script output, got %q", out)
+	}
 }
 
 func TestAgentHandleSkillRead(t *testing.T) {
@@ -1660,6 +1922,150 @@ func TestRunLoopWithSessionLazyStartsAutonomy(t *testing.T) {
 	}
 	if !a.Autonomy().Status().Started {
 		t.Fatal("RunLoop() should lazy-start autonomy")
+	}
+}
+
+func TestRunLoopWithSessionLazyStartsAutonomyFromFormalConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	current := cfg.Get()
+	current.Autonomy.Enabled = true
+	cfgBytes, err := json.Marshal(current)
+	if err != nil {
+		t.Fatalf("marshal config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), cfgBytes, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := cfg.Reload(); err != nil {
+		t.Fatalf("reload config: %v", err)
+	}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	a.provider = &mockProvider{name: "test-mock"}
+
+	if a.Autonomy().Status().Started {
+		t.Fatal("autonomy should be stopped before the first loop")
+	}
+
+	result, err := a.RunLoop(context.Background(), "say hi", DefaultLoopConfig())
+	if err != nil {
+		t.Fatalf("RunLoop() error = %v", err)
+	}
+	if result == nil || result.Response == "" {
+		t.Fatal("expected non-empty run loop response")
+	}
+	if !a.Autonomy().Status().Started {
+		t.Fatal("RunLoop() should lazy-start autonomy from formal config")
+	}
+}
+
+func TestNewRegistersOpenAIMultimodalProviderFromDedicatedConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-main")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("multimodal.provider", "openai")
+	cfg.Set("multimodal.api_key", "sk-mm")
+	cfg.Set("multimodal.api_base", "https://example.com/v1")
+	cfg.Set("multimodal.image_model", "gpt-4.1-mini")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	if a.mediaProcessor == nil {
+		t.Fatal("expected mediaProcessor to be initialized")
+	}
+	providers := a.mediaProcessor.ProvidersForModality(multimodal.ModalityImage)
+	found := false
+	for _, provider := range providers {
+		if provider.Name() == "openai-media" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected openai-media provider to be registered for image modality")
+	}
+}
+
+func TestResolveImageGenerationConfigPrefersDedicatedGeminiConfig(t *testing.T) {
+	cfg := &config.Config{
+		ImageGeneration: config.ImageGenerationConfig{
+			Provider: "gemini",
+			APIKey:   "gen-key",
+			APIBase:  "https://api.shiokou.asia/v1",
+			AuthMode: "bearer",
+			Model:    "gemini-3.1-flash-image-preview",
+		},
+	}
+
+	genCfg, ok := resolveImageGenerationConfig(cfg)
+	if !ok {
+		t.Fatal("expected image generation config to resolve")
+	}
+	if genCfg.Provider != "gemini" {
+		t.Fatalf("expected gemini provider, got %q", genCfg.Provider)
+	}
+	if genCfg.APIBase != "https://api.shiokou.asia/v1" {
+		t.Fatalf("expected gemini api base, got %q", genCfg.APIBase)
+	}
+}
+
+func TestResolveImageGenerationConfigPromotesLegacyGeminiModel(t *testing.T) {
+	cfg := &config.Config{
+		Multimodal: config.MultimodalConfig{
+			APIKey:          "legacy-key",
+			APIBase:         "https://api.shiokou.asia/v1",
+			GenerationModel: "gemini-3.1-flash-image-preview",
+		},
+	}
+
+	genCfg, ok := resolveImageGenerationConfig(cfg)
+	if !ok {
+		t.Fatal("expected legacy gemini config to resolve")
+	}
+	if genCfg.Provider != "gemini" {
+		t.Fatalf("expected gemini provider, got %q", genCfg.Provider)
+	}
+	if genCfg.APIBase != "https://api.shiokou.asia/v1" {
+		t.Fatalf("expected legacy api base, got %q", genCfg.APIBase)
+	}
+}
+
+func TestResolveTTSConfigPrefersDedicatedConfig(t *testing.T) {
+	cfg := &config.Config{
+		TTS: config.TTSConfig{
+			Provider: "openai",
+			APIKey:   "tts-key",
+			APIBase:  "https://speech.example/v1",
+			AuthMode: "bearer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Format:   "mp3",
+			Speed:    1.1,
+		},
+	}
+
+	ttsCfg, ok := resolveTTSConfig(cfg)
+	if !ok {
+		t.Fatal("expected tts config to resolve")
+	}
+	if ttsCfg.APIBase != "https://speech.example/v1" || ttsCfg.Model != "gpt-4o-mini-tts" {
+		t.Fatalf("unexpected tts config: %+v", ttsCfg)
 	}
 }
 
@@ -1970,7 +2376,7 @@ func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
 	if err := job.Task(); err != nil {
 		t.Fatalf("agent cron task error = %v", err)
 	}
-	if len(gw.messages) == 0 {
+	if len(gw.messageSnapshot()) == 0 {
 		t.Fatal("expected telegram notification to be sent")
 	}
 }
@@ -2013,8 +2419,90 @@ func TestCronNotificationFallsBackToRecentTelegramTarget(t *testing.T) {
 	if err := job.Task(); err != nil {
 		t.Fatalf("agent cron task error = %v", err)
 	}
-	if len(gw.messages) == 0 {
+	if len(gw.messageSnapshot()) == 0 {
 		t.Fatal("expected fallback telegram notification to be sent")
+	}
+}
+
+func TestFormatCronNotificationUsesProviderRewrite(t *testing.T) {
+	a := &Agent{
+		provider: &staticChatProvider{
+			name:    "static-chat",
+			content: "我刚帮你把这轮定时巡检处理完了，整体都很顺，唯一值得留意的是结果里提到的那条小波动。要不要我顺手继续帮你往下查一下？",
+		},
+	}
+
+	got := a.formatCronNotification(cronNotificationPayload{
+		JobID:     "job-1",
+		Mode:      "agent",
+		Command:   "巡检一下服务状态",
+		Outcome:   "succeeded",
+		RawResult: "服务状态正常，但 latency 有轻微波动。",
+	})
+	if !strings.Contains(got, "我刚帮你把这轮定时巡检处理完了") {
+		t.Fatalf("expected provider rewritten notification, got %q", got)
+	}
+}
+
+func TestFormatCronNotificationFallsBackNaturallyOnProviderError(t *testing.T) {
+	a := &Agent{
+		provider: &staticChatProvider{
+			name: "static-chat",
+			err:  fmt.Errorf("provider unavailable"),
+		},
+	}
+
+	got := a.formatCronNotification(cronNotificationPayload{
+		JobID:     "job-2",
+		Mode:      "shell",
+		Command:   "同步监控日志",
+		Outcome:   "failed",
+		RawResult: "连接上游接口超时",
+	})
+	if !strings.Contains(got, "同步监控日志") {
+		t.Fatalf("expected fallback to include command context, got %q", got)
+	}
+	if !strings.Contains(got, "连接上游接口超时") {
+		t.Fatalf("expected fallback to include raw failure, got %q", got)
+	}
+	if strings.Contains(got, "执行状态") {
+		t.Fatalf("expected natural fallback wording, got %q", got)
+	}
+}
+
+func TestChatStreamUsesAgentEventLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("stream_mode", "simulated")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &staticChatProvider{name: "static-chat", content: "streamed through loop"}
+
+	ch, err := a.ChatStream(context.Background(), "hello")
+	if err != nil {
+		t.Fatalf("ChatStream() error = %v", err)
+	}
+
+	var got strings.Builder
+	done := false
+	for chunk := range ch {
+		got.WriteString(chunk.Content)
+		if chunk.Done {
+			done = true
+		}
+	}
+	if !done {
+		t.Fatal("expected done chunk")
+	}
+	if strings.TrimSpace(got.String()) != "streamed through loop" {
+		t.Fatalf("unexpected stream content %q", got.String())
 	}
 }
 

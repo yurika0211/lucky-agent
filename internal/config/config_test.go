@@ -12,8 +12,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Provider != "openai" {
 		t.Errorf("expected provider openai, got %s", cfg.Provider)
 	}
-	if cfg.Model != "gpt-4o" {
-		t.Errorf("expected model gpt-4o, got %s", cfg.Model)
+	if cfg.Model != "gpt-5.4-mini" {
+		t.Errorf("expected model ggpt-5.4-mini, got %s", cfg.Model)
 	}
 	if cfg.MaxTokens != 4096 {
 		t.Errorf("expected max_tokens 4096, got %d", cfg.MaxTokens)
@@ -26,6 +26,66 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if cfg.Agent.DuplicateFetchLimit != 1 {
 		t.Errorf("expected duplicate_fetch_limit 1, got %d", cfg.Agent.DuplicateFetchLimit)
+	}
+	if cfg.Agent.SimpleLocalInspection.MaxIterations != 3 {
+		t.Errorf("expected simple_local_inspection.max_iterations 3, got %d", cfg.Agent.SimpleLocalInspection.MaxIterations)
+	}
+	if cfg.Agent.SimpleLocalInspection.TimeoutSeconds != 25 {
+		t.Errorf("expected simple_local_inspection.timeout_seconds 25, got %d", cfg.Agent.SimpleLocalInspection.TimeoutSeconds)
+	}
+	if cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit != 2 {
+		t.Errorf("expected simple_local_inspection.repeat_tool_call_limit 2, got %d", cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit)
+	}
+	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit != 2 {
+		t.Errorf("expected simple_local_inspection.tool_only_iteration_limit 2, got %d", cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit)
+	}
+	if cfg.Autonomy.Enabled {
+		t.Errorf("expected autonomy.enabled false by default, got true")
+	}
+	if cfg.Autonomy.Worker.MaxIterations != 10 {
+		t.Errorf("expected autonomy.worker.max_iterations 10, got %d", cfg.Autonomy.Worker.MaxIterations)
+	}
+	if cfg.Autonomy.Worker.TimeoutSeconds != 120 {
+		t.Errorf("expected autonomy.worker.timeout_seconds 120, got %d", cfg.Autonomy.Worker.TimeoutSeconds)
+	}
+	if cfg.Autonomy.Worker.AutoApprove == nil || !*cfg.Autonomy.Worker.AutoApprove {
+		t.Errorf("expected autonomy.worker.auto_approve true")
+	}
+	if cfg.Autonomy.Worker.RepeatToolCallLimit != 3 {
+		t.Errorf("expected autonomy.worker.repeat_tool_call_limit 3, got %d", cfg.Autonomy.Worker.RepeatToolCallLimit)
+	}
+	if cfg.Autonomy.Worker.ToolOnlyIterationLimit != 3 {
+		t.Errorf("expected autonomy.worker.tool_only_iteration_limit 3, got %d", cfg.Autonomy.Worker.ToolOnlyIterationLimit)
+	}
+	if cfg.Autonomy.Worker.DuplicateFetchLimit != 1 {
+		t.Errorf("expected autonomy.worker.duplicate_fetch_limit 1, got %d", cfg.Autonomy.Worker.DuplicateFetchLimit)
+	}
+	if len(cfg.Autonomy.Worker.DisabledTools) != 1 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" {
+		t.Errorf("expected autonomy.worker.disabled_tools [autonomy], got %v", cfg.Autonomy.Worker.DisabledTools)
+	}
+	if cfg.Multimodal.GenerationModel != "gpt-image-1.5" {
+		t.Errorf("expected multimodal.generation_model gpt-image-1.5, got %s", cfg.Multimodal.GenerationModel)
+	}
+	if cfg.Multimodal.GenerationSize != "1024x1024" {
+		t.Errorf("expected multimodal.generation_size 1024x1024, got %s", cfg.Multimodal.GenerationSize)
+	}
+	if cfg.Multimodal.GenerationOutputFormat != "png" {
+		t.Errorf("expected multimodal.generation_output_format png, got %s", cfg.Multimodal.GenerationOutputFormat)
+	}
+	if cfg.ImageGeneration.Provider != "openai" {
+		t.Errorf("expected image_generation.provider openai, got %s", cfg.ImageGeneration.Provider)
+	}
+	if cfg.ImageGeneration.APIBase != "https://api.openai.com/v1" {
+		t.Errorf("expected image_generation.api_base https://api.openai.com/v1, got %s", cfg.ImageGeneration.APIBase)
+	}
+	if cfg.ImageGeneration.AuthMode != "bearer" {
+		t.Errorf("expected image_generation.auth_mode bearer, got %s", cfg.ImageGeneration.AuthMode)
+	}
+	if cfg.TTS.Model != "gpt-4o-mini-tts" {
+		t.Errorf("expected tts.model gpt-4o-mini-tts, got %s", cfg.TTS.Model)
+	}
+	if cfg.TTS.Voice != "alloy" {
+		t.Errorf("expected tts.voice alloy, got %s", cfg.TTS.Voice)
 	}
 }
 
@@ -68,6 +128,298 @@ func TestManagerSetTelegramProxy(t *testing.T) {
 	cfg := mgr.Get()
 	if cfg.MsgGateway.Telegram.Proxy != "http://127.0.0.1:7897" {
 		t.Errorf("expected telegram proxy to be set, got %q", cfg.MsgGateway.Telegram.Proxy)
+	}
+}
+
+func TestManagerSetSimpleLocalInspectionConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("agent.simple_local_inspection.max_iterations", "5"); err != nil {
+		t.Fatalf("Set simple_local_inspection.max_iterations: %v", err)
+	}
+	if err := mgr.Set("agent.simple_local_inspection.timeout_seconds", "15"); err != nil {
+		t.Fatalf("Set simple_local_inspection.timeout_seconds: %v", err)
+	}
+	if err := mgr.Set("agent.simple_local_inspection.repeat_tool_call_limit", "4"); err != nil {
+		t.Fatalf("Set simple_local_inspection.repeat_tool_call_limit: %v", err)
+	}
+	if err := mgr.Set("agent.simple_local_inspection.tool_only_iteration_limit", "3"); err != nil {
+		t.Fatalf("Set simple_local_inspection.tool_only_iteration_limit: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Agent.SimpleLocalInspection.MaxIterations != 5 {
+		t.Fatalf("expected 5, got %d", cfg.Agent.SimpleLocalInspection.MaxIterations)
+	}
+	if cfg.Agent.SimpleLocalInspection.TimeoutSeconds != 15 {
+		t.Fatalf("expected 15, got %d", cfg.Agent.SimpleLocalInspection.TimeoutSeconds)
+	}
+	if cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit != 4 {
+		t.Fatalf("expected 4, got %d", cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit)
+	}
+	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit != 3 {
+		t.Fatalf("expected 3, got %d", cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit)
+	}
+}
+
+func TestManagerSetAutonomyEnabled(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("autonomy.enabled", "true"); err != nil {
+		t.Fatalf("Set autonomy.enabled: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if !cfg.Autonomy.Enabled {
+		t.Fatalf("expected autonomy.enabled to be true")
+	}
+}
+
+func TestManagerSetAutonomyWorkerConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("autonomy.worker.max_iterations", "25"); err != nil {
+		t.Fatalf("Set autonomy.worker.max_iterations: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.timeout_seconds", "240"); err != nil {
+		t.Fatalf("Set autonomy.worker.timeout_seconds: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.auto_approve", "false"); err != nil {
+		t.Fatalf("Set autonomy.worker.auto_approve: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.repeat_tool_call_limit", "5"); err != nil {
+		t.Fatalf("Set autonomy.worker.repeat_tool_call_limit: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.tool_only_iteration_limit", "6"); err != nil {
+		t.Fatalf("Set autonomy.worker.tool_only_iteration_limit: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.duplicate_fetch_limit", "2"); err != nil {
+		t.Fatalf("Set autonomy.worker.duplicate_fetch_limit: %v", err)
+	}
+	if err := mgr.Set("autonomy.worker.disabled_tools", "autonomy,cron_add"); err != nil {
+		t.Fatalf("Set autonomy.worker.disabled_tools: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Autonomy.Worker.MaxIterations != 25 {
+		t.Fatalf("expected 25, got %d", cfg.Autonomy.Worker.MaxIterations)
+	}
+	if cfg.Autonomy.Worker.TimeoutSeconds != 240 {
+		t.Fatalf("expected 240, got %d", cfg.Autonomy.Worker.TimeoutSeconds)
+	}
+	if cfg.Autonomy.Worker.AutoApprove == nil || *cfg.Autonomy.Worker.AutoApprove {
+		t.Fatalf("expected auto_approve false, got %#v", cfg.Autonomy.Worker.AutoApprove)
+	}
+	if cfg.Autonomy.Worker.RepeatToolCallLimit != 5 {
+		t.Fatalf("expected 5, got %d", cfg.Autonomy.Worker.RepeatToolCallLimit)
+	}
+	if cfg.Autonomy.Worker.ToolOnlyIterationLimit != 6 {
+		t.Fatalf("expected 6, got %d", cfg.Autonomy.Worker.ToolOnlyIterationLimit)
+	}
+	if cfg.Autonomy.Worker.DuplicateFetchLimit != 2 {
+		t.Fatalf("expected 2, got %d", cfg.Autonomy.Worker.DuplicateFetchLimit)
+	}
+	if len(cfg.Autonomy.Worker.DisabledTools) != 2 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" || cfg.Autonomy.Worker.DisabledTools[1] != "cron_add" {
+		t.Fatalf("unexpected disabled tools: %v", cfg.Autonomy.Worker.DisabledTools)
+	}
+}
+
+func TestManagerSetAutonomyWorkerDisabledToolsCanBeCleared(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("autonomy.worker.disabled_tools", ""); err != nil {
+		t.Fatalf("Set autonomy.worker.disabled_tools: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Autonomy.Worker.DisabledTools == nil {
+		t.Fatal("expected explicit empty disabled tools to be preserved")
+	}
+	if len(cfg.Autonomy.Worker.DisabledTools) != 0 {
+		t.Fatalf("expected disabled tools to be empty, got %v", cfg.Autonomy.Worker.DisabledTools)
+	}
+}
+
+func TestManagerSetMultimodalImageProvider(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("multimodal.provider", "openai"); err != nil {
+		t.Fatalf("Set multimodal.provider: %v", err)
+	}
+	if err := mgr.Set("multimodal.api_key", "mm-key"); err != nil {
+		t.Fatalf("Set multimodal.api_key: %v", err)
+	}
+	if err := mgr.Set("multimodal.api_base", "https://vision.example/v1"); err != nil {
+		t.Fatalf("Set multimodal.api_base: %v", err)
+	}
+	if err := mgr.Set("multimodal.image_model", "gpt-4.1-mini"); err != nil {
+		t.Fatalf("Set multimodal.image_model: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_model", "gpt-image-1"); err != nil {
+		t.Fatalf("Set multimodal.generation_model: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_size", "1536x1024"); err != nil {
+		t.Fatalf("Set multimodal.generation_size: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_quality", "high"); err != nil {
+		t.Fatalf("Set multimodal.generation_quality: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_background", "transparent"); err != nil {
+		t.Fatalf("Set multimodal.generation_background: %v", err)
+	}
+	if err := mgr.Set("multimodal.generation_output_format", "webp"); err != nil {
+		t.Fatalf("Set multimodal.generation_output_format: %v", err)
+	}
+	if err := mgr.Set("multimodal.transcription_model", "whisper-1"); err != nil {
+		t.Fatalf("Set multimodal.transcription_model: %v", err)
+	}
+	if err := mgr.Set("multimodal.image_provider", "openai-media"); err != nil {
+		t.Fatalf("Set multimodal.image_provider: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Multimodal.Provider != "openai" {
+		t.Fatalf("expected openai, got %q", cfg.Multimodal.Provider)
+	}
+	if cfg.Multimodal.APIKey != "mm-key" {
+		t.Fatalf("expected mm-key, got %q", cfg.Multimodal.APIKey)
+	}
+	if cfg.Multimodal.APIBase != "https://vision.example/v1" {
+		t.Fatalf("expected multimodal api base, got %q", cfg.Multimodal.APIBase)
+	}
+	if cfg.Multimodal.ImageModel != "gpt-4.1-mini" {
+		t.Fatalf("expected gpt-4.1-mini, got %q", cfg.Multimodal.ImageModel)
+	}
+	if cfg.Multimodal.GenerationModel != "gpt-image-1" {
+		t.Fatalf("expected gpt-image-1, got %q", cfg.Multimodal.GenerationModel)
+	}
+	if cfg.Multimodal.GenerationSize != "1536x1024" {
+		t.Fatalf("expected 1536x1024, got %q", cfg.Multimodal.GenerationSize)
+	}
+	if cfg.Multimodal.GenerationQuality != "high" {
+		t.Fatalf("expected high, got %q", cfg.Multimodal.GenerationQuality)
+	}
+	if cfg.Multimodal.GenerationBackground != "transparent" {
+		t.Fatalf("expected transparent, got %q", cfg.Multimodal.GenerationBackground)
+	}
+	if cfg.Multimodal.GenerationOutputFormat != "webp" {
+		t.Fatalf("expected webp, got %q", cfg.Multimodal.GenerationOutputFormat)
+	}
+	if cfg.Multimodal.TranscriptionModel != "whisper-1" {
+		t.Fatalf("expected whisper-1, got %q", cfg.Multimodal.TranscriptionModel)
+	}
+	if cfg.Multimodal.ImageProvider != "openai-media" {
+		t.Fatalf("expected openai-media, got %q", cfg.Multimodal.ImageProvider)
+	}
+}
+
+func TestManagerSetImageGenerationConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("image_generation.provider", "gemini"); err != nil {
+		t.Fatalf("Set image_generation.provider: %v", err)
+	}
+	if err := mgr.Set("image_generation.api_key", "gen-key"); err != nil {
+		t.Fatalf("Set image_generation.api_key: %v", err)
+	}
+	if err := mgr.Set("image_generation.api_base", "https://api.shiokou.asia/v1"); err != nil {
+		t.Fatalf("Set image_generation.api_base: %v", err)
+	}
+	if err := mgr.Set("image_generation.auth_mode", "bearer"); err != nil {
+		t.Fatalf("Set image_generation.auth_mode: %v", err)
+	}
+	if err := mgr.Set("image_generation.model", "gemini-3.1-flash-image-preview"); err != nil {
+		t.Fatalf("Set image_generation.model: %v", err)
+	}
+	if err := mgr.Set("image_generation.size", "1024x1024"); err != nil {
+		t.Fatalf("Set image_generation.size: %v", err)
+	}
+	if err := mgr.Set("image_generation.quality", "auto"); err != nil {
+		t.Fatalf("Set image_generation.quality: %v", err)
+	}
+	if err := mgr.Set("image_generation.background", "auto"); err != nil {
+		t.Fatalf("Set image_generation.background: %v", err)
+	}
+	if err := mgr.Set("image_generation.output_format", "png"); err != nil {
+		t.Fatalf("Set image_generation.output_format: %v", err)
+	}
+	if err := mgr.Set("image_generation.count", "1"); err != nil {
+		t.Fatalf("Set image_generation.count: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.ImageGeneration.Provider != "gemini" {
+		t.Fatalf("expected gemini, got %q", cfg.ImageGeneration.Provider)
+	}
+	if cfg.ImageGeneration.APIKey != "gen-key" {
+		t.Fatalf("expected gen-key, got %q", cfg.ImageGeneration.APIKey)
+	}
+	if cfg.ImageGeneration.APIBase != "https://api.shiokou.asia/v1" {
+		t.Fatalf("expected https://api.shiokou.asia/v1, got %q", cfg.ImageGeneration.APIBase)
+	}
+	if cfg.ImageGeneration.AuthMode != "bearer" {
+		t.Fatalf("expected bearer, got %q", cfg.ImageGeneration.AuthMode)
+	}
+	if cfg.ImageGeneration.Model != "gemini-3.1-flash-image-preview" {
+		t.Fatalf("expected gemini model, got %q", cfg.ImageGeneration.Model)
+	}
+}
+
+func TestManagerSetTTSConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("tts.provider", "openai"); err != nil {
+		t.Fatalf("Set tts.provider: %v", err)
+	}
+	if err := mgr.Set("tts.api_key", "tts-key"); err != nil {
+		t.Fatalf("Set tts.api_key: %v", err)
+	}
+	if err := mgr.Set("tts.api_base", "https://speech.example/v1"); err != nil {
+		t.Fatalf("Set tts.api_base: %v", err)
+	}
+	if err := mgr.Set("tts.auth_mode", "bearer"); err != nil {
+		t.Fatalf("Set tts.auth_mode: %v", err)
+	}
+	if err := mgr.Set("tts.model", "gpt-4o-mini-tts"); err != nil {
+		t.Fatalf("Set tts.model: %v", err)
+	}
+	if err := mgr.Set("tts.voice", "alloy"); err != nil {
+		t.Fatalf("Set tts.voice: %v", err)
+	}
+	if err := mgr.Set("tts.format", "wav"); err != nil {
+		t.Fatalf("Set tts.format: %v", err)
+	}
+	if err := mgr.Set("tts.speed", "1.25"); err != nil {
+		t.Fatalf("Set tts.speed: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.TTS.APIKey != "tts-key" || cfg.TTS.APIBase != "https://speech.example/v1" {
+		t.Fatalf("unexpected tts config: %+v", cfg.TTS)
+	}
+	if cfg.TTS.Format != "wav" || cfg.TTS.Speed != 1.25 {
+		t.Fatalf("unexpected tts format/speed: %+v", cfg.TTS)
 	}
 }
 
@@ -197,8 +549,8 @@ func TestInitHome(t *testing.T) {
 func TestModelRouterNewModelRouter(t *testing.T) {
 	config := ModelRouterConfig{
 		Enable:         true,
-		SimpleModel:    "gpt-4o-mini",
-		ComplexModel:   "gpt-4o",
+		SimpleModel:    "gpt-5.4-mini",
+		ComplexModel:   "gpt-5.4",
 		LocalModel:     "qwen2.5-coder-32b",
 		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
@@ -215,8 +567,8 @@ func TestModelRouterNewModelRouter(t *testing.T) {
 func TestModelRouterSelectModel(t *testing.T) {
 	config := ModelRouterConfig{
 		Enable:         true,
-		SimpleModel:    "gpt-4o-mini",
-		ComplexModel:   "gpt-4o",
+		SimpleModel:    "gpt-5.4-mini",
+		ComplexModel:   "gpt-5.4",
 		LocalModel:     "qwen2.5-coder-32b",
 		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
@@ -225,14 +577,14 @@ func TestModelRouterSelectModel(t *testing.T) {
 
 	// Test simple task
 	model, apiBase := router.SelectModel(TaskSimple)
-	if model != "gpt-4o-mini" {
-		t.Errorf("expected gpt-4o-mini, got %s", model)
+	if model != "gpt-5.4-mini" {
+		t.Errorf("expected gpt-5.4-mini, got %s", model)
 	}
 
 	// Test complex task
 	model, apiBase = router.SelectModel(TaskComplex)
-	if model != "gpt-4o" {
-		t.Errorf("expected gpt-4o, got %s", model)
+	if model != "gpt-5.4" {
+		t.Errorf("expected gpt-5.4, got %s", model)
 	}
 
 	// Test moderate task (should use local)
@@ -327,8 +679,8 @@ func TestIsLocalTask(t *testing.T) {
 func TestSelectModelForTask(t *testing.T) {
 	config := ModelRouterConfig{
 		Enable:         true,
-		SimpleModel:    "gpt-4o-mini",
-		ComplexModel:   "gpt-4o",
+		SimpleModel:    "gpt-5.4-mini",
+		ComplexModel:   "gpt-5.4",
 		LocalModel:     "qwen2.5-coder-32b",
 		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
@@ -343,7 +695,7 @@ func TestSelectModelForTask(t *testing.T) {
 
 	// Complex task
 	model, apiBase = router.SelectModelForTask("write code for me", 100)
-	if model != "gpt-4o" {
+	if model != "gpt-5.4" {
 		t.Errorf("expected complex model for complex task, got %s", model)
 	}
 
@@ -383,7 +735,7 @@ func TestConfigWatcherOnError(t *testing.T) {
 	defer watcher.Stop()
 
 	// Write initial valid config
-	if err := os.WriteFile(cfgPath, []byte("provider: test\n"), 0644); err != nil {
+	if err := os.WriteFile(cfgPath, []byte("provider: test\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -465,7 +817,7 @@ func TestManagerLoad_InvalidYAML(t *testing.T) {
 
 	// 写入无效 YAML
 	invalidYAML := []byte("invalid: yaml: content: [")
-	if err := os.WriteFile(cfgPath, invalidYAML, 0644); err != nil {
+	if err := os.WriteFile(cfgPath, invalidYAML, 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
@@ -617,10 +969,10 @@ func TestNewManagerWithDir_PermDenied(t *testing.T) {
 	// 创建目录并设置不可写
 	tmpDir := t.TempDir()
 	restrictedDir := filepath.Join(tmpDir, "restricted")
-	if err := os.MkdirAll(restrictedDir, 0000); err != nil {
+	if err := os.MkdirAll(restrictedDir, 0o000); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	defer os.Chmod(restrictedDir, 0755)
+	defer os.Chmod(restrictedDir, 0o755)
 
 	_, err := NewManagerWithDir(restrictedDir)
 	if err == nil {
@@ -837,7 +1189,7 @@ func TestInitHome_SoulAlreadyExists(t *testing.T) {
 	// 先创建 SOUL.md
 	soulPath := filepath.Join(tmpDir, "SOUL.md")
 	customContent := "custom soul content"
-	if err := os.WriteFile(soulPath, []byte(customContent), 0644); err != nil {
+	if err := os.WriteFile(soulPath, []byte(customContent), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 

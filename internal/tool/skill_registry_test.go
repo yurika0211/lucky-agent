@@ -93,6 +93,64 @@ func TestSkillRegistryRegister(t *testing.T) {
 	}
 }
 
+func TestSkillRegistryRegisterUsesSkillExecutor(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "script-skill")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	os.MkdirAll(scriptsDir, 0755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# script-skill\n\nDesc.\n\n## Tools\n\n- `echo`: Echo\n"), 0644)
+	os.WriteFile(filepath.Join(scriptsDir, "echo.sh"), []byte("echo skill-executed\n"), 0644)
+
+	r := NewRegistry()
+	loader := NewSkillLoader(tmpDir)
+	sr := NewSkillRegistry(r, loader)
+
+	if _, err := sr.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if err := sr.Load("script-skill"); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := sr.Validate("script-skill"); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if err := sr.Register("script-skill"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if err := sr.Enable("script-skill"); err != nil {
+		t.Fatalf("Enable: %v", err)
+	}
+
+	out, err := r.Call("skill_script-skill_echo", nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if out != "skill-executed\n" {
+		t.Fatalf("expected script output, got %q", out)
+	}
+}
+
+func TestSkillRegistryValidateDuplicateTool(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "bad-skill")
+	os.MkdirAll(skillDir, 0755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# bad-skill\n\nDesc.\n\n## Tools\n\n- `dup`: First\n- `dup`: Second\n"), 0644)
+
+	r := NewRegistry()
+	loader := NewSkillLoader(tmpDir)
+	sr := NewSkillRegistry(r, loader)
+
+	if _, err := sr.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	if err := sr.Load("bad-skill"); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := sr.Validate("bad-skill"); err == nil {
+		t.Fatal("expected duplicate tool validation error")
+	}
+}
+
 func TestSkillRegistryEnable(t *testing.T) {
 	tmpDir := t.TempDir()
 	skillDir := filepath.Join(tmpDir, "test-skill")

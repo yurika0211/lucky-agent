@@ -2,6 +2,7 @@ package tool
 
 import (
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/multimodal"
 	"github.com/yurika0211/luckyharness/internal/rag"
 )
 
@@ -19,9 +20,9 @@ type Services struct {
 }
 
 // NewServices creates a tool service container.
-func NewServices(searchCfg *WebSearchConfig, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager) *Services {
+func NewServices(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager) *Services {
 	return &Services{
-		Builtin:   NewBuiltinToolService(searchCfg),
+		Builtin:   NewBuiltinToolService(searchCfg, defaultImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults),
 		SearchCfg: searchCfg,
 		Memory:    NewMemoryToolService(mem),
 		RAG:       NewRAGToolService(ragMgr),

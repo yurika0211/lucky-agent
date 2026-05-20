@@ -18,7 +18,7 @@ func NewOpenRouterProvider(cfg Config) Provider {
 		cfg.LlmProvider.BaseURL = "https://openrouter.ai/api/v1"
 	}
 	if cfg.LlmProvider.Model == "" {
-		cfg.LlmProvider.Model = "openai/gpt-4o"
+		cfg.LlmProvider.Model = "openai/gpt-5.4-mini"
 	}
 	return &OpenRouterProvider{cfg: cfg}
 }

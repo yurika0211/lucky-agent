@@ -8,7 +8,13 @@ package autonomy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -87,10 +93,18 @@ type QueueTask struct {
 
 // TaskQueue is a concurrent-safe, persistent task queue.
 type TaskQueue struct {
-	mu     sync.RWMutex
-	tasks  map[string]*QueueTask
-	nextID atomic.Int64
-	ready  chan *QueueTask // buffered channel for ready tasks
+	mu          sync.RWMutex
+	tasks       map[string]*QueueTask
+	nextID      atomic.Int64
+	ready       chan *QueueTask // buffered channel for ready tasks
+	bufferSize  int
+	persistPath string
+}
+
+type persistedTaskQueue struct {
+	Version int         `json:"version"`
+	NextID  int64       `json:"next_id"`
+	Tasks   []QueueTask `json:"tasks"`
 }
 
 // NewTaskQueue creates a new task queue.
@@ -99,13 +113,21 @@ func NewTaskQueue(bufferSize int) *TaskQueue {
 		bufferSize = 64
 	}
 	return &TaskQueue{
-		tasks: make(map[string]*QueueTask),
-		ready: make(chan *QueueTask, bufferSize),
+		tasks:      make(map[string]*QueueTask),
+		ready:      make(chan *QueueTask, bufferSize),
+		bufferSize: bufferSize,
 	}
 }
 
 // Add adds a new task to the queue.
 func (q *TaskQueue) Add(title, description string, priority TaskPriority, tags []string) *QueueTask {
+	task, _ := q.AddWithError(title, description, priority, tags)
+	return task
+}
+
+// AddWithError adds a task and returns persistence errors to callers that need
+// to surface operational failures.
+func (q *TaskQueue) AddWithError(title, description string, priority TaskPriority, tags []string) (*QueueTask, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -123,14 +145,12 @@ func (q *TaskQueue) Add(title, description string, priority TaskPriority, tags [
 
 	q.tasks[id] = task
 
-	// Non-blocking send to ready channel
-	select {
-	case q.ready <- task:
-	default:
-		// channel full, task is still in map and can be pulled via Pull
-	}
+	q.enqueueReadyLocked(task)
 
-	return task
+	if err := q.persistLocked(); err != nil {
+		return task, err
+	}
+	return task, nil
 }
 
 // Pull pulls the highest-priority ready task and marks it in-progress.
@@ -156,6 +176,7 @@ func (q *TaskQueue) Pull(workerID string) *QueueTask {
 	best.State = TaskInProgress
 	best.AssignedTo = workerID
 	best.StartedAt = time.Now()
+	_ = q.persistLocked()
 
 	return best
 }
@@ -178,6 +199,7 @@ func (q *TaskQueue) PullChan(ctx context.Context, workerID string) <-chan *Queue
 					t.State = TaskInProgress
 					t.AssignedTo = workerID
 					t.StartedAt = time.Now()
+					_ = q.persistLocked()
 					q.mu.Unlock()
 					select {
 					case out <- t:
@@ -223,7 +245,7 @@ func (q *TaskQueue) Complete(taskID, result string) error {
 	t.State = TaskDone
 	t.Result = result
 	t.CompletedAt = time.Now()
-	return nil
+	return q.persistLocked()
 }
 
 // Fail marks a task as failed (moves back to ready for retry, or blocked).
@@ -241,13 +263,14 @@ func (q *TaskQueue) Fail(taskID, errMsg string, retry bool) error {
 		t.AssignedTo = ""
 		t.StartedAt = time.Time{}
 		t.Error = errMsg
+		q.enqueueReadyLocked(t)
 	} else {
 		t.State = TaskBlocked
 		t.BlockReason = errMsg
 		t.Error = errMsg
 		t.CompletedAt = time.Now()
 	}
-	return nil
+	return q.persistLocked()
 }
 
 // Block marks a task as blocked.
@@ -262,7 +285,7 @@ func (q *TaskQueue) Block(taskID, reason string) error {
 	t.State = TaskBlocked
 	t.BlockReason = reason
 	t.AssignedTo = ""
-	return nil
+	return q.persistLocked()
 }
 
 // Unblock moves a blocked task back to ready.
@@ -280,12 +303,9 @@ func (q *TaskQueue) Unblock(taskID string) error {
 	t.State = TaskReady
 	t.BlockReason = ""
 
-	select {
-	case q.ready <- t:
-	default:
-	}
+	q.enqueueReadyLocked(t)
 
-	return nil
+	return q.persistLocked()
 }
 
 // Get retrieves a task by ID.
@@ -362,5 +382,152 @@ func (q *TaskQueue) CleanDone(olderThan time.Duration) int {
 			removed++
 		}
 	}
+	_ = q.persistLocked()
 	return removed
+}
+
+// EnablePersistence loads queue state from path and persists subsequent
+// mutations. In-progress tasks from a previous process are restored as ready so
+// they can be retried instead of remaining stuck forever.
+func (q *TaskQueue) EnablePersistence(path string) (int, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return 0, nil
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return 0, fmt.Errorf("read autonomy queue store: %w", err)
+	}
+
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.persistPath = path
+
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+
+	var state persistedTaskQueue
+	if err := json.Unmarshal(data, &state); err != nil {
+		return 0, fmt.Errorf("parse autonomy queue store: %w", err)
+	}
+
+	q.tasks = make(map[string]*QueueTask, len(state.Tasks))
+	q.ready = make(chan *QueueTask, q.bufferSize)
+
+	maxID := state.NextID
+	for _, stored := range state.Tasks {
+		task := stored
+		if strings.TrimSpace(task.ID) == "" {
+			continue
+		}
+		if task.Metadata == nil {
+			task.Metadata = make(map[string]string)
+		}
+		if task.State == TaskInProgress {
+			task.State = TaskReady
+			task.AssignedTo = ""
+			task.StartedAt = time.Time{}
+			task.Error = strings.TrimSpace(joinNonEmpty(task.Error, "restored from interrupted autonomy run"))
+		}
+		q.tasks[task.ID] = &task
+		if task.State == TaskReady {
+			q.enqueueReadyLocked(&task)
+		}
+		if n := parseTaskNumericID(task.ID); n > maxID {
+			maxID = n
+		}
+	}
+	q.nextID.Store(maxID)
+
+	if err := q.persistLocked(); err != nil {
+		return len(q.tasks), err
+	}
+	return len(q.tasks), nil
+}
+
+// PersistencePath returns the queue store path, if persistence is enabled.
+func (q *TaskQueue) PersistencePath() string {
+	if q == nil {
+		return ""
+	}
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.persistPath
+}
+
+// Persist flushes the current queue state.
+func (q *TaskQueue) Persist() error {
+	if q == nil {
+		return nil
+	}
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	return q.persistLocked()
+}
+
+func (q *TaskQueue) enqueueReadyLocked(task *QueueTask) {
+	select {
+	case q.ready <- task:
+	default:
+	}
+}
+
+func (q *TaskQueue) persistLocked() error {
+	if q == nil || strings.TrimSpace(q.persistPath) == "" {
+		return nil
+	}
+
+	tasks := make([]QueueTask, 0, len(q.tasks))
+	for _, t := range q.tasks {
+		if t == nil {
+			continue
+		}
+		cp := *t
+		tasks = append(tasks, cp)
+	}
+	sort.Slice(tasks, func(i, j int) bool {
+		return tasks[i].ID < tasks[j].ID
+	})
+
+	state := persistedTaskQueue{
+		Version: 1,
+		NextID:  q.nextID.Load(),
+		Tasks:   tasks,
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal autonomy queue store: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(q.persistPath), 0o700); err != nil {
+		return fmt.Errorf("create autonomy queue store dir: %w", err)
+	}
+	tmp := q.persistPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return fmt.Errorf("write autonomy queue store: %w", err)
+	}
+	if err := os.Rename(tmp, q.persistPath); err != nil {
+		return fmt.Errorf("replace autonomy queue store: %w", err)
+	}
+	return nil
+}
+
+func parseTaskNumericID(id string) int64 {
+	n, err := strconv.ParseInt(strings.TrimPrefix(id, "tq-"), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func joinNonEmpty(parts ...string) string {
+	kept := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "; ")
 }

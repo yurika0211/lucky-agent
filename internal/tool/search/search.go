@@ -229,6 +229,19 @@ type cacheEntry struct {
 	expiry  time.Time
 }
 
+// FetchCache provides TTL-based caching for fetched URL content.
+type FetchCache struct {
+	mu      sync.RWMutex
+	entries map[string]*fetchCacheEntry
+	ttl     time.Duration
+	maxSize int
+}
+
+type fetchCacheEntry struct {
+	result *FetchResult
+	expiry time.Time
+}
+
 // NewSearchCache creates a search cache with the given TTL and max size.
 func NewSearchCache(ttl time.Duration, maxSize int) *SearchCache {
 	if ttl <= 0 {
@@ -239,6 +252,21 @@ func NewSearchCache(ttl time.Duration, maxSize int) *SearchCache {
 	}
 	return &SearchCache{
 		entries: make(map[string]*cacheEntry),
+		ttl:     ttl,
+		maxSize: maxSize,
+	}
+}
+
+// NewFetchCache creates a fetch cache with the given TTL and max size.
+func NewFetchCache(ttl time.Duration, maxSize int) *FetchCache {
+	if ttl <= 0 {
+		ttl = 10 * time.Minute
+	}
+	if maxSize <= 0 {
+		maxSize = 100
+	}
+	return &FetchCache{
+		entries: make(map[string]*fetchCacheEntry),
 		ttl:     ttl,
 		maxSize: maxSize,
 	}
@@ -285,6 +313,67 @@ func (c *SearchCache) Len() int {
 	return len(c.entries)
 }
 
+// Get retrieves cached fetch results for a URL.
+func (c *FetchCache) Get(rawURL string, maxChars int) (*FetchResult, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	entry, ok := c.entries[fetchCacheKey(rawURL, maxChars)]
+	if !ok || time.Now().After(entry.expiry) {
+		return nil, false
+	}
+	if entry.result == nil {
+		return nil, false
+	}
+	copy := *entry.result
+	return &copy, true
+}
+
+// Set stores fetched content for a URL.
+func (c *FetchCache) Set(rawURL string, maxChars int, result *FetchResult) {
+	if result == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if len(c.entries) >= c.maxSize {
+		c.evictOldest()
+	}
+	copy := *result
+	c.entries[fetchCacheKey(rawURL, maxChars)] = &fetchCacheEntry{
+		result: &copy,
+		expiry: time.Now().Add(c.ttl),
+	}
+}
+
+// Clear removes all cached fetch entries.
+func (c *FetchCache) Clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.entries = make(map[string]*fetchCacheEntry)
+}
+
+// Len returns the number of cached fetch entries.
+func (c *FetchCache) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.entries)
+}
+
+func (c *FetchCache) evictOldest() {
+	var oldestKey string
+	var oldestTime time.Time
+	for k, v := range c.entries {
+		if oldestKey == "" || v.expiry.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = v.expiry
+		}
+	}
+	if oldestKey != "" {
+		delete(c.entries, oldestKey)
+	}
+}
+
 func (c *SearchCache) evictOldest() {
 	var oldestKey string
 	var oldestTime time.Time
@@ -301,6 +390,11 @@ func (c *SearchCache) evictOldest() {
 
 func cacheKey(query string) string {
 	return strings.ToLower(strings.TrimSpace(query))
+}
+
+func fetchCacheKey(rawURL string, maxChars int) string {
+	normalized := utils.NormalizeURL(strings.TrimSpace(rawURL))
+	return fmt.Sprintf("%s|%d", normalized, maxChars)
 }
 
 // --- Concurrent Deep Search ---
@@ -483,35 +577,31 @@ func SearchConfigFromEnv(base *SearchConfig) *SearchConfig {
 
 // BuildEngines creates the search engine chain from config.
 func (c *SearchConfig) BuildEngines() []SearchEngine {
-	var engines []SearchEngine
+	order := []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
+	engines := make([]SearchEngine, 0, len(order))
+	seen := make(map[string]bool, len(order))
 
-	switch c.DefaultProvider {
-	case "ddgs":
-		engines = append(engines, NewDDGSEngine())
-	case "searxng":
-		engines = append(engines, NewSearXNGEngine(c.SearXNGBaseURL, c.Proxy))
-	case "exa":
-		engines = append(engines, NewExaEngine(c.ExaAPIKey))
-	default: // brave or auto
-		engines = append(engines, NewBraveEngine(c.BraveAPIKey, c.Proxy))
-	}
-
-	// Always add DDGS as fallback (unless it's the primary)
-	if c.DefaultProvider != "ddgs" {
-		engines = append(engines, NewDDGSEngine())
-	}
-
-	// DDG Lite as last-resort fallback
-	engines = append(engines, NewDDGLiteEngine())
-
-	// SearXNG if configured
-	if c.SearXNGBaseURL != "" && c.DefaultProvider != "searxng" {
-		engines = append(engines, NewSearXNGEngine(c.SearXNGBaseURL, c.Proxy))
-	}
-
-	// Exa if configured
-	if c.ExaAPIKey != "" && c.DefaultProvider != "exa" {
-		engines = append(engines, NewExaEngine(c.ExaAPIKey))
+	for _, name := range order {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		switch name {
+		case "exa":
+			if strings.TrimSpace(c.ExaAPIKey) != "" {
+				engines = append(engines, NewExaEngine(c.ExaAPIKey))
+			}
+		case "ddgs":
+			engines = append(engines, NewDDGSEngine())
+		case "searxng":
+			if strings.TrimSpace(c.SearXNGBaseURL) != "" {
+				engines = append(engines, NewSearXNGEngine(c.SearXNGBaseURL, c.Proxy))
+			}
+		case "ddg-lite":
+			engines = append(engines, NewDDGLiteEngine())
+		case "brave":
+			engines = append(engines, NewBraveEngine(c.BraveAPIKey, c.Proxy))
+		}
 	}
 
 	return engines
@@ -549,6 +639,7 @@ type Manager struct {
 	searchEngines []SearchEngine
 	fetchEngines  []FetchEngine
 	cache         *SearchCache
+	fetchCache    *FetchCache
 }
 
 // NewManager creates a search manager from config.
@@ -561,6 +652,7 @@ func NewManager(cfg *SearchConfig) *Manager {
 		searchEngines: cfg.BuildEngines(),
 		fetchEngines:  cfg.BuildFetchEngines(),
 		cache:         NewSearchCache(cfg.CacheTTL, cfg.CacheSize),
+		fetchCache:    NewFetchCache(cfg.CacheTTL, cfg.CacheSize),
 	}
 }
 
@@ -610,9 +702,14 @@ func (m *Manager) FetchURL(ctx context.Context, rawURL string, maxChars int) (*F
 		return nil, fmt.Errorf("url validation failed: %w", err)
 	}
 
+	if cached, ok := m.fetchCache.Get(rawURL, maxChars); ok {
+		return cached, nil
+	}
+
 	for _, eng := range m.fetchEngines {
 		result, err := eng.Fetch(ctx, rawURL, maxChars)
 		if err == nil && result != nil {
+			m.fetchCache.Set(rawURL, maxChars, result)
 			return result, nil
 		}
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -186,6 +187,25 @@ func TestSplitMessageRespectsNewlines(t *testing.T) {
 	}
 	// Reassembled should equal original
 	assert.Equal(t, msg, joinChunks(chunks))
+}
+
+func TestSplitMessagePreservesFencedCodeBlocks(t *testing.T) {
+	cfg := Config{Token: "test", MaxMessageLen: 48}
+	adapter := NewAdapter(cfg)
+
+	msg := "before\n```go\n" +
+		strings.Repeat("fmt.Println(\"hello world\")\n", 4) +
+		"```\nafter"
+
+	chunks := adapter.splitMessage(msg)
+	assert.GreaterOrEqual(t, len(chunks), 2)
+
+	for _, chunk := range chunks {
+		assert.LessOrEqual(t, len(chunk), 48)
+		rendered := formatTelegramRichText(chunk)
+		assert.Equal(t, strings.Count(rendered, "<pre>"), strings.Count(rendered, "</pre>"))
+		assert.Equal(t, strings.Count(rendered, "<code"), strings.Count(rendered, "</code>"))
+	}
 }
 
 func joinChunks(chunks []string) string {

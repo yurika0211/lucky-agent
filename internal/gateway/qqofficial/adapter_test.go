@@ -1,8 +1,15 @@
 package qqofficial
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
@@ -98,5 +105,177 @@ func TestAccessTokenResponseUnmarshalExpiresInNumber(t *testing.T) {
 	}
 	if resp.AccessToken != "abc" || resp.ExpiresIn != 7200 {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestSendWithReplyUsesIncrementingMsgSeq(t *testing.T) {
+	var mu sync.Mutex
+	var payloads []outgoingMessagePayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/users/user-1/messages" {
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+		var payload outgoingMessagePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "decode payload: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mu.Lock()
+		payloads = append(payloads, payload)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a := NewAdapter(Config{
+		AppID:      "app-id",
+		AppSecret:  "app-secret",
+		APIBaseURL: server.URL,
+	})
+	a.accessToken = "token"
+	a.tokenExpiry = time.Now().Add(time.Hour)
+
+	if err := a.SendWithReply(context.Background(), "c2c:user-1", "msg-1", "first"); err != nil {
+		t.Fatalf("first SendWithReply error = %v", err)
+	}
+	if err := a.SendWithReply(context.Background(), "c2c:user-1", "msg-1", "second"); err != nil {
+		t.Fatalf("second SendWithReply error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(payloads) != 2 {
+		t.Fatalf("expected 2 payloads, got %d", len(payloads))
+	}
+	if payloads[0].MsgID != "msg-1" || payloads[1].MsgID != "msg-1" {
+		t.Fatalf("unexpected msg_id values: %#v", payloads)
+	}
+	if payloads[0].MsgSeq == 0 || payloads[1].MsgSeq == 0 {
+		t.Fatalf("expected msg_seq to be set: %#v", payloads)
+	}
+	if payloads[0].MsgSeq == payloads[1].MsgSeq {
+		t.Fatalf("expected msg_seq to increment, got %#v", payloads)
+	}
+}
+
+func TestBuildUserTurnInputRoutesAttachmentsThroughTextPath(t *testing.T) {
+	h := NewHandler(NewAdapter(DefaultConfig()), nil)
+	input := h.buildUserTurnInput(context.Background(), "看一下附件", []gateway.Attachment{
+		{
+			Type:     gateway.AttachmentImage,
+			FilePath: "/tmp/example.jpg",
+			FileName: "example.jpg",
+			MimeType: "image/jpeg",
+		},
+	})
+
+	if input.Message.Role != "user" {
+		t.Fatalf("expected user role, got %q", input.Message.Role)
+	}
+	if len(input.Message.ContentParts) != 0 {
+		t.Fatalf("expected no content parts, got %#v", input.Message.ContentParts)
+	}
+	if input.RoutingText == "" {
+		t.Fatal("expected non-empty routing text")
+	}
+	if got := input.RoutingText; got == "看一下附件" {
+		t.Fatalf("expected attachment description to be appended, got %q", got)
+	}
+}
+
+func TestQQProgressHelpers(t *testing.T) {
+	if got := qqThinkingMessage("Thinking... (round 2)", 2); got == "" {
+		t.Fatal("expected non-empty thinking message")
+	}
+	if got := qqToolCallMessage("web_search", `{"query":"abc"}`); got == "" {
+		t.Fatal("expected non-empty tool call message")
+	}
+	if got := qqToolResultMessage("web_search", "found results"); got == "" {
+		t.Fatal("expected non-empty tool result message")
+	}
+}
+
+func TestQQProgressTraceBuildsPublicSummary(t *testing.T) {
+	trace := newQQProgressTrace()
+	trace.AddThinking("Thinking... (round 1)", 1)
+	trace.AddToolCall("web_search", `{"query":"abc"}`)
+	trace.AddToolResult("web_search", strings.Repeat("result ", 80))
+
+	got := trace.Message()
+	if !strings.Contains(got, "本轮公开执行轨迹") {
+		t.Fatalf("expected public trace title, got %q", got)
+	}
+	if !strings.Contains(got, "web_search") {
+		t.Fatalf("expected tool name in trace, got %q", got)
+	}
+	if strings.Contains(got, "Thinking...") {
+		t.Fatalf("trace should not expose raw thinking marker, got %q", got)
+	}
+	if !strings.Contains(got, "不包含模型隐藏推理") {
+		t.Fatalf("expected hidden reasoning disclaimer, got %q", got)
+	}
+}
+
+func TestQQProgressTraceOmitsTrivialThinkingOnlyTrace(t *testing.T) {
+	trace := newQQProgressTrace()
+	trace.AddThinking("Thinking... (round 1)", 1)
+
+	if got := trace.Message(); got != "" {
+		t.Fatalf("expected empty trace for trivial thinking-only turn, got %q", got)
+	}
+}
+
+func TestSplitQQMessageChunks(t *testing.T) {
+	long := strings.Repeat("你", qqProgressTraceChunkLimit+20)
+	chunks := splitQQMessageChunks(long, qqProgressTraceChunkLimit)
+
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if qqRuneLen(chunk) > qqProgressTraceChunkLimit {
+			t.Fatalf("chunk exceeds limit: %d", qqRuneLen(chunk))
+		}
+	}
+}
+
+func TestSendStreamReturnsSenderWhenRunning(t *testing.T) {
+	a := NewAdapter(DefaultConfig())
+	a.running = true
+
+	sender, err := a.SendStream(context.Background(), "c2c:user-1", "msg-1")
+	if err != nil {
+		t.Fatalf("SendStream error = %v", err)
+	}
+	if sender == nil {
+		t.Fatal("expected non-nil sender")
+	}
+	if sender.MessageID() != "msg-1" {
+		t.Fatalf("expected message id msg-1, got %q", sender.MessageID())
+	}
+}
+
+func TestResolveOutboundMediaResponse(t *testing.T) {
+	tmpDir := t.TempDir()
+	img := tmpDir + "/a.png"
+	doc := tmpDir + "/b.pdf"
+	if err := os.WriteFile(img, []byte("img"), 0o644); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	if err := os.WriteFile(doc, []byte("doc"), 0o644); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+
+	text, media, err := resolveOutboundMediaResponse("图片如下\nMEDIA:" + img + "\nMEDIA:" + doc)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse error = %v", err)
+	}
+	if text != "图片如下" {
+		t.Fatalf("unexpected text %q", text)
+	}
+	if len(media) != 2 {
+		t.Fatalf("expected 2 media items, got %d", len(media))
 	}
 }

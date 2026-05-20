@@ -3,12 +3,17 @@ package qqofficial
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -106,9 +111,28 @@ type incomingMessageEvent struct {
 }
 
 type outgoingMessagePayload struct {
-	Content string `json:"content,omitempty"`
-	MsgType int    `json:"msg_type"`
-	MsgID   string `json:"msg_id,omitempty"`
+	Content  string                `json:"content,omitempty"`
+	MsgType  int                   `json:"msg_type"`
+	MsgID    string                `json:"msg_id,omitempty"`
+	MsgSeq   int                   `json:"msg_seq,omitempty"`
+	Media    *outgoingMessageMedia `json:"media,omitempty"`
+	FileName string                `json:"file_name,omitempty"`
+}
+
+type outgoingMessageMedia struct {
+	FileInfo string `json:"file_info"`
+}
+
+type uploadFilePayload struct {
+	FileType   int    `json:"file_type"`
+	URL        string `json:"url,omitempty"`
+	FileData   string `json:"file_data,omitempty"`
+	FileName   string `json:"file_name,omitempty"`
+	SrvSendMsg bool   `json:"srv_send_msg"`
+}
+
+type uploadFileResponse struct {
+	FileInfo string `json:"file_info"`
 }
 
 // Adapter implements gateway.Gateway for QQ official bot.
@@ -126,6 +150,19 @@ type Adapter struct {
 	tokenExpiry time.Time
 	seq         int64
 	sessionID   string
+	replySeq    atomic.Uint32
+}
+
+type qqStreamSender struct {
+	adapter      *Adapter
+	chatID       string
+	replyToMsgID string
+	messageID    string
+
+	mu              sync.Mutex
+	content         strings.Builder
+	lastProgressMsg string
+	finished        bool
 }
 
 func NewAdapter(cfg Config) *Adapter {
@@ -226,6 +263,37 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 	default:
 		return fmt.Errorf("qqofficial: unsupported chat type %q", parts[0])
 	}
+}
+
+func (a *Adapter) SendPhoto(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
+	if strings.TrimSpace(caption) != "" {
+		if err := a.SendWithReply(ctx, chatID, replyToMsgID, caption); err != nil {
+			return err
+		}
+	}
+	return a.sendMediaMessage(ctx, chatID, replyToMsgID, source, 1, "")
+}
+
+func (a *Adapter) SendDocument(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
+	if strings.TrimSpace(caption) != "" {
+		if err := a.SendWithReply(ctx, chatID, replyToMsgID, caption); err != nil {
+			return err
+		}
+	}
+	return a.sendMediaMessage(ctx, chatID, replyToMsgID, source, 4, filepath.Base(strings.TrimSpace(source)))
+}
+
+// SendStream implements gateway.StreamGateway for QQ Official by emitting a reply-message chain.
+func (a *Adapter) SendStream(_ context.Context, chatID string, replyToMsgID string) (gateway.StreamSender, error) {
+	if !a.IsRunning() {
+		return nil, fmt.Errorf("qqofficial: adapter not running")
+	}
+	return &qqStreamSender{
+		adapter:      a,
+		chatID:       chatID,
+		replyToMsgID: strings.TrimSpace(replyToMsgID),
+		messageID:    strings.TrimSpace(replyToMsgID),
+	}, nil
 }
 
 func (a *Adapter) ensureAccessToken(ctx context.Context) (string, error) {
@@ -442,6 +510,27 @@ func (a *Adapter) sendGroupMessage(ctx context.Context, groupOpenID, replyMsgID,
 	return a.sendMessage(ctx, a.cfg.normalizedAPIBaseURL()+"/v2/groups/"+groupOpenID+"/messages", replyMsgID, message)
 }
 
+func (a *Adapter) sendMediaMessage(ctx context.Context, chatID string, replyMsgID string, source string, fileType int, fileName string) error {
+	parts := strings.SplitN(chatID, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("qqofficial: invalid chat id %q", chatID)
+	}
+
+	fileInfo, err := a.uploadMedia(ctx, parts[0], parts[1], source, fileType, fileName)
+	if err != nil {
+		return err
+	}
+
+	switch parts[0] {
+	case "c2c":
+		return a.sendC2CMedia(ctx, parts[1], replyMsgID, fileInfo, fileName)
+	case "group":
+		return a.sendGroupMedia(ctx, parts[1], replyMsgID, fileInfo, fileName)
+	default:
+		return fmt.Errorf("qqofficial: unsupported chat type %q", parts[0])
+	}
+}
+
 func (a *Adapter) sendMessage(ctx context.Context, endpoint, replyMsgID, message string) error {
 	token, err := a.ensureAccessToken(ctx)
 	if err != nil {
@@ -451,6 +540,7 @@ func (a *Adapter) sendMessage(ctx context.Context, endpoint, replyMsgID, message
 		Content: strings.TrimSpace(message),
 		MsgType: 0,
 		MsgID:   strings.TrimSpace(replyMsgID),
+		MsgSeq:  a.nextReplyMsgSeq(replyMsgID),
 	}
 	body, _ := json.Marshal(payload)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
@@ -475,6 +565,135 @@ func (a *Adapter) sendMessage(ctx context.Context, endpoint, replyMsgID, message
 		return fmt.Errorf("qqofficial: send message status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func (a *Adapter) sendC2CMedia(ctx context.Context, openID, replyMsgID, fileInfo, fileName string) error {
+	return a.sendRichMessage(ctx, a.cfg.normalizedAPIBaseURL()+"/v2/users/"+openID+"/messages", replyMsgID, fileInfo, fileName)
+}
+
+func (a *Adapter) sendGroupMedia(ctx context.Context, groupOpenID, replyMsgID, fileInfo, fileName string) error {
+	return a.sendRichMessage(ctx, a.cfg.normalizedAPIBaseURL()+"/v2/groups/"+groupOpenID+"/messages", replyMsgID, fileInfo, fileName)
+}
+
+func (a *Adapter) sendRichMessage(ctx context.Context, endpoint, replyMsgID, fileInfo, fileName string) error {
+	token, err := a.ensureAccessToken(ctx)
+	if err != nil {
+		return err
+	}
+	payload := outgoingMessagePayload{
+		MsgType: 7,
+		MsgID:   strings.TrimSpace(replyMsgID),
+		MsgSeq:  a.nextReplyMsgSeq(replyMsgID),
+		Media: &outgoingMessageMedia{
+			FileInfo: fileInfo,
+		},
+		FileName: strings.TrimSpace(fileName),
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("qqofficial: create rich send request: %w", err)
+	}
+	req.Header.Set("Authorization", "QQBot "+token)
+	req.Header.Set("X-Union-Appid", a.cfg.AppID)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("qqofficial: send rich media message: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		a.mu.Lock()
+		a.accessToken = ""
+		a.tokenExpiry = time.Time{}
+		a.mu.Unlock()
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("qqofficial: send rich media message status %d", resp.StatusCode)
+	}
+	return nil
+}
+
+func (a *Adapter) uploadMedia(ctx context.Context, scope, targetID, source string, fileType int, fileName string) (string, error) {
+	token, err := a.ensureAccessToken(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	payload := uploadFilePayload{
+		FileType:   fileType,
+		SrvSendMsg: false,
+	}
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return "", fmt.Errorf("qqofficial: empty media source")
+	}
+	if strings.HasPrefix(strings.ToLower(source), "file://") {
+		if u, err := url.Parse(source); err == nil {
+			source = u.Path
+		}
+	}
+	if strings.HasPrefix(strings.ToLower(source), "http://") || strings.HasPrefix(strings.ToLower(source), "https://") {
+		payload.URL = source
+	} else {
+		data, err := os.ReadFile(source)
+		if err != nil {
+			return "", fmt.Errorf("qqofficial: read media file: %w", err)
+		}
+		payload.FileData = base64.StdEncoding.EncodeToString(data)
+	}
+	if fileType == 4 && strings.TrimSpace(fileName) != "" {
+		payload.FileName = strings.TrimSpace(fileName)
+	}
+
+	var endpoint string
+	switch scope {
+	case "c2c":
+		endpoint = a.cfg.normalizedAPIBaseURL() + "/v2/users/" + targetID + "/files"
+	case "group":
+		endpoint = a.cfg.normalizedAPIBaseURL() + "/v2/groups/" + targetID + "/files"
+	default:
+		return "", fmt.Errorf("qqofficial: unsupported upload scope %q", scope)
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("qqofficial: create media upload request: %w", err)
+	}
+	req.Header.Set("Authorization", "QQBot "+token)
+	req.Header.Set("X-Union-Appid", a.cfg.AppID)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("qqofficial: upload media: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		a.mu.Lock()
+		a.accessToken = ""
+		a.tokenExpiry = time.Time{}
+		a.mu.Unlock()
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("qqofficial: upload media status %d", resp.StatusCode)
+	}
+
+	var result uploadFileResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("qqofficial: decode media upload response: %w", err)
+	}
+	if strings.TrimSpace(result.FileInfo) == "" {
+		return "", fmt.Errorf("qqofficial: upload media returned empty file_info")
+	}
+	return result.FileInfo, nil
+}
+
+func (a *Adapter) nextReplyMsgSeq(replyMsgID string) int {
+	if strings.TrimSpace(replyMsgID) == "" {
+		return 0
+	}
+	return int(a.replySeq.Add(1))
 }
 
 func buildIntentBits(names []string) int {
@@ -510,6 +729,94 @@ func parseCommand(text string) (bool, string, string) {
 	}
 	return true, cmd, args
 }
+
+func (s *qqStreamSender) Append(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return fmt.Errorf("qqofficial: stream sender already finished")
+	}
+	s.content.WriteString(content)
+	return nil
+}
+
+func (s *qqStreamSender) SetThinking(label string) error {
+	return s.sendProgress("🧠 " + strings.TrimSpace(label))
+}
+
+func (s *qqStreamSender) SetToolCall(name, args string) error {
+	name = strings.TrimSpace(name)
+	args = strings.TrimSpace(args)
+	if len(args) > 120 {
+		args = args[:117] + "..."
+	}
+	if args == "" {
+		return s.sendProgress(fmt.Sprintf("🔧 正在调用工具：%s", name))
+	}
+	return s.sendProgress(fmt.Sprintf("🔧 正在调用工具：%s\n参数：%s", name, args))
+}
+
+func (s *qqStreamSender) SetResult(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.finished {
+		return nil
+	}
+	s.content.Reset()
+	s.content.WriteString(content)
+	return nil
+}
+
+func (s *qqStreamSender) Finish() error {
+	s.mu.Lock()
+	if s.finished {
+		s.mu.Unlock()
+		return nil
+	}
+	s.finished = true
+	message := strings.TrimSpace(s.content.String())
+	s.mu.Unlock()
+
+	if message == "" {
+		message = "我这边暂时还没有整理出可发送的结果。"
+	}
+	return s.sendMessage(message)
+}
+
+func (s *qqStreamSender) MessageID() string {
+	return s.messageID
+}
+
+func (s *qqStreamSender) sendProgress(message string) error {
+	s.mu.Lock()
+	if s.finished {
+		s.mu.Unlock()
+		return nil
+	}
+	message = strings.TrimSpace(message)
+	if message == "" || message == s.lastProgressMsg {
+		s.mu.Unlock()
+		return nil
+	}
+	s.lastProgressMsg = message
+	s.mu.Unlock()
+	return s.sendMessage(message)
+}
+
+func (s *qqStreamSender) sendMessage(message string) error {
+	if s == nil || s.adapter == nil {
+		return fmt.Errorf("qqofficial: stream sender not initialized")
+	}
+	sendCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if s.replyToMsgID != "" {
+		return s.adapter.SendWithReply(sendCtx, s.chatID, s.replyToMsgID, message)
+	}
+	return s.adapter.Send(sendCtx, s.chatID, message)
+}
+
+var _ gateway.StreamGateway = (*Adapter)(nil)
+var _ gateway.StreamSender = (*qqStreamSender)(nil)
 
 func stripLeadingQQMention(text string) string {
 	text = strings.TrimSpace(text)

@@ -11,6 +11,8 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
 // v0.72.0: websocket 包测试补全 - 覆盖 syncChat 和 streamChat
@@ -48,6 +50,45 @@ func cleanupPendingSession(t *testing.T, h *AgentHandler, sessionID string) {
 	}
 
 	t.Logf("warning: pending websocket chat did not finish for session %s", sessionID)
+}
+
+type stubAgentRuntime struct {
+	sessions       *session.Manager
+	tools          *tool.Registry
+	chatFn         func(ctx context.Context, userInput string) (string, error)
+	chatSessFn     func(ctx context.Context, sessionID, userInput string) (string, error)
+	chatStreamSess func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+}
+
+func (s *stubAgentRuntime) Chat(ctx context.Context, userInput string) (string, error) {
+	if s.chatFn != nil {
+		return s.chatFn(ctx, userInput)
+	}
+	return "", nil
+}
+
+func (s *stubAgentRuntime) ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error) {
+	if s.chatSessFn != nil {
+		return s.chatSessFn(ctx, sessionID, userInput)
+	}
+	return "", nil
+}
+
+func (s *stubAgentRuntime) ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+	if s.chatStreamSess != nil {
+		return s.chatStreamSess(ctx, sessionID, userInput)
+	}
+	ch := make(chan agent.ChatEvent)
+	close(ch)
+	return ch, nil
+}
+
+func (s *stubAgentRuntime) Sessions() *session.Manager {
+	return s.sessions
+}
+
+func (s *stubAgentRuntime) Tools() *tool.Registry {
+	return s.tools
 }
 
 // TestSyncChat 测试 syncChat 函数
@@ -178,6 +219,138 @@ func TestStreamChatError(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Error("streamChat error test timed out")
+	}
+}
+
+func TestStreamChatEmitsStructuredAgentEvents(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	h := NewAgentHandler(&stubAgentRuntime{
+		sessions: mgr,
+		tools:    tool.NewRegistry(),
+		chatStreamSess: func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+			ch := make(chan agent.ChatEvent, 6)
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"luckyharness"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "web_search", Result: "Found 3 results"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "Final answer"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "Final answer"}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	client := &Client{
+		SessionID: "ws-structured",
+		Send:      make(chan *Message, 16),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	h.streamChat(ctx, client, ChatData{Message: "Hello", Stream: true}, "parent-id")
+
+	if _, ok := mgr.Get("ws-structured"); !ok {
+		t.Fatal("expected websocket session to be ensured before streaming")
+	}
+
+	gotTypes := make([]MessageType, 0, len(client.Send))
+	for len(client.Send) > 0 {
+		gotTypes = append(gotTypes, (<-client.Send).Type)
+	}
+
+	want := []MessageType{
+		TypeStatus,
+		TypeReasoning,
+		TypeToolCall,
+		TypeToolResult,
+		TypeStreamChunk,
+		TypeStreamEnd,
+		TypeStatus,
+	}
+	if len(gotTypes) != len(want) {
+		t.Fatalf("expected %d websocket messages, got %d (%v)", len(want), len(gotTypes), gotTypes)
+	}
+	for i := range want {
+		if gotTypes[i] != want[i] {
+			t.Fatalf("message %d: expected %s, got %s", i, want[i], gotTypes[i])
+		}
+	}
+}
+
+func TestStreamChatAnnotatesToolGroupingAndVisibility(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true, Category: tool.CatBuiltin})
+
+	h := NewAgentHandler(&stubAgentRuntime{
+		sessions: mgr,
+		tools:    reg,
+		chatStreamSess: func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+			ch := make(chan agent.ChatEvent, 8)
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"agent ui"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "skill_read", Args: `{"name":"obsidian"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "web_search", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "skill_read", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "done"}
+			close(ch)
+			return ch, nil
+		},
+	})
+
+	client := &Client{
+		SessionID: "ws-visibility",
+		Send:      make(chan *Message, 16),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	h.streamChat(ctx, client, ChatData{Message: "Hello", Stream: true}, "parent-id")
+
+	var toolCalls []ToolCallData
+	var toolResults []ToolResultData
+	for len(client.Send) > 0 {
+		msg := <-client.Send
+		switch msg.Type {
+		case TypeToolCall:
+			var data ToolCallData
+			if err := msg.ParseData(&data); err != nil {
+				t.Fatalf("parse tool call: %v", err)
+			}
+			toolCalls = append(toolCalls, data)
+		case TypeToolResult:
+			var data ToolResultData
+			if err := msg.ParseData(&data); err != nil {
+				t.Fatalf("parse tool result: %v", err)
+			}
+			toolResults = append(toolResults, data)
+		}
+	}
+
+	if len(toolCalls) != 2 || len(toolResults) != 2 {
+		t.Fatalf("expected 2 tool calls and 2 tool results, got %d/%d", len(toolCalls), len(toolResults))
+	}
+	if toolCalls[0].GroupID != "round-1" || toolCalls[0].StepID == "" {
+		t.Fatalf("expected grouped tool call metadata, got %+v", toolCalls[0])
+	}
+	if toolCalls[0].Visibility != "visible" {
+		t.Fatalf("expected web_search visible, got %s", toolCalls[0].Visibility)
+	}
+	if toolCalls[1].Visibility != "compact" {
+		t.Fatalf("expected skill_read compact, got %s", toolCalls[1].Visibility)
+	}
+	if toolResults[0].StepID != toolCalls[0].StepID {
+		t.Fatalf("expected result step id %s, got %s", toolCalls[0].StepID, toolResults[0].StepID)
+	}
+	if toolResults[1].StepID != toolCalls[1].StepID {
+		t.Fatalf("expected result step id %s, got %s", toolCalls[1].StepID, toolResults[1].StepID)
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
@@ -68,6 +67,7 @@ type LoopConfig struct {
 	RepeatToolCallLimit    int           // 相同工具签名重复上限
 	ToolOnlyIterationLimit int           // 连续纯工具轮次上限
 	DuplicateFetchLimit    int           // 同一 URL 抓取上限
+	DisabledTools          []string      // 本轮对模型隐藏的工具名
 }
 
 // DefaultLoopConfig 返回默认 Loop 配置
@@ -119,6 +119,27 @@ func sanitizeLoopConfig(cfg *LoopConfig) {
 	if cfg.DuplicateFetchLimit <= 0 {
 		cfg.DuplicateFetchLimit = 1
 	}
+	cfg.DisabledTools = normalizeToolNameList(cfg.DisabledTools)
+}
+
+func normalizeToolNameList(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(names))
+	normalized := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	return normalized
 }
 
 /*
@@ -205,12 +226,19 @@ type toolCallLog struct {
 
 // RunLoop 执行 Agent Loop
 func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfig) (*LoopResult, error) {
-	return a.RunLoopWithSession(ctx, nil, userInput, loopCfg)
+	return a.RunLoopWithSessionInput(ctx, nil, TextUserTurnInput(userInput), loopCfg)
 }
 
 // RunLoopWithSession 执行 Agent Loop（带会话上下文）
 func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, userInput string, loopCfg LoopConfig) (result *LoopResult, err error) {
-	a.maybeRouteModel(userInput)
+	return a.RunLoopWithSessionInput(ctx, sess, TextUserTurnInput(userInput), loopCfg)
+}
+
+// RunLoopWithSessionInput 执行 Agent Loop（带结构化多模态输入）。
+func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Session, turnInput UserTurnInput, loopCfg LoopConfig) (result *LoopResult, err error) {
+	turnInput = turnInput.Normalize()
+	routingText := turnInput.RoutingText
+	a.maybeRouteModel(routingText)
 
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
@@ -286,10 +314,10 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
 		if a.ragManager != nil {
-			a.indexConversationTurn(userInput, response)
+			a.indexConversationTurn(routingText, response)
 		}
 
-		if saveErr := a.saveFinalAnswerDocument(sessionID, userInput, response); saveErr != nil {
+		if saveErr := a.saveFinalAnswerDocument(sessionID, routingText, response); saveErr != nil {
 			logger.Warn("save final answer document failed", "session_id", sessionID, "error", saveErr)
 		}
 
@@ -301,16 +329,15 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		}
 	}
 	loopState := newLoopRuntimeState()
+	memoryGate := a.buildMemoryToolGate(routingText, loopCfg.DisabledTools)
 
 	// 构建初始消息
-	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
+	messages := a.buildContextMessagesForInput(ctx, sess, turnInput, defaultContextBuildOptions())
 	if sess != nil {
-		sess.AddProviderMessage(provider.Message{Role: "user", Content: userInput})
+		sess.AddProviderMessage(turnInput.Message)
 	}
 
-	// v0.16.0: 构建 function calling 工具定义
-	fcMgr := function.NewManager(a.tools)
-	callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
+	callOpts := a.buildLoopCallOptions(routingText, loopCfg)
 
 	for i := 0; i < loopCfg.MaxIterations; i++ {
 		result.Iterations = i + 1
@@ -323,21 +350,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 		// Reason: 调用 LLM（带 function calling 支持）
 		loopCtx, cancel := context.WithTimeout(ctx, loopCfg.Timeout)
-		var resp *provider.Response
-		var err error
-		iterCallOpts := callOpts
-		iterCallOpts = relaxForcedSkillToolChoice(messages, iterCallOpts)
-		if loopState.forceSearchSynthesis {
-			iterCallOpts.Tools = nil
-			iterCallOpts.ToolChoice = "none"
-		}
-
-		// 尝试使用 FunctionCallingProvider 接口
-		if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(iterCallOpts.Tools) > 0 {
-			resp, err = fcProvider.ChatWithOptions(loopCtx, messages, iterCallOpts)
-		} else {
-			resp, err = a.provider.Chat(loopCtx, messages)
-		}
+		resp, err := a.chatLoopIteration(loopCtx, messages, callOpts, loopState.forceSearchSynthesis)
 		cancel()
 
 		if err != nil {
@@ -345,17 +358,30 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		}
 
 		result.TokensUsed += resp.TokensUsed
+		applyTextToolCallsToResponse(resp, loopCfg.DisabledTools)
 
 		// 检查是否有工具调用
 		if len(resp.ToolCalls) > 0 {
 			var finalized bool
 			var finalResponse string
-			messages, finalized, finalResponse = a.processToolCallBatch(resp, loopCfg, result, sess, messages, loopState)
+			messages, finalized, finalResponse = a.processToolCallBatch(resp, loopCfg, result, sess, messages, loopState, memoryGate)
 			if finalized {
+				if updatedMessages, enforced := a.executeMemoryGateForLoop(memoryGate, loopCfg, result, sess, messages, loopState); enforced {
+					messages = updatedMessages
+					continue
+				}
 				finalize(finalResponse)
 				return result, nil
 			}
+			if updatedMessages, enforced := a.executeMemoryGateForLoop(memoryGate, loopCfg, result, sess, messages, loopState); enforced {
+				messages = updatedMessages
+			}
 			continue // 继续循环，让 LLM 处理工具结果
+		}
+
+		if updatedMessages, enforced := a.executeMemoryGateForLoop(memoryGate, loopCfg, result, sess, messages, loopState); enforced {
+			messages = updatedMessages
+			continue
 		}
 
 		var finalized bool
@@ -371,6 +397,17 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	if strings.TrimSpace(loopState.continuedResponse.String()) != "" {
 		finalize(strings.TrimSpace(loopState.continuedResponse.String()) + lengthTruncatedNotice)
 		return result, nil
+	}
+
+	if memoryGate != nil && (memoryGate.shouldBlockFinal() || len(memoryGate.attemptedTools()) > 0) {
+		result.Response = memoryGate.incompleteMessage()
+		result.State = StateDone
+		if sess != nil {
+			if saveErr := sess.Save(); saveErr != nil {
+				logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
+			}
+		}
+		return result, fmt.Errorf("memory gate did not produce final synthesis")
 	}
 
 	// 达到最大循环次数
@@ -415,15 +452,6 @@ type loopRuntimeState struct {
 	detailedSearchEvidence   int
 	forceSearchSynthesis     bool
 	continuedResponse        strings.Builder
-}
-
-/*
-toolExecResult 表示一批工具调用中单个工具执行后的结果。
-*/
-type toolExecResult struct {
-	Index       int
-	ToolCall    toolCallLog
-	ToolMessage provider.Message
 }
 
 /*
@@ -520,6 +548,7 @@ func (a *Agent) processToolCallBatch(
 	sess *session.Session,
 	messages []provider.Message,
 	loopState *loopRuntimeState,
+	memoryGate *memoryToolGate,
 ) (updatedMessages []provider.Message, finalized bool, finalResponse string) {
 	logger.Info("agent loop tool call batch",
 		"session_id", func() string {
@@ -580,114 +609,51 @@ func (a *Agent) processToolCallBatch(
 	}
 
 	messages = append(messages, provider.Message{
-		Role:      "assistant",
-		Content:   resp.Content,
-		ToolCalls: resp.ToolCalls,
+		Role:             "assistant",
+		Content:          resp.Content,
+		ReasoningContent: resp.ReasoningContent,
+		ToolCalls:        resp.ToolCalls,
 	})
 	if sess != nil {
 		sess.AddProviderMessage(provider.Message{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
+			Role:             "assistant",
+			Content:          resp.Content,
+			ReasoningContent: resp.ReasoningContent,
+			ToolCalls:        resp.ToolCalls,
 		})
 	}
 
-	allParallelSafe := true
-	for _, tc := range resp.ToolCalls {
-		if !a.isToolParallelSafe(tc.Name) {
-			allParallelSafe = false
-			break
+	executed := a.executeToolCallsOrdered(
+		resp.ToolCalls,
+		loopCfg.AutoApprove,
+		sess,
+		loopState.toolURLRepeatCount,
+		loopState.toolURLLastResult,
+		loopCfg.DuplicateFetchLimit,
+		false,
+	)
+
+	for _, execResult := range executed {
+		if memoryGate != nil {
+			memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 		}
-	}
-
-	resultCh := make(chan toolExecResult, len(resp.ToolCalls))
-	if allParallelSafe {
-		for idx, tc := range resp.ToolCalls {
-			go func(idx int, tc provider.ToolCall) {
-				start := time.Now()
-				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, loopState.toolURLRepeatCount, loopState.toolURLLastResult, loopCfg.DuplicateFetchLimit)
-				duration := time.Since(start)
-
-				tcLog := toolCallLog{
-					Name:      tc.Name,
-					Arguments: tc.Arguments,
-					Duration:  duration,
-				}
-				if err != nil {
-					toolResult = fmt.Sprintf("Error: %v", err)
-					tcLog.Result = toolResult
-				} else {
-					tcLog.Result = toolResult
-				}
-
-				resultCh <- toolExecResult{
-					Index:    idx,
-					ToolCall: tcLog,
-					ToolMessage: provider.Message{
-						Role:       "tool",
-						Content:    toolResult,
-						ToolCallID: tc.ID,
-						Name:       tc.Name,
-					},
-				}
-			}(idx, tc)
+		tcLog := toolCallLog{
+			Name:      execResult.ToolCall.Name,
+			Arguments: execResult.ToolCall.Arguments,
+			Result:    execResult.Result,
+			Duration:  execResult.Duration,
 		}
-	} else {
-		for idx, tc := range resp.ToolCalls {
-			start := time.Now()
-			toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, loopState.toolURLRepeatCount, loopState.toolURLLastResult, loopCfg.DuplicateFetchLimit)
-			duration := time.Since(start)
+		result.ToolCalls = append(result.ToolCalls, tcLog)
 
-			tcLog := toolCallLog{
-				Name:      tc.Name,
-				Arguments: tc.Arguments,
-				Duration:  duration,
-			}
-			if err != nil {
-				toolResult = fmt.Sprintf("Error: %v", err)
-				tcLog.Result = toolResult
-			} else {
-				tcLog.Result = toolResult
-			}
-
-			resultCh <- toolExecResult{
-				Index:    idx,
-				ToolCall: tcLog,
-				ToolMessage: provider.Message{
-					Role:       "tool",
-					Content:    toolResult,
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
-				},
-			}
+		contextToolMsg := provider.Message{
+			Role:       "tool",
+			Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence),
+			ToolCallID: execResult.ToolCall.ID,
+			Name:       execResult.ToolCall.Name,
 		}
-	}
-
-	allResults := make([]toolExecResult, 0, len(resp.ToolCalls))
-	for i := 0; i < len(resp.ToolCalls); i++ {
-		allResults = append(allResults, <-resultCh)
-	}
-	sort.Slice(allResults, func(i, j int) bool {
-		return allResults[i].Index < allResults[j].Index
-	})
-
-	for _, r := range allResults {
-		result.ToolCalls = append(result.ToolCalls, r.ToolCall)
-		contextToolMsg := r.ToolMessage
-		contextToolMsg.Content = compactToolResultForContext(contextToolMsg.Name, contextToolMsg.Content)
-		loopState.toolCallLastResult[toolCallSignature(r.ToolCall.Name, r.ToolCall.Arguments)] = r.ToolCall.Result
-		if key := normalizedToolTarget(r.ToolCall.Name, r.ToolCall.Arguments); key != "" {
-			loopState.toolURLLastResult[key] = r.ToolCall.Result
-		}
-		if isUsefulSearchEvidence(r.ToolCall.Name, r.ToolCall.Result) {
-			loopState.successfulSearchEvidence++
-			if r.ToolCall.Name == "web_search" {
-				if loopState.detailedSearchEvidence >= 2 {
-					contextToolMsg.Content = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
-				} else {
-					loopState.detailedSearchEvidence++
-				}
-			}
+		loopState.toolCallLastResult[toolCallSignature(tcLog.Name, tcLog.Arguments)] = tcLog.Result
+		if key := normalizedToolTarget(tcLog.Name, tcLog.Arguments); key != "" {
+			loopState.toolURLLastResult[key] = tcLog.Result
 		}
 		messages = append(messages, contextToolMsg)
 		if sess != nil {
@@ -703,13 +669,7 @@ func (a *Agent) processToolCallBatch(
 		}
 	}
 
-	if !loopState.forceSearchSynthesis && shouldForceSearchSynthesis(loopState.successfulSearchEvidence, loopState.consecutiveToolOnlyIters) {
-		loopState.forceSearchSynthesis = true
-		messages = append(messages, provider.Message{
-			Role:    "user",
-			Content: searchSynthesisPrompt,
-		})
-	}
+	messages = maybeAppendSearchSynthesisMessage(messages, &loopState.forceSearchSynthesis, loopState.successfulSearchEvidence, loopState.consecutiveToolOnlyIters)
 
 	return messages, false, ""
 }
@@ -854,6 +814,11 @@ func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message
 	if a == nil || a.contextWin == nil {
 		return messages
 	}
+	for _, msg := range messages {
+		if len(msg.ContentParts) > 0 {
+			return messages
+		}
+	}
 	contextMessages := a.toContextMessages(messages)
 	fitted, trimResult := a.contextWin.Fit(contextMessages)
 	if trimResult.Trimmed {
@@ -981,78 +946,6 @@ func buildFinalAnswerFilename(source string, now time.Time) string {
 }
 
 // RunLoopStream 执行流式 Agent Loop
-func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg LoopConfig) (<-chan StreamEvent, error) {
-	// 安全边界校验
-	sanitizeLoopConfig(&loopCfg)
-
-	events := make(chan StreamEvent, 128)
-
-	go func() {
-		defer close(events)
-
-		messages := a.buildContextMessages(ctx, nil, userInput, defaultContextBuildOptions())
-
-		// v0.16.0: 构建 function calling 工具定义
-		fcMgr := function.NewManager(a.tools)
-		callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
-
-		for i := 0; i < loopCfg.MaxIterations; i++ {
-			events <- StreamEvent{Type: EventReason, Iteration: i + 1}
-
-			// 流式调用（带 function calling 支持）
-			var ch <-chan provider.StreamChunk
-			var err error
-			if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
-				ch, err = fcProvider.ChatStreamWithOptions(ctx, messages, callOpts)
-			} else {
-				ch, err = a.provider.ChatStream(ctx, messages)
-			}
-			if err != nil {
-				events <- StreamEvent{Type: EventError, Error: err}
-				return
-			}
-
-			var content strings.Builder
-			for chunk := range ch {
-				if chunk.Content != "" {
-					content.WriteString(chunk.Content)
-					events <- StreamEvent{Type: EventContent, Content: chunk.Content}
-				}
-				if chunk.Done {
-					break
-				}
-			}
-
-			events <- StreamEvent{Type: EventDone, Content: content.String()}
-			return
-		}
-	}()
-
-	return events, nil
-}
-
-// StreamEvent 是流式事件
-/*
-StreamEvent 表示 RunLoopStream 对外暴露的流式事件。
-*/
-type StreamEvent struct {
-	Type      EventType
-	Content   string
-	Iteration int
-	Error     error
-}
-
-type EventType int
-
-const (
-	EventReason  EventType = iota // 推理阶段
-	EventAct                      // 行动阶段
-	EventObserve                  // 观察阶段
-	EventContent                  // 内容片段
-	EventDone                     // 完成
-	EventError                    // 错误
-)
-
 // executeTool 执行工具调用（通过 Gateway）
 /*
 executeTool 在无会话上下文时执行一次工具调用。

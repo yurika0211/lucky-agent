@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/metrics"
@@ -138,9 +139,9 @@ func TestEnqueueChatRequestTracksQueuePosition(t *testing.T) {
 		queues: make(map[string]*chatQueue),
 	}
 
-	pos1, start1 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "first"})
-	pos2, start2 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "second"})
-	pos3, start3 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "third"})
+	pos1, start1 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), input: agent.TextUserTurnInput("first")})
+	pos2, start2 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), input: agent.TextUserTurnInput("second")})
+	pos3, start3 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), input: agent.TextUserTurnInput("third")})
 
 	assert.Equal(t, 1, pos1)
 	assert.True(t, start1)
@@ -158,8 +159,8 @@ func TestDequeueChatRequestFIFO(t *testing.T) {
 	h := &Handler{
 		queues: make(map[string]*chatQueue),
 	}
-	h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "first"})
-	h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "second"})
+	h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), input: agent.TextUserTurnInput("first")})
+	h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), input: agent.TextUserTurnInput("second")})
 
 	req1, ok1 := h.dequeueChatRequest("chat1")
 	req2, ok2 := h.dequeueChatRequest("chat1")
@@ -167,9 +168,60 @@ func TestDequeueChatRequestFIFO(t *testing.T) {
 
 	require.True(t, ok1)
 	require.True(t, ok2)
-	assert.Equal(t, "first", req1.inputText)
-	assert.Equal(t, "second", req2.inputText)
+	assert.Equal(t, "first", req1.input.RoutingText)
+	assert.Equal(t, "second", req2.input.RoutingText)
 	assert.False(t, ok3)
+}
+
+func TestBuildUserTurnInputRoutesImagesThroughAttachmentAnalysisPath(t *testing.T) {
+	h := &Handler{}
+	input := h.buildUserTurnInput(context.Background(), "看这张图", []gateway.Attachment{
+		{
+			Type:     gateway.AttachmentImage,
+			FilePath: "/tmp/example.jpg",
+			FileName: "example.jpg",
+			MimeType: "image/jpeg",
+		},
+	})
+
+	require.Equal(t, "user", input.Message.Role)
+	require.Empty(t, input.Message.ContentParts)
+	assert.Contains(t, input.RoutingText, "看这张图")
+	assert.Contains(t, input.RoutingText, "[Multimedia Attachments]")
+	assert.Contains(t, input.RoutingText, "example.jpg")
+}
+
+func TestGenerateRoundProgressFeedbackIncludesPreviousUserFacingUpdate(t *testing.T) {
+	var gotObservations []string
+	h := &Handler{
+		chat: &mockAgentProvider{
+			progressFn: func(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+				gotObservations = append([]string(nil), observations...)
+				return "At this point, the retry is narrowing things down.", nil
+			},
+		},
+	}
+
+	progress := h.generateRoundProgressFeedback(
+		context.Background(),
+		nil,
+		"generate a flower image",
+		2,
+		[]string{"Tool call: retry image generation", "Tool result: previous attempt failed"},
+		[]string{"I've retried the image generation step."},
+		"I've retried the image generation step.",
+	)
+
+	assert.Equal(t, "At this point, the retry is narrowing things down.", progress)
+	require.Len(t, gotObservations, 3)
+	assert.Equal(t, "Previous user-facing update: I've retried the image generation step.", gotObservations[0])
+}
+
+func TestSmoothProgressSummaryAddsContinuityCueForRepeatedFirstPersonStart(t *testing.T) {
+	got := smoothProgressSummary("I've retried the image generation step and I'm waiting on the result.", 2, []string{
+		"I've started by checking the previous run.",
+	})
+	assert.Equal(t, "At this point, I've retried the image generation step and I'm waiting on the result.", got)
 }
 
 // TestHandleMessageCommand verifies command routing.
@@ -454,6 +506,18 @@ func TestPrependToolNarratives(t *testing.T) {
 	assert.Contains(t, got2, "dup")
 	// Should only appear once
 	assert.Equal(t, strings.Count(got2, "1. dup"), 1)
+}
+
+func TestAppendTelegramProgressSection(t *testing.T) {
+	parts := appendTelegramProgressSection(nil, normalizeTelegramProgressSection("<b>💭 当前进度</b>\n<blockquote expandable>第一段</blockquote>"))
+	parts = appendTelegramProgressSection(parts, normalizeTelegramProgressSection("<b>💭 当前进度</b>\n<blockquote expandable>第二段</blockquote>"))
+	parts = appendTelegramProgressSection(parts, normalizeTelegramProgressSection("<b>💭 当前进度</b>\n<blockquote expandable>第二段</blockquote>"))
+
+	require.Len(t, parts, 2)
+	card := renderTelegramProgressHistoryCard(parts)
+	assert.Contains(t, card, "第一段")
+	assert.Contains(t, card, "第二段")
+	assert.Equal(t, 1, strings.Count(card, "<blockquote expandable>"))
 }
 
 func TestIsTaskCanceledError(t *testing.T) {

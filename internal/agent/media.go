@@ -27,7 +27,7 @@ func (a *Agent) AnalyzeAttachments(ctx context.Context, attachments []gateway.At
 			continue
 		}
 
-		result, err := a.mediaProcessor.Analyze(ctx, input)
+		result, err := a.analyzeMultimodalInput(ctx, input)
 		if err != nil {
 			sections = append(sections, fmt.Sprintf("%s\n- error: %s", title, err.Error()))
 			continue
@@ -41,6 +41,33 @@ func (a *Agent) AnalyzeAttachments(ctx context.Context, attachments []gateway.At
 	}
 
 	return "[Multimodal Analysis]\n" + strings.Join(sections, "\n\n"), nil
+}
+
+func (a *Agent) analyzeMultimodalInput(ctx context.Context, input *multimodal.Input) (*multimodal.AnalysisResult, error) {
+	if a == nil || a.mediaProcessor == nil {
+		return nil, fmt.Errorf("multimodal processor is not configured")
+	}
+	if input == nil {
+		return nil, fmt.Errorf("multimodal input is nil")
+	}
+
+	if providerName := a.preferredMultimodalProvider(input.Modality); providerName != "" {
+		return a.mediaProcessor.AnalyzeWithProvider(ctx, providerName, input)
+	}
+	return a.mediaProcessor.Analyze(ctx, input)
+}
+
+func (a *Agent) preferredMultimodalProvider(modality multimodal.Modality) string {
+	if a == nil || a.cfg == nil {
+		return ""
+	}
+	cfg := a.cfg.Get()
+	switch modality {
+	case multimodal.ModalityImage:
+		return strings.TrimSpace(cfg.Multimodal.ImageProvider)
+	default:
+		return ""
+	}
 }
 
 /*

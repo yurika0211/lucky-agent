@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -29,7 +30,9 @@ import (
 type chatRuntime interface {
 	Chat(ctx context.Context, userInput string) (string, error)
 	ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error)
+	ChatWithSessionInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
 	ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 	ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error)
 	AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error)
 }
@@ -59,6 +62,8 @@ type telegramSender interface {
 	gateway.StreamGateway
 	SendPhoto(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error
 	SendDocument(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error
+	SendHTML(ctx context.Context, chatID string, message string) error
+	SendWithReplyHTML(ctx context.Context, chatID string, replyToMsgID string, message string) error
 	SendTypingLoop(ctx context.Context, chatID string)
 	ReactToMessage(chatID string, messageID string, emoji string)
 }
@@ -120,8 +125,16 @@ func (a agentProviderAdapter) ChatWithSession(ctx context.Context, sessionID, us
 	return a.inner.ChatWithSession(ctx, sessionID, userInput)
 }
 
+func (a agentProviderAdapter) ChatWithSessionInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error) {
+	return a.inner.ChatWithSessionInput(ctx, sessionID, input)
+}
+
 func (a agentProviderAdapter) ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
 	return a.inner.ChatWithSessionStream(ctx, sessionID, userInput)
+}
+
+func (a agentProviderAdapter) ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+	return a.inner.ChatWithSessionStreamInput(ctx, sessionID, input)
 }
 
 func (a agentProviderAdapter) ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error) {
@@ -202,9 +215,9 @@ type chatTask struct {
 }
 
 type queuedChatRequest struct {
-	ctx       context.Context
-	msg       *gateway.Message
-	inputText string
+	ctx   context.Context
+	msg   *gateway.Message
+	input agent.UserTurnInput
 }
 
 type chatQueue struct {
@@ -261,9 +274,11 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 
 func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 	return map[string]telegramCommandHandler{
-		"start":   h.handleStart,
-		"help":    h.handleHelp,
-		"chat":    func(ctx context.Context, msg *gateway.Message) error { return h.dispatchChatAsync(ctx, msg, msg.Args) },
+		"start": h.handleStart,
+		"help":  h.handleHelp,
+		"chat": func(ctx context.Context, msg *gateway.Message) error {
+			return h.dispatchChatAsync(ctx, msg, agent.TextUserTurnInput(msg.Args))
+		},
 		"model":   h.handleModel,
 		"soul":    h.handleSoul,
 		"tools":   h.handleTools,
@@ -627,12 +642,12 @@ func (h *Handler) setSessionID(chatID, sessionID string) {
 	h.mu.Unlock()
 }
 
-func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, inputText string) error {
+func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
 	msgCopy := *msg
 	position, startWorker := h.enqueueChatRequest(msg.Chat.ID, &queuedChatRequest{
-		ctx:       ctx,
-		msg:       &msgCopy,
-		inputText: inputText,
+		ctx:   ctx,
+		msg:   &msgCopy,
+		input: input,
 	})
 	if startWorker {
 		go h.runChatQueue(msg.Chat.ID)
@@ -692,7 +707,7 @@ func (h *Handler) runChatQueue(chatID string) {
 		if !ok {
 			return
 		}
-		if err := h.handleChat(req.ctx, req.msg, req.inputText); err != nil {
+		if err := h.handleChat(req.ctx, req.msg, req.input); err != nil {
 			fmt.Printf("[telegram] chat error: %v\n", err)
 		}
 	}
@@ -796,19 +811,24 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 		return h.handleCommand(ctx, msg)
 	}
 
-	// v0.36.0: 如果有附件，构造多媒体描述
-	inputText := msg.Text
-	if len(msg.Attachments) > 0 {
-		inputText = h.composeAttachmentInput(ctx, inputText, msg.Attachments)
-	}
+	input := h.buildUserTurnInput(ctx, msg.Text, msg.Attachments)
 
 	// Regular text in private chats → forward to Agent
 	if msg.Chat.Type == gateway.ChatPrivate {
-		return h.dispatchChatAsync(ctx, msg, inputText)
+		return h.dispatchChatAsync(ctx, msg, input)
 	}
 
 	// Group chats: only respond if mentioned or replied to (already filtered by adapter)
-	return h.dispatchChatAsync(ctx, msg, inputText)
+	return h.dispatchChatAsync(ctx, msg, input)
+}
+
+func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attachments []gateway.Attachment) agent.UserTurnInput {
+	baseText = strings.TrimSpace(baseText)
+	if len(attachments) == 0 {
+		return agent.TextUserTurnInput(baseText)
+	}
+
+	return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
 }
 
 func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
@@ -915,11 +935,12 @@ func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
 
 // handleChat sends a message to the agent and returns the response.
 // Uses streaming output with thinking/tool-call visualization when available.
-func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text string) error {
+func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
+	input = input.Normalize()
 	if recorder := h.routeRecorder(); recorder != nil {
 		recorder.RecordRecentChatTarget("telegram", msg.Chat.ID, msg.ID)
 	}
-	if strings.TrimSpace(text) == "" {
+	if strings.TrimSpace(input.RoutingText) == "" {
 		return h.adapter.Send(ctx, msg.Chat.ID, "Please provide a message. Usage: /chat <message>")
 	}
 
@@ -932,31 +953,31 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 	sessionID := h.getSessionID(msg.Chat.ID)
 
 	// 群聊中在输入文本前加上发送者名字，让 agent 知道是谁在说话
-	inputText := text
 	if msg.IsGroupTrigger && msg.Sender.DisplayName() != "" {
-		inputText = fmt.Sprintf("[%s]: %s", msg.Sender.DisplayName(), text)
+		input = input.WithRoutingText(fmt.Sprintf("[%s]: %s", msg.Sender.DisplayName(), input.RoutingText))
 	}
-	inputText = telegramMediaDeliveryGuidance(inputText)
+	input = input.WithRoutingText(telegramMediaDeliveryGuidance(input.RoutingText))
+	routingText := input.RoutingText
 
-	if agent.IsSimpleLocalInspectionTask(inputText) {
-		return h.handleChatSync(taskCtx, msg, inputText, sessionID)
+	if agent.IsSimpleLocalInspectionTask(routingText) {
+		return h.handleChatSync(taskCtx, msg, input, sessionID)
 	}
 
 	// 自然语言进度模式：直接按步骤发独立消息，最终结论也作为“最后一条新消息”发送。
 	// 这样可以避免结论写回到最早的占位流消息，导致视觉上跑到最上面。
 	if h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage() {
-		return h.handleChatNarrativeStream(taskCtx, msg, inputText, sessionID)
+		return h.handleChatNarrativeStream(taskCtx, msg, input, sessionID)
 	}
 
 	// 尝试流式输出（Adapter 已实现 StreamGateway）
 	sender, err := h.adapter.SendStream(taskCtx, msg.Chat.ID, msg.ID)
 	if err == nil {
-		return h.handleChatStream(taskCtx, sender, msg, inputText, sessionID)
+		return h.handleChatStream(taskCtx, sender, msg, input, sessionID)
 	}
 	// SendStream 失败，回退到非流式
 
 	// 回退到非流式
-	return h.handleChatSync(taskCtx, msg, inputText, sessionID)
+	return h.handleChatSync(taskCtx, msg, input, sessionID)
 }
 
 func (h *Handler) sendProgressMessage(msg *gateway.Message, text string) {
@@ -976,6 +997,109 @@ func (h *Handler) sendProgressMessage(msg *gateway.Message, text string) {
 	_ = h.adapter.Send(sendCtx, msg.Chat.ID, text)
 }
 
+func (h *Handler) sendProgressMessageHTML(msg *gateway.Message, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" || h.adapter == nil || msg == nil {
+		return
+	}
+
+	sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
+		_ = h.adapter.SendWithReplyHTML(sendCtx, msg.Chat.ID, msg.ID, text)
+		return
+	}
+	_ = h.adapter.SendHTML(sendCtx, msg.Chat.ID, text)
+}
+
+func (h *Handler) newProgressCardUpdater(msg *gateway.Message) func(string) {
+	if h == nil || h.adapter == nil || msg == nil {
+		return func(text string) {
+			h.sendProgressMessage(msg, text)
+		}
+	}
+
+	var sender gateway.StreamSender
+	var stream *telegramStreamSender
+	var parts []string
+
+	return func(text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		section := normalizeTelegramProgressSection(text)
+		if section == "" {
+			return
+		}
+		parts = appendTelegramProgressSection(parts, section)
+		combined := renderTelegramProgressHistoryCard(parts)
+		if strings.TrimSpace(combined) == "" {
+			return
+		}
+		if stream == nil {
+			sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+
+			s, err := h.adapter.SendStream(sendCtx, msg.Chat.ID, msg.ID)
+			if err == nil {
+				sender = s
+				if ts, ok := s.(*telegramStreamSender); ok {
+					stream = ts
+				}
+			}
+		}
+		if stream != nil {
+			_ = stream.SetHTMLCard(combined)
+			return
+		}
+		if sender != nil {
+			_ = sender.SetResult(combined)
+			_ = sender.Finish()
+			return
+		}
+		h.sendProgressMessage(msg, combined)
+	}
+}
+
+func appendTelegramProgressSection(parts []string, text string) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return parts
+	}
+	if len(parts) > 0 && strings.TrimSpace(parts[len(parts)-1]) == text {
+		return parts
+	}
+	for _, part := range parts {
+		if strings.TrimSpace(part) == text {
+			return parts
+		}
+	}
+	return append(parts, text)
+}
+
+func normalizeTelegramProgressSection(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+
+	const openTag = "<blockquote expandable>"
+	const closeTag = "</blockquote>"
+	if start := strings.Index(text, openTag); start >= 0 {
+		start += len(openTag)
+		if end := strings.LastIndex(text, closeTag); end > start {
+			text = text[start:end]
+		}
+	}
+	text = strings.ReplaceAll(text, "<br>", "\n")
+	text = strings.ReplaceAll(text, "<br/>", "\n")
+	text = strings.ReplaceAll(text, "<br />", "\n")
+	text = strings.TrimSpace(text)
+	return strings.TrimSpace(html.UnescapeString(text))
+}
+
 func extractRoundNumber(thinking string) int {
 	var round int
 	if _, err := fmt.Sscanf(strings.TrimSpace(thinking), "Thinking... (round %d)", &round); err == nil && round > 0 {
@@ -984,7 +1108,7 @@ func extractRoundNumber(thinking string) int {
 	return 0
 }
 
-func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, lastProgress string) string {
+func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, progressHistory []string, lastProgress string) string {
 	chat := h.chatService()
 	if len(observations) == 0 || chat == nil {
 		return ""
@@ -992,7 +1116,16 @@ func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gatewa
 	summaryCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
-	summary, err := chat.ProgressFeedback(summaryCtx, userInput, round, observations)
+	progressObservations := append([]string(nil), observations...)
+	for _, prev := range progressHistory {
+		prev = strings.TrimSpace(prev)
+		if prev == "" {
+			continue
+		}
+		progressObservations = append([]string{"Previous user-facing update: " + prev}, progressObservations...)
+	}
+
+	summary, err := chat.ProgressFeedback(summaryCtx, userInput, round, progressObservations)
 	if err != nil {
 		return ""
 	}
@@ -1000,19 +1133,94 @@ func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gatewa
 	if summary == "" || summary == lastProgress {
 		return ""
 	}
-	return summary
+	return smoothProgressSummary(summary, round, progressHistory)
 }
 
-func (h *Handler) flushRoundProgress(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, lastProgress *string) {
+func (h *Handler) flushRoundProgress(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, progressHistory *[]string, lastProgress *string) {
+	h.flushRoundProgressWithEmitter(ctx, msg, userInput, round, observations, progressHistory, lastProgress, h.sendProgressMessage)
+}
+
+func (h *Handler) flushRoundProgressWithEmitter(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, progressHistory *[]string, lastProgress *string, emit func(*gateway.Message, string)) {
 	if !h.effectiveProgressSummaryWithLLM() {
 		return
 	}
-	progress := h.generateRoundProgressFeedback(ctx, msg, userInput, round, observations, strings.TrimSpace(*lastProgress))
+	var history []string
+	if progressHistory != nil {
+		history = append(history, (*progressHistory)...)
+	}
+	progress := h.generateRoundProgressFeedback(ctx, msg, userInput, round, observations, history, strings.TrimSpace(*lastProgress))
 	if progress == "" {
 		return
 	}
-	h.sendProgressMessage(msg, progress)
+	if emit == nil {
+		emit = h.sendProgressMessage
+	}
+	emit(msg, formatTelegramProgressSummary(progress))
 	*lastProgress = progress
+	appendProgressHistory(progressHistory, progress)
+}
+
+func formatTelegramProgressSummary(progress string) string {
+	card := renderTelegramSummaryCard(progress)
+	if strings.TrimSpace(card) == "" {
+		return progress
+	}
+	return card
+}
+
+func appendProgressHistory(history *[]string, progress string) {
+	if history == nil {
+		return
+	}
+	progress = strings.TrimSpace(progress)
+	if progress == "" {
+		return
+	}
+	entries := append([]string(nil), (*history)...)
+	if len(entries) > 0 && strings.TrimSpace(entries[len(entries)-1]) == progress {
+		*history = entries
+		return
+	}
+	entries = append(entries, progress)
+	if len(entries) > 3 {
+		entries = entries[len(entries)-3:]
+	}
+	*history = entries
+}
+
+func smoothProgressSummary(summary string, round int, history []string) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" || len(history) == 0 {
+		return summary
+	}
+	lower := strings.ToLower(summary)
+	switch {
+	case strings.HasPrefix(lower, "i've "),
+		strings.HasPrefix(lower, "i’m "),
+		strings.HasPrefix(lower, "i'm "),
+		strings.HasPrefix(lower, "i have "):
+		return continuityCue(round) + summary
+	case strings.HasPrefix(lower, "i've started"),
+		strings.HasPrefix(lower, "i started"),
+		strings.HasPrefix(lower, "i’m still"),
+		strings.HasPrefix(lower, "i'm still"):
+		return continuityCue(round) + summary
+	default:
+		return summary
+	}
+}
+
+func continuityCue(round int) string {
+	switch round % 4 {
+	case 0:
+		return "That suggests "
+	case 1:
+		return "So far, "
+	case 2:
+		return "At this point, "
+	default:
+		return "The latest result shows "
+	}
 }
 
 func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Message, response string) error {
@@ -1197,12 +1405,12 @@ func (h *Handler) sendFinalAssistantResponse(msg *gateway.Message, response stri
 	}
 }
 
-func (h *Handler) openChatEventStream(ctx context.Context, chatID, text, sessionID string) (<-chan agent.ChatEvent, error) {
+func (h *Handler) openChatEventStream(ctx context.Context, chatID string, input agent.UserTurnInput, sessionID string) (<-chan agent.ChatEvent, error) {
 	chat := h.chatService()
 	if chat == nil {
 		return nil, fmt.Errorf("chat runtime not available")
 	}
-	events, err := chat.ChatWithSessionStream(ctx, sessionID, text)
+	events, err := chat.ChatWithSessionStreamInput(ctx, sessionID, input)
 	if err == nil {
 		return events, nil
 	}
@@ -1212,7 +1420,7 @@ func (h *Handler) openChatEventStream(ctx context.Context, chatID, text, session
 
 	h.resetSession(chatID)
 	retrySessionID := h.getSessionID(chatID)
-	return chat.ChatWithSessionStream(ctx, retrySessionID, text)
+	return chat.ChatWithSessionStreamInput(ctx, retrySessionID, input)
 }
 
 func runChatEventLoop(
@@ -1246,7 +1454,14 @@ func runChatEventLoop(
 
 // handleChatNarrativeStream 自然语言进度模式（不使用流式占位消息）。
 // 中间步骤和最终结论都作为独立消息发送，保证“结论在最后”。
-func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
+func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput, sessionID string) error {
+	routingText := input.RoutingText
+	emitProgress := func(text string) {
+		h.sendProgressMessageHTML(msg, text)
+	}
+	emitProgressForMsg := func(_ *gateway.Message, text string) {
+		emitProgress(text)
+	}
 	// 启动 typing indicator（每 5 秒刷新一次，直到完成）
 	typingCtx, typingCancel := context.WithCancel(context.Background())
 	defer typingCancel()
@@ -1255,15 +1470,15 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	chatCtx, chatCancel := context.WithTimeout(ctx, h.effectiveChatStreamTimeout())
 	defer chatCancel()
 
-	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, text, sessionID)
+	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, input, sessionID)
 	if err != nil {
 		switch {
 		case isTaskTimeoutError(err):
-			h.sendProgressMessage(msg, "⏱ 请求超时")
+			emitProgress("⏱ 请求超时")
 		case isTaskCanceledError(err):
-			h.sendProgressMessage(msg, "🛑 当前任务已停止")
+			emitProgress("🛑 当前任务已停止")
 		default:
-			h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
+			emitProgress(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
 		}
 		return nil
 	}
@@ -1272,8 +1487,11 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	toolCallCount := 0
 	lastProgress := ""
 	var toolNarratives []string
+	var toolTraceSteps []telegramToolTraceStep
+	toolTraceSent := false
 	currentRound := 1
 	var roundObservations []string
+	var progressHistory []string
 	summaryMode := h.effectiveProgressSummaryWithLLM()
 
 	sentResult := runChatEventLoop(
@@ -1281,9 +1499,9 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		events,
 		func(err error) bool {
 			if errors.Is(err, context.DeadlineExceeded) {
-				h.sendProgressMessage(msg, "⏱ 请求超时")
+				emitProgress("⏱ 请求超时")
 			} else {
-				h.sendProgressMessage(msg, "🛑 当前任务已停止")
+				emitProgress("🛑 当前任务已停止")
 			}
 			return true
 		},
@@ -1292,46 +1510,50 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 			case agent.ChatEventThinking:
 				if summaryMode {
 					if nextRound := extractRoundNumber(evt.Content); nextRound > currentRound {
-						if progress := h.generateRoundProgressFeedback(chatCtx, msg, text, currentRound, roundObservations, lastProgress); progress != "" {
-							h.sendProgressMessage(msg, progress)
+						if progress := h.generateRoundProgressFeedback(chatCtx, msg, routingText, currentRound, roundObservations, progressHistory, lastProgress); progress != "" {
+							emitProgress(formatTelegramProgressSummary(progress))
 							lastProgress = progress
+							appendProgressHistory(&progressHistory, progress)
 						}
 						roundObservations = nil
 						currentRound = nextRound
 					}
 				} else {
-					progress := humanizeThinkingProgress(evt.Content)
+					progress := renderTelegramThinkingCard(evt.Content)
+					if strings.TrimSpace(progress) == "" {
+						progress = humanizeThinkingProgress(evt.Content)
+					}
 					if strings.TrimSpace(progress) != "" && progress != lastProgress {
-						h.sendProgressMessage(msg, progress)
+						emitProgress(progress)
 						lastProgress = progress
 					}
 				}
 
 			case agent.ChatEventToolCall:
 				toolCallCount++
+				toolTraceSteps = append(toolTraceSteps, telegramToolTraceStep{
+					Name: evt.Name,
+					Args: evt.Args,
+				})
 				if summaryMode {
 					if line := humanizeToolCall(evt.Name, evt.Args); line != "" {
 						roundObservations = append(roundObservations, "Tool call: "+line)
 					}
-				} else {
-					progress := humanizeToolCallProgress(toolCallCount, evt.Name, evt.Args)
-					if strings.TrimSpace(progress) != "" && progress != lastProgress {
-						h.sendProgressMessage(msg, progress)
-						lastProgress = progress
-					}
 				}
 
 			case agent.ChatEventToolResult:
+				if len(toolTraceSteps) > 0 {
+					for i := len(toolTraceSteps) - 1; i >= 0; i-- {
+						if toolTraceSteps[i].Name == evt.Name && toolTraceSteps[i].Result == "" {
+							toolTraceSteps[i].Result = evt.Result
+							toolTraceSteps[i].Success = !strings.HasPrefix(strings.ToLower(strings.TrimSpace(evt.Result)), "error:")
+							break
+						}
+					}
+				}
 				if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), true) {
 					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
 						toolNarratives = append(toolNarratives, line)
-					}
-				}
-				if !summaryMode {
-					progress := humanizeToolResultProgress(toolCallCount, evt.Name, evt.Result)
-					if strings.TrimSpace(progress) != "" && progress != lastProgress {
-						h.sendProgressMessage(msg, progress)
-						lastProgress = progress
 					}
 				}
 
@@ -1340,8 +1562,14 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 
 			case agent.ChatEventDone:
 				if summaryMode {
-					h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
+					h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress, emitProgressForMsg)
 					roundObservations = nil
+				}
+				if !toolTraceSent {
+					if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+						h.sendProgressMessageHTML(msg, card)
+						toolTraceSent = true
+					}
 				}
 				if finalContent.Len() == 0 {
 					finalContent.WriteString(evt.Content)
@@ -1356,15 +1584,15 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 			case agent.ChatEventError:
 				fmt.Printf("[telegram] chat event error: chatID=%s sessionID=%s err=%v\n", msg.Chat.ID, sessionID, evt.Err)
 				if isTaskTimeoutError(evt.Err) {
-					h.sendProgressMessage(msg, "⏱ 请求超时")
+					emitProgress("⏱ 请求超时")
 				} else if isTaskCanceledError(evt.Err) {
-					h.sendProgressMessage(msg, "🛑 当前任务已停止")
+					emitProgress("🛑 当前任务已停止")
 				} else {
 					errMsg := evt.Err.Error()
 					if len(errMsg) > 200 {
 						errMsg = errMsg[:197] + "..."
 					}
-					h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", errMsg))
+					emitProgress(fmt.Sprintf("❌ Error: %s", errMsg))
 				}
 				return true, true
 			}
@@ -1377,18 +1605,24 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		switch {
 		case finalOutput != "":
 			if summaryMode {
-				h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
+				h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress, emitProgressForMsg)
+			}
+			if !toolTraceSent {
+				if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+					h.sendProgressMessageHTML(msg, card)
+					toolTraceSent = true
+				}
 			}
 			if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), true) {
 				finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 			}
 			h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
-			h.sendProgressMessage(msg, "⏱ 请求超时")
+			emitProgress("⏱ 请求超时")
 		case errors.Is(chatCtx.Err(), context.Canceled):
-			h.sendProgressMessage(msg, "🛑 当前任务已停止")
+			emitProgress("🛑 当前任务已停止")
 		default:
-			h.sendProgressMessage(msg, "❌ Error: stream ended unexpectedly, please retry")
+			emitProgress("❌ Error: stream ended unexpectedly, please retry")
 		}
 	}
 
@@ -1396,7 +1630,9 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 }
 
 // handleChatStream 流式对话处理（Telegram 专用）
-func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSender, msg *gateway.Message, text, sessionID string) error {
+func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSender, msg *gateway.Message, input agent.UserTurnInput, sessionID string) error {
+	routingText := input.RoutingText
+	emitProgress := h.newProgressCardUpdater(msg)
 	// 启动 typing indicator（每 5 秒刷新一次，直到完成）
 	typingCtx, typingCancel := context.WithCancel(context.Background())
 	defer typingCancel()
@@ -1405,7 +1641,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	chatCtx, chatCancel := context.WithTimeout(ctx, h.effectiveChatStreamTimeout())
 	defer chatCancel()
 
-	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, text, sessionID)
+	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, input, sessionID)
 	if err != nil {
 		if isTaskTimeoutError(err) {
 			sender.SetResult("⏱ 请求超时")
@@ -1426,10 +1662,13 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	toolCallCount := 0
 	lastProgress := ""
 	var toolNarratives []string
+	var toolTraceSteps []telegramToolTraceStep
+	toolTraceSent := false
 	narrativeMode := h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage()
 	summaryMode := narrativeMode && h.effectiveProgressSummaryWithLLM()
 	currentRound := 1
 	var roundObservations []string
+	var progressHistory []string
 
 	sentResult := runChatEventLoop(
 		chatCtx,
@@ -1448,9 +1687,10 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			case agent.ChatEventThinking:
 				if summaryMode {
 					if nextRound := extractRoundNumber(evt.Content); nextRound > currentRound {
-						if progress := h.generateRoundProgressFeedback(chatCtx, msg, text, currentRound, roundObservations, lastProgress); progress != "" {
-							h.sendProgressMessage(msg, progress)
+						if progress := h.generateRoundProgressFeedback(chatCtx, msg, routingText, currentRound, roundObservations, progressHistory, lastProgress); progress != "" {
+							emitProgress(formatTelegramProgressSummary(progress))
 							lastProgress = progress
+							appendProgressHistory(&progressHistory, progress)
 						}
 						roundObservations = nil
 						currentRound = nextRound
@@ -1461,7 +1701,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						progress = humanizeThinkingProgress(evt.Content)
 					}
 					if strings.TrimSpace(progress) != "" && progress != "🧠 " && progress != lastProgress {
-						h.sendProgressMessage(msg, progress)
+						emitProgress(progress)
 						lastProgress = progress
 					}
 				} else {
@@ -1471,6 +1711,10 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 
 			case agent.ChatEventToolCall:
 				toolCallCount++
+				toolTraceSteps = append(toolTraceSteps, telegramToolTraceStep{
+					Name: evt.Name,
+					Args: evt.Args,
+				})
 				if summaryMode {
 					if line := humanizeToolCall(evt.Name, evt.Args); line != "" && len(roundObservations) < 2 {
 						roundObservations = append(roundObservations, "Tool call: "+line)
@@ -1482,7 +1726,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						progress = humanizeToolCallProgress(1, evt.Name, evt.Args)
 					}
 					if strings.TrimSpace(progress) != "" && progress != lastProgress {
-						h.sendProgressMessage(msg, progress)
+						emitProgress(progress)
 						lastProgress = progress
 					}
 				} else {
@@ -1491,6 +1735,15 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				}
 
 			case agent.ChatEventToolResult:
+				if len(toolTraceSteps) > 0 {
+					for i := len(toolTraceSteps) - 1; i >= 0; i-- {
+						if toolTraceSteps[i].Name == evt.Name && toolTraceSteps[i].Result == "" {
+							toolTraceSteps[i].Result = evt.Result
+							toolTraceSteps[i].Success = !strings.HasPrefix(strings.ToLower(strings.TrimSpace(evt.Result)), "error:")
+							break
+						}
+					}
+				}
 				if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), narrativeMode) {
 					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
 						toolNarratives = append(toolNarratives, line)
@@ -1510,8 +1763,14 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 
 			case agent.ChatEventDone:
 				if summaryMode {
-					h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
+					h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress)
 					roundObservations = nil
+				}
+				if narrativeMode && !toolTraceSent {
+					if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+						h.sendProgressMessageHTML(msg, card)
+						toolTraceSent = true
+					}
 				}
 				if finalContent.Len() == 0 {
 					finalContent.WriteString(evt.Content)
@@ -1573,7 +1832,13 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	if !sentResult {
 		finalOutput := finalContent.String()
 		if summaryMode && finalOutput != "" {
-			h.flushRoundProgress(chatCtx, msg, text, currentRound, roundObservations, &lastProgress)
+			h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress)
+		}
+		if narrativeMode && !toolTraceSent && finalOutput != "" {
+			if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+				h.sendProgressMessageHTML(msg, card)
+				toolTraceSent = true
+			}
 		}
 		if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), narrativeMode) && finalOutput != "" {
 			finalOutput = prependToolNarratives(toolNarratives, finalOutput)
@@ -1653,7 +1918,7 @@ func prependToolNarratives(lines []string, finalOutput string) string {
 }
 
 // handleChatSync 非流式对话处理（回退方案）
-func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
+func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput, sessionID string) error {
 	if recorder := h.routeRecorder(); recorder != nil {
 		recorder.RecordRecentChatTarget("telegram", msg.Chat.ID, msg.ID)
 	}
@@ -1666,13 +1931,13 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text
 	if chat == nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Chat runtime unavailable")
 	}
-	response, err := chat.ChatWithSession(ctx, sessionID, text)
+	response, err := chat.ChatWithSessionInput(ctx, sessionID, input)
 	if err != nil {
 		// If session is broken, try with a fresh session
 		if strings.Contains(err.Error(), "session not found") {
 			h.resetSession(msg.Chat.ID)
 			sessionID = h.getSessionID(msg.Chat.ID)
-			response, err = chat.ChatWithSession(ctx, sessionID, text)
+			response, err = chat.ChatWithSessionInput(ctx, sessionID, input)
 		}
 		if err != nil {
 			if isTaskTimeoutError(err) {

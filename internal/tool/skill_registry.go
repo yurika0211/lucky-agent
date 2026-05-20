@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -52,8 +53,8 @@ type SkillMetadata struct {
 	Author       string            `json:"author"`
 	Description  string            `json:"description"`
 	Dir          string            `json:"dir"`
-	Tools        []string          `json:"tools"`         // tool names provided by this skill
-	Dependencies []string          `json:"dependencies"`  // names of skills this one depends on
+	Tools        []string          `json:"tools"`        // tool names provided by this skill
+	Dependencies []string          `json:"dependencies"` // names of skills this one depends on
 	State        SkillState        `json:"state"`
 	LoadedAt     time.Time         `json:"loaded_at"`
 	Error        string            `json:"error,omitempty"`
@@ -63,9 +64,11 @@ type SkillMetadata struct {
 // SkillRegistry manages skill plugin lifecycle: discover → load → register → enable/disable → unload.
 type SkillRegistry struct {
 	mu       sync.RWMutex
-	skills   map[string]*SkillMetadata // name -> metadata
-	registry *Registry                 // tool registry for registering/unregistering tools
-	loader   *SkillLoader              // skill loader for discovering skills
+	skills   map[string]*SkillMetadata                         // name -> metadata
+	infos    map[string]*SkillInfo                             // name -> parsed skill definition
+	registry *Registry                                         // tool registry for registering/unregistering tools
+	loader   *SkillLoader                                      // skill loader for discovering skills
+	executor *SkillExecutor                                    // skill execution adapter
 	watchers map[string]func(name string, from, to SkillState) // state change watchers
 }
 
@@ -73,10 +76,36 @@ type SkillRegistry struct {
 func NewSkillRegistry(registry *Registry, loader *SkillLoader) *SkillRegistry {
 	return &SkillRegistry{
 		skills:   make(map[string]*SkillMetadata),
+		infos:    make(map[string]*SkillInfo),
 		registry: registry,
 		loader:   loader,
+		executor: NewSkillExecutor(),
 		watchers: make(map[string]func(name string, from, to SkillState)),
 	}
+}
+
+// SetExecutor replaces the skill executor used when registering skill tools.
+func (sr *SkillRegistry) SetExecutor(executor *SkillExecutor) {
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+	if executor == nil {
+		executor = NewSkillExecutor()
+	}
+	sr.executor = executor
+}
+
+func skillMetadataFromInfo(info *SkillInfo, state SkillState) *SkillMetadata {
+	meta := &SkillMetadata{
+		Name:        info.Name,
+		Description: info.Description,
+		Dir:         info.Dir,
+		State:       state,
+		Labels:      make(map[string]string),
+	}
+	for _, t := range info.Tools {
+		meta.Tools = append(meta.Tools, t.Name)
+	}
+	return meta
 }
 
 // Discover scans the skill directory and records all discovered skills.
@@ -94,18 +123,19 @@ func (sr *SkillRegistry) Discover() ([]*SkillMetadata, error) {
 	defer sr.mu.Unlock()
 
 	var discovered []*SkillMetadata
+	seen := make(map[string]struct{}, len(skills))
 	for _, info := range skills {
-		meta := &SkillMetadata{
-			Name:        info.Name,
-			Description: info.Description,
-			Dir:         info.Dir,
-			State:       SkillDiscovered,
-			Labels:      make(map[string]string),
+		if info == nil || strings.TrimSpace(info.Name) == "" {
+			continue
 		}
-		for _, t := range info.Tools {
-			meta.Tools = append(meta.Tools, t.Name)
+		if _, ok := seen[info.Name]; ok {
+			return nil, fmt.Errorf("duplicate skill id: %s", info.Name)
 		}
+		seen[info.Name] = struct{}{}
+
+		meta := skillMetadataFromInfo(info, SkillDiscovered)
 		sr.skills[info.Name] = meta
+		sr.infos[info.Name] = info
 		discovered = append(discovered, meta)
 	}
 
@@ -146,7 +176,14 @@ func (sr *SkillRegistry) Load(name string) error {
 	}
 
 	from := meta.State
+	if strings.TrimSpace(info.Name) != "" && info.Name != name {
+		delete(sr.skills, name)
+		delete(sr.infos, name)
+		name = info.Name
+		meta.Name = info.Name
+	}
 	meta.Description = info.Description
+	meta.Dir = info.Dir
 	meta.Tools = nil
 	for _, t := range info.Tools {
 		meta.Tools = append(meta.Tools, t.Name)
@@ -154,6 +191,8 @@ func (sr *SkillRegistry) Load(name string) error {
 	meta.State = SkillLoaded
 	meta.LoadedAt = time.Now()
 	meta.Error = ""
+	sr.skills[name] = meta
+	sr.infos[name] = info
 
 	sr.notifyWatchers(name, from, SkillLoaded)
 	return nil
@@ -179,6 +218,75 @@ func (sr *SkillRegistry) LoadAll() error {
 	return nil
 }
 
+// Validate checks whether a loaded skill can be registered safely.
+func (sr *SkillRegistry) Validate(name string) error {
+	sr.mu.RLock()
+	defer sr.mu.RUnlock()
+	return sr.validateLocked(name)
+}
+
+func (sr *SkillRegistry) validateLocked(name string) error {
+	if sr.registry == nil {
+		return fmt.Errorf("tool registry not configured")
+	}
+	meta, ok := sr.skills[name]
+	if !ok {
+		return fmt.Errorf("skill not found: %s", name)
+	}
+	info, ok := sr.infos[name]
+	if !ok || info == nil {
+		return fmt.Errorf("skill %s has no loaded definition", name)
+	}
+	if strings.TrimSpace(meta.Name) == "" || strings.TrimSpace(info.Name) == "" {
+		return fmt.Errorf("skill id is required")
+	}
+	if strings.TrimSpace(meta.Dir) == "" || strings.TrimSpace(info.Dir) == "" {
+		return fmt.Errorf("skill %s directory is required", name)
+	}
+	for _, dep := range meta.Dependencies {
+		if strings.TrimSpace(dep) == "" {
+			continue
+		}
+		if _, ok := sr.skills[dep]; !ok {
+			return fmt.Errorf("skill %s depends on unknown skill %s", name, dep)
+		}
+	}
+
+	seenTools := make(map[string]struct{}, len(info.Tools))
+	for _, toolDef := range info.Tools {
+		toolName := strings.TrimSpace(toolDef.Name)
+		if toolName == "" {
+			return fmt.Errorf("skill %s has a tool with empty name", name)
+		}
+		if _, ok := seenTools[toolName]; ok {
+			return fmt.Errorf("skill %s has duplicate tool %s", name, toolName)
+		}
+		seenTools[toolName] = struct{}{}
+	}
+
+	return nil
+}
+
+// ValidateAll checks all loaded skills before registration.
+func (sr *SkillRegistry) ValidateAll() error {
+	sr.mu.RLock()
+	names := make([]string, 0, len(sr.skills))
+	for name, meta := range sr.skills {
+		switch meta.State {
+		case SkillLoaded, SkillRegistered, SkillEnabled, SkillDisabled:
+			names = append(names, name)
+		}
+	}
+	sr.mu.RUnlock()
+
+	for _, name := range names {
+		if err := sr.Validate(name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Register registers a skill's tools into the tool Registry and transitions to SkillRegistered.
 func (sr *SkillRegistry) Register(name string) error {
 	sr.mu.Lock()
@@ -197,22 +305,29 @@ func (sr *SkillRegistry) Register(name string) error {
 		return nil // already registered
 	}
 
+	if err := sr.validateLocked(name); err != nil {
+		meta.State = SkillError
+		meta.Error = err.Error()
+		return err
+	}
+	info := sr.infos[name]
+	executor := sr.executor
+	if executor == nil {
+		executor = NewSkillExecutor()
+		sr.executor = executor
+	}
+
 	// Register tools into the tool registry
-	for _, toolName := range meta.Tools {
-		fullName := fmt.Sprintf("skill_%s_%s", name, toolName)
+	for _, toolDef := range info.Tools {
+		fullName := fmt.Sprintf("skill_%s_%s", name, toolDef.Name)
 		if _, exists := sr.registry.Get(fullName); !exists {
-			tool := &Tool{
-				Name:        fullName,
-				Description: fmt.Sprintf("Skill tool from %s: %s", name, toolName),
-				Category:    CatSkill,
-				Source:      name,
-				Permission:  PermApprove,
-				Enabled:     false, // disabled until skill is enabled
-				Parameters:  map[string]Param{},
-				Handler: func(args map[string]any) (string, error) {
-					return fmt.Sprintf("Skill tool '%s' from '%s' — handler not implemented", toolName, name), nil
-				},
+			handler, err := executor.HandlerFor(info, toolDef)
+			if err != nil {
+				meta.State = SkillError
+				meta.Error = err.Error()
+				return fmt.Errorf("build skill tool %s: %w", fullName, err)
 			}
+			tool := newSkillToolFromDef(info, toolDef, handler)
 			sr.registry.Register(tool)
 			// Registry.Register forces Enabled=true, so we disable it again
 			sr.registry.Disable(fullName)
@@ -228,10 +343,15 @@ func (sr *SkillRegistry) Register(name string) error {
 
 // RegisterAll registers all loaded skills.
 func (sr *SkillRegistry) RegisterAll() error {
+	order, err := sr.ResolveLoadOrder()
+	if err != nil {
+		return err
+	}
+
 	sr.mu.RLock()
 	names := make([]string, 0, len(sr.skills))
-	for name, meta := range sr.skills {
-		if meta.State == SkillLoaded {
+	for _, name := range order {
+		if meta := sr.skills[name]; meta != nil && meta.State == SkillLoaded {
 			names = append(names, name)
 		}
 	}
@@ -239,6 +359,26 @@ func (sr *SkillRegistry) RegisterAll() error {
 
 	for _, name := range names {
 		if err := sr.Register(name); err != nil {
+			continue
+		}
+	}
+	return nil
+}
+
+// EnableAll enables every registered or disabled skill.
+func (sr *SkillRegistry) EnableAll() error {
+	sr.mu.RLock()
+	names := make([]string, 0, len(sr.skills))
+	for name, meta := range sr.skills {
+		if meta.State == SkillRegistered || meta.State == SkillDisabled {
+			names = append(names, name)
+		}
+	}
+	sr.mu.RUnlock()
+	sort.Strings(names)
+
+	for _, name := range names {
+		if err := sr.Enable(name); err != nil {
 			continue
 		}
 	}
@@ -353,6 +493,27 @@ func (sr *SkillRegistry) List() []*SkillMetadata {
 	return result
 }
 
+// SkillInfos returns loaded skill definitions sorted by name.
+func (sr *SkillRegistry) SkillInfos() []*SkillInfo {
+	sr.mu.RLock()
+	defer sr.mu.RUnlock()
+
+	result := make([]*SkillInfo, 0, len(sr.infos))
+	for _, info := range sr.infos {
+		if info == nil {
+			continue
+		}
+		copyInfo := *info
+		copyInfo.Aliases = append([]string(nil), info.Aliases...)
+		copyInfo.Tools = append([]SkillToolDef(nil), info.Tools...)
+		result = append(result, &copyInfo)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+	return result
+}
+
 // ListByState returns skills filtered by state.
 func (sr *SkillRegistry) ListByState(state SkillState) []*SkillMetadata {
 	sr.mu.RLock()
@@ -379,7 +540,7 @@ func (sr *SkillRegistry) ResolveLoadOrder() ([]string, error) {
 	defer sr.mu.RUnlock()
 
 	// Build adjacency list
-	graph := make(map[string][]string)   // skill -> skills it depends on
+	graph := make(map[string][]string) // skill -> skills it depends on
 	inDegree := make(map[string]int)
 
 	for name := range sr.skills {

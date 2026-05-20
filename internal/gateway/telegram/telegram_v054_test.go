@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -43,6 +44,10 @@ func (c *mockBotClient) Do(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("mock bot client: nil handler")
 	}
 	result := c.handler(req)
+	if req.Body != nil {
+		_, _ = io.Copy(io.Discard, req.Body)
+		_ = req.Body.Close()
+	}
 	body, err := json.Marshal(result)
 	if err != nil {
 		return nil, err
@@ -205,6 +210,20 @@ func TestV054SendWithMockBot(t *testing.T) {
 
 	ctx := context.Background()
 	err = adapter.Send(ctx, "12345", "hello world")
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054SendHTMLWithMockBot(t *testing.T) {
+	adapter, server, err := newAdapterWithMockBot()
+	if err != nil {
+		t.Fatalf("failed to create adapter: %v", err)
+	}
+	defer server.Close()
+
+	ctx := context.Background()
+	err = adapter.SendHTML(ctx, "12345", "<b>工具调用</b>\n<pre><code>web_search: test ✅</code></pre>")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -705,14 +724,41 @@ func TestV054SendTypingLoopInvalidChatID(t *testing.T) {
 // ============================================================
 
 func TestV054ReactToMessageWithMockBot(t *testing.T) {
-	adapter, server, err := newAdapterWithMockBot()
+	reactionSeen := make(chan url.Values, 1)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMessageReaction") {
+			_ = r.ParseForm()
+			reactionSeen <- r.Form
+		}
+		return defaultMockBotResponse(r)
+	})
 	if err != nil {
-		t.Fatalf("failed to create adapter: %v", err)
+		t.Fatalf("failed to create mock bot: %v", err)
 	}
-	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.botUsername = "testbot"
+	adapter.running = true
 
 	adapter.ReactToMessage("12345", "1", "👍")
-	time.Sleep(100 * time.Millisecond)
+
+	select {
+	case form := <-reactionSeen:
+		if got := form.Get("chat_id"); got != "12345" {
+			t.Fatalf("chat_id = %q, want 12345", got)
+		}
+		if got := form.Get("message_id"); got != "1" {
+			t.Fatalf("message_id = %q, want 1", got)
+		}
+		if got := form.Get("reaction"); !strings.Contains(got, `"emoji":"👍"`) {
+			t.Fatalf("reaction = %q, want thumbs-up emoji payload", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected setMessageReaction request")
+	}
 }
 
 func TestV054ReactToMessageNilBot(t *testing.T) {
@@ -748,13 +794,36 @@ func TestV054ReactToMessageInvalidMessageID(t *testing.T) {
 // ============================================================
 
 func TestV054CallSetMessageReactionWithMockBot(t *testing.T) {
-	adapter, server, err := newAdapterWithMockBot()
+	reactionSeen := make(chan url.Values, 1)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMessageReaction") {
+			_ = r.ParseForm()
+			reactionSeen <- r.Form
+		}
+		return defaultMockBotResponse(r)
+	})
 	if err != nil {
-		t.Fatalf("failed to create adapter: %v", err)
+		t.Fatalf("failed to create mock bot: %v", err)
 	}
-	defer server.Close()
 
-	adapter.callSetMessageReaction(12345, 1, "👍")
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.botUsername = "testbot"
+	adapter.running = true
+
+	if err := adapter.callSetMessageReaction(12345, 1, "👍"); err != nil {
+		t.Fatalf("callSetMessageReaction error = %v", err)
+	}
+	select {
+	case form := <-reactionSeen:
+		if got := form.Get("chat_id"); got != "12345" {
+			t.Fatalf("chat_id = %q, want 12345", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected setMessageReaction request")
+	}
 }
 
 // ============================================================
@@ -768,9 +837,13 @@ func TestV054CallTelegramAPIWithMockBot(t *testing.T) {
 	}
 	defer server.Close()
 
-	// callTelegramAPI 有 bug：body 未分配空间，Read 会失败
-	// 但不应该 panic
-	_, _ = adapter.callTelegramAPI("getMe", nil)
+	body, err := adapter.callTelegramAPI("getMe", nil)
+	if err != nil {
+		t.Fatalf("callTelegramAPI error = %v", err)
+	}
+	if len(body) == 0 {
+		t.Fatal("expected callTelegramAPI response body")
+	}
 }
 
 // ============================================================
@@ -2593,7 +2666,9 @@ type mockAgentProvider struct {
 	memoryVal     *memory.Store
 	chatFunc      func(ctx context.Context, userInput string) (string, error)
 	chatSessFn    func(ctx context.Context, sessionID, userInput string) (string, error)
+	chatInputFn   func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
 	chatStreamFn  func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	chatStreamIn  func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 	progressFn    func(ctx context.Context, userInput string, round int, observations []string) (string, error)
 	analyzeFn     func(ctx context.Context, attachments []gateway.Attachment) (string, error)
 	switchModelFn func(modelID string) error
@@ -2644,9 +2719,32 @@ func (m *mockAgentProvider) ChatWithSession(ctx context.Context, sessionID, user
 	return "mock response", nil
 }
 
+func (m *mockAgentProvider) ChatWithSessionInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error) {
+	if m.chatInputFn != nil {
+		return m.chatInputFn(ctx, sessionID, input)
+	}
+	if m.chatSessFn != nil {
+		return m.chatSessFn(ctx, sessionID, input.RoutingText)
+	}
+	return "mock response", nil
+}
+
 func (m *mockAgentProvider) ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
 	if m.chatStreamFn != nil {
 		return m.chatStreamFn(ctx, sessionID, userInput)
+	}
+	ch := make(chan agent.ChatEvent, 1)
+	ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "mock response"}
+	close(ch)
+	return ch, nil
+}
+
+func (m *mockAgentProvider) ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+	if m.chatStreamIn != nil {
+		return m.chatStreamIn(ctx, sessionID, input)
+	}
+	if m.chatStreamFn != nil {
+		return m.chatStreamFn(ctx, sessionID, input.RoutingText)
 	}
 	ch := make(chan agent.ChatEvent, 1)
 	ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "mock response"}
@@ -3285,7 +3383,7 @@ func TestV054HandleChatEmpty(t *testing.T) {
 		Args:      "",
 	}
 
-	err := handler.handleChat(ctx, msg, "")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput(""))
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -3308,7 +3406,7 @@ func TestV054HandleChatWithText(t *testing.T) {
 		Args:      "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -3333,7 +3431,7 @@ func TestV054HandleChatGroupWithSender(t *testing.T) {
 		Text:           "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -3509,7 +3607,7 @@ func TestV054HandleChatStreamError(t *testing.T) {
 		Text: "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error (error handled gracefully), got: %v", err)
 	}
@@ -3533,7 +3631,7 @@ func TestV054HandleChatStreamTimeout(t *testing.T) {
 		Text: "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error (timeout handled gracefully), got: %v", err)
 	}
@@ -3557,7 +3655,7 @@ func TestV054HandleChatStream503(t *testing.T) {
 		Text: "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error (503 handled gracefully), got: %v", err)
 	}
@@ -3586,7 +3684,7 @@ func TestV054HandleChatStreamSuccess(t *testing.T) {
 		Text: "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -3617,7 +3715,7 @@ func TestV054HandleChatStreamWithToolCall(t *testing.T) {
 		Text: "search for test",
 	}
 
-	err := handler.handleChat(ctx, msg, "search for test")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("search for test"))
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
 	}
@@ -3645,7 +3743,7 @@ func TestV054HandleChatStreamUnexpectedClose(t *testing.T) {
 	}
 	sender := &mockStreamSender{}
 
-	err := handler.handleChatStream(context.Background(), sender, msg, "hello", handler.getSessionID("12345"))
+	err := handler.handleChatStream(context.Background(), sender, msg, agent.TextUserTurnInput("hello"), handler.getSessionID("12345"))
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -3682,7 +3780,7 @@ func TestV054HandleChatStreamProgressAsSeparateMessages(t *testing.T) {
 	}
 	sender := &mockStreamSender{}
 
-	err := handler.handleChatStream(context.Background(), sender, msg, "search for test", handler.getSessionID("12345"))
+	err := handler.handleChatStream(context.Background(), sender, msg, agent.TextUserTurnInput("search for test"), handler.getSessionID("12345"))
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -3724,12 +3822,96 @@ func TestV054HandleChatStreamNaturalProgressFinalOnly(t *testing.T) {
 	}
 	sender := &mockStreamSender{}
 
-	err := handler.handleChatStream(context.Background(), sender, msg, "status report", handler.getSessionID("12345"))
+	err := handler.handleChatStream(context.Background(), sender, msg, agent.TextUserTurnInput("status report"), handler.getSessionID("12345"))
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	if sender.content.Len() != 0 {
 		t.Fatalf("expected no streaming append in natural progress mode, got content length %d", sender.content.Len())
+	}
+}
+
+func TestV054HandleChatNarrativeStreamHidesInternalProgressMarkers(t *testing.T) {
+	var sentTexts []string
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "sendMessage") {
+			_ = r.ParseForm()
+			sentTexts = append(sentTexts, r.Form.Get("text"))
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.botUsername = "testbot"
+	adapter.running = true
+
+	sessMgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+
+	mockAgent := &mockAgentProvider{
+		sessions: sessMgr,
+		configSnap: agentConfigSnapshot{
+			ProgressAsMessages:        true,
+			ProgressAsNaturalLanguage: true,
+		},
+		chatStreamIn: func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			ch := make(chan agent.ChatEvent, 6)
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "skill_run", Args: `{"skill_name":"content"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "skill_run", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 2)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "最终答案"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "最终答案"}
+			close(ch)
+			return ch, nil
+		},
+		toolsVal:   tool.NewRegistry(),
+		skillsVal:  []*tool.SkillInfo{},
+		cronEngine: cron.NewEngine(),
+		metricsVal: metrics.NewMetrics(),
+	}
+
+	handler := &Handler{
+		adapter:                   adapter,
+		agent:                     mockAgent,
+		chat:                      mockAgent,
+		sessions:                  make(map[string]string),
+		chatStreamTimeout:         defaultChatStreamTimeout,
+		progressAsMessages:        true,
+		progressAsNaturalLanguage: true,
+		progressSummaryWithLLM:    true,
+	}
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "帮我处理一下",
+	}
+
+	err = handler.handleChat(context.Background(), msg, agent.TextUserTurnInput("帮我处理一下"))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(sentTexts) != 2 {
+		t.Fatalf("expected one progress message and one final message, got %d: %#v", len(sentTexts), sentTexts)
+	}
+	if strings.Contains(sentTexts[0], "Thinking...") || strings.Contains(sentTexts[0], "content") {
+		t.Fatalf("expected progress message to hide internal markers, got %q", sentTexts[0])
+	}
+	if sentTexts[1] != "最终答案" {
+		t.Fatalf("expected final answer only, got %q", sentTexts[1])
 	}
 }
 
@@ -3766,7 +3948,7 @@ func TestV054HandleChatStreamErrorEvent(t *testing.T) {
 		Text: "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error (error event handled gracefully), got: %v", err)
 	}
@@ -3793,7 +3975,7 @@ func TestV054HandleChatStreamError524(t *testing.T) {
 		Text: "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error (524 error handled gracefully), got: %v", err)
 	}
@@ -3820,7 +4002,7 @@ func TestV054HandleChatStreamError429(t *testing.T) {
 		Text: "hello",
 	}
 
-	err := handler.handleChat(ctx, msg, "hello")
+	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error (429 error handled gracefully), got: %v", err)
 	}

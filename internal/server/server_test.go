@@ -18,15 +18,48 @@ import (
 // createTestAgent 创建测试用 Agent（使用临时目录，不污染生产数据）
 func createTestAgent(t *testing.T) *agent.Agent {
 	t.Helper()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
 	tmpDir := t.TempDir()
 	mgr, err := config.NewManagerWithDir(tmpDir)
 	if err != nil {
 		t.Fatalf("create config manager: %v", err)
 	}
+	if err := mgr.Set("provider", "openai"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	if err := mgr.Set("api_key", "sk-test"); err != nil {
+		t.Fatalf("set api_key: %v", err)
+	}
+	if err := mgr.Set("api_base", upstream.URL); err != nil {
+		t.Fatalf("set api_base: %v", err)
+	}
+	if err := mgr.Set("model", "gpt-test"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
 	a, err := agent.New(mgr)
 	if err != nil {
 		t.Fatalf("create agent: %v", err)
 	}
+	t.Cleanup(func() { _ = a.Close() })
 	return a
 }
 
@@ -252,6 +285,9 @@ func TestHandleStats(t *testing.T) {
 	if resp["version"] != "v0.21.0" {
 		t.Errorf("expected v0.21.0, got %v", resp["version"])
 	}
+	if _, ok := resp["context_cache"]; !ok {
+		t.Error("expected context_cache in response")
+	}
 }
 
 func TestHandleSoul(t *testing.T) {
@@ -340,7 +376,7 @@ func TestHandleChatSyncRunsLoopOncePerRequest(t *testing.T) {
 	if err := mgr.Set("api_base", upstream.URL); err != nil {
 		t.Fatalf("set api_base: %v", err)
 	}
-	if err := mgr.Set("model", "gpt-4o-mini"); err != nil {
+	if err := mgr.Set("model", "gpt-test"); err != nil {
 		t.Fatalf("set model: %v", err)
 	}
 
@@ -653,24 +689,24 @@ func TestServerStats(t *testing.T) {
 	}
 }
 
-func TestEventTypeString(t *testing.T) {
+func TestChatEventTypeString(t *testing.T) {
 	tests := []struct {
-		input    agent.EventType
+		input    agent.ChatEventType
 		expected string
 	}{
-		{0, "reason"},    // EventReason
-		{1, "act"},       // EventAct
-		{2, "observe"},   // EventObserve
-		{3, "content"},   // EventContent
-		{4, "done"},      // EventDone
-		{5, "error"},     // EventError
-		{99, "unknown"},  // Unknown
+		{agent.ChatEventThinking, "reason"},
+		{agent.ChatEventToolCall, "act"},
+		{agent.ChatEventToolResult, "observe"},
+		{agent.ChatEventContent, "content"},
+		{agent.ChatEventDone, "done"},
+		{agent.ChatEventError, "error"},
+		{99, "unknown"}, // Unknown
 	}
 
 	for _, tt := range tests {
-		result := eventTypeString(tt.input)
+		result := chatEventTypeString(tt.input)
 		if result != tt.expected {
-			t.Errorf("eventTypeString(%d) = %s, want %s", tt.input, result, tt.expected)
+			t.Errorf("chatEventTypeString(%d) = %s, want %s", tt.input, result, tt.expected)
 		}
 	}
 }

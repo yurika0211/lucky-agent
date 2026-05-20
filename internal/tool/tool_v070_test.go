@@ -4,6 +4,7 @@
 package tool
 
 import (
+	"os"
 	"testing"
 )
 
@@ -30,11 +31,14 @@ func TestHandleWebSearchQueryValidation(t *testing.T) {
 
 	// 注意：空字符串 query 在实现中是允许的（会搜索空字符串）
 	// 这里只验证函数不会 panic
-	_, _ = handleWebSearch(cfg, map[string]any{"query": ""})
+	if os.Getenv("LH_RUN_LIVE_SEARCH_TESTS") == "1" {
+		_, _ = handleWebSearch(cfg, map[string]any{"query": ""})
+	}
 }
 
 // TestHandleWebSearchCountParameter 测试 handleWebSearch count 参数处理
 func TestHandleWebSearchCountParameter(t *testing.T) {
+	skipLiveSearchTest(t)
 	cfg := &WebSearchConfig{
 		Provider:   "brave",
 		MaxResults: 5,
@@ -45,12 +49,12 @@ func TestHandleWebSearchCountParameter(t *testing.T) {
 		count    any
 		expected int
 	}{
-		{"no count", nil, 5},           // 使用默认 MaxResults
+		{"no count", nil, 5}, // 使用默认 MaxResults
 		{"count as int", 3, 3},
 		{"count as float64", float64(7), 7},
-		{"count too small", 0, 1},      // 最小值为 1
-		{"count negative", -5, 1},      // 负数也限制为 1
-		{"count too large", 15, 10},    // 最大值为 10
+		{"count too small", 0, 1},            // 最小值为 1
+		{"count negative", -5, 1},            // 负数也限制为 1
+		{"count too large", 15, 10},          // 最大值为 10
 		{"count string (invalid)", "abc", 5}, // 无效类型使用默认值
 	}
 
@@ -71,6 +75,7 @@ func TestHandleWebSearchCountParameter(t *testing.T) {
 
 // TestHandleWebSearchModeParameter 测试 handleWebSearch mode 参数处理
 func TestHandleWebSearchModeParameter(t *testing.T) {
+	skipLiveSearchTest(t)
 	cfg := &WebSearchConfig{
 		Provider:   "brave",
 		MaxResults: 5,
@@ -104,6 +109,7 @@ func TestHandleWebSearchModeParameter(t *testing.T) {
 
 // TestHandleWebSearchProviderFallback 测试 handleWebSearch provider 配置
 func TestHandleWebSearchProviderFallback(t *testing.T) {
+	skipLiveSearchTest(t)
 	tests := []struct {
 		name     string
 		provider string

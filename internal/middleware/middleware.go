@@ -179,17 +179,31 @@ func (m *CostTrackingMiddleware) InterceptChat(ctx context.Context, info CallInf
 		return resp, err
 	}
 
-	// Record cost
 	promptTokens := estimateTokens(info.Messages)
+	cachedPromptTokens := 0
+	cacheCreation5MTokens := 0
+	cacheCreation1HTokens := 0
 	completionTokens := 0
-	if resp != nil {
-		completionTokens = resp.TokensUsed - promptTokens
-		if completionTokens < 0 {
-			completionTokens = 0
+	if resp != nil && resp.Usage != nil {
+		if resp.Usage.PromptTokens > 0 {
+			promptTokens = resp.Usage.PromptTokens
 		}
+		cachedPromptTokens = resp.Usage.CachedPromptTokens
+		cacheCreation5MTokens = resp.Usage.CacheCreation5MTokens
+		cacheCreation1HTokens = resp.Usage.CacheCreation1HTokens
+		if resp.Usage.CompletionTokens > 0 {
+			completionTokens = resp.Usage.CompletionTokens
+		} else {
+			completionTokens = resp.TokensUsed - promptTokens
+		}
+	} else if resp != nil {
+		completionTokens = resp.TokensUsed - promptTokens
+	}
+	if completionTokens < 0 {
+		completionTokens = 0
 	}
 
-	m.store.RecordCall(m.idGen(), info.Provider, info.Model, m.sessionID, promptTokens, completionTokens)
+	m.store.RecordCallDetailed(m.idGen(), info.Provider, info.Model, m.sessionID, promptTokens, cachedPromptTokens, cacheCreation5MTokens, cacheCreation1HTokens, completionTokens)
 	return resp, nil
 }
 
@@ -205,11 +219,33 @@ func (m *CostTrackingMiddleware) InterceptChatStream(ctx context.Context, info C
 	go func() {
 		defer close(wrappedCh)
 		completionTokens := 0
+		promptTokensActual := 0
+		cachedPromptTokens := 0
+		cacheCreation5MTokens := 0
+		cacheCreation1HTokens := 0
+		sawCompletionUsage := false
 		for chunk := range ch {
-			completionTokens += len(chunk.Content) / 4 // rough estimate
+			if chunk.Usage != nil {
+				if chunk.Usage.PromptTokens > 0 {
+					promptTokensActual = chunk.Usage.PromptTokens
+				}
+				if chunk.Usage.CompletionTokens > 0 {
+					completionTokens = chunk.Usage.CompletionTokens
+					sawCompletionUsage = true
+				}
+				cachedPromptTokens = chunk.Usage.CachedPromptTokens
+				cacheCreation5MTokens = chunk.Usage.CacheCreation5MTokens
+				cacheCreation1HTokens = chunk.Usage.CacheCreation1HTokens
+			}
+			if !sawCompletionUsage {
+				completionTokens += len(chunk.Content) / 4 // rough estimate
+			}
 			wrappedCh <- chunk
 		}
-		m.store.RecordCall(m.idGen(), info.Provider, info.Model, m.sessionID, promptTokens, completionTokens)
+		if promptTokensActual > 0 {
+			promptTokens = promptTokensActual
+		}
+		m.store.RecordCallDetailed(m.idGen(), info.Provider, info.Model, m.sessionID, promptTokens, cachedPromptTokens, cacheCreation5MTokens, cacheCreation1HTokens, completionTokens)
 	}()
 
 	return wrappedCh, nil

@@ -419,6 +419,25 @@ func (m *Manager) Get(id string) (*Session, bool) {
 	return s, ok
 }
 
+// Ensure 获取指定 ID 的会话；若不存在则创建一个同 ID 新会话。
+func (m *Manager) Ensure(id string) *Session {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if id == "" {
+		id = fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	if s, ok := m.sessions[id]; ok {
+		return s
+	}
+
+	s := NewSession(id, m.dir)
+	s.messagesLoaded = true
+	s.messageCount = 0
+	m.sessions[id] = s
+	return s
+}
+
 // List 列出所有会话
 func (m *Manager) List() []*Session {
 	m.mu.RLock()

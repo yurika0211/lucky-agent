@@ -6,12 +6,13 @@ import (
 )
 
 var (
-	toolProtocolBlockRe = regexp.MustCompile(`(?is)<tool_call>.*?</tool_call>`)
-	toolProtocolJSONRe  = regexp.MustCompile(`(?i)^\s*\{\s*"(name|tool|tool_name|command)"\s*:`)
-	toolProtocolToRe    = regexp.MustCompile(`(?i)^\{?\s*to=[a-z0-9_\-]+`)
-	toolProtocolPunctRe = regexp.MustCompile(`^[\{\}\[\]\(\)!",:\.\-\+\s]+$`)
-	toolProtocolNameRe  = regexp.MustCompile(`(?i)^[a-z][a-z0-9_\-]{1,40}$`)
-	toolMetaLeakRe      = regexp.MustCompile(`(?i)(commentary channel|analysis channel|tool call syntax|tool-call syntax|assistant to=|as chatgpt|let'?s attempt|hidden parser|function_call object|need infer|maybe the tool call)`)
+	toolProtocolBlockRe     = regexp.MustCompile(`(?is)<tool_call>.*?</tool_call>`)
+	toolProtocolTextCallsRe = regexp.MustCompile(`(?is)<\s*(?:\|\|DSML\|\||｜｜DSML｜｜)?tool_calls\s*>.*?</\s*(?:\|\|DSML\|\||｜｜DSML｜｜)?tool_calls\s*>`)
+	toolProtocolJSONRe      = regexp.MustCompile(`(?i)^\s*\{\s*"(name|tool|tool_name|command)"\s*:`)
+	toolProtocolToRe        = regexp.MustCompile(`(?i)^\{?\s*to=[a-z0-9_\-]+`)
+	toolProtocolPunctRe     = regexp.MustCompile(`^[\{\}\[\]\(\)!",:\.\-\+\s]+$`)
+	toolProtocolNameRe      = regexp.MustCompile(`(?i)^[a-z][a-z0-9_\-]{1,40}$`)
+	toolMetaLeakRe          = regexp.MustCompile(`(?i)(commentary channel|analysis channel|tool call syntax|tool-call syntax|assistant to=|as chatgpt|let'?s attempt|hidden parser|function_call object|need infer|maybe the tool call)`)
 )
 
 const ToolProtocolFilteredFallback = "已完成处理。内部工具调用日志已自动隐藏。"
@@ -29,6 +30,7 @@ func SanitizeToolProtocolOutput(input string) string {
 	}
 
 	text := toolProtocolBlockRe.ReplaceAllString(raw, "")
+	text = toolProtocolTextCallsRe.ReplaceAllString(text, "")
 	lines := strings.Split(text, "\n")
 	kept := make([]string, 0, len(lines))
 	removed := 0
@@ -57,6 +59,9 @@ func SanitizeToolProtocolOutput(input string) string {
 			toolProtocolJSONRe.MatchString(trimmed) ||
 			strings.Contains(lower, "<tool_call>") ||
 			strings.Contains(lower, "</tool_call>") ||
+			strings.Contains(lower, "tool_calls>") ||
+			strings.Contains(lower, "<｜｜dsml｜｜") ||
+			strings.Contains(lower, "<||dsml||") ||
 			trimmed == "```" ||
 			strings.HasPrefix(lower, "```json") ||
 			strings.HasPrefix(lower, "```tool") {

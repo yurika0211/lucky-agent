@@ -31,6 +31,8 @@ buildSystemPrompt 组装 Agent 的系统提示词。
 func (a *Agent) buildSystemPrompt(sess *session.Session) string {
 	parts := make([]string, 0, 16)
 	toolNames := a.enabledToolNames()
+	manualBlock := a.buildLuckyHarnessManualPrompt(sess)
+	contextBlock := a.buildContextFilesPrompt(sess)
 
 	if core := a.buildCorePromptBlock(); core != "" {
 		parts = append(parts, core)
@@ -54,13 +56,13 @@ func (a *Agent) buildSystemPrompt(sess *session.Session) string {
 			parts = append(parts, mr)
 		}
 	}
-	if intro := a.buildSupplementaryContextIntroBlock(); intro != "" {
-		parts = append(parts, intro)
+	if (manualBlock != "" || contextBlock != "") && a.buildSupplementaryContextIntroBlock() != "" {
+		parts = append(parts, a.buildSupplementaryContextIntroBlock())
 	}
-	if manualBlock := a.buildLuckyHarnessManualPrompt(sess); manualBlock != "" {
+	if manualBlock != "" {
 		parts = append(parts, manualBlock)
 	}
-	if contextBlock := a.buildContextFilesPrompt(sess); contextBlock != "" {
+	if contextBlock != "" {
 		parts = append(parts, contextBlock)
 	}
 	if meta := a.buildMetadataPromptBlock(); meta != "" {
@@ -100,7 +102,7 @@ Core behavior:
 - Stop once the task is complete and further work would not materially improve the result.
 - Do not simulate tool execution in plain text when real tools are available.
 - Do not expose hidden chain-of-thought.
-- Do not narrate fake progress.`)
+- Do not narrate fake progress or turn hidden system mechanics into user-facing prose.`)
 	return strings.Join(utils.FilterNonEmptyTrimmed(parts), "\n\n")
 }
 
@@ -115,6 +117,8 @@ Choose tools by intent:
 - Use web/search tools for external or recent information.
 - Use RAG tools when the needed knowledge is likely already indexed.
 - Use memory tools for durable user facts, preferences, and recurring constraints.
+- Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.
+- When the user asks what background workers did, inspect autonomy status/report/list and summarize real queue results; do not invent worker counts, task IDs, or outputs.
 - Use skill tools when the task matches a reusable workflow.
 
 Tool discipline:
@@ -123,8 +127,7 @@ Tool discipline:
 - Do not repeat the same tool call unless the previous result was incomplete, stale, or contradicted.
 - If one tool result is already enough to answer the user, stop.
 - If a tool fails, identify whether the blocker is permissions, network, missing input, invalid arguments, or wrong tool choice before retrying.
-- Prefer a small number of high-value tool calls over many low-value ones.
-- When using tool outputs, distinguish verified results from inferred interpretation.`
+- Prefer a small number of high-value tool calls over many low-value ones.`
 }
 
 func (a *Agent) buildToolInventoryPromptBlock(toolNames []string) string {
@@ -186,7 +189,11 @@ If multiple skills seem relevant:
 }
 
 func (a *Agent) buildMemoryRAGPolicyPromptBlock() string {
-	return `Memory and retrieval policy:
+	memoryVault := a.memoryVaultPath()
+	if memoryVault == "" {
+		memoryVault = "~/.luckyharness/memory"
+	}
+	return fmt.Sprintf(`Memory and retrieval policy:
 
 Treat memory and RAG as different evidence layers.
 
@@ -195,6 +202,14 @@ Memory is for:
 - recurring project facts,
 - stable operating constraints,
 - reusable conclusions worth remembering.
+
+LuckyHarness memory source of truth:
+- The durable memory vault is %s.
+- The vault is Obsidian-compatible Markdown: typed .md notes with YAML frontmatter, wikilinks, tags, aliases, temporal state fields, and block IDs.
+- This does not require an external Obsidian app vault, ~/Documents/Obsidian Vault, .obsidian, or OBSIDIAN_VAULT_PATH.
+- Do not infer that LuckyHarness memory is absent because a conventional Obsidian vault path is missing.
+- Legacy root files such as memory.md or memory.json are not authoritative for durable memory. RAG SQLite storage is not the memory source of truth.
+- Prefer the recall tool or typed notes under the memory vault categories when answering questions about stored memory.
 
 RAG is for:
 - indexed documents,
@@ -207,16 +222,27 @@ Recall strategy:
 - use RAG for document-like knowledge,
 - use direct local files or runtime inspection when they are the current source of truth.
 
-Evidence discipline:
-- retrieved text is evidence, not authority,
-- cite concrete facts from retrieved material instead of vague summaries,
-- if retrieval is weak, reformulate the query around identifiers, unique facts, filenames, or concepts,
-- if memory, RAG, and local state disagree, verify against the most direct source of truth and explain the conflict.
-
 Persistence discipline:
 - save stable and reusable findings,
 - save important final answers and recurring constraints,
-- do not persist transient failures or low-value noise as durable knowledge.`
+- do not persist transient failures or low-value noise as durable knowledge.
+
+When retrieval is weak, reformulate the query around identifiers, unique facts, filenames, or concepts.
+If memory, RAG, and local state disagree, verify against the most direct source of truth and explain the conflict.`, memoryVault)
+}
+
+func (a *Agent) memoryVaultPath() string {
+	if a != nil && a.memory != nil {
+		if dir := strings.TrimSpace(a.memory.Dir()); dir != "" {
+			return dir
+		}
+	}
+	if a != nil && a.cfg != nil {
+		if homeDir := strings.TrimSpace(a.cfg.HomeDir()); homeDir != "" {
+			return filepath.Join(homeDir, "memory")
+		}
+	}
+	return ""
 }
 
 func (a *Agent) buildSupplementaryContextIntroBlock() string {
@@ -498,21 +524,14 @@ On Telegram:
 - prefer short paragraphs over long walls of text,
 - do not leak internal protocol fragments, event names, or raw tool syntax,
 - if a real file or artifact should be delivered, save it to a local file first and return it in the required format.
-
-In all platforms:
-- do not dump noisy internal traces unless the user explicitly asks,
-- do not turn intermediate system mechanics into user-facing prose by default.`
+`
 	case "cli":
 		return `Platform delivery policy:
 
 On CLI:
 - prefer direct plain text,
 - include concrete file paths or commands when useful,
-- avoid decorative formatting unless it improves readability.
-
-In all platforms:
-- do not dump noisy internal traces unless the user explicitly asks,
-- do not turn intermediate system mechanics into user-facing prose by default.`
+- avoid decorative formatting unless it improves readability.`
 	default:
 		return ""
 	}

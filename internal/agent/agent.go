@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,7 +18,6 @@ import (
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/embedder"
-	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/memory"
@@ -88,44 +86,47 @@ type supportRuntime struct {
 
 // Agent 是 LuckyHarness 的核心 Agent
 type Agent struct {
-	cfg                *config.Manager
-	soul               *soul.Soul
-	tmplMgr            *soul.TemplateManager  // SOUL 模板管理器
-	provider           provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
-	registry           *provider.Registry     // provider 注册表
-	catalog            *provider.ModelCatalog // 模型目录
-	tokenStore         *provider.TokenStore   // token 存储
-	memory             *memory.Store
-	shortTerm          *memory.ShortTermBuffer // 短期记忆滑动窗口
-	midTerm            *memory.MidTermStore    // 中期会话摘要存储
-	sessions           *session.Manager
-	tools              *tool.Registry
-	gateway            *tool.Gateway           // 统一工具网关
-	msgGateway         *gateway.GatewayManager // 消息平台网关
-	mcpClient          *tool.MCPClient         // MCP 客户端
-	delegate           *tool.DelegateManager   // 子代理委派管理器
-	contextWin         *contextx.ContextWindow // 上下文窗口管理器
-	contextEst         *contextx.TokenEstimator
-	ragManager         *rag.RAGManager         // RAG 知识库管理器
-	ragPersist         *rag.Persistence        // RAG 持久化
-	streamIndexer      *rag.StreamIndexer      // 流式索引器
-	embedderReg        *embedder.Registry      // 嵌入模型注册表
-	collabReg          *collab.Registry        // Agent 协作注册表
-	collabMgr          *collab.DelegateManager // 协作任务管理器
-	skills             []*tool.SkillInfo       // 已加载的 skill 列表
-	metrics            *metrics.Metrics        // 指标收集器
-	cronEngine         *cron.Engine            // 定时任务引擎
-	cronStore          *cron.Store
-	autonomy           *autonomy.AutonomyKit // 自主工作套件
-	heartbeatSvc       *appheartbeat.Service
-	heartbeatMu        sync.Mutex
-	heartbeatSessionID string
-	recentTarget       recentChatTarget
-	contextCache       *contextMessageCache
-	mediaProcessor     *multimodal.Processor
-	chatCount          int // 对话计数，用于触发自动摘要
-	activeModel        string
-	activeAPIBase      string
+	cfg                   *config.Manager
+	soul                  *soul.Soul
+	tmplMgr               *soul.TemplateManager  // SOUL 模板管理器
+	provider              provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	registry              *provider.Registry     // provider 注册表
+	catalog               *provider.ModelCatalog // 模型目录
+	tokenStore            *provider.TokenStore   // token 存储
+	memory                *memory.Store
+	shortTerm             *memory.ShortTermBuffer // 短期记忆滑动窗口
+	midTerm               *memory.MidTermStore    // 中期会话摘要存储
+	sessions              *session.Manager
+	tools                 *tool.Registry
+	gateway               *tool.Gateway           // 统一工具网关
+	msgGateway            *gateway.GatewayManager // 消息平台网关
+	mcpClient             *tool.MCPClient         // MCP 客户端
+	delegate              *tool.DelegateManager   // 子代理委派管理器
+	contextWin            *contextx.ContextWindow // 上下文窗口管理器
+	contextEst            *contextx.TokenEstimator
+	ragManager            *rag.RAGManager         // RAG 知识库管理器
+	ragPersist            *rag.Persistence        // RAG 持久化
+	streamIndexer         *rag.StreamIndexer      // 流式索引器
+	embedderReg           *embedder.Registry      // 嵌入模型注册表
+	collabReg             *collab.Registry        // Agent 协作注册表
+	collabMgr             *collab.DelegateManager // 协作任务管理器
+	skills                []*tool.SkillInfo       // 已加载的 skill 列表
+	skillRegistry         *tool.SkillRegistry
+	metrics               *metrics.Metrics // 指标收集器
+	cronEngine            *cron.Engine     // 定时任务引擎
+	cronStore             *cron.Store
+	autonomy              *autonomy.AutonomyKit // 自主工作套件
+	autonomyResultsMu     sync.Mutex
+	autonomyResultsCancel context.CancelFunc
+	heartbeatSvc          *appheartbeat.Service
+	heartbeatMu           sync.Mutex
+	heartbeatSessionID    string
+	recentTarget          recentChatTarget
+	contextCache          *contextMessageCache
+	mediaProcessor        *multimodal.Processor
+	chatCount             int // 对话计数，用于触发自动摘要
+	activeModel           string
+	activeAPIBase         string
 }
 
 /*
@@ -375,7 +376,7 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	if midTermMaxSummaries <= 0 {
 		midTermMaxSummaries = 100
 	}
-	midTerm, err := memory.NewMidTermStore(cfg.HomeDir()+"/memory/midterm", midTermMaxSummaries)
+	midTerm, err := memory.NewMidTermStore(filepath.Join(cfg.HomeDir(), "memory", "30_Sessions"), midTermMaxSummaries)
 	if err != nil {
 		return memoryRuntime{}, fmt.Errorf("init midterm store: %w", err)
 	}
@@ -463,8 +464,82 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		MaxResults: c.WebSearch.MaxResults,
 		Proxy:      c.WebSearch.Proxy,
 	}
+	mediaProcessor := multimodal.NewProcessor()
+	var imageGenerator multimodal.ImageGenerator
+	var speechSynthesizer multimodal.SpeechSynthesizer
+	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
+		multimodal.ModalityText,
+		multimodal.ModalityImage,
+		multimodal.ModalityAudio,
+		multimodal.ModalityVideo,
+		multimodal.ModalityDocument,
+	), true)
+
+	mmCfg, mmOK := resolveOpenAIMultimodalConfig(c)
+	if mmOK {
+		if openaiMedia, mediaErr := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
+			APIKey:             mmCfg.APIKey,
+			APIBase:            mmCfg.APIBase,
+			ResponsesModel:     mmCfg.ImageModel,
+			TranscriptionModel: mmCfg.TranscriptionModel,
+		}); mediaErr == nil {
+			_ = mediaProcessor.RegisterProvider(openaiMedia, true)
+			imageGenerator = openaiMedia
+		}
+	}
+
+	if genCfg, ok := resolveImageGenerationConfig(c); ok {
+		switch genCfg.Provider {
+		case "gemini":
+			if geminiGenerator, err := multimodal.NewGeminiImageProvider(multimodal.GeminiImageConfig{
+				APIKey:   genCfg.APIKey,
+				APIBase:  genCfg.APIBase,
+				AuthMode: genCfg.AuthMode,
+			}); err == nil {
+				imageGenerator = geminiGenerator
+			}
+		case "openai":
+			if openaiGenerator, err := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
+				APIKey:             genCfg.APIKey,
+				APIBase:            genCfg.APIBase,
+				ResponsesModel:     mmCfg.ImageModel,
+				TranscriptionModel: mmCfg.TranscriptionModel,
+			}); err == nil {
+				imageGenerator = openaiGenerator
+			}
+		}
+	}
+
+	if ttsCfg, ok := resolveTTSConfig(c); ok {
+		switch ttsCfg.Provider {
+		case "openai":
+			if ttsProvider, err := multimodal.NewOpenAITTSProvider(multimodal.OpenAITTSConfig{
+				APIKey:   ttsCfg.APIKey,
+				APIBase:  ttsCfg.APIBase,
+				AuthMode: ttsCfg.AuthMode,
+			}); err == nil {
+				speechSynthesizer = ttsProvider
+			}
+		}
+	}
+
 	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
-	toolServices := tool.NewServices(searchCfg, mem, ragMgr, delegateMgr)
+	imageGenDefaults := tool.ImageGenerationDefaults{
+		Model:             strings.TrimSpace(c.ImageGeneration.Model),
+		Size:              strings.TrimSpace(c.ImageGeneration.Size),
+		Quality:           strings.TrimSpace(c.ImageGeneration.Quality),
+		Background:        strings.TrimSpace(c.ImageGeneration.Background),
+		OutputFormat:      strings.TrimSpace(c.ImageGeneration.OutputFormat),
+		OutputCompression: c.ImageGeneration.OutputCompression,
+		Count:             c.ImageGeneration.Count,
+	}
+	ttsDefaults := tool.TTSDefaults{
+		Model:  strings.TrimSpace(c.TTS.Model),
+		Voice:  strings.TrimSpace(c.TTS.Voice),
+		Format: strings.TrimSpace(c.TTS.Format),
+		Speed:  c.TTS.Speed,
+	}
+	toolServices := tool.NewServices(searchCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr)
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
@@ -475,23 +550,6 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		MemoryBudget:         800,
 		SummarizeThreshold:   0.8,
 	})
-
-	mediaProcessor := multimodal.NewProcessor()
-	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
-		multimodal.ModalityText,
-		multimodal.ModalityImage,
-		multimodal.ModalityAudio,
-		multimodal.ModalityVideo,
-		multimodal.ModalityDocument,
-	), true)
-	if c.APIKey != "" && (c.Provider == "openai" || strings.Contains(strings.ToLower(c.APIBase), "openai.com")) {
-		if openaiMedia, mediaErr := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
-			APIKey:  c.APIKey,
-			APIBase: c.APIBase,
-		}); mediaErr == nil {
-			_ = mediaProcessor.RegisterProvider(openaiMedia, true)
-		}
-	}
 
 	cronEngine := cron.NewEngine()
 	cronEngine.SetEventHandler(func(event cron.Event) {
@@ -517,8 +575,242 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		metrics:        metrics.NewMetrics(),
 		mediaProcessor: mediaProcessor,
 		cronEngine:     cronEngine,
-		autonomyKit:    autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), nil),
+		autonomyKit:    autonomy.NewAutonomyKit(buildAutonomyRuntimeConfig(c), nil),
 	}
+}
+
+func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
+	cfg := autonomy.DefaultAutonomyConfig()
+	if c == nil {
+		return cfg
+	}
+	worker := c.Autonomy.Worker
+	loop := autonomy.DefaultWorkerLoopConfig()
+	if worker.MaxIterations > 0 {
+		loop.MaxIterations = worker.MaxIterations
+	}
+	if worker.TimeoutSeconds > 0 {
+		loop.Timeout = time.Duration(worker.TimeoutSeconds) * time.Second
+	}
+	if worker.AutoApprove != nil {
+		loop.AutoApprove = *worker.AutoApprove
+		loop.AutoApproveSet = true
+	}
+	if worker.RepeatToolCallLimit > 0 {
+		loop.RepeatToolCallLimit = worker.RepeatToolCallLimit
+	}
+	if worker.ToolOnlyIterationLimit > 0 {
+		loop.ToolOnlyIterationLimit = worker.ToolOnlyIterationLimit
+	}
+	if worker.DuplicateFetchLimit > 0 {
+		loop.DuplicateFetchLimit = worker.DuplicateFetchLimit
+	}
+	if worker.DisabledTools != nil {
+		loop.DisabledTools = append([]string{}, worker.DisabledTools...)
+	}
+	cfg.Pool.WorkerLoop = loop
+	if worker.TimeoutSeconds > 0 {
+		cfg.Pool.TaskTimeout = time.Duration(worker.TimeoutSeconds) * time.Second
+	}
+	return cfg
+}
+
+type multimodalRuntimeConfig struct {
+	APIKey             string
+	APIBase            string
+	ImageModel         string
+	TranscriptionModel string
+}
+
+type imageGenerationRuntimeConfig struct {
+	Provider          string
+	APIKey            string
+	APIBase           string
+	AuthMode          string
+	Model             string
+	Size              string
+	Quality           string
+	Background        string
+	OutputFormat      string
+	OutputCompression int
+	Count             int
+}
+
+type ttsRuntimeConfig struct {
+	Provider string
+	APIKey   string
+	APIBase  string
+	AuthMode string
+	Model    string
+	Voice    string
+	Format   string
+	Speed    float64
+}
+
+func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, bool) {
+	if c == nil {
+		return multimodalRuntimeConfig{}, false
+	}
+
+	cfg := multimodalRuntimeConfig{
+		APIKey:             strings.TrimSpace(c.Multimodal.APIKey),
+		APIBase:            strings.TrimSpace(c.Multimodal.APIBase),
+		ImageModel:         strings.TrimSpace(c.Multimodal.ImageModel),
+		TranscriptionModel: strings.TrimSpace(c.Multimodal.TranscriptionModel),
+	}
+
+	providerName := strings.ToLower(strings.TrimSpace(c.Multimodal.Provider))
+	if providerName == "" {
+		providerName = strings.ToLower(strings.TrimSpace(c.Provider))
+	}
+
+	if cfg.APIKey == "" {
+		cfg.APIKey = strings.TrimSpace(c.APIKey)
+	}
+	if cfg.APIBase == "" {
+		cfg.APIBase = strings.TrimSpace(c.APIBase)
+	}
+
+	explicitMultimodalConfig := strings.TrimSpace(c.Multimodal.APIKey) != "" ||
+		strings.TrimSpace(c.Multimodal.APIBase) != "" ||
+		strings.TrimSpace(c.Multimodal.ImageModel) != "" ||
+		strings.TrimSpace(c.Multimodal.TranscriptionModel) != "" ||
+		strings.TrimSpace(c.Multimodal.Provider) != ""
+
+	if providerName == "openai" || explicitMultimodalConfig {
+		if cfg.APIKey != "" {
+			return cfg, true
+		}
+		return multimodalRuntimeConfig{}, false
+	}
+
+	// Backward-compatible fallback for the old implicit OpenAI-only behavior.
+	if cfg.APIKey != "" && (strings.EqualFold(c.Provider, "openai") || strings.Contains(strings.ToLower(c.APIBase), "openai.com")) {
+		return cfg, true
+	}
+
+	return multimodalRuntimeConfig{}, false
+}
+
+func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfig, bool) {
+	if c == nil {
+		return imageGenerationRuntimeConfig{}, false
+	}
+
+	cfg := imageGenerationRuntimeConfig{
+		Provider:          strings.ToLower(strings.TrimSpace(c.ImageGeneration.Provider)),
+		APIKey:            strings.TrimSpace(c.ImageGeneration.APIKey),
+		APIBase:           strings.TrimSpace(c.ImageGeneration.APIBase),
+		AuthMode:          strings.ToLower(strings.TrimSpace(c.ImageGeneration.AuthMode)),
+		Model:             strings.TrimSpace(c.ImageGeneration.Model),
+		Size:              strings.TrimSpace(c.ImageGeneration.Size),
+		Quality:           strings.TrimSpace(c.ImageGeneration.Quality),
+		Background:        strings.TrimSpace(c.ImageGeneration.Background),
+		OutputFormat:      strings.TrimSpace(c.ImageGeneration.OutputFormat),
+		OutputCompression: c.ImageGeneration.OutputCompression,
+		Count:             c.ImageGeneration.Count,
+	}
+	if cfg.Model == "" {
+		cfg.Model = strings.TrimSpace(c.Multimodal.GenerationModel)
+	}
+	if cfg.Size == "" {
+		cfg.Size = strings.TrimSpace(c.Multimodal.GenerationSize)
+	}
+	if cfg.Quality == "" {
+		cfg.Quality = strings.TrimSpace(c.Multimodal.GenerationQuality)
+	}
+	if cfg.Background == "" {
+		cfg.Background = strings.TrimSpace(c.Multimodal.GenerationBackground)
+	}
+	if cfg.OutputFormat == "" {
+		cfg.OutputFormat = strings.TrimSpace(c.Multimodal.GenerationOutputFormat)
+	}
+	if cfg.Provider == "" {
+		cfg.Provider = "openai"
+	}
+	if cfg.Provider == "openai" && looksLikeGeminiImageModel(cfg.Model) {
+		cfg.Provider = "gemini"
+	}
+	if cfg.AuthMode == "" {
+		cfg.AuthMode = "bearer"
+	}
+
+	if cfg.Provider == "openai" {
+		if cfg.APIKey == "" {
+			cfg.APIKey = strings.TrimSpace(c.Multimodal.APIKey)
+			if cfg.APIKey == "" {
+				cfg.APIKey = strings.TrimSpace(c.APIKey)
+			}
+		}
+		if cfg.APIBase == "" {
+			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
+			if cfg.APIBase == "" {
+				cfg.APIBase = strings.TrimSpace(c.APIBase)
+			}
+		}
+		if cfg.APIBase == "https://api.openai.com/v1" && strings.TrimSpace(c.Multimodal.APIBase) != "" {
+			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
+		}
+	}
+
+	if cfg.Provider == "gemini" {
+		if cfg.APIKey == "" {
+			cfg.APIKey = strings.TrimSpace(c.Multimodal.APIKey)
+			if cfg.APIKey == "" {
+				cfg.APIKey = strings.TrimSpace(c.APIKey)
+			}
+		}
+		if cfg.APIBase == "" || cfg.APIBase == "https://api.openai.com/v1" {
+			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
+			if cfg.APIBase == "" {
+				cfg.APIBase = "https://generativelanguage.googleapis.com/v1beta"
+			}
+		}
+	}
+
+	if cfg.APIKey == "" || cfg.APIBase == "" {
+		return imageGenerationRuntimeConfig{}, false
+	}
+	return cfg, true
+}
+
+func looksLikeGeminiImageModel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "gemini") || strings.HasPrefix(model, "google/gemini")
+}
+
+func resolveTTSConfig(c *config.Config) (ttsRuntimeConfig, bool) {
+	if c == nil {
+		return ttsRuntimeConfig{}, false
+	}
+	cfg := ttsRuntimeConfig{
+		Provider: strings.ToLower(strings.TrimSpace(c.TTS.Provider)),
+		APIKey:   strings.TrimSpace(c.TTS.APIKey),
+		APIBase:  strings.TrimSpace(c.TTS.APIBase),
+		AuthMode: strings.ToLower(strings.TrimSpace(c.TTS.AuthMode)),
+		Model:    strings.TrimSpace(c.TTS.Model),
+		Voice:    strings.TrimSpace(c.TTS.Voice),
+		Format:   strings.TrimSpace(c.TTS.Format),
+		Speed:    c.TTS.Speed,
+	}
+	if cfg.Provider == "" {
+		cfg.Provider = "openai"
+	}
+	if cfg.AuthMode == "" {
+		cfg.AuthMode = "bearer"
+	}
+	if cfg.Provider == "openai" {
+		if cfg.APIKey == "" {
+			cfg.APIKey = strings.TrimSpace(c.APIKey)
+		}
+		if cfg.APIBase == "" {
+			cfg.APIBase = strings.TrimSpace(c.APIBase)
+		}
+	}
+	if cfg.APIKey == "" || cfg.APIBase == "" {
+		return ttsRuntimeConfig{}, false
+	}
+	return cfg, true
 }
 
 // New 创建 Agent
@@ -584,6 +876,13 @@ func New(cfg *config.Manager) (*Agent, error) {
 	})
 	a.collabMgr = collab.NewDelegateManager(a.collabReg, nil)
 
+	autonomyQueuePath := filepath.Join(cfg.HomeDir(), "runtime", "autonomy_queue.json")
+	if restored, restoreErr := supportRT.autonomyKit.EnablePersistence(autonomyQueuePath); restoreErr != nil {
+		fmt.Printf("[autonomy] restore failed: %v\n", restoreErr)
+	} else if restored > 0 {
+		fmt.Printf("[autonomy] restored %d queued tasks\n", restored)
+	}
+
 	supportRT.toolServices.Cron = tool.NewCronToolService(
 		supportRT.cronEngine,
 		a.saveCronJobs,
@@ -591,7 +890,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 			return a.buildCronTask(id, cronTaskMode(mode), command, metadata)
 		},
 	)
-	supportRT.toolServices.Autonomy = tool.NewAutonomyToolService(supportRT.autonomyKit)
+	supportRT.toolServices.Autonomy = tool.NewAutonomyToolService(supportRT.autonomyKit, func() error {
+		return a.StartAutonomyNow(context.Background())
+	})
 	supportRT.toolServices.Heartbeat = tool.NewHeartbeatToolService(a.handleHeartbeatTrigger, a.handleHeartbeatStatus)
 	supportRT.toolServices.RegisterCoreTools(supportRT.tools)
 
@@ -643,7 +944,7 @@ Chat 在新会话中执行一次完整对话。
 */
 func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 	sess := a.sessions.New()
-	return a.chatWithSession(ctx, sess, userInput)
+	return a.chatWithSessionInput(ctx, sess, TextUserTurnInput(userInput))
 }
 
 // ChatWithSession 在已有会话中继续对话，实现多轮上下文。
@@ -652,7 +953,16 @@ func (a *Agent) ChatWithSession(ctx context.Context, sessionID string, userInput
 	if !ok {
 		return "", fmt.Errorf("session not found: %s", sessionID)
 	}
-	return a.chatWithSession(ctx, sess, userInput)
+	return a.chatWithSessionInput(ctx, sess, TextUserTurnInput(userInput))
+}
+
+// ChatWithSessionInput 在已有会话中继续对话，支持结构化多模态输入。
+func (a *Agent) ChatWithSessionInput(ctx context.Context, sessionID string, input UserTurnInput) (string, error) {
+	sess, ok := a.sessions.Get(sessionID)
+	if !ok {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+	return a.chatWithSessionInput(ctx, sess, input)
 }
 
 // ProgressFeedback generates a concise model-authored progress update for an unfinished round.
@@ -664,32 +974,74 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 		return "", nil
 	}
 
-	systemPrompt := `You are generating one concise progress update for the user during an unfinished task.
+	systemPrompt := `You are generating one concise reasoning update for the user during an unfinished task.
 
-Report real progress only.
+Report real progress only. Stay close to the observed evidence.
 
-Summarize:
-- what has already been verified,
-- what is currently being checked,
-- what remains uncertain or unfinished.
+Write in English.
 
-Rules:
-- use the user's language,
-- keep it short and natural,
+The update should sound like a human investigator thinking aloud in a compact way.
+It should read like a short natural reasoning paragraph, not like a checklist, template, or repeated report.
+
+If previous user-facing updates are provided, treat them as messages that the user has already seen. Continue naturally from them instead of restarting the narration from scratch.
+Prioritize what changed since the previous update.
+
+What to include when relevant:
+- what you have checked,
+- what that currently suggests,
+- what you are verifying now and why,
+- what is still uncertain,
+- what likely matters next.
+
+Style requirements:
+- use 2 to 4 short connected sentences,
+- use natural transitions, but vary them across updates,
+- make the first sentence anchor to the newest change or signal, not to a generic restart,
+- do not start every update with the same pattern such as "I first checked...",
+- do not repeatedly open with first-person patterns like "I've...", "I have...", or "I'm..." unless there is a strong reason,
+- prefer continuity cues such as "So far,", "At this point,", "That suggests,", "The latest result shows,", or "This narrows it down because..." when they fit,
+- avoid rigid labels like "Verified", "Checking", "Uncertain", "Next",
+- avoid repeating the same rhetorical skeleton from one round to the next,
+- include brief causal links and small explanations, not just status labels,
+- keep it concrete and evidence-driven,
 - do not expose hidden chain-of-thought,
 - do not mention internal event types, implementation details, or tool protocol syntax,
 - do not pretend the task is complete if it is not,
-- do not sound like a system log.
-
-A good progress update should help the user understand the current state of the task in one quick read. Limit the update to at most 3 short sentences.`
+- do not use rigid headings like "Verified:" or "Checking:" unless the user explicitly asked for a checklist.`
 
 	var userPrompt strings.Builder
+	var previousUpdates []string
+	var newObservations []string
+	for _, line := range observations {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "Previous user-facing update: ") {
+			previousUpdates = append(previousUpdates, strings.TrimPrefix(line, "Previous user-facing update: "))
+			continue
+		}
+		newObservations = append(newObservations, line)
+	}
+
 	userPrompt.WriteString("Original user request:\n")
 	userPrompt.WriteString(strings.TrimSpace(userInput))
 	userPrompt.WriteString("\n\nCurrent round:\n")
 	userPrompt.WriteString(fmt.Sprintf("%d", round))
-	userPrompt.WriteString("\n\nObserved progress so far:\n")
-	for _, line := range observations {
+	if len(previousUpdates) > 0 {
+		userPrompt.WriteString("\n\nPrevious user-facing updates already shown:\n")
+		for _, line := range previousUpdates {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			userPrompt.WriteString("- ")
+			userPrompt.WriteString(line)
+			userPrompt.WriteString("\n")
+		}
+	}
+	userPrompt.WriteString("\n\nNew observed progress since the last update:\n")
+	for _, line := range newObservations {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -698,7 +1050,7 @@ A good progress update should help the user understand the current state of the 
 		userPrompt.WriteString(line)
 		userPrompt.WriteString("\n")
 	}
-	userPrompt.WriteString("\nWrite a single progress update for the user.")
+	userPrompt.WriteString("\nWrite a single progress update for the user that clearly continues from the previous updates and focuses on what changed.")
 
 	resp, err := a.provider.Chat(ctx, []provider.Message{
 		{Role: "system", Content: systemPrompt},
@@ -715,21 +1067,29 @@ A good progress update should help the user understand the current state of the 
 chatWithSession 是 Chat 与 ChatWithSession 共用的内部实现。
 */
 func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
-	a.maybeRouteModel(userInput)
+	return a.chatWithSessionInput(ctx, sess, TextUserTurnInput(userInput))
+}
+
+func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
+	input = input.Normalize()
+	routingText := input.RoutingText
+	a.maybeRouteModel(routingText)
 
 	// 优先使用 RunLoop（支持 function calling / 工具调用）
 	loopCfg := DefaultLoopConfig()
+	agentLoopCfg := config.AgentLoopConfig{}
 	if a.cfg != nil {
 		cfg := a.cfg.Get()
+		agentLoopCfg = cfg.Agent
 		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 	}
-	applySimpleTaskLoopTuning(&loopCfg, userInput)
+	applySimpleTaskLoopTuning(&loopCfg, routingText, agentLoopCfg)
 	loopCfg.AutoApprove = true // Telegram 场景自动批准工具调用
 
-	result, err := a.RunLoopWithSession(ctx, sess, userInput, loopCfg)
+	result, err := a.RunLoopWithSessionInput(ctx, sess, input, loopCfg)
 	if err != nil {
 		// 如果 RunLoop 失败，回退到简单流式聊天
-		response, chatErr := a.chatStreamSimple(ctx, sess, userInput)
+		response, chatErr := a.chatStreamSimpleInput(ctx, sess, input)
 		if chatErr != nil {
 			return "", fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr)
 		}
@@ -742,7 +1102,7 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 
 	// 自动记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
-	a.saveConversationMemory(userInput, response)
+	a.saveConversationMemory(routingText, response)
 
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
@@ -795,21 +1155,38 @@ func IsSimpleLocalInspectionTask(input string) bool {
 	return false
 }
 
-func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string) {
+func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string, cfg config.AgentLoopConfig) {
 	if loopCfg == nil || !IsSimpleLocalInspectionTask(userInput) {
 		return
 	}
-	if loopCfg.MaxIterations > 3 {
-		loopCfg.MaxIterations = 3
+	maxIterations := cfg.SimpleLocalInspection.MaxIterations
+	if maxIterations <= 0 {
+		maxIterations = 3
 	}
-	if loopCfg.Timeout > 25*time.Second {
-		loopCfg.Timeout = 25 * time.Second
+	timeout := time.Duration(cfg.SimpleLocalInspection.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = 25 * time.Second
 	}
-	if loopCfg.RepeatToolCallLimit > 2 {
-		loopCfg.RepeatToolCallLimit = 2
+	repeatToolCallLimit := cfg.SimpleLocalInspection.RepeatToolCallLimit
+	if repeatToolCallLimit <= 0 {
+		repeatToolCallLimit = 2
 	}
-	if loopCfg.ToolOnlyIterationLimit > 2 {
-		loopCfg.ToolOnlyIterationLimit = 2
+	toolOnlyIterationLimit := cfg.SimpleLocalInspection.ToolOnlyIterationLimit
+	if toolOnlyIterationLimit <= 0 {
+		toolOnlyIterationLimit = 2
+	}
+
+	if loopCfg.MaxIterations > maxIterations {
+		loopCfg.MaxIterations = maxIterations
+	}
+	if loopCfg.Timeout > timeout {
+		loopCfg.Timeout = timeout
+	}
+	if loopCfg.RepeatToolCallLimit > repeatToolCallLimit {
+		loopCfg.RepeatToolCallLimit = repeatToolCallLimit
+	}
+	if loopCfg.ToolOnlyIterationLimit > toolOnlyIterationLimit {
+		loopCfg.ToolOnlyIterationLimit = toolOnlyIterationLimit
 	}
 }
 
@@ -818,8 +1195,14 @@ func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string) {
 chatStreamSimple 使用不带工具调用的简单流式聊天作为回退路径。
 */
 func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, userInput string) (string, error) {
-	a.maybeRouteModel(userInput)
-	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
+	return a.chatStreamSimpleInput(ctx, sess, TextUserTurnInput(userInput))
+}
+
+func (a *Agent) chatStreamSimpleInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
+	input = input.Normalize()
+	routingText := input.RoutingText
+	a.maybeRouteModel(routingText)
+	messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
 
 	// 调用 Provider
 	ch, err := a.provider.ChatStream(ctx, messages)
@@ -836,14 +1219,15 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 	}
 
 	response := utils.SanitizeToolProtocolOutput(result.String())
-	sess.AddMessage("assistant", response)
+	sess.AddProviderMessage(input.Message)
+	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
 
 	// 保存会话
 	_ = sess.Save()
 
 	// 自动记忆：将对话存为短期记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
-	a.saveConversationMemory(userInput, response)
+	a.saveConversationMemory(routingText, response)
 
 	// 每 10 轮对话触发衰减 + 过期清理
 	if a.chatCount%10 == 0 {
@@ -870,19 +1254,42 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 
 // ChatStream 执行流式对话
 func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provider.StreamChunk, error) {
-	a.maybeRouteModel(userInput)
 	sess := a.sessions.New()
-	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
-
-	return a.provider.ChatStream(ctx, messages)
+	events, err := a.ChatWithSessionStream(ctx, sess.ID, userInput)
+	if err != nil {
+		return nil, err
+	}
+	chunks := make(chan provider.StreamChunk, 64)
+	go func() {
+		defer close(chunks)
+		for evt := range events {
+			switch evt.Type {
+			case ChatEventContent:
+				if evt.Content != "" {
+					chunks <- provider.StreamChunk{Content: evt.Content}
+				}
+			case ChatEventDone:
+				chunks <- provider.StreamChunk{Done: true, FinishReason: "stop"}
+				return
+			case ChatEventError:
+				chunks <- provider.StreamChunk{Done: true, FinishReason: "error"}
+				return
+			}
+		}
+	}()
+	return chunks, nil
 }
 
 /*
 buildContextMessages 为一次请求构造送入模型的完整上下文消息序列。
 */
 func (a *Agent) buildContextMessages(ctx context.Context, sess *session.Session, userInput string, opts contextBuildOptions) []provider.Message {
+	return a.buildContextMessagesForInput(ctx, sess, TextUserTurnInput(userInput), opts)
+}
+
+func (a *Agent) buildContextMessagesForInput(ctx context.Context, sess *session.Session, input UserTurnInput, opts contextBuildOptions) []provider.Message {
 	planner := newContextPlanner(a, opts)
-	return planner.Build(ctx, sess, userInput)
+	return planner.BuildInput(ctx, sess, input)
 }
 
 // ChatEvent 是流式对话事件，包含思考过程和内容
@@ -957,6 +1364,8 @@ type streamConvergenceState struct {
 	repeatToolCallLimit      int
 	toolOnlyIterationLimit   int
 	duplicateFetchLimit      int
+	disabledTools            []string
+	memoryGate               *memoryToolGate
 }
 
 /*
@@ -1065,31 +1474,37 @@ func (s *streamConvergenceState) repeatedToolLoopMessage(repeatedSigs []string) 
 }
 
 func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, userInput string) (<-chan ChatEvent, error) {
+	return a.ChatWithSessionStreamInput(ctx, sessionID, TextUserTurnInput(userInput))
+}
+
+func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string, input UserTurnInput) (<-chan ChatEvent, error) {
 	sess, ok := a.sessions.Get(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
+	input = input.Normalize()
+	routingText := input.RoutingText
 
 	events := make(chan ChatEvent, 64)
 
 	go func() {
 		defer close(events)
 
-		messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
-
-		// 构建 function calling 工具定义
-		fcMgr := function.NewManager(a.tools)
-		callOpts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
-
 		loopCfg := DefaultLoopConfig()
 		cfg := a.cfg.Get()
 		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 		loopCfg.AutoApprove = true
 		sanitizeLoopConfig(&loopCfg)
+
+		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
+		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
+
 		state := &streamConvergenceState{
 			repeatToolCallLimit:    loopCfg.RepeatToolCallLimit,
 			toolOnlyIterationLimit: loopCfg.ToolOnlyIterationLimit,
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
+			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
+			memoryGate:             a.buildMemoryToolGate(routingText, loopCfg.DisabledTools),
 		}
 
 		// 🧠 思考阶段（第一轮）
@@ -1098,12 +1513,12 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 		mode := a.getStreamMode()
 		if mode == StreamModeNative {
 			// === 真流式路径 ===
-			a.streamNative(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations, state)
+			a.streamNative(ctx, events, messages, callOpts, sess, input, 1, loopCfg.MaxIterations, state)
 			return
 		}
 
 		// === 模拟流式路径 ===
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations, state)
+		a.streamSimulated(ctx, events, messages, callOpts, sess, input, 1, loopCfg.MaxIterations, state)
 	}()
 
 	return events, nil
@@ -1114,33 +1529,32 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 /*
 streamNative 使用 provider 原生流式接口执行一轮或多轮对话。
 */
-func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int, state *streamConvergenceState) {
+func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, turnInput UserTurnInput, round int, remaining int, state *streamConvergenceState) {
 	if state == nil {
 		state = &streamConvergenceState{}
 	}
 	if remaining <= 0 {
+		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+			a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+			return
+		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 		return
 	}
 
-	// 尝试流式调用
-	var ch <-chan provider.StreamChunk
-	var err error
-	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
-		ch, err = fcProvider.ChatStreamWithOptions(ctx, messages, callOpts)
-	} else {
-		ch, err = a.provider.ChatStream(ctx, messages)
-	}
+	ch, err := a.streamLoopIteration(ctx, messages, callOpts, state.forceSearchSynthesis)
 	if err != nil {
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
 
 	var content strings.Builder
+	var reasoning strings.Builder
+	emittedContentBytes := 0
 	streamFinishReason := ""
 	// 流式 tool_calls 增量拼接
 	var toolCallsAcc []streamToolCallAcc // 按 index 累积
@@ -1151,7 +1565,21 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		}
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
-			events <- ChatEvent{Type: ChatEventContent, Content: chunk.Content}
+			if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+				continue
+			}
+			full := content.String()
+			pending := full[emittedContentBytes:]
+			if shouldHoldPotentialTextToolCallStream(full) || shouldHoldPotentialTextToolCallStream(pending) {
+				continue
+			}
+			if len(full) > emittedContentBytes {
+				events <- ChatEvent{Type: ChatEventContent, Content: pending}
+				emittedContentBytes = len(full)
+			}
+		}
+		if chunk.ReasoningContent != "" {
+			reasoning.WriteString(chunk.ReasoningContent)
 		}
 		// 处理流式 tool_calls 增量
 		if len(chunk.ToolCallDeltas) > 0 {
@@ -1177,11 +1605,16 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		}
 	}
 
+	response := content.String()
+	assistantContent, textToolCalls := extractTextToolCalls(response)
+	hadTextToolCalls := len(textToolCalls) > 0
+	textToolCalls = filterProviderToolCalls(textToolCalls, state.disabledTools)
+
 	// 如果有累积的 tool_calls，处理它们
-	if len(toolCallsAcc) > 0 {
+	if len(toolCallsAcc) > 0 || len(textToolCalls) > 0 {
 		state.emptyResponseRetries = 0
 		state.lengthRecoveryCount = 0
-		toolCalls := make([]provider.ToolCall, 0, len(toolCallsAcc))
+		toolCalls := make([]provider.ToolCall, 0, len(toolCallsAcc)+len(textToolCalls))
 		for _, acc := range toolCallsAcc {
 			if acc.name != "" {
 				// v0.55.1: 如果 ID 为空，生成唯一 call_id
@@ -1196,139 +1629,59 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				})
 			}
 		}
+		toolCalls = append(toolCalls, textToolCalls...)
 
 		if len(toolCalls) > 0 {
-			if shouldStop, repeatedSigs := state.trackToolCallPattern(toolCalls, content.String()); shouldStop {
-				a.finalizeStream(events, sess, userInput, state.repeatedToolLoopMessage(repeatedSigs))
+			if shouldStop, repeatedSigs := state.trackToolCallPattern(toolCalls, assistantContent); shouldStop {
+				if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+					return
+				}
+				a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
 				return
 			}
 
 			// 将 assistant 消息加入历史
 			messages = append(messages, provider.Message{
-				Role:      "assistant",
-				Content:   content.String(),
-				ToolCalls: toolCalls,
+				Role:             "assistant",
+				Content:          assistantContent,
+				ReasoningContent: reasoning.String(),
+				ToolCalls:        toolCalls,
 			})
 
-			// v0.44.0: 并发执行工具调用（无状态工具并行，有状态工具串行）
-			type streamToolResult struct {
-				Index       int
-				ToolCallID  string
-				ToolName    string
-				Result      string
-				ShortResult string
-			}
+			emitChatToolCallEvents(events, toolCalls)
+			executed := a.executeToolCallsOrdered(
+				toolCalls,
+				true,
+				sess,
+				state.toolURLRepeatCount,
+				state.toolURLLastResult,
+				state.duplicateFetchLimit,
+				true,
+			)
 
-			resultCh := make(chan streamToolResult, len(toolCalls))
-
-			// 分类：可并发 vs 必须串行
-			var parallelIdx []int
-			var serialIdx []int
-			for i, tc := range toolCalls {
-				if a.isToolParallelSafe(tc.Name) {
-					parallelIdx = append(parallelIdx, i)
-				} else {
-					serialIdx = append(serialIdx, i)
+			for _, execResult := range executed {
+				if state.memoryGate != nil {
+					state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 				}
-			}
-
-			// 先发所有 ToolCall 事件（让用户看到进度）
-			for _, tc := range toolCalls {
-				shortArgs := tc.Arguments
-				if len(shortArgs) > 100 {
-					shortArgs = shortArgs[:97] + "..."
-				}
-				events <- ChatEvent{
-					Type:    ChatEventToolCall,
-					Name:    tc.Name,
-					Args:    shortArgs,
-					Content: fmt.Sprintf("🔧 %s", tc.Name),
-				}
-			}
-
-			// 并发执行无状态工具
-			for _, idx := range parallelIdx {
-				tc := toolCalls[idx]
-				go func(idx int, tc provider.ToolCall) {
-					toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
-					if err != nil {
-						toolResult = fmt.Sprintf("Error: %v", err)
-					}
-					shortResult := toolResult
-					if len(shortResult) > 200 {
-						shortResult = shortResult[:197] + "..."
-					}
-					resultCh <- streamToolResult{
-						Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
-						Result: toolResult, ShortResult: shortResult,
-					}
-				}(idx, tc)
-			}
-
-			// 串行执行有状态工具
-			for _, idx := range serialIdx {
-				tc := toolCalls[idx]
-				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
-				if err != nil {
-					toolResult = fmt.Sprintf("Error: %v", err)
-				}
-				shortResult := toolResult
-				if len(shortResult) > 200 {
-					shortResult = shortResult[:197] + "..."
-				}
-				resultCh <- streamToolResult{
-					Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
-					Result: toolResult, ShortResult: shortResult,
-				}
-			}
-
-			// 收集结果，按顺序
-			allResults := make([]streamToolResult, 0, len(toolCalls))
-			for i := 0; i < len(toolCalls); i++ {
-				allResults = append(allResults, <-resultCh)
-			}
-			sort.Slice(allResults, func(i, j int) bool {
-				return allResults[i].Index < allResults[j].Index
-			})
-
-			for _, r := range allResults {
-				events <- ChatEvent{
-					Type:    ChatEventToolResult,
-					Name:    r.ToolName,
-					Result:  r.ShortResult,
-					Content: fmt.Sprintf("📋 %s → %s", r.ToolName, r.ShortResult),
-				}
-				contextResult := compactToolResultForContext(r.ToolName, r.Result)
-				if isUsefulSearchEvidence(r.ToolName, r.Result) {
-					state.successfulSearchEvidence++
-					if r.ToolName == "web_search" {
-						if state.detailedSearchEvidence >= 2 {
-							contextResult = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
-						} else {
-							state.detailedSearchEvidence++
-						}
-					}
-				}
+				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
 				messages = append(messages, provider.Message{
 					Role:       "tool",
-					Content:    contextResult,
-					ToolCallID: r.ToolCallID,
-					Name:       r.ToolName,
+					Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence),
+					ToolCallID: execResult.ToolCall.ID,
+					Name:       execResult.ToolCall.Name,
 				})
-				if r.Index >= 0 && r.Index < len(toolCalls) {
-					state.rememberToolCallResult(r.ToolName, toolCalls[r.Index].Arguments, r.Result)
-				}
+				state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
 			}
 
 			// 裁剪上下文，继续下一轮
 			messages = a.fitContextWindow(messages)
-			if !state.forceSearchSynthesis && shouldForceSearchSynthesis(state.successfulSearchEvidence, state.consecutiveToolOnlyIters) {
-				state.forceSearchSynthesis = true
-				messages = append(messages, provider.Message{Role: "user", Content: searchSynthesisPrompt})
+			messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
+			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+				return
 			}
 			if remaining <= 1 {
 				if state.hasContinuation() {
-					a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+					a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 					return
 				}
 				events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1338,13 +1691,23 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
 
 			// 递归进入下一轮（用非流式，因为 tool_calls 后通常需要完整响应）
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 	}
 
 	// 没有工具调用，纯文本回复（已在流式中逐 chunk 推送了）
-	response := content.String()
+	if hadTextToolCalls {
+		response = assistantContent
+		emittedContentBytes = 0
+	}
+	if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+		return
+	}
+	if len(response) > emittedContentBytes {
+		events <- ChatEvent{Type: ChatEventContent, Content: response[emittedContentBytes:]}
+		emittedContentBytes = len(response)
+	}
 	clean := strings.TrimSpace(response)
 
 	// 空回复恢复
@@ -1356,13 +1719,13 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String()))
+			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()))
 		} else {
-			a.finalizeStream(events, sess, userInput, emptyFinalResponseMessage)
+			a.finalizeStream(events, sess, turnInput, emptyFinalResponseMessage)
 		}
 		return
 	}
@@ -1378,14 +1741,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 		partial := strings.TrimSpace(state.continuedResponse.String())
 		if partial == "" {
 			partial = clean
 		}
-		a.finalizeStream(events, sess, userInput, partial+lengthTruncatedNotice)
+		a.finalizeStream(events, sess, turnInput, partial+lengthTruncatedNotice)
 		return
 	}
 	state.lengthRecoveryCount = 0
@@ -1395,176 +1758,89 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		appendContinuation(&state.continuedResponse, response)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 	}
-	a.finalizeStream(events, sess, userInput, finalResponse)
+	a.finalizeStream(events, sess, turnInput, finalResponse)
 }
 
 // streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
 /*
 streamSimulated 先获取完整响应，再按块模拟流式输出。
 */
-func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int, state *streamConvergenceState) {
+func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, turnInput UserTurnInput, round int, remaining int, state *streamConvergenceState) {
 	if state == nil {
 		state = &streamConvergenceState{}
 	}
 	if remaining <= 0 {
+		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+			a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+			return
+		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 		return
 	}
 
-	var resp *provider.Response
-	var err error
-	iterCallOpts := callOpts
-	iterCallOpts = relaxForcedSkillToolChoice(messages, iterCallOpts)
-	if state.forceSearchSynthesis {
-		iterCallOpts.Tools = nil
-		iterCallOpts.ToolChoice = "none"
-	}
-	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(iterCallOpts.Tools) > 0 {
-		resp, err = fcProvider.ChatWithOptions(ctx, messages, iterCallOpts)
-	} else {
-		resp, err = a.provider.Chat(ctx, messages)
-	}
+	resp, err := a.chatLoopIteration(ctx, messages, callOpts, state.forceSearchSynthesis)
 	if err != nil {
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
+	applyTextToolCallsToResponse(resp, state.disabledTools)
 
 	// 有工具调用 → 展示过程 → 执行 → 继续循环
 	if len(resp.ToolCalls) > 0 {
 		state.emptyResponseRetries = 0
 		state.lengthRecoveryCount = 0
 		if shouldStop, repeatedSigs := state.trackToolCallPattern(resp.ToolCalls, resp.Content); shouldStop {
-			a.finalizeStream(events, sess, userInput, state.repeatedToolLoopMessage(repeatedSigs))
+			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+				return
+			}
+			a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
 			return
 		}
 		messages = append(messages, provider.Message{
-			Role:      "assistant",
-			Content:   resp.Content,
-			ToolCalls: resp.ToolCalls,
+			Role:             "assistant",
+			Content:          resp.Content,
+			ReasoningContent: resp.ReasoningContent,
+			ToolCalls:        resp.ToolCalls,
 		})
 
-		// v0.44.0: 并发执行工具调用（无状态工具并行，有状态工具串行）
-		type simToolResult struct {
-			Index       int
-			ToolCallID  string
-			ToolName    string
-			Result      string
-			ShortResult string
-		}
+		emitChatToolCallEvents(events, resp.ToolCalls)
+		executed := a.executeToolCallsOrdered(
+			resp.ToolCalls,
+			true,
+			sess,
+			state.toolURLRepeatCount,
+			state.toolURLLastResult,
+			state.duplicateFetchLimit,
+			true,
+		)
 
-		simResultCh := make(chan simToolResult, len(resp.ToolCalls))
-
-		// 分类
-		var parallelIdx []int
-		var serialIdx []int
-		for i, tc := range resp.ToolCalls {
-			if a.isToolParallelSafe(tc.Name) {
-				parallelIdx = append(parallelIdx, i)
-			} else {
-				serialIdx = append(serialIdx, i)
+		for _, execResult := range executed {
+			if state.memoryGate != nil {
+				state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 			}
-		}
-
-		// 先发所有 ToolCall 事件
-		for _, tc := range resp.ToolCalls {
-			shortArgs := tc.Arguments
-			if len(shortArgs) > 100 {
-				shortArgs = shortArgs[:97] + "..."
-			}
-			events <- ChatEvent{
-				Type:    ChatEventToolCall,
-				Name:    tc.Name,
-				Args:    shortArgs,
-				Content: fmt.Sprintf("🔧 %s", tc.Name),
-			}
-		}
-
-		// 并发执行无状态工具
-		for _, idx := range parallelIdx {
-			tc := resp.ToolCalls[idx]
-			go func(idx int, tc provider.ToolCall) {
-				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
-				if err != nil {
-					toolResult = fmt.Sprintf("Error: %v", err)
-				}
-				shortResult := toolResult
-				if len(shortResult) > 200 {
-					shortResult = shortResult[:197] + "..."
-				}
-				simResultCh <- simToolResult{
-					Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
-					Result: toolResult, ShortResult: shortResult,
-				}
-			}(idx, tc)
-		}
-
-		// 串行执行有状态工具
-		for _, idx := range serialIdx {
-			tc := resp.ToolCalls[idx]
-			toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
-			if err != nil {
-				toolResult = fmt.Sprintf("Error: %v", err)
-			}
-			shortResult := toolResult
-			if len(shortResult) > 200 {
-				shortResult = shortResult[:197] + "..."
-			}
-			simResultCh <- simToolResult{
-				Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
-				Result: toolResult, ShortResult: shortResult,
-			}
-		}
-
-		simResults := make([]simToolResult, 0, len(resp.ToolCalls))
-		for i := 0; i < len(resp.ToolCalls); i++ {
-			simResults = append(simResults, <-simResultCh)
-		}
-		sort.Slice(simResults, func(i, j int) bool {
-			return simResults[i].Index < simResults[j].Index
-		})
-
-		for _, r := range simResults {
-			events <- ChatEvent{
-				Type:    ChatEventToolResult,
-				Name:    r.ToolName,
-				Result:  r.ShortResult,
-				Content: fmt.Sprintf("📋 %s → %s", r.ToolName, r.ShortResult),
-			}
-			contextResult := compactToolResultForContext(r.ToolName, r.Result)
-			if isUsefulSearchEvidence(r.ToolName, r.Result) {
-				state.successfulSearchEvidence++
-				if r.ToolName == "web_search" {
-					if state.detailedSearchEvidence >= 2 {
-						contextResult = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
-					} else {
-						state.detailedSearchEvidence++
-					}
-				}
-			}
+			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
 			messages = append(messages, provider.Message{
 				Role:       "tool",
-				Content:    contextResult,
-				ToolCallID: r.ToolCallID,
-				Name:       r.ToolName,
+				Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence),
+				ToolCallID: execResult.ToolCall.ID,
+				Name:       execResult.ToolCall.Name,
 			})
-			if r.Index >= 0 && r.Index < len(resp.ToolCalls) {
-				state.rememberToolCallResult(r.ToolName, resp.ToolCalls[r.Index].Arguments, r.Result)
-			}
+			state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
 		}
 
 		// 裁剪上下文，递归继续
 		messages = a.fitContextWindow(messages)
-		if !state.forceSearchSynthesis && shouldForceSearchSynthesis(state.successfulSearchEvidence, state.consecutiveToolOnlyIters) {
-			state.forceSearchSynthesis = true
-			messages = append(messages, provider.Message{Role: "user", Content: searchSynthesisPrompt})
+		messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
+		if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+			return
 		}
 		if remaining <= 1 {
 			if state.hasContinuation() {
-				a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+				a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
 				return
 			}
 			events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1572,13 +1848,16 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 		nextRound := round + 1
 		events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+		a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 		return
 	}
 
 	// 纯文本回复，模拟流式推送
 	response := resp.Content
 	clean := strings.TrimSpace(response)
+	if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+		return
+	}
 
 	// 空回复恢复
 	if clean == "" {
@@ -1589,13 +1868,13 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String()))
+			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()))
 		} else {
-			a.finalizeStream(events, sess, userInput, emptyFinalResponseMessage)
+			a.finalizeStream(events, sess, turnInput, emptyFinalResponseMessage)
 		}
 		return
 	}
@@ -1616,14 +1895,14 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
 			return
 		}
 		partial := strings.TrimSpace(state.continuedResponse.String())
 		if partial == "" {
 			partial = clean
 		}
-		a.finalizeStream(events, sess, userInput, partial+lengthTruncatedNotice)
+		a.finalizeStream(events, sess, turnInput, partial+lengthTruncatedNotice)
 		return
 	}
 	state.lengthRecoveryCount = 0
@@ -1639,18 +1918,20 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		appendContinuation(&state.continuedResponse, response)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 	}
-	a.finalizeStream(events, sess, userInput, finalResponse)
+	a.finalizeStream(events, sess, turnInput, finalResponse)
 }
 
 // finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引
-func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, userInput, response string) {
+func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string) {
+	turnInput = turnInput.Normalize()
+	routingText := turnInput.RoutingText
 	response = utils.SanitizeToolProtocolOutput(response)
-	sess.AddMessage("user", userInput)
-	sess.AddMessage("assistant", response)
+	sess.AddProviderMessage(turnInput.Message)
+	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
 	_ = sess.Save()
 
 	a.chatCount++
-	a.saveConversationMemory(userInput, response)
+	a.saveConversationMemory(routingText, response)
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
 		a.memory.Expire()
@@ -1669,7 +1950,7 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, u
 	}
 
 	if a.ragManager != nil {
-		a.indexConversationTurn(userInput, response)
+		a.indexConversationTurn(routingText, response)
 	}
 
 	a.metrics.RecordChatRequest()
@@ -2032,17 +2313,33 @@ func (a *Agent) Autonomy() *autonomy.AutonomyKit {
 // StartAutonomy 启动自主工作套件（WorkerPool + HeartbeatEngine）。
 // Autonomy 是进程级后台组件，不应绑定到单次请求的取消信号。
 func (a *Agent) StartAutonomy(ctx context.Context) error {
+	return a.startAutonomy(ctx, false)
+}
+
+// StartAutonomyNow explicitly starts autonomy even when autonomy.enabled is
+// false. This is used by the model-visible autonomy tool: an explicit tool call
+// is treated as direct intent to use the autonomy runtime for this process.
+func (a *Agent) StartAutonomyNow(ctx context.Context) error {
+	return a.startAutonomy(ctx, true)
+}
+
+func (a *Agent) startAutonomy(ctx context.Context, force bool) error {
 	if a.autonomy == nil {
 		return fmt.Errorf("autonomy kit not initialized")
 	}
-	if a.cfg != nil {
+	if !force && a.cfg != nil {
 		cfg := a.cfg.Get()
-		raw := strings.TrimSpace(cfg.Extra["autonomy.enabled"])
-		if raw == "" {
-			return nil
+		enabled := cfg.Autonomy.Enabled
+		if !enabled {
+			raw := strings.TrimSpace(cfg.Extra["autonomy.enabled"])
+			if raw != "" {
+				parsed, err := strconv.ParseBool(strings.ToLower(raw))
+				if err == nil {
+					enabled = parsed
+				}
+			}
 		}
-		enabled, err := strconv.ParseBool(strings.ToLower(raw))
-		if err != nil || !enabled {
+		if !enabled {
 			return nil
 		}
 	}
@@ -2052,6 +2349,7 @@ func (a *Agent) StartAutonomy(ctx context.Context) error {
 	a.autonomy.SetExecutor(executor)
 
 	if a.autonomy.Status().Started {
+		a.startAutonomyResultReporter()
 		return nil
 	}
 
@@ -2061,6 +2359,7 @@ func (a *Agent) StartAutonomy(ctx context.Context) error {
 		}
 		return err
 	}
+	a.startAutonomyResultReporter()
 
 	return nil
 }
@@ -2085,9 +2384,13 @@ func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID
 	}
 
 	loopCfg := LoopConfig{
-		MaxIterations: cfg.MaxIterations,
-		Timeout:       cfg.Timeout,
-		AutoApprove:   cfg.AutoApprove,
+		MaxIterations:          cfg.MaxIterations,
+		Timeout:                cfg.Timeout,
+		AutoApprove:            cfg.AutoApprove,
+		RepeatToolCallLimit:    cfg.RepeatToolCallLimit,
+		ToolOnlyIterationLimit: cfg.ToolOnlyIterationLimit,
+		DuplicateFetchLimit:    cfg.DuplicateFetchLimit,
+		DisabledTools:          append([]string(nil), cfg.DisabledTools...),
 	}
 
 	result, err := a.agent.RunLoopWithSession(ctx, sess, userInput, loopCfg)
@@ -2122,16 +2425,39 @@ func (a *Agent) MsgGateway() *gateway.GatewayManager {
 
 // LoadSkills 从目录加载 Skill 插件
 func (a *Agent) LoadSkills(skillsDir string) (int, error) {
+	if a.tools == nil {
+		a.tools = tool.NewRegistry()
+	}
 	loader := tool.NewSkillLoader(skillsDir)
-	skills, err := loader.LoadAll()
-	if err != nil {
+	skillRegistry := tool.NewSkillRegistry(a.tools, loader)
+
+	if _, err := skillRegistry.Discover(); err != nil {
+		return 0, fmt.Errorf("discover skills: %w", err)
+	}
+	if err := skillRegistry.LoadAll(); err != nil {
 		return 0, fmt.Errorf("load skills: %w", err)
 	}
+	if err := skillRegistry.ValidateAll(); err != nil {
+		return 0, fmt.Errorf("validate skills: %w", err)
+	}
+	if err := skillRegistry.RegisterAll(); err != nil {
+		return 0, fmt.Errorf("register skills: %w", err)
+	}
+	if err := skillRegistry.EnableAll(); err != nil {
+		return 0, fmt.Errorf("enable skills: %w", err)
+	}
 
+	skills := skillRegistry.SkillInfos()
+	a.skillRegistry = skillRegistry
 	a.skills = skills
-	tool.NewSkillToolService(skills).RegisterSkillTools(a.tools)
+	tool.NewSkillToolService(skills).RegisterReadTool(a.tools)
 
 	return len(skills), nil
+}
+
+// SkillRegistry returns the lifecycle registry for loaded skills.
+func (a *Agent) SkillRegistry() *tool.SkillRegistry {
+	return a.skillRegistry
 }
 
 // Skills 返回已加载的 skill 列表
@@ -2196,6 +2522,22 @@ func (a *Agent) ContextStats(messages []contextx.Message) contextx.ContextStats 
 	return a.contextWin.Stats(messages)
 }
 
+// ContextCacheStats returns local context cache statistics.
+func (a *Agent) ContextCacheStats() map[string]any {
+	if a == nil || a.contextCache == nil {
+		return map[string]any{}
+	}
+	stats := a.contextCache.Stats()
+	return map[string]any{
+		"entries":   stats.Entries,
+		"hits":      stats.Hits,
+		"misses":    stats.Misses,
+		"evictions": stats.Evictions,
+		"expired":   stats.Expired,
+		"ttl":       stats.TTL.String(),
+	}
+}
+
 // RAG 返回 RAG 管理器
 func (a *Agent) RAG() *rag.RAGManager {
 	return a.ragManager
@@ -2231,6 +2573,7 @@ func (a *Agent) Close() error {
 	var firstErr error
 
 	if a.autonomy != nil && a.autonomy.Status().Started {
+		a.stopAutonomyResultReporter()
 		if err := a.autonomy.Stop(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("stop autonomy: %w", err)
 		}

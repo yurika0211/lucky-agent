@@ -7,10 +7,26 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 )
 
+type ContentPart struct {
+	Type  string     `json:"type"`
+	Text  string     `json:"text,omitempty"`
+	Image *ImagePart `json:"image,omitempty"`
+}
+
+type ImagePart struct {
+	URL      string `json:"url,omitempty"`
+	FilePath string `json:"file_path,omitempty"`
+	MimeType string `json:"mime_type,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
 // Message 代表一条对话消息
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content"`
+	Role             string        `json:"role"`
+	Content          string        `json:"content"`
+	ReasoningContent string        `json:"reasoning_content,omitempty"`
+	ContentParts     []ContentPart `json:"content_parts,omitempty"`
+
 	ToolCallID string     `json:"tool_call_id,omitempty"` // v0.16.0: function calling tool result
 	Name       string     `json:"name,omitempty"`         // v0.16.0: function name for tool messages
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // v0.16.0: assistant tool calls
@@ -18,20 +34,36 @@ type Message struct {
 
 // Response 代表 Provider 的响应
 type Response struct {
-	Content      string
-	TokensUsed   int
-	Model        string
-	FinishReason string
-	ToolCalls    []ToolCall
+	Content          string
+	ReasoningContent string
+	TokensUsed       int
+	Usage            *UsageDetails
+	Model            string
+	FinishReason     string
+	ToolCalls        []ToolCall
 }
 
 // StreamChunk 代表流式响应的一个片段
 type StreamChunk struct {
-	Content        string
-	Done           bool
-	FinishReason   string
-	Model          string
-	ToolCallDeltas []StreamToolCallDelta // v0.40.0: 流式 tool_calls 增量
+	Content          string
+	ReasoningContent string
+	Done             bool
+	FinishReason     string
+	Model            string
+	Usage            *UsageDetails
+	ToolCallDeltas   []StreamToolCallDelta // v0.40.0: 流式 tool_calls 增量
+}
+
+// UsageDetails carries provider-reported token usage, including cache-related fields when available.
+type UsageDetails struct {
+	PromptTokens          int `json:"prompt_tokens,omitempty"`
+	CompletionTokens      int `json:"completion_tokens,omitempty"`
+	TotalTokens           int `json:"total_tokens,omitempty"`
+	InputTokens           int `json:"input_tokens,omitempty"`
+	OutputTokens          int `json:"output_tokens,omitempty"`
+	CachedPromptTokens    int `json:"cached_prompt_tokens,omitempty"`
+	CacheCreation5MTokens int `json:"cache_creation_5m_tokens,omitempty"`
+	CacheCreation1HTokens int `json:"cache_creation_1h_tokens,omitempty"`
 }
 
 // StreamToolCallDelta 流式 tool_calls 的增量片段
@@ -179,7 +211,7 @@ func newOpenAIBaseProvider(cfg Config) openAIBaseProvider {
 		cfg.LlmProvider.BaseURL = "https://api.openai.com/v1"
 	}
 	if cfg.LlmProvider.Model == "" {
-		cfg.LlmProvider.Model = "gpt-4o"
+		cfg.LlmProvider.Model = "gpt-5.4-mini"
 	}
 	return openAIBaseProvider{cfg: cfg}
 }

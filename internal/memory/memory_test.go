@@ -71,6 +71,339 @@ func TestPersistence(t *testing.T) {
 	}
 }
 
+func TestObsidianVaultPersistenceWritesNotes(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithTierAndTags("My [[Daughter]] has [[Pollen Allergy]].", "health", TierLong, 0.95, []string{"health"}); err != nil {
+		t.Fatalf("SaveWithTierAndTags: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(dir, "memory.md")); !os.IsNotExist(err) {
+		t.Fatalf("expected no legacy memory.md, stat err=%v", err)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "50_Facts", "*.md"))
+	if err != nil {
+		t.Fatalf("glob notes: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected one Obsidian note, got %d: %v", len(matches), matches)
+	}
+	raw, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("read note: %v", err)
+	}
+	note := string(raw)
+	for _, want := range []string{"type: memory", "tier: long", "[[Daughter]]", "[[Pollen Allergy]]", "^mem-"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("expected note to contain %q:\n%s", want, note)
+		}
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	results := reloaded.Search("Pollen Allergy")
+	if len(results) != 1 {
+		t.Fatalf("expected linked memory after reload, got %d", len(results))
+	}
+	if len(results[0].Links) != 2 {
+		t.Fatalf("expected two parsed wikilinks, got %#v", results[0].Links)
+	}
+}
+
+func TestLegacyRootMemoryFilesAreArchived(t *testing.T) {
+	dir := t.TempDir()
+	legacyFiles := map[string]string{
+		"memory.md":   "# LuckyHarness Memory\n\n```json\n[]\n```\n",
+		"memory.json": "[]",
+		"memory.txt":  "old memory line\n",
+	}
+	for name, body := range legacyFiles {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if s.Count() != 0 {
+		t.Fatalf("expected legacy files not to load as memory entries, got %d", s.Count())
+	}
+	for name := range legacyFiles {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Fatalf("expected root legacy file %s to be archived, stat err=%v", name, err)
+		}
+	}
+	archived, err := filepath.Glob(filepath.Join(dir, "90_Archive", "legacy-*"))
+	if err != nil {
+		t.Fatalf("glob archive: %v", err)
+	}
+	if len(archived) != len(legacyFiles) {
+		t.Fatalf("expected %d archived legacy files, got %d: %v", len(legacyFiles), len(archived), archived)
+	}
+	readme := filepath.Join(dir, "00_Index", "LuckyHarness Memory Vault.md")
+	raw, err := os.ReadFile(readme)
+	if err != nil {
+		t.Fatalf("read vault readme: %v", err)
+	}
+	if !strings.Contains(string(raw), "durable memory source of truth") || !strings.Contains(string(raw), "OBSIDIAN_VAULT_PATH is not required") {
+		t.Fatalf("unexpected vault readme:\n%s", raw)
+	}
+}
+
+func TestSearchPropagatesAcrossSharedWikilinks(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithTierAndTags("Outdoor walks often include [[Daughter]].", "plan", TierMedium, 0.6, []string{"family"}); err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+	if err := s.SaveWithTierAndTags("[[Daughter]] has [[Pollen Allergy]].", "health", TierLong, 0.95, []string{"health"}); err != nil {
+		t.Fatalf("save health: %v", err)
+	}
+
+	results := s.Search("Outdoor walks")
+	if len(results) < 2 {
+		t.Fatalf("expected graph propagation to add related memory, got %#v", results)
+	}
+
+	foundAllergy := false
+	for _, result := range results {
+		if strings.Contains(result.Content, "Pollen Allergy") {
+			foundAllergy = true
+			break
+		}
+	}
+	if !foundAllergy {
+		t.Fatalf("expected propagation through [[Daughter]] to recall allergy fact, got %#v", results)
+	}
+}
+
+func TestSearchTokenizesNaturalChineseQuery(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithTierAndTags("用户的女儿对应实体是 [[Daughter]]。", "identity", TierLong, 0.9, []string{"family"}); err != nil {
+		t.Fatalf("save profile: %v", err)
+	}
+	if err := s.SaveWithTierAndTags("[[Daughter]] 被诊断出有 [[Pollen Allergy]]。涉及 [[Outdoor Plan]]、公园、踏青、户外活动时，应考虑花粉暴露风险。", "health", TierLong, 0.98, []string{"health"}); err != nil {
+		t.Fatalf("save allergy: %v", err)
+	}
+
+	results := s.Search("今天下午适合和女儿户外活动吗")
+	if len(results) < 2 {
+		t.Fatalf("expected natural Chinese query to recall linked memories, got %#v", results)
+	}
+	foundAllergy := false
+	for _, result := range results {
+		if strings.Contains(result.Content, "Pollen Allergy") {
+			foundAllergy = true
+			break
+		}
+	}
+	if !foundAllergy {
+		t.Fatalf("expected allergy memory for natural Chinese query, got %#v", results)
+	}
+}
+
+func TestSearchExpandsChineseQueryToObsidianConceptAliases(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithTierAndTags("My [[Daughter]] has [[Pollen Allergy]].", "health", TierLong, 0.98, []string{"health"}); err != nil {
+		t.Fatalf("save allergy: %v", err)
+	}
+	if err := s.SaveWithTierAndTags("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", TierLong, 0.92, []string{"tool-routing"}); err != nil {
+		t.Fatalf("save rule: %v", err)
+	}
+
+	results := s.Search("今天下午适合和女儿出门吗")
+	if len(results) < 2 {
+		t.Fatalf("expected Chinese query aliases to recall linked memories, got %#v", results)
+	}
+	foundAllergy := false
+	foundRule := false
+	for _, result := range results {
+		if strings.Contains(result.Content, "Pollen Allergy") {
+			foundAllergy = true
+		}
+		if strings.Contains(result.Content, "Weather Forecast") {
+			foundRule = true
+		}
+	}
+	if !foundAllergy || !foundRule {
+		t.Fatalf("expected allergy and tool-routing memories, allergy=%v rule=%v results=%#v", foundAllergy, foundRule, results)
+	}
+}
+
+func TestSaveWithMetadataPersistsAliasesAndLinks(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	err = s.SaveWithMetadata("孩子出门要考虑过敏。", "health", TierLong, 0.9, []string{"health"}, []string{"Daughter", "Pollen Allergy"}, []string{"女儿", "孩子"})
+	if err != nil {
+		t.Fatalf("SaveWithMetadata: %v", err)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	results := reloaded.Search("Daughter")
+	if len(results) != 1 {
+		t.Fatalf("expected linked memory after reload, got %#v", results)
+	}
+	foundAlias := false
+	for _, alias := range results[0].Aliases {
+		if alias == "女儿" {
+			foundAlias = true
+			break
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("expected alias to persist, got %#v", results[0].Aliases)
+	}
+}
+
+func TestRouteDerivesToolAndHealthConstraints(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	mustSave := func(content, category string, links []string) {
+		t.Helper()
+		if err := s.SaveWithMetadata(content, category, TierLong, 0.95, nil, links, nil); err != nil {
+			t.Fatalf("save %s: %v", category, err)
+		}
+	}
+	mustSave("[[Daughter]] has [[Pollen Allergy]].", "health", []string{"Daughter", "Pollen Allergy"})
+	mustSave("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", []string{"Outdoor Plan", "Daughter", "Pollen Allergy", "Weather Forecast", "Air Quality"})
+	mustSave("Default family [[Outdoor Plan]] location is [[Shanghai]].", "location", []string{"Outdoor Plan", "Shanghai"})
+
+	route := s.Route("明天下午适合和女儿出门吗")
+	for _, want := range []string{"current_time", "web_search"} {
+		if !stringSliceContains(route.RequiredTools, want) {
+			t.Fatalf("expected required tool %q, got %#v", want, route.RequiredTools)
+		}
+	}
+	for _, want := range []string{"pollen_allergy", "child_health_outdoor_plan"} {
+		if !stringSliceContains(route.RiskFlags, want) {
+			t.Fatalf("expected risk flag %q, got %#v", want, route.RiskFlags)
+		}
+	}
+	if len(route.SuggestedSearches) == 0 || !strings.Contains(strings.Join(route.SuggestedSearches, "\n"), "Shanghai") {
+		t.Fatalf("expected Shanghai suggested searches, got %#v", route.SuggestedSearches)
+	}
+	if len(route.EvidenceRefs) == 0 {
+		t.Fatalf("expected evidence refs")
+	}
+}
+
+func TestRouteTemporalResolutionPrefersLatestState(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	oldTime := time.Date(2026, 1, 1, 9, 0, 0, 0, time.UTC)
+	newTime := time.Date(2026, 5, 1, 9, 0, 0, 0, time.UTC)
+
+	if err := s.SaveWithOptions("[[Daughter]] has active [[Pollen Allergy]].", "health", TierLong, 0.95, SaveOptions{
+		Links:      []string{"Daughter", "Pollen Allergy", "Outdoor Plan"},
+		StateKey:   "family.daughter.pollen_allergy",
+		StateValue: "active",
+		ValidFrom:  oldTime,
+	}); err != nil {
+		t.Fatalf("save old state: %v", err)
+	}
+	oldID := ""
+	for id := range s.entries {
+		oldID = id
+	}
+	if err := s.SaveWithOptions("[[Daughter]] pollen allergy state is resolved.", "health", TierLong, 0.95, SaveOptions{
+		Links:      []string{"Daughter", "Pollen Allergy", "Outdoor Plan"},
+		StateKey:   "family.daughter.pollen_allergy",
+		StateValue: "resolved",
+		ValidFrom:  newTime,
+		Supersedes: []string{oldID},
+	}); err != nil {
+		t.Fatalf("save new state: %v", err)
+	}
+
+	route := s.Route("明天下午适合和女儿出门吗")
+	if stringSliceContains(route.RiskFlags, "pollen_allergy") {
+		t.Fatalf("expected resolved pollen state not to route active allergy risk, got %#v", route.RiskFlags)
+	}
+	if !stringSliceContains(route.RiskFlags, "pollen_allergy_inactive_or_resolved") {
+		t.Fatalf("expected inactive/resolved risk flag, got %#v", route.RiskFlags)
+	}
+	if len(route.SupersededRefs) == 0 || len(route.TemporalNotes) == 0 {
+		t.Fatalf("expected superseded refs and temporal notes, refs=%#v notes=%#v", route.SupersededRefs, route.TemporalNotes)
+	}
+}
+
+func TestRouteReportsConflictMemories(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.SaveWithOptions("[[Daughter]] has [[Pollen Allergy]].", "health", TierLong, 0.95, SaveOptions{
+		Links:      []string{"Daughter", "Pollen Allergy"},
+		StateKey:   "family.daughter.pollen_allergy",
+		StateValue: "active",
+	}); err != nil {
+		t.Fatalf("save active state: %v", err)
+	}
+	if err := s.SaveWithOptions("Conflicting note about [[Daughter]] and [[Pollen Allergy]].", "health", TierLong, 0.6, SaveOptions{
+		Links:      []string{"Daughter", "Pollen Allergy"},
+		Status:     "conflict",
+		StateKey:   "family.daughter.pollen_allergy",
+		StateValue: "unknown",
+	}); err != nil {
+		t.Fatalf("save conflict state: %v", err)
+	}
+
+	route := s.Route("女儿花粉过敏出门")
+	if len(route.ConflictRefs) == 0 {
+		t.Fatalf("expected conflict refs, got route=%#v", route)
+	}
+	if len(route.TemporalNotes) == 0 || !strings.Contains(strings.Join(route.TemporalNotes, "\n"), "Conflict memory") {
+		t.Fatalf("expected conflict temporal note, got %#v", route.TemporalNotes)
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 // --- v0.4.0 新测试 ---
 
 func TestThreeTierSave(t *testing.T) {
@@ -505,10 +838,10 @@ func TestEntryWeight(t *testing.T) {
 	}
 }
 
-func TestMigrateOldFormat(t *testing.T) {
+func TestOldFlatTextFormatIgnored(t *testing.T) {
 	dir := t.TempDir()
 
-	// 写入旧格式文件
+	// 旧 memory.txt 不再作为事实源；Obsidian Markdown note 才是事实源。
 	oldData := "old memory line 1\nold memory line 2\nold memory line 3\n"
 	oldPath := dir + "/memory.txt"
 	if err := os.WriteFile(oldPath, []byte(oldData), 0600); err != nil {
@@ -520,21 +853,8 @@ func TestMigrateOldFormat(t *testing.T) {
 		t.Fatalf("NewStore with old format: %v", err)
 	}
 
-	// 应该迁移了 3 条
-	if s.Count() != 3 {
-		t.Errorf("expected 3 migrated entries, got %d", s.Count())
-	}
-
-	// 验证迁移后的层级
-	stats := s.Stats()
-	if stats[TierMedium] != 3 {
-		t.Errorf("expected 3 medium (migrated), got %d", stats[TierMedium])
-	}
-
-	// 搜索应该能找到
-	results := s.Search("old memory")
-	if len(results) != 3 {
-		t.Errorf("expected 3 results, got %d", len(results))
+	if s.Count() != 0 {
+		t.Errorf("expected old flat text to be ignored, got %d entries", s.Count())
 	}
 }
 
@@ -572,26 +892,38 @@ func TestPersistenceWithNewFields(t *testing.T) {
 	}
 }
 
-func TestLoadMarkdownWithEmbeddedCodeFenceText(t *testing.T) {
+func TestLoadObsidianNoteWithEmbeddedCodeFenceText(t *testing.T) {
 	dir := t.TempDir()
-	content := "# LuckyHarness Memory\n\n" +
-		"自动生成，请勿手动编辑 JSON 块。\n\n" +
-		"```json\n" +
-		"[\n" +
-		"  {\n" +
-		"    \"id\": \"mem_1_1\",\n" +
-		"    \"content\": \"Assistant: ```tool\\n{\\\"name\\\":\\\"cron_list\\\"}\\n```\",\n" +
-		"    \"category\": \"conversation\",\n" +
-		"    \"tier\": 1,\n" +
-		"    \"importance\": 0.2,\n" +
-		"    \"access_count\": 0,\n" +
-		"    \"created_at\": \"2026-04-30T00:00:00Z\",\n" +
-		"    \"accessed_at\": \"2026-04-30T00:00:00Z\"\n" +
-		"  }\n" +
-		"]\n" +
-		"```\n"
-	if err := os.WriteFile(filepath.Join(dir, "memory.md"), []byte(content), 0600); err != nil {
-		t.Fatalf("write memory.md: %v", err)
+	content := `---
+id: mem_1_1
+type: memory
+tier: medium
+category: conversation
+importance: 0.2
+access_count: 0
+created_at: 2026-04-30T00:00:00Z
+accessed_at: 2026-04-30T00:00:00Z
+status: active
+valid_from: 2026-04-30T00:00:00Z
+block_id: mem-1-1
+---
+
+# Tool Protocol Memory
+
+## Memory
+
+Assistant: ` + "```tool" + `
+{"name":"cron_list"}
+` + "```" + `
+
+^mem-1-1
+`
+	noteDir := filepath.Join(dir, "30_Sessions")
+	if err := os.MkdirAll(noteDir, 0700); err != nil {
+		t.Fatalf("mkdir note dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(noteDir, "tool-protocol.md"), []byte(content), 0600); err != nil {
+		t.Fatalf("write obsidian note: %v", err)
 	}
 
 	s, err := NewStore(dir)

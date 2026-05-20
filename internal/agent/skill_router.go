@@ -64,6 +64,12 @@ func (a *Agent) buildSkillRouteSystemHint(userInput string) string {
 	if match == nil || match.skill == nil {
 		return ""
 	}
+	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyHarnessMemoryBackendQuestion(userInput) {
+		return `Skill routing note:
+- This request is about the LuckyHarness memory backend, not an external Obsidian app vault.
+- Do not use the Obsidian skill or OBSIDIAN_VAULT_PATH to decide whether LuckyHarness memory exists unless the user explicitly asks to operate an external Obsidian vault.
+- Use recall, local LuckyHarness memory vault files, or runtime inspection as direct evidence.`
+	}
 
 	var lines []string
 	lines = append(lines, "Skill routing hint:")
@@ -83,6 +89,27 @@ func (a *Agent) buildSkillRouteSystemHint(userInput string) string {
 	}
 	lines = append(lines, "- Do not ignore better direct evidence, but bias toward this skill workflow unless the task clearly does not fit.")
 	return strings.Join(lines, "\n")
+}
+
+func isLuckyHarnessMemoryBackendQuestion(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	hasMemory := strings.Contains(lower, "memory") ||
+		strings.Contains(lower, "记忆") ||
+		strings.Contains(lower, "回忆") ||
+		strings.Contains(lower, "recall") ||
+		strings.Contains(lower, "remember")
+	hasBackend := strings.Contains(lower, "luckyharness") ||
+		strings.Contains(lower, "记忆系统") ||
+		strings.Contains(lower, "记忆库") ||
+		strings.Contains(lower, "存储") ||
+		strings.Contains(lower, "后端") ||
+		strings.Contains(lower, "取代") ||
+		strings.Contains(lower, "生效") ||
+		strings.Contains(lower, "双链记忆")
+	return hasMemory && hasBackend
 }
 
 func (a *Agent) matchSkillRoute(userInput string) *skillRouteMatch {
@@ -353,6 +380,9 @@ func (a *Agent) buildFunctionCallOptionsForInput(userInput string, tools []map[s
 
 	match := a.matchSkillRoute(userInput)
 	if match == nil {
+		return callOpts
+	}
+	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyHarnessMemoryBackendQuestion(userInput) {
 		return callOpts
 	}
 

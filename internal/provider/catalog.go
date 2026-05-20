@@ -9,13 +9,13 @@ import (
 
 // ModelInfo 描述一个可用模型
 type ModelInfo struct {
-	ID           string   `json:"id"`            // 模型 ID (e.g. "gpt-4o", "claude-sonnet-4-20250514")
-	Provider     string   `json:"provider"`      // 所属 provider
-	DisplayName  string   `json:"display_name"`  // 显示名称
-	Capabilities []string `json:"capabilities"`  // 能力标签: "chat", "streaming", "tools", "vision"
-	ContextWindow int     `json:"context_window"` // 上下文窗口大小
-	CostPer1kIn  float64  `json:"cost_per_1k_in"`  // 输入每 1k token 价格 (USD)
-	CostPer1kOut float64  `json:"cost_per_1k_out"` // 输出每 1k token 价格 (USD)
+	ID            string   `json:"id"`              // 模型 ID (e.g. "gpt-5.4-mini", "claude-sonnet-4-20250514")
+	Provider      string   `json:"provider"`        // 所属 provider
+	DisplayName   string   `json:"display_name"`    // 显示名称
+	Capabilities  []string `json:"capabilities"`    // 能力标签: "chat", "streaming", "tools", "vision"
+	ContextWindow int      `json:"context_window"`  // 上下文窗口大小
+	CostPer1kIn   float64  `json:"cost_per_1k_in"`  // 输入每 1k token 价格 (USD)
+	CostPer1kOut  float64  `json:"cost_per_1k_out"` // 输出每 1k token 价格 (USD)
 }
 
 // ModelCatalog 管理可用模型列表
@@ -38,8 +38,8 @@ func NewModelCatalog() *ModelCatalog {
 func (mc *ModelCatalog) registerDefaults() {
 	defaults := []ModelInfo{
 		// OpenAI
-		{ID: "gpt-4o", Provider: "openai", DisplayName: "GPT-4o", Capabilities: []string{"chat", "streaming", "tools", "vision"}, ContextWindow: 128000, CostPer1kIn: 0.0025, CostPer1kOut: 0.01},
-		{ID: "gpt-4o-mini", Provider: "openai", DisplayName: "GPT-4o Mini", Capabilities: []string{"chat", "streaming", "tools"}, ContextWindow: 128000, CostPer1kIn: 0.00015, CostPer1kOut: 0.0006},
+		{ID: "gpt-5.4-mini", Provider: "openai", DisplayName: "gpt-5.4-mini", Capabilities: []string{"chat", "streaming", "tools", "vision"}, ContextWindow: 128000, CostPer1kIn: 0.0025, CostPer1kOut: 0.01},
+		{ID: "gpt-5.4-mini-mini", Provider: "openai", DisplayName: "gpt-5.4-mini Mini", Capabilities: []string{"chat", "streaming", "tools"}, ContextWindow: 128000, CostPer1kIn: 0.00015, CostPer1kOut: 0.0006},
 		{ID: "gpt-4-turbo", Provider: "openai", DisplayName: "GPT-4 Turbo", Capabilities: []string{"chat", "streaming", "tools", "vision"}, ContextWindow: 128000, CostPer1kIn: 0.01, CostPer1kOut: 0.03},
 		{ID: "gpt-3.5-turbo", Provider: "openai", DisplayName: "GPT-3.5 Turbo", Capabilities: []string{"chat", "streaming", "tools"}, ContextWindow: 16385, CostPer1kIn: 0.0005, CostPer1kOut: 0.0015},
 		// Anthropic
@@ -52,7 +52,7 @@ func (mc *ModelCatalog) registerDefaults() {
 		{ID: "mistral", Provider: "ollama", DisplayName: "Mistral", Capabilities: []string{"chat", "streaming"}, ContextWindow: 32768, CostPer1kIn: 0, CostPer1kOut: 0},
 		{ID: "qwen2", Provider: "ollama", DisplayName: "Qwen 2", Capabilities: []string{"chat", "streaming"}, ContextWindow: 32768, CostPer1kIn: 0, CostPer1kOut: 0},
 		// OpenRouter (聚合)
-		{ID: "openai/gpt-4o", Provider: "openrouter", DisplayName: "GPT-4o (via OpenRouter)", Capabilities: []string{"chat", "streaming", "tools"}, ContextWindow: 128000, CostPer1kIn: 0.005, CostPer1kOut: 0.015},
+		{ID: "openai/gpt-5.4-mini", Provider: "openrouter", DisplayName: "gpt-5.4-mini (via OpenRouter)", Capabilities: []string{"chat", "streaming", "tools"}, ContextWindow: 128000, CostPer1kIn: 0.005, CostPer1kOut: 0.015},
 		{ID: "anthropic/claude-3.5-sonnet", Provider: "openrouter", DisplayName: "Claude 3.5 Sonnet (via OpenRouter)", Capabilities: []string{"chat", "streaming", "tools"}, ContextWindow: 200000, CostPer1kIn: 0.003, CostPer1kOut: 0.015},
 		{ID: "google/gemini-pro-1.5", Provider: "openrouter", DisplayName: "Gemini Pro 1.5 (via OpenRouter)", Capabilities: []string{"chat", "streaming", "vision"}, ContextWindow: 1000000, CostPer1kIn: 0.00125, CostPer1kOut: 0.005},
 		{ID: "meta-llama/llama-3-70b-instruct", Provider: "openrouter", DisplayName: "Llama 3 70B (via OpenRouter)", Capabilities: []string{"chat", "streaming"}, ContextWindow: 8192, CostPer1kIn: 0.0008, CostPer1kOut: 0.0008},

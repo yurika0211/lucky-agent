@@ -3,15 +3,100 @@ package telegram
 import (
 	"encoding/json"
 	"fmt"
+	"html"
 	"strings"
 )
+
+type telegramToolTraceStep struct {
+	Name    string
+	Args    string
+	Result  string
+	Success bool
+}
 
 func humanizeThinkingProgress(content string) string {
 	content = clipOneLine(content, 180)
 	if content == "" {
 		return ""
 	}
-	return ensureSentenceSuffix("我先陪你把这条思路慢慢捋顺喔：" + content)
+	if isInternalThinkingProgress(content) {
+		return ""
+	}
+	return ensureSentenceSuffix("先整理一下当前思路：" + content)
+}
+
+func renderTelegramThinkingCard(content string) string {
+	content = compactProgressCardText(content)
+	if content == "" || isInternalThinkingProgress(content) {
+		return ""
+	}
+	return "<b>💭 Reasoning Trace</b>\n<blockquote expandable>" + html.EscapeString(content) + "</blockquote>"
+}
+
+func renderTelegramSummaryCard(summary string) string {
+	summary = compactProgressCardText(summary)
+	if summary == "" {
+		return ""
+	}
+	return "<b>💭 Reasoning Trace</b>\n<blockquote expandable>" + html.EscapeString(summary) + "</blockquote>"
+}
+
+func renderTelegramProgressHistoryCard(parts []string) string {
+	body := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = compactProgressCardText(part)
+		if part == "" {
+			continue
+		}
+		body = append(body, html.EscapeString(part))
+	}
+	if len(body) == 0 {
+		return ""
+	}
+	return "<b>💭 Reasoning Trace</b>\n<blockquote expandable>" + strings.Join(body, "\n") + "</blockquote>"
+}
+
+func compactProgressCardText(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+func renderTelegramToolTraceCard(steps []telegramToolTraceStep) string {
+	segments := make([]string, 0, len(steps))
+	shown := 0
+	for _, step := range steps {
+		visibility := telegramToolTraceVisibility(step.Name)
+		if visibility == "hidden" {
+			continue
+		}
+		line := formatTelegramToolTraceLine(shown+1, step, visibility)
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		segments = append(segments, line)
+		shown++
+		if shown >= 6 {
+			break
+		}
+	}
+	if shown == 0 {
+		return ""
+	}
+	body := strings.Join(segments, "  →  ")
+	body += "\nDone · " + fmt.Sprintf("%d tools", shown)
+	return "<b>🛠 Tool Trace</b>\n<pre><code>" + html.EscapeString(body) + "</code></pre>"
 }
 
 func humanizeToolCallProgress(step int, name, args string) string {
@@ -26,55 +111,52 @@ func humanizeToolCallProgress(step int, name, args string) string {
 	parsed := parseToolCallArgs(args)
 
 	if strings.Contains(lowerName, "skill") {
-		if skillName := pickArg(parsed, "skill", "skill_name", "name", "id"); skillName != "" {
-			return fmt.Sprintf("我先借一下技能「%s」的处理套路呀，帮你把这一步走稳一点。", clipOneLine(skillName, 60))
-		}
-		return "我先调一下现成的技能链路呀，把这类问题的处理框架先搭稳。"
+		return "先接入现成的处理链路，确认这一步该怎么处理。"
 	}
 
 	switch lowerName {
 	case "web_search":
 		if q := pickArg(parsed, "query", "q", "keyword"); q != "" {
-			return fmt.Sprintf("我先替你去网上找一轮资料呀，重点盯着 %s。", quoteAndTrim(q, 90))
+			return fmt.Sprintf("先查一轮公开资料，重点看 %s。", quoteAndTrim(q, 90))
 		}
-		return "我先去外面帮你扫一圈资料呀，看看有没有更靠谱的线索。"
+		return "先查一轮公开资料，看看有没有可靠线索。"
 	case "web_fetch":
 		if u := pickArg(parsed, "url", "uri", "link"); u != "" {
-			return fmt.Sprintf("我把这页原文打开看看呀，先替你核对细节：%s。", clipOneLine(u, 100))
+			return fmt.Sprintf("先打开原文核对细节：%s。", clipOneLine(u, 100))
 		}
-		return "我先把网页正文捞出来呀，看看里面到底写了什么。"
+		return "先读取网页正文，确认原文内容。"
 	case "shell":
 		if cmd := pickArg(parsed, "cmd", "command", "script"); cmd != "" {
-			return fmt.Sprintf("我先在终端里替你查一下现状呀，跑这条命令看看：%s。", clipOneLine(cmd, 100))
+			return fmt.Sprintf("先在终端核对现状，执行：%s。", clipOneLine(cmd, 100))
 		}
-		return "我先去终端里探一下路呀，确认当前环境到底是什么状态。"
+		return "先在终端核对当前环境状态。"
 	case "file_read":
 		if p := pickArg(parsed, "path", "file", "filepath", "filename"); p != "" {
-			return fmt.Sprintf("我先陪你翻一下文件 %s 呀，看看里面现在是什么情况。", clipOneLine(p, 100))
+			return fmt.Sprintf("先查看文件 %s，确认当前内容。", clipOneLine(p, 100))
 		}
-		return "我先把相关文件读一遍呀，免得后面判断跑偏。"
+		return "先读取相关文件，确认判断依据。"
 	case "file_write":
 		if p := pickArg(parsed, "path", "file", "filepath", "filename"); p != "" {
-			return fmt.Sprintf("我先把修改落到 %s 里呀，这样你后面接着看会更安心。", clipOneLine(p, 100))
+			return fmt.Sprintf("先把修改写入 %s。", clipOneLine(p, 100))
 		}
-		return "我先把这次改动真正写进去呀，后面再陪你一起收口。"
+		return "先把这次改动真正落盘。"
 	case "recall":
 		if q := pickArg(parsed, "query", "q", "keyword"); q != "" {
-			return fmt.Sprintf("我先回头翻一下之前的上下文呀，看看 %s 有没有旧线索。", quoteAndTrim(q, 90))
+			return fmt.Sprintf("先回看之前的上下文，确认 %s 有没有旧线索。", quoteAndTrim(q, 90))
 		}
-		return "我先把之前的上下文翻出来呀，避免漏掉已经说过的关键信息。"
+		return "先回看之前的上下文，避免漏掉已有信息。"
 	case "remember":
-		return "这个点值得记一下呀，我先替你收进记忆里，后面就不用重复解释了。"
+		return "先把这条信息记下来，后面可以直接复用。"
 	case "current_time":
-		return "我先确认一下现在的时间和时区呀，免得时间线搞错。"
+		return "先确认当前时间和时区，避免时间线出错。"
 	}
 
 	if keyHint := pickArg(parsed,
 		"query", "url", "path", "cmd", "command",
 		"title", "task_id", "name"); keyHint != "" {
-		return fmt.Sprintf("我先借工具 %s 处理一下 %s 呀，把这块缺口替你补上。", n, clipOneLine(keyHint, 100))
+		return fmt.Sprintf("先用工具 %s 处理 %s，补齐这一步所需信息。", n, clipOneLine(keyHint, 100))
 	}
-	return fmt.Sprintf("我先调一下 %s 呀，把这一小段信息替你补全。", n)
+	return fmt.Sprintf("先调用 %s，补齐这一小段信息。", n)
 }
 
 func humanizeToolResultProgress(step int, name, result string) string {
@@ -86,39 +168,39 @@ func humanizeToolResultProgress(step int, name, result string) string {
 
 	switch lowerName {
 	case "web_search":
-		return "这一轮搜索结果我已经拿到了呀，我先帮你把有用的和噪音分开。"
+		return "搜索结果已经拿到，开始筛选有效信息。"
 	case "web_fetch":
-		return "原文我已经读过了呀，接着帮你拎里面真正关键的部分。"
+		return "原文已经读完，开始提取关键细节。"
 	case "shell":
-		return "命令已经跑完啦，我正顺着输出继续帮你判断。"
+		return "命令已经执行完，正在根据输出继续判断。"
 	case "file_read":
-		return "文件我已经看过了呀，接着帮你抓重点。"
+		return "文件已经看过，开始收拢重点。"
 	case "file_write":
-		return "改动已经写进去了呀，我再顺手帮你做一轮确认。"
+		return "改动已经写入，接着做一轮确认。"
 	case "recall":
-		return "前面的上下文我已经翻过了呀，现在继续帮你往下收拢。"
+		return "之前的上下文已经回看完，继续往下收束。"
 	case "remember":
-		return "这条信息我已经记住啦，后面我们可以直接接着用。"
+		return "这条信息已经记下，后面可以直接复用。"
 	case "current_time":
-		return "时间线已经核对好了呀，这块不会再跑偏。"
+		return "时间线已经核对完成。"
 	}
 
 	if strings.Contains(lowerName, "skill") {
-		return "技能链路已经跑完啦，我现在把结果慢慢往结论里收。"
+		return "处理链路已经跑完，开始收束结论。"
 	}
 
 	if summary := humanizeToolResult(name, result); summary != "" {
 		summary = strings.TrimPrefix(summary, "我")
 		summary = strings.TrimSpace(summary)
-		return ensureSentenceSuffix("好呀，我已经把这一步带回来了，" + summary)
+		return ensureSentenceSuffix("这一步已经完成，" + summary)
 	}
-	return "这一步已经有结果啦，我继续帮你往下整理。"
+	return "这一步已经有结果，继续往下整理。"
 }
 
 func wrapFinalConclusion(finalOutput string) string {
 	finalOutput = strings.TrimSpace(finalOutput)
 	if finalOutput == "" {
-		return "我这轮暂时还没整理出能直接递给你的结论呀。"
+		return "这轮暂时还没有整理出能直接给你的结论。"
 	}
 	return finalOutput
 }
@@ -196,33 +278,115 @@ func humanizeToolResult(name, result string) string {
 	switch n {
 	case "web_search":
 		if strings.Contains(text, "Results for:") {
-			return "我先捞到了一批相关结果呀，里面已经能看到几个比较靠谱的入口。"
+			return "已经拿到一批相关结果，里面有几个比较可靠的入口。"
 		}
 		if strings.Contains(strings.ToLower(text), "no results found") {
-			return "我先替你搜了一轮，不过这次还没捞到像样的结果呀。"
+			return "已经搜过一轮，但这次还没有拿到像样的结果。"
 		}
-		return "我先查到了一批和这个问题贴得比较近的资料呀。"
+		return "已经查到一批和这个问题比较接近的资料。"
 
 	case "web_fetch":
 		if strings.Contains(strings.ToLower(text), "failed to fetch") {
-			return "我试着把网页正文抓下来，不过这页没顺利拿到呀。"
+			return "尝试抓取网页正文，但这页没有顺利拿到。"
 		}
-		return "我把网页正文过了一遍呀，里面有几处细节可以直接拿来用。"
+		return "网页正文已经过了一遍，里面有几处细节可以直接使用。"
 
 	case "file_read":
-		return "我已经翻到文件里的关键片段啦。"
+		return "已经找到文件里的关键片段。"
 
 	case "recall":
 		if strings.Contains(text, "没有找到") {
-			return "我回头翻了之前的记录，不过这件事暂时没有现成线索呀。"
+			return "已经回看过之前的记录，但这件事暂时没有现成线索。"
 		}
-		return "我先把之前相关的上下文顺了一遍呀。"
+		return "已经把之前相关的上下文顺了一遍。"
 
 	case "current_time":
-		return "我顺手把时间信息也核对过了呀。"
+		return "已经把时间信息核对过了。"
 	}
 
-	return fmt.Sprintf("我已经把 %s 这一步的结果带回来啦。", n)
+	return fmt.Sprintf("已经拿到 %s 这一步的结果。", n)
+}
+
+func telegramToolTraceVisibility(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case lower == "":
+		return "visible"
+	case lower == "skill_read",
+		lower == "remember",
+		lower == "recall",
+		lower == "rag_search",
+		lower == "rag_index",
+		strings.HasPrefix(lower, "cron"):
+		return "compact"
+	case strings.HasPrefix(lower, "skill_"),
+		strings.HasPrefix(lower, "delegate_"),
+		strings.HasPrefix(lower, "autonomy_"),
+		strings.HasPrefix(lower, "heartbeat_"):
+		return "hidden"
+	default:
+		return "visible"
+	}
+}
+
+func formatTelegramToolTraceLine(index int, step telegramToolTraceStep, visibility string) string {
+	name := strings.TrimSpace(step.Name)
+	if name == "" {
+		name = "unknown_tool"
+	}
+	status := "✅"
+	if !step.Success {
+		status = "⚠️"
+	}
+	displayName := name
+	if visibility == "compact" {
+		displayName = compactToolTraceName(name)
+	}
+	return fmt.Sprintf("[%d] %s %s", index, displayName, status)
+}
+
+func compactToolTraceName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "unknown_tool"
+	}
+	return name
+}
+
+func compactToolTraceDetail(args string) string {
+	parsed := parseToolCallArgs(args)
+	if memory := pickArg(parsed, "content", "text", "memory", "query", "name"); memory != "" {
+		return clipOneLine(memory, 48)
+	}
+	return ""
+}
+
+func verboseToolTraceDetail(args string) string {
+	parsed := parseToolCallArgs(args)
+	if hint := pickArg(parsed,
+		"query", "q", "keyword",
+		"url", "uri", "link",
+		"path", "file", "filepath", "filename",
+		"cmd", "command", "script",
+		"name", "title", "task_id", "content", "text"); hint != "" {
+		return clipOneLine(hint, 72)
+	}
+	raw := clipOneLine(strings.TrimSpace(args), 72)
+	raw = strings.Trim(raw, "{}")
+	return raw
+}
+
+func isInternalThinkingProgress(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return true
+	}
+	if extractRoundNumber(trimmed) > 0 {
+		return true
+	}
+
+	lower := strings.ToLower(strings.Trim(trimmed, " .!"))
+	return lower == "thinking" || lower == "thinking.."
 }
 
 func parseToolCallArgs(raw string) map[string]any {

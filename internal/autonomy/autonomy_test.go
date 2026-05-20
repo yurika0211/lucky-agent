@@ -3,6 +3,7 @@ package autonomy
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -495,6 +496,72 @@ func TestTaskQueueCleanDone(t *testing.T) {
 	}
 }
 
+func TestTaskQueuePersistenceRestoresTasks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "autonomy_queue.json")
+
+	q := NewTaskQueue(16)
+	if restored, err := q.EnablePersistence(path); err != nil {
+		t.Fatalf("EnablePersistence: %v", err)
+	} else if restored != 0 {
+		t.Fatalf("expected no restored tasks, got %d", restored)
+	}
+	task, err := q.AddWithError("Persistent task", "survive restart", PriorityHigh, []string{"persist"})
+	if err != nil {
+		t.Fatalf("AddWithError: %v", err)
+	}
+	if err := q.Block(task.ID, "waiting"); err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+
+	reloaded := NewTaskQueue(16)
+	restored, err := reloaded.EnablePersistence(path)
+	if err != nil {
+		t.Fatalf("reload EnablePersistence: %v", err)
+	}
+	if restored != 1 {
+		t.Fatalf("expected one restored task, got %d", restored)
+	}
+	got, ok := reloaded.Get(task.ID)
+	if !ok {
+		t.Fatalf("restored task %s not found", task.ID)
+	}
+	if got.State != TaskBlocked || got.BlockReason != "waiting" {
+		t.Fatalf("unexpected restored state: %#v", got)
+	}
+}
+
+func TestTaskQueuePersistenceRestoresInterruptedTasksAsReady(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "autonomy_queue.json")
+
+	q := NewTaskQueue(16)
+	if _, err := q.EnablePersistence(path); err != nil {
+		t.Fatalf("EnablePersistence: %v", err)
+	}
+	task, err := q.AddWithError("Interrupted task", "", PriorityNormal, nil)
+	if err != nil {
+		t.Fatalf("AddWithError: %v", err)
+	}
+	pulled := q.Pull("worker-1")
+	if pulled == nil || pulled.ID != task.ID {
+		t.Fatalf("expected task to be pulled, got %#v", pulled)
+	}
+
+	reloaded := NewTaskQueue(16)
+	if _, err := reloaded.EnablePersistence(path); err != nil {
+		t.Fatalf("reload EnablePersistence: %v", err)
+	}
+	got, ok := reloaded.Get(task.ID)
+	if !ok {
+		t.Fatalf("restored task %s not found", task.ID)
+	}
+	if got.State != TaskReady {
+		t.Fatalf("expected interrupted task to restore as ready, got %s", got.State)
+	}
+	if got.AssignedTo != "" || !got.StartedAt.IsZero() {
+		t.Fatalf("expected assignment to be cleared, got %#v", got)
+	}
+}
+
 func TestTaskQueueListByState(t *testing.T) {
 	q := NewTaskQueue(16)
 
@@ -556,6 +623,9 @@ func TestNewWorker(t *testing.T) {
 	}
 	if info.State != WorkerIdle {
 		t.Errorf("expected idle state, got %s", info.State)
+	}
+	if !worker.LoopConfig.AutoApprove {
+		t.Error("expected default worker auto approve")
 	}
 }
 
@@ -899,16 +969,26 @@ func TestToolHeartbeatTrigger(t *testing.T) {
 
 // mockAgentExecutor implements AgentExecutor for testing
 type mockAgentExecutor struct {
-	mu sync.Mutex
+	mu       sync.Mutex
 	sessions []string
+	lastCfg  LoopConfig
 }
 
 func (m *mockAgentExecutor) RunLoopWithSession(ctx context.Context, sessionID string, userInput string, cfg LoopConfig) (*LoopResult, error) {
+	m.mu.Lock()
+	m.lastCfg = cfg
+	m.mu.Unlock()
 	return &LoopResult{
 		Response:   "mock response",
 		TokensUsed: 100,
 		Iterations: 1,
 	}, nil
+}
+
+func (m *mockAgentExecutor) LastConfig() LoopConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastCfg
 }
 
 func (m *mockAgentExecutor) NewSession(title string) string {
@@ -931,6 +1011,55 @@ func TestWorkerTaskCount(t *testing.T) {
 	// Initial count should be 0
 	if worker.TaskCount() != 0 {
 		t.Errorf("expected initial task count 0, got %d", worker.TaskCount())
+	}
+}
+
+func TestWorkerUsesConfiguredLoopLimits(t *testing.T) {
+	executor := &mockAgentExecutor{}
+	cfg := WorkerConfig{
+		ID: "configured-worker",
+		LoopConfig: LoopConfig{
+			MaxIterations:          25,
+			Timeout:                4 * time.Minute,
+			AutoApprove:            false,
+			AutoApproveSet:         true,
+			RepeatToolCallLimit:    6,
+			ToolOnlyIterationLimit: 7,
+			DuplicateFetchLimit:    2,
+			DisabledTools:          []string{"autonomy", "cron_add"},
+		},
+	}
+	worker := NewWorker(cfg, executor)
+
+	result := worker.Execute(context.Background(), &QueueTask{
+		ID:    "task-1",
+		Title: "configured task",
+	})
+	if result.Error != nil {
+		t.Fatalf("Execute returned error: %v", result.Error)
+	}
+
+	got := executor.LastConfig()
+	if got.MaxIterations != 25 {
+		t.Fatalf("expected max iterations 25, got %d", got.MaxIterations)
+	}
+	if got.Timeout != 4*time.Minute {
+		t.Fatalf("expected timeout 4m, got %s", got.Timeout)
+	}
+	if got.AutoApprove {
+		t.Fatalf("expected auto approve false")
+	}
+	if got.RepeatToolCallLimit != 6 {
+		t.Fatalf("expected repeat limit 6, got %d", got.RepeatToolCallLimit)
+	}
+	if got.ToolOnlyIterationLimit != 7 {
+		t.Fatalf("expected tool-only limit 7, got %d", got.ToolOnlyIterationLimit)
+	}
+	if got.DuplicateFetchLimit != 2 {
+		t.Fatalf("expected duplicate fetch limit 2, got %d", got.DuplicateFetchLimit)
+	}
+	if len(got.DisabledTools) != 2 || got.DisabledTools[0] != "autonomy" || got.DisabledTools[1] != "cron_add" {
+		t.Fatalf("unexpected disabled tools: %v", got.DisabledTools)
 	}
 }
 

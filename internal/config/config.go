@@ -32,6 +32,15 @@ type Config struct {
 	// Embedding 配置（供 RAG / 记忆向量化使用）
 	Embedding EmbeddingConfig `json:"embedding,omitempty"`
 
+	// v0.95.0: 多模态配置
+	Multimodal MultimodalConfig `json:"multimodal,omitempty"`
+
+	// v0.96.0: 独立图片生成配置
+	ImageGeneration ImageGenerationConfig `json:"image_generation,omitempty"`
+
+	// v0.97.0: 独立 TTS 配置
+	TTS TTSConfig `json:"tts,omitempty"`
+
 	// v0.40.0: 流式输出模式 (native=真流式，simulated=非流式获取 + 模拟推送)
 	StreamMode string `json:"stream_mode,omitempty"`
 
@@ -65,6 +74,9 @@ type Config struct {
 	// v0.64.0: Dashboard 配置
 	Dashboard DashboardConfig `json:"dashboard,omitempty"`
 
+	// v0.95.0: Autonomy 配置
+	Autonomy AutonomyConfig `json:"autonomy,omitempty"`
+
 	// v0.64.0: Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
 }
@@ -81,6 +93,45 @@ type EmbeddingConfig struct {
 	APIKey    string `json:"api_key,omitempty"`
 	APIBase   string `json:"api_base,omitempty"`
 	Dimension int    `json:"dimension,omitempty"`
+}
+
+type MultimodalConfig struct {
+	Provider               string `json:"provider,omitempty"`
+	APIKey                 string `json:"api_key,omitempty"`
+	APIBase                string `json:"api_base,omitempty"`
+	ImageModel             string `json:"image_model,omitempty"`
+	GenerationModel        string `json:"generation_model,omitempty"`
+	GenerationSize         string `json:"generation_size,omitempty"`
+	GenerationQuality      string `json:"generation_quality,omitempty"`
+	GenerationBackground   string `json:"generation_background,omitempty"`
+	GenerationOutputFormat string `json:"generation_output_format,omitempty"`
+	TranscriptionModel     string `json:"transcription_model,omitempty"`
+	ImageProvider          string `json:"image_provider,omitempty"`
+}
+
+type ImageGenerationConfig struct {
+	Provider          string `json:"provider,omitempty"`
+	APIKey            string `json:"api_key,omitempty"`
+	APIBase           string `json:"api_base,omitempty"`
+	AuthMode          string `json:"auth_mode,omitempty"`
+	Model             string `json:"model,omitempty"`
+	Size              string `json:"size,omitempty"`
+	Quality           string `json:"quality,omitempty"`
+	Background        string `json:"background,omitempty"`
+	OutputFormat      string `json:"output_format,omitempty"`
+	OutputCompression int    `json:"output_compression,omitempty"`
+	Count             int    `json:"count,omitempty"`
+}
+
+type TTSConfig struct {
+	Provider string  `json:"provider,omitempty"`
+	APIKey   string  `json:"api_key,omitempty"`
+	APIBase  string  `json:"api_base,omitempty"`
+	AuthMode string  `json:"auth_mode,omitempty"`
+	Model    string  `json:"model,omitempty"`
+	Voice    string  `json:"voice,omitempty"`
+	Format   string  `json:"format,omitempty"`
+	Speed    float64 `json:"speed,omitempty"`
 }
 
 // LimitsConfig 限制配置
@@ -129,14 +180,23 @@ type ContextConfig struct {
 }
 
 // AgentLoopConfig Agent Loop 配置
+type SimpleLocalInspectionConfig struct {
+	MaxIterations          int `json:"max_iterations,omitempty"`
+	TimeoutSeconds         int `json:"timeout_seconds,omitempty"`
+	RepeatToolCallLimit    int `json:"repeat_tool_call_limit,omitempty"`
+	ToolOnlyIterationLimit int `json:"tool_only_iteration_limit,omitempty"`
+}
+
+// AgentLoopConfig Agent Loop 配置
 type AgentLoopConfig struct {
-	MaxIterations          int  `json:"max_iterations,omitempty"`
-	TimeoutSeconds         int  `json:"timeout_seconds,omitempty"`
-	AutoApprove            bool `json:"auto_approve,omitempty"`
-	RepeatToolCallLimit    int  `json:"repeat_tool_call_limit,omitempty"`
-	ToolOnlyIterationLimit int  `json:"tool_only_iteration_limit,omitempty"`
-	DuplicateFetchLimit    int  `json:"duplicate_fetch_limit,omitempty"`
-	ContextDebug           bool `json:"context_debug,omitempty"`
+	MaxIterations          int                         `json:"max_iterations,omitempty"`
+	TimeoutSeconds         int                         `json:"timeout_seconds,omitempty"`
+	AutoApprove            bool                        `json:"auto_approve,omitempty"`
+	RepeatToolCallLimit    int                         `json:"repeat_tool_call_limit,omitempty"`
+	ToolOnlyIterationLimit int                         `json:"tool_only_iteration_limit,omitempty"`
+	DuplicateFetchLimit    int                         `json:"duplicate_fetch_limit,omitempty"`
+	ContextDebug           bool                        `json:"context_debug,omitempty"`
+	SimpleLocalInspection  SimpleLocalInspectionConfig `json:"simple_local_inspection,omitempty"`
 }
 
 // ServerConfig API Server 配置
@@ -154,6 +214,23 @@ type ServerConfig struct {
 // DashboardConfig Dashboard 配置
 type DashboardConfig struct {
 	Addr string `json:"addr,omitempty"`
+}
+
+// AutonomyWorkerConfig 自主 worker 配置
+type AutonomyWorkerConfig struct {
+	MaxIterations          int      `json:"max_iterations,omitempty"`
+	TimeoutSeconds         int      `json:"timeout_seconds,omitempty"`
+	AutoApprove            *bool    `json:"auto_approve,omitempty"`
+	RepeatToolCallLimit    int      `json:"repeat_tool_call_limit,omitempty"`
+	ToolOnlyIterationLimit int      `json:"tool_only_iteration_limit,omitempty"`
+	DuplicateFetchLimit    int      `json:"duplicate_fetch_limit,omitempty"`
+	DisabledTools          []string `json:"disabled_tools,omitempty"`
+}
+
+// AutonomyConfig 自主工作套件配置
+type AutonomyConfig struct {
+	Enabled bool                 `json:"enabled,omitempty"`
+	Worker  AutonomyWorkerConfig `json:"worker,omitempty"`
 }
 
 // MsgGatewayConfig 消息网关配置
@@ -361,10 +438,10 @@ func DefaultConfig() *Config {
 	return &Config{
 		LlmProvider: LlmProviderConfig{
 			Name:  "openai",
-			Model: "gpt-4o",
+			Model: "gpt-5.4-mini",
 		},
 		Provider:     "openai",
-		Model:        "gpt-4o",
+		Model:        "gpt-5.4-mini",
 		SoulPath:     filepath.Join(home, ".luckyharness", "SOUL.md"),
 		MaxTokens:    4096,
 		Temperature:  0.7,
@@ -373,6 +450,36 @@ func DefaultConfig() *Config {
 		WebSearch: WebSearchConfig{
 			Provider:   "brave",
 			MaxResults: 5,
+		},
+		Multimodal: MultimodalConfig{
+			Provider:               "openai",
+			ImageModel:             "gpt-5.4-mini",
+			GenerationModel:        "gpt-image-1.5",
+			GenerationSize:         "1024x1024",
+			GenerationQuality:      "auto",
+			GenerationBackground:   "auto",
+			GenerationOutputFormat: "png",
+			TranscriptionModel:     "whisper-1",
+		},
+		ImageGeneration: ImageGenerationConfig{
+			Provider:     "openai",
+			APIBase:      "https://api.openai.com/v1",
+			AuthMode:     "bearer",
+			Model:        "gpt-image-1.5",
+			Size:         "1024x1024",
+			Quality:      "auto",
+			Background:   "auto",
+			OutputFormat: "png",
+			Count:        1,
+		},
+		TTS: TTSConfig{
+			Provider: "openai",
+			APIBase:  "https://api.openai.com/v1",
+			AuthMode: "bearer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Format:   "mp3",
+			Speed:    1.0,
 		},
 		StreamMode: "native",
 		Memory: MemoryConfig{
@@ -423,6 +530,12 @@ func DefaultConfig() *Config {
 			ToolOnlyIterationLimit: 3,
 			DuplicateFetchLimit:    1,
 			ContextDebug:           false,
+			SimpleLocalInspection: SimpleLocalInspectionConfig{
+				MaxIterations:          3,
+				TimeoutSeconds:         25,
+				RepeatToolCallLimit:    2,
+				ToolOnlyIterationLimit: 2,
+			},
 		},
 		Server: ServerConfig{
 			Addr:        "127.0.0.1:9090",
@@ -434,6 +547,18 @@ func DefaultConfig() *Config {
 		},
 		Dashboard: DashboardConfig{
 			Addr: ":8765",
+		},
+		Autonomy: AutonomyConfig{
+			Enabled: false,
+			Worker: AutonomyWorkerConfig{
+				MaxIterations:          10,
+				TimeoutSeconds:         120,
+				AutoApprove:            boolPtr(true),
+				RepeatToolCallLimit:    3,
+				ToolOnlyIterationLimit: 3,
+				DuplicateFetchLimit:    1,
+				DisabledTools:          []string{"autonomy"},
+			},
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
@@ -500,6 +625,104 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.WebSearch.MaxResults <= 0 {
 		cfg.WebSearch.MaxResults = def.WebSearch.MaxResults
+	}
+	if cfg.Multimodal.Provider == "" {
+		cfg.Multimodal.Provider = def.Multimodal.Provider
+	}
+	if cfg.Multimodal.ImageModel == "" {
+		cfg.Multimodal.ImageModel = def.Multimodal.ImageModel
+	}
+	if cfg.Multimodal.GenerationModel == "" {
+		cfg.Multimodal.GenerationModel = def.Multimodal.GenerationModel
+	}
+	if cfg.Multimodal.GenerationSize == "" {
+		cfg.Multimodal.GenerationSize = def.Multimodal.GenerationSize
+	}
+	if cfg.Multimodal.GenerationQuality == "" {
+		cfg.Multimodal.GenerationQuality = def.Multimodal.GenerationQuality
+	}
+	if cfg.Multimodal.GenerationBackground == "" {
+		cfg.Multimodal.GenerationBackground = def.Multimodal.GenerationBackground
+	}
+	if cfg.Multimodal.GenerationOutputFormat == "" {
+		cfg.Multimodal.GenerationOutputFormat = def.Multimodal.GenerationOutputFormat
+	}
+	if cfg.Multimodal.TranscriptionModel == "" {
+		cfg.Multimodal.TranscriptionModel = def.Multimodal.TranscriptionModel
+	}
+	if cfg.ImageGeneration.Provider == "" {
+		cfg.ImageGeneration.Provider = def.ImageGeneration.Provider
+	}
+	if cfg.ImageGeneration.APIBase == "" {
+		cfg.ImageGeneration.APIBase = def.ImageGeneration.APIBase
+	}
+	if cfg.ImageGeneration.AuthMode == "" {
+		cfg.ImageGeneration.AuthMode = def.ImageGeneration.AuthMode
+	}
+	if cfg.ImageGeneration.Model == "" {
+		if cfg.Multimodal.GenerationModel != "" {
+			cfg.ImageGeneration.Model = cfg.Multimodal.GenerationModel
+		} else {
+			cfg.ImageGeneration.Model = def.ImageGeneration.Model
+		}
+	}
+	if cfg.ImageGeneration.Size == "" {
+		if cfg.Multimodal.GenerationSize != "" {
+			cfg.ImageGeneration.Size = cfg.Multimodal.GenerationSize
+		} else {
+			cfg.ImageGeneration.Size = def.ImageGeneration.Size
+		}
+	}
+	if cfg.ImageGeneration.Quality == "" {
+		if cfg.Multimodal.GenerationQuality != "" {
+			cfg.ImageGeneration.Quality = cfg.Multimodal.GenerationQuality
+		} else {
+			cfg.ImageGeneration.Quality = def.ImageGeneration.Quality
+		}
+	}
+	if cfg.ImageGeneration.Background == "" {
+		if cfg.Multimodal.GenerationBackground != "" {
+			cfg.ImageGeneration.Background = cfg.Multimodal.GenerationBackground
+		} else {
+			cfg.ImageGeneration.Background = def.ImageGeneration.Background
+		}
+	}
+	if cfg.ImageGeneration.OutputFormat == "" {
+		if cfg.Multimodal.GenerationOutputFormat != "" {
+			cfg.ImageGeneration.OutputFormat = cfg.Multimodal.GenerationOutputFormat
+		} else {
+			cfg.ImageGeneration.OutputFormat = def.ImageGeneration.OutputFormat
+		}
+	}
+	if cfg.ImageGeneration.APIKey == "" && cfg.ImageGeneration.Provider == "openai" && cfg.Multimodal.APIKey != "" {
+		cfg.ImageGeneration.APIKey = cfg.Multimodal.APIKey
+	}
+	if cfg.ImageGeneration.APIBase == def.ImageGeneration.APIBase && cfg.ImageGeneration.Provider == "openai" && cfg.Multimodal.APIBase != "" {
+		cfg.ImageGeneration.APIBase = cfg.Multimodal.APIBase
+	}
+	if cfg.ImageGeneration.Count <= 0 {
+		cfg.ImageGeneration.Count = def.ImageGeneration.Count
+	}
+	if cfg.TTS.Provider == "" {
+		cfg.TTS.Provider = def.TTS.Provider
+	}
+	if cfg.TTS.APIBase == "" {
+		cfg.TTS.APIBase = def.TTS.APIBase
+	}
+	if cfg.TTS.AuthMode == "" {
+		cfg.TTS.AuthMode = def.TTS.AuthMode
+	}
+	if cfg.TTS.Model == "" {
+		cfg.TTS.Model = def.TTS.Model
+	}
+	if cfg.TTS.Voice == "" {
+		cfg.TTS.Voice = def.TTS.Voice
+	}
+	if cfg.TTS.Format == "" {
+		cfg.TTS.Format = def.TTS.Format
+	}
+	if cfg.TTS.Speed <= 0 {
+		cfg.TTS.Speed = def.TTS.Speed
 	}
 	if cfg.StreamMode == "" {
 		cfg.StreamMode = def.StreamMode
@@ -591,6 +814,39 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Agent.DuplicateFetchLimit <= 0 {
 		cfg.Agent.DuplicateFetchLimit = def.Agent.DuplicateFetchLimit
 	}
+	if cfg.Agent.SimpleLocalInspection.MaxIterations <= 0 {
+		cfg.Agent.SimpleLocalInspection.MaxIterations = def.Agent.SimpleLocalInspection.MaxIterations
+	}
+	if cfg.Agent.SimpleLocalInspection.TimeoutSeconds <= 0 {
+		cfg.Agent.SimpleLocalInspection.TimeoutSeconds = def.Agent.SimpleLocalInspection.TimeoutSeconds
+	}
+	if cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit <= 0 {
+		cfg.Agent.SimpleLocalInspection.RepeatToolCallLimit = def.Agent.SimpleLocalInspection.RepeatToolCallLimit
+	}
+	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit <= 0 {
+		cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit = def.Agent.SimpleLocalInspection.ToolOnlyIterationLimit
+	}
+	if cfg.Autonomy.Worker.MaxIterations <= 0 {
+		cfg.Autonomy.Worker.MaxIterations = def.Autonomy.Worker.MaxIterations
+	}
+	if cfg.Autonomy.Worker.TimeoutSeconds <= 0 {
+		cfg.Autonomy.Worker.TimeoutSeconds = def.Autonomy.Worker.TimeoutSeconds
+	}
+	if cfg.Autonomy.Worker.RepeatToolCallLimit <= 0 {
+		cfg.Autonomy.Worker.RepeatToolCallLimit = def.Autonomy.Worker.RepeatToolCallLimit
+	}
+	if cfg.Autonomy.Worker.ToolOnlyIterationLimit <= 0 {
+		cfg.Autonomy.Worker.ToolOnlyIterationLimit = def.Autonomy.Worker.ToolOnlyIterationLimit
+	}
+	if cfg.Autonomy.Worker.DuplicateFetchLimit <= 0 {
+		cfg.Autonomy.Worker.DuplicateFetchLimit = def.Autonomy.Worker.DuplicateFetchLimit
+	}
+	if cfg.Autonomy.Worker.AutoApprove == nil {
+		cfg.Autonomy.Worker.AutoApprove = def.Autonomy.Worker.AutoApprove
+	}
+	if cfg.Autonomy.Worker.DisabledTools == nil {
+		cfg.Autonomy.Worker.DisabledTools = append([]string(nil), def.Autonomy.Worker.DisabledTools...)
+	}
 
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = def.Server.Addr
@@ -658,6 +914,13 @@ func cloneConfig(in *Config) *Config {
 	cp.Fallbacks = append([]FallbackEntry(nil), in.Fallbacks...)
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
+	if in.Autonomy.Worker.AutoApprove != nil {
+		v := *in.Autonomy.Worker.AutoApprove
+		cp.Autonomy.Worker.AutoApprove = &v
+	}
+	if in.Autonomy.Worker.DisabledTools != nil {
+		cp.Autonomy.Worker.DisabledTools = append([]string{}, in.Autonomy.Worker.DisabledTools...)
+	}
 	return &cp
 }
 
@@ -775,6 +1038,72 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Embedding.Dimension = n
+	case "multimodal.provider":
+		m.config.Multimodal.Provider = value
+	case "multimodal.api_key":
+		m.config.Multimodal.APIKey = value
+	case "multimodal.api_base":
+		m.config.Multimodal.APIBase = value
+	case "multimodal.image_model":
+		m.config.Multimodal.ImageModel = value
+	case "multimodal.generation_model":
+		m.config.Multimodal.GenerationModel = value
+	case "multimodal.generation_size":
+		m.config.Multimodal.GenerationSize = value
+	case "multimodal.generation_quality":
+		m.config.Multimodal.GenerationQuality = value
+	case "multimodal.generation_background":
+		m.config.Multimodal.GenerationBackground = value
+	case "multimodal.generation_output_format":
+		m.config.Multimodal.GenerationOutputFormat = value
+	case "multimodal.transcription_model":
+		m.config.Multimodal.TranscriptionModel = value
+	case "multimodal.image_provider":
+		m.config.Multimodal.ImageProvider = value
+	case "image_generation.provider":
+		m.config.ImageGeneration.Provider = value
+	case "image_generation.api_key":
+		m.config.ImageGeneration.APIKey = value
+	case "image_generation.api_base":
+		m.config.ImageGeneration.APIBase = value
+	case "image_generation.auth_mode":
+		m.config.ImageGeneration.AuthMode = value
+	case "image_generation.model":
+		m.config.ImageGeneration.Model = value
+	case "image_generation.size":
+		m.config.ImageGeneration.Size = value
+	case "image_generation.quality":
+		m.config.ImageGeneration.Quality = value
+	case "image_generation.background":
+		m.config.ImageGeneration.Background = value
+	case "image_generation.output_format":
+		m.config.ImageGeneration.OutputFormat = value
+	case "image_generation.output_compression":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.ImageGeneration.OutputCompression = n
+	case "image_generation.count":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.ImageGeneration.Count = n
+	case "tts.provider":
+		m.config.TTS.Provider = value
+	case "tts.api_key":
+		m.config.TTS.APIKey = value
+	case "tts.api_base":
+		m.config.TTS.APIBase = value
+	case "tts.auth_mode":
+		m.config.TTS.AuthMode = value
+	case "tts.model":
+		m.config.TTS.Model = value
+	case "tts.voice":
+		m.config.TTS.Voice = value
+	case "tts.format":
+		m.config.TTS.Format = value
+	case "tts.speed":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.TTS.Speed = f
 	case "soul_path":
 		m.config.SoulPath = value
 	case "max_tokens":
@@ -824,6 +1153,22 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Agent.DuplicateFetchLimit = n
 	case "agent.context_debug":
 		m.config.Agent.ContextDebug = parseBool(value)
+	case "agent.simple_local_inspection.max_iterations":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.SimpleLocalInspection.MaxIterations = n
+	case "agent.simple_local_inspection.timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.SimpleLocalInspection.TimeoutSeconds = n
+	case "agent.simple_local_inspection.repeat_tool_call_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.SimpleLocalInspection.RepeatToolCallLimit = n
+	case "agent.simple_local_inspection.tool_only_iteration_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.SimpleLocalInspection.ToolOnlyIterationLimit = n
 	case "server.addr":
 		m.config.Server.Addr = value
 	case "server.api_keys":
@@ -844,6 +1189,33 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Server.LogFormat = value
 	case "dashboard.addr":
 		m.config.Dashboard.Addr = value
+	case "autonomy.enabled":
+		m.config.Autonomy.Enabled = parseBool(value)
+	case "autonomy.worker.max_iterations":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.MaxIterations = n
+	case "autonomy.worker.timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.TimeoutSeconds = n
+	case "autonomy.worker.auto_approve":
+		v := parseBool(value)
+		m.config.Autonomy.Worker.AutoApprove = &v
+	case "autonomy.worker.repeat_tool_call_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.RepeatToolCallLimit = n
+	case "autonomy.worker.tool_only_iteration_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.ToolOnlyIterationLimit = n
+	case "autonomy.worker.duplicate_fetch_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Worker.DuplicateFetchLimit = n
+	case "autonomy.worker.disabled_tools":
+		m.config.Autonomy.Worker.DisabledTools = splitCSV(value)
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":
@@ -1016,6 +1388,10 @@ func parseBool(s string) bool {
 	default:
 		return false
 	}
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 func splitCSV(s string) []string {

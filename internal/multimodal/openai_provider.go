@@ -13,12 +13,12 @@ import (
 
 // OpenAIVisionProvider implements Provider using OpenAI's vision API
 type OpenAIVisionProvider struct {
-	mu         sync.RWMutex
-	apiKey     string
-	apiBase    string
-	model      string
-	maxTokens  int
-	analyzed   int
+	mu        sync.RWMutex
+	apiKey    string
+	apiBase   string
+	model     string
+	maxTokens int
+	analyzed  int
 }
 
 // OpenAIConfig holds OpenAI provider configuration
@@ -35,7 +35,7 @@ func NewOpenAIVisionProvider(cfg OpenAIConfig) (*OpenAIVisionProvider, error) {
 		return nil, fmt.Errorf("openai api key is required")
 	}
 	if cfg.Model == "" {
-		cfg.Model = "gpt-4o"
+		cfg.Model = "gpt-5.4-mini"
 	}
 	if cfg.MaxTokens == 0 {
 		cfg.MaxTokens = 4096

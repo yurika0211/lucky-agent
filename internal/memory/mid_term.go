@@ -1,7 +1,6 @@
 package memory
 
 import (
-	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -10,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // --- 中期记忆：会话级持久化 ---
@@ -34,9 +35,10 @@ type SessionSummary struct {
 
 // MidTermStore 中期记忆存储
 type MidTermStore struct {
-	mu          sync.RWMutex
-	summaries   map[string]*SessionSummary // key: session ID
-	dir         string
+	mu           sync.RWMutex
+	summaries    map[string]*SessionSummary // key: session ID
+	paths        map[string]string          // key: session ID, value: relative note path
+	dir          string
 	maxSummaries int // 最大摘要数量（默认 100）
 }
 
@@ -50,6 +52,7 @@ func NewMidTermStore(dir string, maxSummaries int) (*MidTermStore, error) {
 	}
 	s := &MidTermStore{
 		summaries:    make(map[string]*SessionSummary),
+		paths:        make(map[string]string),
 		dir:          dir,
 		maxSummaries: maxSummaries,
 	}
@@ -259,6 +262,7 @@ func (s *MidTermStore) ExpireOldSummaries(olderThan time.Duration) int {
 	}
 
 	for _, id := range toDelete {
+		s.removeSummaryFileLocked(id)
 		delete(s.summaries, id)
 	}
 
@@ -314,6 +318,7 @@ func (s *MidTermStore) Delete(sessionID string) error {
 		return fmt.Errorf("summary not found: %s", sessionID)
 	}
 
+	s.removeSummaryFileLocked(sessionID)
 	delete(s.summaries, sessionID)
 	return s.persist()
 }
@@ -331,79 +336,204 @@ func (s *MidTermStore) evictOldest() {
 	}
 
 	if oldestID != "" {
+		s.removeSummaryFileLocked(oldestID)
 		delete(s.summaries, oldestID)
 	}
 }
 
-// --- 持久化 ---
-
-// midtermData JSON 序列化格式
-type midtermData struct {
-	Summaries []*SessionSummary `json:"summaries"`
-}
-
 func (s *MidTermStore) persist() error {
-	path := filepath.Join(s.dir, "midterm.md")
-
-	data := midtermData{
-		Summaries: make([]*SessionSummary, 0, len(s.summaries)),
+	if err := os.MkdirAll(s.dir, 0700); err != nil {
+		return fmt.Errorf("create midterm dir: %w", err)
 	}
 	for _, sm := range s.summaries {
-		data.Summaries = append(data.Summaries, sm)
+		if sm.CreatedAt.IsZero() {
+			sm.CreatedAt = time.Now()
+		}
+		rel := s.paths[sm.SessionID]
+		if rel == "" {
+			rel = sessionNotePath(sm)
+			s.paths[sm.SessionID] = rel
+		}
+		path := filepath.Join(s.dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return fmt.Errorf("create session note dir: %w", err)
+		}
+		if err := os.WriteFile(path, []byte(renderSessionSummaryNote(sm)), 0600); err != nil {
+			return fmt.Errorf("write session note %s: %w", path, err)
+		}
 	}
-
-	jsonData, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal midterm: %w", err)
-	}
-
-	var b strings.Builder
-	b.WriteString("# LuckyHarness Midterm Memory\n\n")
-	b.WriteString("自动生成，请勿手动编辑 JSON 块。\n\n")
-	b.WriteString("```json\n")
-	b.Write(jsonData)
-	b.WriteString("\n```\n")
-	return os.WriteFile(path, []byte(b.String()), 0600)
+	return nil
 }
 
 func (s *MidTermStore) load() error {
-	path := filepath.Join(s.dir, "midterm.md")
+	if err := os.MkdirAll(s.dir, 0700); err != nil {
+		return fmt.Errorf("create midterm dir: %w", err)
+	}
+	return filepath.Walk(s.dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if strings.ToLower(filepath.Ext(path)) != ".md" {
+			return nil
+		}
+		sm, ok, err := parseSessionSummaryNote(path, s.dir)
+		if err != nil {
+			return fmt.Errorf("parse session note %s: %w", path, err)
+		}
+		if !ok {
+			return nil
+		}
+		s.summaries[sm.SessionID] = sm
+		rel, err := filepath.Rel(s.dir, path)
+		if err != nil {
+			rel = path
+		}
+		s.paths[sm.SessionID] = filepath.ToSlash(rel)
+		return nil
+	})
+}
+
+type sessionSummaryFrontmatter struct {
+	ID            string    `yaml:"id"`
+	Type          string    `yaml:"type"`
+	UserID        string    `yaml:"user_id,omitempty"`
+	CreatedAt     time.Time `yaml:"created_at"`
+	Topics        []string  `yaml:"topics,omitempty"`
+	KeyDecisions  []string  `yaml:"key_decisions,omitempty"`
+	OpenQuestions []string  `yaml:"open_questions,omitempty"`
+	CodeContext   string    `yaml:"code_context,omitempty"`
+	Status        string    `yaml:"status,omitempty"`
+	Tags          []string  `yaml:"tags,omitempty"`
+}
+
+func sessionNotePath(sm *SessionSummary) string {
+	created := sm.CreatedAt
+	if created.IsZero() {
+		created = time.Now()
+	}
+	slug := slugify(strings.Join(sm.Topics, "-"))
+	if slug == "" {
+		slug = slugify(sm.SessionID)
+	}
+	if slug == "" {
+		slug = "session"
+	}
+	return filepath.ToSlash(fmt.Sprintf("%s-%s-%s.md", created.Format("20060102-150405"), slug, sm.SessionID))
+}
+
+func renderSessionSummaryNote(sm *SessionSummary) string {
+	tags := make([]string, 0, len(sm.Topics)+1)
+	tags = append(tags, "memory/session")
+	for _, topic := range sm.Topics {
+		if strings.TrimSpace(topic) != "" {
+			tags = append(tags, "topic/"+slugify(topic))
+		}
+	}
+	fm := sessionSummaryFrontmatter{
+		ID:            sm.SessionID,
+		Type:          "session_summary",
+		UserID:        sm.UserID,
+		CreatedAt:     sm.CreatedAt,
+		Topics:        sm.Topics,
+		KeyDecisions:  sm.KeyDecisions,
+		OpenQuestions: sm.OpenQuestions,
+		CodeContext:   sm.CodeContext,
+		Status:        "active",
+		Tags:          dedupSlice(tags),
+	}
+	yml, _ := yaml.Marshal(fm)
+	title := sm.SessionID
+	if len(sm.Topics) > 0 {
+		title = strings.Join(sm.Topics, ", ")
+	}
+
+	var b strings.Builder
+	b.WriteString("---\n")
+	b.Write(yml)
+	b.WriteString("---\n\n")
+	b.WriteString("# Session " + title + "\n\n")
+	b.WriteString("## Summary\n\n")
+	b.WriteString(strings.TrimSpace(sm.RawSummary))
+	b.WriteString("\n\n^session-" + blockIDForEntry(sm.SessionID) + "\n")
+	if len(sm.KeyDecisions) > 0 {
+		b.WriteString("\n## Key Decisions\n\n")
+		for _, item := range sm.KeyDecisions {
+			b.WriteString("- " + strings.TrimSpace(item) + "\n")
+		}
+	}
+	if len(sm.OpenQuestions) > 0 {
+		b.WriteString("\n## Open Questions\n\n")
+		for _, item := range sm.OpenQuestions {
+			b.WriteString("- " + strings.TrimSpace(item) + "\n")
+		}
+	}
+	if sm.CodeContext != "" {
+		b.WriteString("\n## Code Context\n\n")
+		b.WriteString(sm.CodeContext)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func parseSessionSummaryNote(path, root string) (*SessionSummary, bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // 文件不存在是正常的
-		}
-		return fmt.Errorf("read midterm: %w", err)
+		return nil, false, err
 	}
-
-	if strings.Contains(string(raw), "```json") {
-		raw = []byte(extractJSONCodeFence(string(raw)))
+	fmRaw, body, ok := splitFrontmatter(string(raw))
+	if !ok {
+		return nil, false, nil
 	}
-
-	var data midtermData
-	if err := json.Unmarshal(raw, &data); err != nil {
-		return fmt.Errorf("parse midterm: %w", err)
+	var fm sessionSummaryFrontmatter
+	if err := yaml.Unmarshal([]byte(fmRaw), &fm); err != nil {
+		return nil, false, err
 	}
-
-	for _, sm := range data.Summaries {
-		s.summaries[sm.SessionID] = sm
+	if fm.Type != "session_summary" || fm.ID == "" {
+		return nil, false, nil
 	}
+	sm := &SessionSummary{
+		SessionID:     fm.ID,
+		UserID:        fm.UserID,
+		CreatedAt:     fm.CreatedAt,
+		Topics:        fm.Topics,
+		KeyDecisions:  fm.KeyDecisions,
+		OpenQuestions: fm.OpenQuestions,
+		CodeContext:   fm.CodeContext,
+		RawSummary:    strings.TrimSpace(blockIDPattern.ReplaceAllString(extractMarkdownSection(body, "Summary"), "")),
+	}
+	if sm.CreatedAt.IsZero() {
+		sm.CreatedAt = time.Now()
+	}
+	if sm.RawSummary == "" {
+		sm.RawSummary = strings.TrimSpace(blockIDPattern.ReplaceAllString(bodyWithoutTitle(body), ""))
+	}
+	return sm, true, nil
+}
 
-	return nil
+func (s *MidTermStore) removeSummaryFileLocked(sessionID string) {
+	rel := s.paths[sessionID]
+	if rel == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(s.dir, filepath.FromSlash(rel)))
+	delete(s.paths, sessionID)
 }
 
 // GenerateSessionSummary 从对话消息生成结构化会话摘要
 // 暂不接 LLM，用启发式规则提取
 func GenerateSessionSummary(sessionID, userID string, messages []ConversationTurn) *SessionSummary {
 	summary := &SessionSummary{
-		SessionID:    sessionID,
-		UserID:       userID,
-		CreatedAt:    time.Now(),
-		Topics:       extractTopics(messages),
-		KeyDecisions: extractKeyDecisions(messages),
+		SessionID:     sessionID,
+		UserID:        userID,
+		CreatedAt:     time.Now(),
+		Topics:        extractTopics(messages),
+		KeyDecisions:  extractKeyDecisions(messages),
 		OpenQuestions: extractOpenQuestions(messages),
 		CodeContext:   extractCodeContext(messages),
-		RawSummary:   generateRawSummary(messages),
+		RawSummary:    generateRawSummary(messages),
 	}
 	return summary
 }

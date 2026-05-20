@@ -27,9 +27,9 @@ type chatTask struct {
 }
 
 type queuedChatRequest struct {
-	ctx       context.Context
-	msg       *gateway.Message
-	inputText string
+	ctx   context.Context
+	msg   *gateway.Message
+	input agent.UserTurnInput
 }
 
 type chatQueue struct {
@@ -45,23 +45,25 @@ type Handler struct {
 	agent    *agent.Agent
 	commands map[string]commandHandler
 
-	mu         sync.RWMutex
-	sessions   map[string]string
-	tasks      map[string]*chatTask
-	queues     map[string]*chatQueue
-	dataDir    string
-	restarting bool
+	mu                sync.RWMutex
+	sessions          map[string]string
+	tasks             map[string]*chatTask
+	queues            map[string]*chatQueue
+	dataDir           string
+	restarting        bool
+	chatStreamTimeout time.Duration
 }
 
 func NewHandler(adapter *Adapter, agentRuntime *agent.Agent) *Handler {
 	h := &Handler{
-		adapter:  adapter,
-		agent:    agentRuntime,
-		commands: make(map[string]commandHandler),
-		sessions: make(map[string]string),
-		tasks:    make(map[string]*chatTask),
-		queues:   make(map[string]*chatQueue),
-		dataDir:  "",
+		adapter:           adapter,
+		agent:             agentRuntime,
+		commands:          make(map[string]commandHandler),
+		sessions:          make(map[string]string),
+		tasks:             make(map[string]*chatTask),
+		queues:            make(map[string]*chatQueue),
+		dataDir:           "",
+		chatStreamTimeout: 10 * time.Minute,
 	}
 	h.commands = h.buildCommandRegistry()
 	return h
@@ -79,10 +81,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 	}
 
 	text := strings.TrimSpace(msg.Text)
-	if text == "" {
+	if text == "" && len(msg.Attachments) == 0 {
 		return nil
 	}
-	return h.dispatchChatAsync(ctx, msg, text)
+	input := h.buildUserTurnInput(ctx, text, msg.Attachments)
+	return h.dispatchChatAsync(ctx, msg, input)
 }
 
 func (h *Handler) buildCommandRegistry() map[string]commandHandler {
@@ -227,7 +230,7 @@ func (h *Handler) handleChatCommand(ctx context.Context, msg *gateway.Message) e
 	if strings.TrimSpace(msg.Args) == "" {
 		return h.reply(ctx, msg, "请在 /chat 后面带上要发送的内容，例如：/chat 你好")
 	}
-	return h.dispatchChatAsync(ctx, msg, msg.Args)
+	return h.dispatchChatAsync(ctx, msg, agent.TextUserTurnInput(msg.Args))
 }
 
 func (h *Handler) handleModel(ctx context.Context, msg *gateway.Message) error {
@@ -613,16 +616,16 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 	return nil
 }
 
-func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, inputText string) error {
-	text := strings.TrimSpace(inputText)
-	if text == "" {
+func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
+	input = input.Normalize()
+	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
 		return nil
 	}
 
 	req := &queuedChatRequest{
-		ctx:       ctx,
-		msg:       msg,
-		inputText: text,
+		ctx:   ctx,
+		msg:   msg,
+		input: input,
 	}
 	position, startWorker := h.enqueueChatRequest(msg.Chat.ID, req)
 	if position > 1 {
@@ -675,7 +678,7 @@ func (h *Handler) runChatQueue(chatID string) {
 		}
 
 		taskCtx, task := h.beginChatTask(chatID, req.ctx)
-		err := h.handleChatSync(taskCtx, req.msg, req.inputText)
+		err := h.handleChatStream(taskCtx, req.msg, req.input)
 		h.finishChatTask(chatID, task)
 
 		if err != nil && !errors.Is(err, context.Canceled) {
@@ -738,17 +741,17 @@ func (h *Handler) queueStatus(chatID string) (running bool, queued int) {
 	return running, queued
 }
 
-func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text string) error {
-	text = strings.TrimSpace(text)
-	if text == "" {
+func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
+	input = input.Normalize()
+	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
 		return nil
 	}
 
 	sessionID := h.getSessionID(msg.Chat.ID)
-	response, err := h.agent.ChatWithSession(ctx, sessionID, text)
+	response, err := h.agent.ChatWithSessionInput(ctx, sessionID, input)
 	if err != nil && strings.Contains(err.Error(), "session not found") {
 		sessionID = h.resetSession(msg.Chat.ID)
-		response, err = h.agent.ChatWithSession(ctx, sessionID, text)
+		response, err = h.agent.ChatWithSessionInput(ctx, sessionID, input)
 	}
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
@@ -762,6 +765,437 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text
 		response = "我这边暂时还没有整理出可发送的结果。"
 	}
 	return h.reply(ctx, msg, response)
+}
+
+func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attachments []gateway.Attachment) agent.UserTurnInput {
+	baseText = strings.TrimSpace(baseText)
+	if len(attachments) == 0 {
+		return agent.TextUserTurnInput(baseText)
+	}
+	return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
+}
+
+func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
+	var sections []string
+	if strings.TrimSpace(baseText) != "" {
+		sections = append(sections, strings.TrimSpace(baseText))
+	}
+
+	if h.agent != nil {
+		analysis, err := h.agent.AnalyzeAttachments(ctx, attachments)
+		if err == nil && strings.TrimSpace(analysis) != "" {
+			sections = append(sections, analysis)
+			return strings.Join(sections, "\n\n")
+		}
+	}
+
+	var mediaDesc strings.Builder
+	mediaDesc.WriteString("[Multimedia Attachments]\n")
+	for i, att := range attachments {
+		label := string(att.Type)
+		if strings.TrimSpace(label) == "" {
+			label = "attachment"
+		}
+		name := strings.TrimSpace(att.FileName)
+		if name == "" {
+			name = "unnamed"
+		}
+		mediaDesc.WriteString(fmt.Sprintf("%s %d: %s (mime: %s)\n", strings.Title(label), i+1, name, att.MimeType))
+	}
+	sections = append(sections, strings.TrimSpace(mediaDesc.String()))
+	return strings.Join(sections, "\n\n")
+}
+
+func (h *Handler) openChatEventStream(ctx context.Context, chatID string, input agent.UserTurnInput, sessionID string) (<-chan agent.ChatEvent, error) {
+	events, err := h.agent.ChatWithSessionStreamInput(ctx, sessionID, input)
+	if err == nil {
+		return events, nil
+	}
+	if !strings.Contains(err.Error(), "session not found") {
+		return nil, err
+	}
+	h.resetSession(chatID)
+	retrySessionID := h.getSessionID(chatID)
+	return h.agent.ChatWithSessionStreamInput(ctx, retrySessionID, input)
+}
+
+func (h *Handler) sendProgress(ctx context.Context, msg *gateway.Message, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	_ = h.reply(ctx, msg, text)
+}
+
+func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Message, response string) error {
+	if h.adapter == nil || msg == nil {
+		return fmt.Errorf("qqofficial: adapter or message is nil")
+	}
+
+	text, media, err := resolveOutboundMediaResponse(response)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) != "" {
+		if err := h.reply(ctx, msg, text); err != nil {
+			return err
+		}
+	}
+	for _, item := range media {
+		switch item.Kind {
+		case outboundMediaPhoto:
+			if err := h.adapter.SendPhoto(ctx, msg.Chat.ID, msg.ID, item.Source, item.Caption); err != nil {
+				return err
+			}
+		case outboundMediaDocument:
+			if err := h.adapter.SendDocument(ctx, msg.Chat.ID, msg.ID, item.Source, item.Caption); err != nil {
+				return err
+			}
+		}
+	}
+	if strings.TrimSpace(text) == "" && len(media) == 0 {
+		return h.reply(ctx, msg, "我这边暂时还没有整理出可发送的结果。")
+	}
+	return nil
+}
+
+func (h *Handler) sendAssistantResponseWithTrace(ctx context.Context, msg *gateway.Message, response string, trace *qqProgressTrace) error {
+	if err := h.sendAssistantResponse(ctx, msg, response); err != nil {
+		return err
+	}
+	if err := h.sendProgressTrace(ctx, msg, trace); err != nil {
+		fmt.Printf("[qqofficial] warning: failed to send progress trace: %v\n", err)
+	}
+	return nil
+}
+
+func (h *Handler) sendProgressTrace(ctx context.Context, msg *gateway.Message, trace *qqProgressTrace) error {
+	if trace == nil {
+		return nil
+	}
+	text := trace.Message()
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	for _, chunk := range splitQQMessageChunks(text, qqProgressTraceChunkLimit) {
+		if err := h.reply(ctx, msg, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (h *Handler) handleChatStream(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
+	if h.agent == nil {
+		return fmt.Errorf("qqofficial: agent not initialized")
+	}
+	input = input.Normalize()
+	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
+		return nil
+	}
+
+	sessionID := h.getSessionID(msg.Chat.ID)
+	h.agent.RecordRecentChatTarget("qqofficial", msg.Chat.ID, msg.ID)
+
+	chatCtx, chatCancel := context.WithTimeout(ctx, h.chatStreamTimeout)
+	defer chatCancel()
+
+	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, input, sessionID)
+	if err != nil {
+		if isTaskTimeoutError(err) {
+			h.sendProgress(ctx, msg, "⏱ 请求超时")
+			return nil
+		}
+		if isTaskCanceledError(err) {
+			h.sendProgress(ctx, msg, "🛑 当前任务已停止")
+			return nil
+		}
+		return err
+	}
+
+	var finalContent strings.Builder
+	currentRound := 1
+	trace := newQQProgressTrace()
+
+	for {
+		select {
+		case <-chatCtx.Done():
+			if errors.Is(chatCtx.Err(), context.DeadlineExceeded) {
+				h.sendProgress(context.Background(), msg, "⏱ 请求超时")
+			} else {
+				h.sendProgress(context.Background(), msg, "🛑 当前任务已停止")
+			}
+			return nil
+		case evt, ok := <-events:
+			if !ok {
+				out := strings.TrimSpace(finalContent.String())
+				if out == "" {
+					out = "我这边暂时还没有整理出可发送的结果。"
+				}
+				return h.sendAssistantResponseWithTrace(context.Background(), msg, out, trace)
+			}
+			switch evt.Type {
+			case agent.ChatEventThinking:
+				if nextRound := extractQQRoundNumber(evt.Content); nextRound > currentRound {
+					currentRound = nextRound
+				}
+				trace.AddThinking(evt.Content, currentRound)
+				h.sendProgress(context.Background(), msg, qqThinkingMessage(evt.Content, currentRound))
+			case agent.ChatEventToolCall:
+				trace.AddToolCall(evt.Name, evt.Args)
+				h.sendProgress(context.Background(), msg, qqToolCallMessage(evt.Name, evt.Args))
+			case agent.ChatEventToolResult:
+				result := qqToolResultText(evt)
+				trace.AddToolResult(evt.Name, result)
+				h.sendProgress(context.Background(), msg, qqToolResultMessage(evt.Name, result))
+			case agent.ChatEventContent:
+				finalContent.WriteString(evt.Content)
+			case agent.ChatEventDone:
+				if strings.TrimSpace(finalContent.String()) == "" {
+					finalContent.WriteString(evt.Content)
+				}
+				out := strings.TrimSpace(finalContent.String())
+				if out == "" {
+					out = "我这边暂时还没有整理出可发送的结果。"
+				}
+				return h.sendAssistantResponseWithTrace(context.Background(), msg, out, trace)
+			case agent.ChatEventError:
+				if isTaskTimeoutError(evt.Err) {
+					h.sendProgress(context.Background(), msg, "⏱ 请求超时")
+					return nil
+				}
+				if isTaskCanceledError(evt.Err) {
+					h.sendProgress(context.Background(), msg, "🛑 当前任务已停止")
+					return nil
+				}
+				return h.reply(context.Background(), msg, fmt.Sprintf("处理消息时出错：%v", evt.Err))
+			}
+		}
+	}
+}
+
+func extractQQRoundNumber(thinking string) int {
+	var round int
+	if _, err := fmt.Sscanf(strings.TrimSpace(thinking), "Thinking... (round %d)", &round); err == nil && round > 0 {
+		return round
+	}
+	return 0
+}
+
+func qqToolResultText(evt agent.ChatEvent) string {
+	if strings.TrimSpace(evt.Result) != "" {
+		return evt.Result
+	}
+	return evt.Content
+}
+
+func qqThinkingMessage(raw string, round int) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		if round > 1 {
+			return fmt.Sprintf("我继续往下处理了，现在在看第 %d 轮结果。", round)
+		}
+		return "我先帮你看一下这个问题。"
+	}
+	if round > 1 {
+		if extractQQRoundNumber(raw) > 0 || strings.EqualFold(raw, "Thinking...") {
+			return fmt.Sprintf("我继续往下处理了，现在在看第 %d 轮结果。", round)
+		}
+		return fmt.Sprintf("我继续往下处理了，现在在看第 %d 轮：%s", round, raw)
+	}
+	return "我先帮你看一下这个问题。"
+}
+
+func qqToolCallMessage(name, args string) string {
+	name = strings.TrimSpace(name)
+	args = strings.TrimSpace(args)
+	if len(args) > 120 {
+		args = args[:117] + "..."
+	}
+	if args == "" {
+		return fmt.Sprintf("我刚调了一下 `%s` 这个工具。", name)
+	}
+	return fmt.Sprintf("我刚调了一下 `%s` 这个工具，参数大概是：%s", name, args)
+}
+
+func qqToolResultMessage(name, result string) string {
+	name = strings.TrimSpace(name)
+	result = strings.TrimSpace(result)
+	if len(result) > 180 {
+		result = result[:177] + "..."
+	}
+	if result == "" {
+		return fmt.Sprintf("`%s` 已经返回结果了。", name)
+	}
+	return fmt.Sprintf("`%s` 这边已经有结果了，我先记下来：%s", name, result)
+}
+
+const (
+	qqProgressTraceMaxEntries = 18
+	qqProgressTraceChunkLimit = 1800
+)
+
+type qqProgressTrace struct {
+	entries   []string
+	seen      map[string]struct{}
+	hasTool   bool
+	truncated bool
+}
+
+func newQQProgressTrace() *qqProgressTrace {
+	return &qqProgressTrace{
+		seen: make(map[string]struct{}),
+	}
+}
+
+func (t *qqProgressTrace) AddThinking(_ string, round int) {
+	if t == nil {
+		return
+	}
+	if round > 1 {
+		t.add(fmt.Sprintf("进入第 %d 轮整理和校验。", round))
+		return
+	}
+	t.add("开始分析用户请求。")
+}
+
+func (t *qqProgressTrace) AddToolCall(name, args string) {
+	if t == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	args = qqCompactTraceText(args, 180)
+	t.hasTool = true
+	if name == "" {
+		name = "unknown"
+	}
+	if args == "" {
+		t.add(fmt.Sprintf("调用工具 `%s`。", name))
+		return
+	}
+	t.add(fmt.Sprintf("调用工具 `%s`，参数摘要：%s", name, args))
+}
+
+func (t *qqProgressTrace) AddToolResult(name, result string) {
+	if t == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	result = qqCompactTraceText(result, 220)
+	t.hasTool = true
+	if name == "" {
+		name = "unknown"
+	}
+	if result == "" {
+		t.add(fmt.Sprintf("工具 `%s` 返回完成。", name))
+		return
+	}
+	t.add(fmt.Sprintf("工具 `%s` 返回摘要：%s", name, result))
+}
+
+func (t *qqProgressTrace) add(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	if _, ok := t.seen[line]; ok {
+		return
+	}
+	if len(t.entries) >= qqProgressTraceMaxEntries {
+		t.truncated = true
+		return
+	}
+	t.seen[line] = struct{}{}
+	t.entries = append(t.entries, line)
+}
+
+func (t *qqProgressTrace) Message() string {
+	if t == nil || len(t.entries) == 0 {
+		return ""
+	}
+	if !t.hasTool && len(t.entries) <= 1 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("本轮公开执行轨迹：\n")
+	for i, entry := range t.entries {
+		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, entry))
+	}
+	if t.truncated {
+		sb.WriteString(fmt.Sprintf("%d. 后续步骤已省略，只保留关键轨迹。\n", len(t.entries)+1))
+	}
+	sb.WriteString("\n说明：这是可公开的进度和工具摘要，不包含模型隐藏推理。")
+	return strings.TrimSpace(sb.String())
+}
+
+func qqCompactTraceText(text string, maxLen int) string {
+	text = strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
+	if text == "" {
+		return ""
+	}
+	return utils.TruncateKeepLength(text, maxLen)
+}
+
+func splitQQMessageChunks(text string, limit int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if limit <= 0 || qqRuneLen(text) <= limit {
+		return []string{text}
+	}
+
+	var chunks []string
+	var current strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		for qqRuneLen(line) > limit {
+			if strings.TrimSpace(current.String()) != "" {
+				chunks = append(chunks, strings.TrimSpace(current.String()))
+				current.Reset()
+			}
+			head, tail := splitRunes(line, limit)
+			chunks = append(chunks, strings.TrimSpace(head))
+			line = tail
+		}
+
+		extra := qqRuneLen(line)
+		if current.Len() > 0 {
+			extra++
+		}
+		if current.Len() > 0 && qqRuneLen(current.String())+extra > limit {
+			chunks = append(chunks, strings.TrimSpace(current.String()))
+			current.Reset()
+		}
+		if current.Len() > 0 {
+			current.WriteByte('\n')
+		}
+		current.WriteString(line)
+	}
+	if strings.TrimSpace(current.String()) != "" {
+		chunks = append(chunks, strings.TrimSpace(current.String()))
+	}
+	return chunks
+}
+
+func splitRunes(text string, limit int) (string, string) {
+	runes := []rune(text)
+	if limit >= len(runes) {
+		return text, ""
+	}
+	return string(runes[:limit]), string(runes[limit:])
+}
+
+func qqRuneLen(text string) int {
+	return len([]rune(text))
+}
+
+func isTaskTimeoutError(err error) bool {
+	return err != nil && (errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout"))
+}
+
+func isTaskCanceledError(err error) bool {
+	return err != nil && errors.Is(err, context.Canceled)
 }
 
 func (h *Handler) getSessionID(chatID string) string {

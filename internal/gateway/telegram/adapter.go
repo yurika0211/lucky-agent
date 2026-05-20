@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -229,6 +230,32 @@ func (a *Adapter) Send(ctx context.Context, chatID string, message string) error
 	return nil
 }
 
+// SendHTML sends a pre-rendered Telegram HTML message without markdown reformatting.
+func (a *Adapter) SendHTML(ctx context.Context, chatID string, message string) error {
+	if !a.running || a.bot == nil {
+		return fmt.Errorf("telegram: adapter not running")
+	}
+
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	chunks := a.splitHTMLMessage(message)
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+
+	for _, chunk := range chunks {
+		if err := a.sendChunkHTML(ctx, chatIDInt, 0, chunk); err != nil {
+			return err
+		}
+		a.waitRateLimit(chatID)
+	}
+
+	return nil
+}
+
 // SendWithReply sends a message as a reply to a specific message.
 func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
 	if !a.running || a.bot == nil {
@@ -253,6 +280,41 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 			replyID = replyToID
 		}
 		if err := a.sendChunk(ctx, chatIDInt, replyID, chunk); err != nil {
+			return err
+		}
+		a.waitRateLimit(chatID)
+	}
+
+	return nil
+}
+
+// SendWithReplyHTML sends a pre-rendered Telegram HTML message as a reply.
+func (a *Adapter) SendWithReplyHTML(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	if !a.running || a.bot == nil {
+		return fmt.Errorf("telegram: adapter not running")
+	}
+
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return nil
+	}
+	chunks := a.splitHTMLMessage(message)
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+
+	replyToID, err := strconv.Atoi(replyToMsgID)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid reply-to message ID %q: %w", replyToMsgID, err)
+	}
+
+	for i, chunk := range chunks {
+		replyID := 0
+		if i == 0 {
+			replyID = replyToID
+		}
+		if err := a.sendChunkHTML(ctx, chatIDInt, replyID, chunk); err != nil {
 			return err
 		}
 		a.waitRateLimit(chatID)
@@ -368,9 +430,13 @@ func (a *Adapter) sendTypingOnce(chatID int64) {
 }
 
 // ReactToMessage 给消息添加 emoji reaction（👍 等）
-// 使用 Telegram Bot API setMessageReaction（v5.5.1 不支持，直接 HTTP 调用）
+// 使用 Telegram Bot API setMessageReaction（v5.5.1 未封装，复用 bot HTTP client 调用）
 func (a *Adapter) ReactToMessage(chatID string, messageID string, emoji string) {
 	if a.bot == nil {
+		return
+	}
+	emoji = strings.TrimSpace(emoji)
+	if emoji == "" {
 		return
 	}
 
@@ -383,43 +449,47 @@ func (a *Adapter) ReactToMessage(chatID string, messageID string, emoji string) 
 		return
 	}
 
-	// 直接调 Telegram Bot API setMessageReaction
+	// best-effort，不阻塞消息处理主路径。
 	go a.callSetMessageReaction(chatIDInt, msgIDInt, emoji)
 }
 
 // callSetMessageReaction 调用 Telegram setMessageReaction API
-func (a *Adapter) callSetMessageReaction(chatID int64, messageID int, emoji string) {
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/setMessageReaction", a.bot.Token)
-
-	payload := strings.NewReader(fmt.Sprintf(
-		`{"chat_id":%d,"message_id":%d,"reaction":[{"type":"emoji","emoji":"%s"}]}`,
-		chatID, messageID, emoji,
-	))
-
-	resp, err := http.Post(apiURL, "application/json", payload)
-	if err != nil {
-		return
+func (a *Adapter) callSetMessageReaction(chatID int64, messageID int, emoji string) error {
+	if a.bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
 	}
-	defer resp.Body.Close()
-
-	// best-effort，不处理响应
-	_ = resp
+	params := tgbotapi.Params{
+		"chat_id":    strconv.FormatInt(chatID, 10),
+		"message_id": strconv.Itoa(messageID),
+	}
+	if err := params.AddInterface("reaction", []map[string]string{
+		{
+			"type":  "emoji",
+			"emoji": emoji,
+		},
+	}); err != nil {
+		return err
+	}
+	_, err := a.bot.MakeRequest("setMessageReaction", params)
+	return err
 }
 
 // callTelegramAPI 调用 Telegram Bot API 的通用方法
 func (a *Adapter) callTelegramAPI(method string, params url.Values) ([]byte, error) {
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/%s", a.bot.Token, method)
-	resp, err := http.PostForm(apiURL, params)
+	if a.bot == nil {
+		return nil, fmt.Errorf("telegram: bot is not initialized")
+	}
+	apiParams := tgbotapi.Params{}
+	for key, values := range params {
+		if len(values) > 0 {
+			apiParams[key] = values[0]
+		}
+	}
+	resp, err := a.bot.MakeRequest(method, apiParams)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-
-	var body []byte
-	if _, err := resp.Body.Read(body); err != nil {
-		return nil, err
-	}
-	return body, nil
+	return json.Marshal(resp)
 }
 
 // SendStream implements gateway.StreamGateway.
@@ -543,6 +613,23 @@ func (s *telegramStreamSender) SetResult(content string) error {
 	s.content = sanitizeOutgoingText(content)
 	s.thinking = ""
 	return s.throttledEdit()
+}
+
+func (s *telegramStreamSender) SetHTMLCard(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.finished {
+		return nil
+	}
+
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return nil
+	}
+	s.content = content
+	s.thinking = ""
+	return s.editMessageHTML(content)
 }
 
 func (s *telegramStreamSender) Finish() error {
@@ -895,7 +982,13 @@ func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
 		return
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	var client interface {
+		Do(*http.Request) (*http.Response, error)
+	} = http.DefaultClient
+	if a.bot != nil && a.bot.Client != nil {
+		client = a.bot.Client
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
@@ -1061,10 +1154,23 @@ func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text s
 	return nil
 }
 
+func (a *Adapter) sendChunkHTML(_ context.Context, chatID int64, replyTo int, text string) error {
+	msg := tgbotapi.NewMessage(chatID, text)
+	if replyTo > 0 {
+		msg.ReplyToMessageID = replyTo
+	}
+	msg.ParseMode = tgbotapi.ModeHTML
+
+	if _, err := a.bot.Send(msg); err != nil {
+		return fmt.Errorf("telegram: send html message: %w", err)
+	}
+	return nil
+}
+
 // splitMessage splits a message into chunks that fit within Telegram's 4096 char limit.
 func (a *Adapter) splitMessage(message string) []string {
 	maxLen := a.cfg.MaxMessageLen
-	if maxLen > 4096 {
+	if maxLen <= 0 || maxLen > 4096 {
 		maxLen = 4096
 	}
 
@@ -1072,28 +1178,149 @@ func (a *Adapter) splitMessage(message string) []string {
 		return []string{message}
 	}
 
+	return splitTelegramMessageChunks(message, maxLen)
+}
+
+func (a *Adapter) splitHTMLMessage(message string) []string {
+	maxLen := a.cfg.MaxMessageLen
+	if maxLen <= 0 || maxLen > 4096 {
+		maxLen = 4096
+	}
+	if len(message) <= maxLen {
+		return []string{message}
+	}
+
+	lines := strings.SplitAfter(message, "\n")
 	var chunks []string
-	for len(message) > 0 {
-		chunkLen := maxLen
-		if chunkLen > len(message) {
-			chunkLen = len(message)
+	var current strings.Builder
+	for _, line := range lines {
+		if current.Len()+len(line) > maxLen && current.Len() > 0 {
+			chunks = append(chunks, current.String())
+			current.Reset()
 		}
-
-		chunk := message[:chunkLen]
-
-		// Try to split at newline boundary
-		if chunkLen < len(message) {
-			if idx := strings.LastIndex(chunk, "\n"); idx > 0 {
-				chunk = chunk[:idx+1]
-				chunkLen = idx + 1
+		if len(line) > maxLen {
+			for len(line) > maxLen {
+				chunks = append(chunks, line[:maxLen])
+				line = line[maxLen:]
 			}
 		}
+		current.WriteString(line)
+	}
+	if current.Len() > 0 {
+		chunks = append(chunks, current.String())
+	}
+	return chunks
+}
 
-		chunks = append(chunks, chunk)
-		message = message[chunkLen:]
+func splitTelegramMessageChunks(message string, maxLen int) []string {
+	lines := strings.SplitAfter(message, "\n")
+	var chunks []string
+	var current strings.Builder
+	inFence := false
+	pendingFenceReopen := false
+	fenceOpener := ""
+
+	for _, originalLine := range lines {
+		line := originalLine
+		lineIsFence := isMarkdownFenceLine(originalLine)
+
+		for {
+			if pendingFenceReopen && current.Len() == 0 {
+				current.WriteString(fenceOpener)
+				if !strings.HasSuffix(fenceOpener, "\n") {
+					current.WriteString("\n")
+				}
+				pendingFenceReopen = false
+			}
+
+			limit := maxLen
+			if inFence && !lineIsFence {
+				limit -= len("\n```")
+				if limit <= 0 {
+					limit = 1
+				}
+			}
+
+			if current.Len()+len(line) > limit {
+				if current.Len() == 0 || chunkHasOnlyFencePrefix(current.String(), fenceOpener) {
+					take := limit - current.Len()
+					if take <= 0 {
+						take = maxLen
+					}
+					current.WriteString(line[:take])
+					line = line[take:]
+					chunk, reopen := finalizeTelegramChunk(current.String(), inFence)
+					if chunk != "" {
+						chunks = append(chunks, chunk)
+					}
+					current.Reset()
+					pendingFenceReopen = reopen && fenceOpener != ""
+					continue
+				}
+
+				chunk, reopen := finalizeTelegramChunk(current.String(), inFence)
+				if chunk != "" {
+					chunks = append(chunks, chunk)
+				}
+				current.Reset()
+				pendingFenceReopen = reopen && fenceOpener != ""
+				continue
+			}
+
+			current.WriteString(line)
+			break
+		}
+
+		if lineIsFence {
+			trimmed := strings.TrimRight(originalLine, "\n")
+			if !inFence {
+				inFence = true
+				fenceOpener = trimmed
+			} else {
+				inFence = false
+				pendingFenceReopen = false
+				fenceOpener = ""
+			}
+		}
+	}
+
+	if current.Len() > 0 {
+		chunk, _ := finalizeTelegramChunk(current.String(), inFence)
+		if chunk != "" {
+			chunks = append(chunks, chunk)
+		}
 	}
 
 	return chunks
+}
+
+func isMarkdownFenceLine(line string) bool {
+	trimmed := strings.TrimSpace(strings.TrimRight(line, "\n"))
+	if len(trimmed) < 3 {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~")
+}
+
+func finalizeTelegramChunk(chunk string, inFence bool) (string, bool) {
+	if chunk == "" {
+		return "", false
+	}
+	if !inFence {
+		return chunk, false
+	}
+	if !strings.HasSuffix(chunk, "\n") {
+		chunk += "\n"
+	}
+	chunk += "```"
+	return chunk, true
+}
+
+func chunkHasOnlyFencePrefix(chunk string, fenceOpener string) bool {
+	if fenceOpener == "" {
+		return false
+	}
+	return chunk == fenceOpener || chunk == fenceOpener+"\n"
 }
 
 // waitRateLimit enforces per-chat rate limiting.

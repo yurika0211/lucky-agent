@@ -348,7 +348,7 @@ func TestOpenRouterProviderDefaults(t *testing.T) {
 	if op.cfg.LlmProvider.BaseURL != "https://openrouter.ai/api/v1" {
 		t.Errorf("expected default APIBase, got %s", op.cfg.LlmProvider.BaseURL)
 	}
-	if op.cfg.LlmProvider.Model != "openai/gpt-4o" {
+	if op.cfg.LlmProvider.Model != "openai/gpt-5.4-mini" {
 		t.Errorf("expected default model, got %s", op.cfg.LlmProvider.Model)
 	}
 }
@@ -503,7 +503,7 @@ func TestModelCatalogDefaults(t *testing.T) {
 	}
 
 	// 检查关键模型存在
-	expected := []string{"gpt-4o", "claude-sonnet-4-20250514", "llama3", "openai/gpt-4o"}
+	expected := []string{"gpt-5.4-mini", "claude-sonnet-4-20250514", "llama3", "openai/gpt-5.4-mini"}
 	for _, id := range expected {
 		if _, err := catalog.Get(id); err != nil {
 			t.Errorf("expected model %s in catalog: %v", id, err)
@@ -513,15 +513,15 @@ func TestModelCatalogDefaults(t *testing.T) {
 
 func TestModelCatalogGet(t *testing.T) {
 	catalog := NewModelCatalog()
-	m, err := catalog.Get("gpt-4o")
+	m, err := catalog.Get("gpt-5.4-mini")
 	if err != nil {
-		t.Fatalf("Get gpt-4o: %v", err)
+		t.Fatalf("Get gpt-5.4-mini: %v", err)
 	}
 	if m.Provider != "openai" {
 		t.Errorf("expected provider openai, got %s", m.Provider)
 	}
-	if m.DisplayName != "GPT-4o" {
-		t.Errorf("expected display name GPT-4o, got %s", m.DisplayName)
+	if m.DisplayName != "gpt-5.4-mini" {
+		t.Errorf("expected display name gpt-5.4-mini, got %s", m.DisplayName)
 	}
 }
 
@@ -592,9 +592,9 @@ func TestModelCatalogResolveProvider(t *testing.T) {
 		modelID  string
 		expected string
 	}{
-		{"gpt-4o", "openai"},
+		{"gpt-5.4-mini", "openai"},
 		{"claude-3-haiku-20240307", "anthropic"},
-		{"openai/gpt-4o", "openrouter"},
+		{"openai/gpt-5.4-mini", "openrouter"},
 		{"llama3", "ollama"},
 		{"gpt-5-turbo", "openai"},      // 未知但前缀匹配
 		{"claude-4-opus", "anthropic"}, // 未知但前缀匹配

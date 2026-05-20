@@ -68,7 +68,7 @@ go run ./cmd/lh init
   "provider": "openai",
   "api_key": "sk-your-api-key",
   "api_base": "https://api.openai.com/v1",
-  "model": "gpt-4o",
+  "model": "gpt-5.4-mini",
   "server": {
     "addr": "127.0.0.1:9090",
     "enable_cors": true,
@@ -110,7 +110,15 @@ go run ./cmd/lh init
 ├── mission.md
 ├── sessions/
 ├── memory/
-│   └── midterm/
+│   ├── 00_Index/
+│   ├── 10_Profile/
+│   ├── 20_Projects/
+│   ├── 30_Sessions/
+│   ├── 40_Decisions/
+│   ├── 50_Facts/
+│   ├── 60_Rules/
+│   ├── 70_Trajectories/
+│   └── 90_Archive/
 ├── logs/
 ├── skills/
 ├── tokens/
@@ -142,7 +150,7 @@ go run ./cmd/lh init
 ```bash
 go run ./cmd/lh config set api_key sk-your-api-key
 go run ./cmd/lh config set provider openai
-go run ./cmd/lh config set model gpt-4o
+go run ./cmd/lh config set model gpt-5.4-mini
 ```
 
 ### 2. 启动本地对话调试
@@ -503,7 +511,7 @@ lh config list
 lh config get provider
 
 # 修改单个配置项
-lh config set model gpt-4o
+lh config set model gpt-5.4-mini
 
 # 本地聊天
 lh chat
