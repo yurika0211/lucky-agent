@@ -83,7 +83,7 @@ func DefaultLoopConfig() LoopConfig {
 }
 
 // maxAllowedIterations 是 MaxIterations 的硬上限
-const maxAllowedIterations = 100
+const maxAllowedIterations = 300
 
 const (
 	maxEmptyResponseRetries      = 2

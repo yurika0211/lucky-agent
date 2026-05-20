@@ -36,13 +36,13 @@ type LoopConfig struct {
 // DefaultWorkerLoopConfig returns the default loop limits for autonomy workers.
 func DefaultWorkerLoopConfig() LoopConfig {
 	return LoopConfig{
-		MaxIterations:          50,
+		MaxIterations:          300,
 		Timeout:                300 * time.Second,
 		AutoApprove:            true,
 		AutoApproveSet:         true,
-		RepeatToolCallLimit:    20,
-		ToolOnlyIterationLimit: 20,
-		DuplicateFetchLimit:    3,
+		RepeatToolCallLimit:    300,
+		ToolOnlyIterationLimit: 300,
+		DuplicateFetchLimit:    300,
 		DisabledTools:          []string{"autonomy"},
 	}
 }

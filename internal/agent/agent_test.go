@@ -226,10 +226,10 @@ func TestSanitizeLoopConfig_Defaults(t *testing.T) {
 }
 
 func TestSanitizeLoopConfig_ExceedsMax(t *testing.T) {
-	cfg := LoopConfig{MaxIterations: 200, Timeout: 30 * time.Minute}
+	cfg := LoopConfig{MaxIterations: 400, Timeout: 30 * time.Minute}
 	sanitizeLoopConfig(&cfg)
-	if cfg.MaxIterations != 100 {
-		t.Errorf("expected MaxIterations capped at 100, got %d", cfg.MaxIterations)
+	if cfg.MaxIterations != 300 {
+		t.Errorf("expected MaxIterations capped at 300, got %d", cfg.MaxIterations)
 	}
 	if cfg.Timeout != 10*time.Minute {
 		t.Errorf("expected Timeout capped at 10m, got %v", cfg.Timeout)

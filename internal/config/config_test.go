@@ -42,8 +42,8 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Autonomy.Enabled {
 		t.Errorf("expected autonomy.enabled false by default, got true")
 	}
-	if cfg.Autonomy.Worker.MaxIterations != 50 {
-		t.Errorf("expected autonomy.worker.max_iterations 50, got %d", cfg.Autonomy.Worker.MaxIterations)
+	if cfg.Autonomy.Worker.MaxIterations != 300 {
+		t.Errorf("expected autonomy.worker.max_iterations 300, got %d", cfg.Autonomy.Worker.MaxIterations)
 	}
 	if cfg.Autonomy.Worker.TimeoutSeconds != 300 {
 		t.Errorf("expected autonomy.worker.timeout_seconds 300, got %d", cfg.Autonomy.Worker.TimeoutSeconds)
@@ -51,14 +51,14 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Autonomy.Worker.AutoApprove == nil || !*cfg.Autonomy.Worker.AutoApprove {
 		t.Errorf("expected autonomy.worker.auto_approve true")
 	}
-	if cfg.Autonomy.Worker.RepeatToolCallLimit != 20 {
-		t.Errorf("expected autonomy.worker.repeat_tool_call_limit 20, got %d", cfg.Autonomy.Worker.RepeatToolCallLimit)
+	if cfg.Autonomy.Worker.RepeatToolCallLimit != 300 {
+		t.Errorf("expected autonomy.worker.repeat_tool_call_limit 300, got %d", cfg.Autonomy.Worker.RepeatToolCallLimit)
 	}
-	if cfg.Autonomy.Worker.ToolOnlyIterationLimit != 20 {
-		t.Errorf("expected autonomy.worker.tool_only_iteration_limit 20, got %d", cfg.Autonomy.Worker.ToolOnlyIterationLimit)
+	if cfg.Autonomy.Worker.ToolOnlyIterationLimit != 300 {
+		t.Errorf("expected autonomy.worker.tool_only_iteration_limit 300, got %d", cfg.Autonomy.Worker.ToolOnlyIterationLimit)
 	}
-	if cfg.Autonomy.Worker.DuplicateFetchLimit != 3 {
-		t.Errorf("expected autonomy.worker.duplicate_fetch_limit 3, got %d", cfg.Autonomy.Worker.DuplicateFetchLimit)
+	if cfg.Autonomy.Worker.DuplicateFetchLimit != 300 {
+		t.Errorf("expected autonomy.worker.duplicate_fetch_limit 300, got %d", cfg.Autonomy.Worker.DuplicateFetchLimit)
 	}
 	if len(cfg.Autonomy.Worker.DisabledTools) != 1 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" {
 		t.Errorf("expected autonomy.worker.disabled_tools [autonomy], got %v", cfg.Autonomy.Worker.DisabledTools)

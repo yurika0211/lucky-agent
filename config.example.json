@@ -140,12 +140,12 @@
   "autonomy": {
     "enabled": false,
     "worker": {
-      "max_iterations": 50,
+      "max_iterations": 300,
       "timeout_seconds": 300,
       "auto_approve": true,
-      "repeat_tool_call_limit": 20,
-      "tool_only_iteration_limit": 20,
-      "duplicate_fetch_limit": 3,
+      "repeat_tool_call_limit": 300,
+      "tool_only_iteration_limit": 300,
+      "duplicate_fetch_limit": 300,
       "disabled_tools": [
         "autonomy"
       ]
