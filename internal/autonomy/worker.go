@@ -36,13 +36,13 @@ type LoopConfig struct {
 // DefaultWorkerLoopConfig returns the default loop limits for autonomy workers.
 func DefaultWorkerLoopConfig() LoopConfig {
 	return LoopConfig{
-		MaxIterations:          10,
-		Timeout:                120 * time.Second,
+		MaxIterations:          50,
+		Timeout:                300 * time.Second,
 		AutoApprove:            true,
 		AutoApproveSet:         true,
-		RepeatToolCallLimit:    3,
-		ToolOnlyIterationLimit: 3,
-		DuplicateFetchLimit:    1,
+		RepeatToolCallLimit:    20,
+		ToolOnlyIterationLimit: 20,
+		DuplicateFetchLimit:    3,
 		DisabledTools:          []string{"autonomy"},
 	}
 }
@@ -248,7 +248,7 @@ type WorkerInfo struct {
 // PoolConfig configures the worker pool.
 type PoolConfig struct {
 	MaxWorkers  int           // maximum concurrent workers (default: 8)
-	TaskTimeout time.Duration // per-task timeout (default: 120s)
+	TaskTimeout time.Duration // per-task timeout (default: 300s)
 	QueueBuffer int           // task queue buffer size (default: 64)
 	AutoScale   bool          // auto-scale workers based on queue depth
 	MinWorkers  int           // minimum workers when auto-scaling (default: 1)
@@ -259,7 +259,7 @@ type PoolConfig struct {
 func DefaultPoolConfig() PoolConfig {
 	return PoolConfig{
 		MaxWorkers:  8,
-		TaskTimeout: 120 * time.Second,
+		TaskTimeout: 300 * time.Second,
 		QueueBuffer: 64,
 		AutoScale:   false,
 		MinWorkers:  1,

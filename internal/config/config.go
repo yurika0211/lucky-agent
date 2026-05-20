@@ -551,12 +551,12 @@ func DefaultConfig() *Config {
 		Autonomy: AutonomyConfig{
 			Enabled: false,
 			Worker: AutonomyWorkerConfig{
-				MaxIterations:          10,
-				TimeoutSeconds:         120,
+				MaxIterations:          50,
+				TimeoutSeconds:         300,
 				AutoApprove:            boolPtr(true),
-				RepeatToolCallLimit:    3,
-				ToolOnlyIterationLimit: 3,
-				DuplicateFetchLimit:    1,
+				RepeatToolCallLimit:    20,
+				ToolOnlyIterationLimit: 20,
+				DuplicateFetchLimit:    3,
 				DisabledTools:          []string{"autonomy"},
 			},
 		},
