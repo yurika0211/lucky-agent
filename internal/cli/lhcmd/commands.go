@@ -15,6 +15,7 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/gateway/openclawweixin"
 	"github.com/yurika0211/luckyharness/internal/gateway/qqofficial"
@@ -72,6 +73,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	userInput := strings.Join(args, " ")
+	trimmedInput := strings.TrimSpace(userInput)
 	if userInput == "" {
 		return startREPL(mgr)
 	}
@@ -89,8 +91,34 @@ func runChat(cmd *cobra.Command, args []string) error {
 		loopCfg.AutoApprove = yolo
 	}
 
+	if strings.HasPrefix(trimmedInput, "/") {
+		sessionMgr := a.Sessions()
+		if sessionMgr == nil {
+			return fmt.Errorf("session manager is not initialized")
+		}
+		currentSession := sessionMgr.New()
+		cronEngine := a.CronEngine()
+		cronStore := a.CronStore()
+		watcher := cron.NewWatcher(cronEngine)
+		handled, exit := executeSingleCommand(trimmedInput, a, &loopCfg, cronEngine, cronStore, watcher, sessionMgr, &currentSession, mgr)
+		if !handled {
+			return nil
+		}
+		if exit {
+			return nil
+		}
+		return nil
+	}
+
 	sess := a.Sessions().New()
-	result, err := runChatStream(context.Background(), a, sess, userInput, loopCfg)
+	plainText, attachments := parseAttachmentsFromInput(userInput)
+	var turn agent.UserTurnInput
+	if len(attachments) > 0 {
+		turn = agent.MultimodalUserTurnInput(plainText, attachments)
+	} else {
+		turn = agent.TextUserTurnInput(userInput)
+	}
+	result, err := runChatStreamInput(context.Background(), a, sess, turn, loopCfg)
 	if err != nil {
 		return fmt.Errorf("chat: %w", err)
 	}
