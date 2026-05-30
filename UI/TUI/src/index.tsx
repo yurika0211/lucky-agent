@@ -1,5 +1,5 @@
 import { render } from 'ink';
-import { App } from './tui-app';
+import { App } from './tui-app.tsx';
 
 function parseArg(name: string, fallback: string): string {
   const idx = process.argv.indexOf(name);
@@ -11,7 +11,7 @@ function parseArg(name: string, fallback: string): string {
 
 const apiBase = parseArg('--api-base', 'http://127.0.0.1:9090');
 const session = parseArg('--session', 'dashboard-main');
-const model = parseArg('--model', 'gpt-5.4-high');
+const model = parseArg('--model', '');
 
 if (!process.stdin.isTTY) {
   console.error('Ink raw mode is not supported in this terminal. Run TUI from an interactive PowerShell / terminal window.');
