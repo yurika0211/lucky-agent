@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -15,8 +16,10 @@ import (
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/gateway/openclawweixin"
 	"github.com/yurika0211/luckyharness/internal/gateway/qqofficial"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
+	"github.com/yurika0211/luckyharness/internal/gateway/weixin"
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 )
@@ -77,6 +80,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
+	defer a.Close()
 
 	loopCfg := agent.DefaultLoopConfig()
 	cfg := mgr.Get()
@@ -85,18 +89,13 @@ func runChat(cmd *cobra.Command, args []string) error {
 		loopCfg.AutoApprove = yolo
 	}
 
-	result, err := a.RunLoop(context.Background(), userInput, loopCfg)
+	sess := a.Sessions().New()
+	result, err := runChatStream(context.Background(), a, sess, userInput, loopCfg)
 	if err != nil {
 		return fmt.Errorf("chat: %w", err)
 	}
 
 	fmt.Println(result.Response)
-	if len(result.ToolCalls) > 0 {
-		fmt.Println()
-		for _, tc := range result.ToolCalls {
-			fmt.Printf("  %s -> %s\n", tc.Name, truncate(tc.Result, 80))
-		}
-	}
 	return nil
 }
 
@@ -313,12 +312,24 @@ func getAgent() (*agent.Agent, error) {
 }
 
 type msgGatewayStartOptions struct {
-	StartAll    bool
-	Platform    string
-	Token       string
-	QQAppID     string
-	QQAppSecret string
-	QQSandbox   bool
+	StartAll           bool
+	Platform           string
+	Token              string
+	QQAppID            string
+	QQAppSecret        string
+	QQSandbox          bool
+	WeixinToken        string
+	WeixinAcct         string
+	OpenClawWeixinAcct string
+}
+
+type weixinLoginOptions struct {
+	Driver       string
+	BaseURL      string
+	PollInterval time.Duration
+	Timeout      time.Duration
+	NoSave       bool
+	PrintStatus  bool
 }
 
 func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGatewayStartOptions {
@@ -361,11 +372,30 @@ func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGa
 		opts.QQSandbox = cfg.MsgGateway.QQOfficial.Sandbox
 	}
 
+	if cfg != nil {
+		opts.WeixinToken = strings.TrimSpace(cfg.MsgGateway.Weixin.Token)
+		opts.WeixinAcct = strings.TrimSpace(cfg.MsgGateway.Weixin.AccountID)
+		opts.OpenClawWeixinAcct = strings.TrimSpace(cfg.MsgGateway.OpenClawWeixin.AccountID)
+	}
+
 	return opts
 }
 
 func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
 	if opts.StartAll {
+		return nil
+	}
+
+	if opts.Platform == "weixin" {
+		if strings.TrimSpace(opts.WeixinToken) == "" || strings.TrimSpace(opts.WeixinAcct) == "" {
+			return fmt.Errorf("weixin 需要 msg_gateway.weixin.token 和 msg_gateway.weixin.account_id")
+		}
+		return nil
+	}
+	if opts.Platform == "openclawweixin" {
+		if strings.TrimSpace(opts.OpenClawWeixinAcct) == "" {
+			return fmt.Errorf("openclawweixin 需要 msg_gateway.openclawweixin.account_id")
+		}
 		return nil
 	}
 
@@ -386,6 +416,195 @@ func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
 	}
 
 	return nil
+}
+
+func runMsgGatewayWeixinLogin(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	if err := mgr.InitHome(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+
+	opts := weixinLoginOptions{
+		Driver:       "ilink",
+		BaseURL:      strings.TrimSpace(cfg.MsgGateway.Weixin.BaseURL),
+		PollInterval: 2 * time.Second,
+		Timeout:      3 * time.Minute,
+	}
+	if v, _ := cmd.Flags().GetString("driver"); strings.TrimSpace(v) != "" {
+		opts.Driver = strings.ToLower(strings.TrimSpace(v))
+	}
+	if v, _ := cmd.Flags().GetString("base-url"); strings.TrimSpace(v) != "" {
+		opts.BaseURL = strings.TrimSpace(v)
+	}
+	if v, _ := cmd.Flags().GetDuration("poll-interval"); v > 0 {
+		opts.PollInterval = v
+	}
+	if v, _ := cmd.Flags().GetDuration("timeout"); v > 0 {
+		opts.Timeout = v
+	}
+	opts.NoSave, _ = cmd.Flags().GetBool("no-save")
+	opts.PrintStatus, _ = cmd.Flags().GetBool("print-status")
+
+	if opts.BaseURL == "" {
+		opts.BaseURL = "https://ilinkai.weixin.qq.com"
+	}
+	if opts.Driver == "" {
+		opts.Driver = "ilink"
+	}
+	if opts.Driver == "openclaw" {
+		return runMsgGatewayWeixinLoginWithOpenClaw(opts)
+	}
+	if opts.Driver != "ilink" {
+		return fmt.Errorf("unsupported weixin login driver: %s (supported: ilink, openclaw)", opts.Driver)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+	defer cancel()
+
+	client := weixin.NewLoginClient(opts.BaseURL)
+	login, err := client.FetchQRCode(ctx)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("微信登录二维码已生成。")
+	if login.QRCodeURL != "" {
+		fmt.Printf("请打开扫码链接：%s\n", login.QRCodeURL)
+	}
+	if login.QRCode != "" && login.QRCodeURL != login.QRCode {
+		fmt.Printf("二维码票据：%s\n", login.QRCode)
+	}
+	if len(login.RawImage) > 0 {
+		qrPath := filepath.Join(mgr.HomeDir(), "runtime", "weixin-login-qrcode.png")
+		if err := os.WriteFile(qrPath, login.RawImage, 0o600); err == nil {
+			fmt.Printf("二维码图片已保存：%s\n", qrPath)
+		}
+	}
+	fmt.Println("请在手机微信中完成扫码并确认登录。")
+
+	if opts.PrintStatus {
+		fmt.Println("开始轮询二维码状态...")
+	}
+
+	result, err := pollWeixinLogin(ctx, client, login.QRCode, opts.PollInterval, opts.PrintStatus)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("微信登录成功。")
+	fmt.Printf("account_id: %s\n", result.AccountID)
+	fmt.Printf("base_url: %s\n", result.BaseURL)
+
+	if opts.NoSave {
+		fmt.Printf("token: %s\n", result.Token)
+		return nil
+	}
+
+	if err := mgr.Set("msg_gateway.weixin.token", result.Token); err != nil {
+		return err
+	}
+	if err := mgr.Set("msg_gateway.weixin.account_id", result.AccountID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(result.BaseURL) != "" {
+		if err := mgr.Set("msg_gateway.weixin.base_url", result.BaseURL); err != nil {
+			return err
+		}
+	}
+	if err := mgr.Save(); err != nil {
+		return err
+	}
+
+	fmt.Printf("已写入配置：%s\n", filepath.Join(mgr.HomeDir(), "config.json"))
+	return nil
+}
+
+func runMsgGatewayWeixinLoginWithOpenClaw(opts weixinLoginOptions) error {
+	_ = opts
+	fmt.Println("Using OpenClaw Weixin installer for QR login.")
+	fmt.Println("This flow installs the OpenClaw Weixin plugin, performs QR login, and restarts OpenClaw Gateway.")
+	fmt.Println("LuckyHarness built-in weixin gateway still uses iLink token/account_id mode.")
+
+	cmd := exec.Command("npx", "-y", "@tencent-weixin/openclaw-weixin-cli@latest", "install")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd.Run()
+}
+
+func pollWeixinLogin(ctx context.Context, client *weixin.LoginClient, qrCode string, interval time.Duration, printStatus bool) (*weixin.QRCodeLogin, error) {
+	if client == nil {
+		return nil, fmt.Errorf("weixin login: client is nil")
+	}
+	return pollWeixinLoginWithFetcher(ctx, client.GetQRCodeStatus, qrCode, interval, printStatus)
+}
+
+func pollWeixinLoginWithFetcher(ctx context.Context, fetch func(context.Context, string) (*weixin.QRCodeLogin, error), qrCode string, interval time.Duration, printStatus bool) (*weixin.QRCodeLogin, error) {
+	if fetch == nil {
+		return nil, fmt.Errorf("weixin login: fetcher is nil")
+	}
+	seen := ""
+	for {
+		login, err := fetch(ctx, qrCode)
+		if err != nil {
+			return nil, err
+		}
+
+		status := strings.TrimSpace(login.Status)
+		if printStatus && status != "" && status != seen {
+			seen = status
+			if strings.TrimSpace(login.Description) != "" {
+				fmt.Printf("状态：%s (%s)\n", status, strings.TrimSpace(login.Description))
+			} else {
+				fmt.Printf("状态：%s\n", status)
+			}
+		}
+
+		switch {
+		case isWeixinLoginSuccessStatus(status):
+			if strings.TrimSpace(login.Token) == "" || strings.TrimSpace(login.AccountID) == "" {
+				return nil, fmt.Errorf("weixin login: login succeeded but token/account_id missing")
+			}
+			return login, nil
+		case isWeixinLoginFailureStatus(status):
+			msg := strings.TrimSpace(login.Description)
+			if msg == "" {
+				msg = status
+			}
+			return nil, fmt.Errorf("weixin login: %s", msg)
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
+
+func isWeixinLoginSuccessStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "confirmed", "confirm", "success", "ok", "logged_in", "login_success":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWeixinLoginFailureStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "expired", "cancelled", "canceled", "failed", "denied", "rejected":
+		return true
+	default:
+		return false
+	}
 }
 
 func runServe(cmd *cobra.Command, args []string) error {
@@ -547,6 +766,73 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		fmt.Println("QQ 官方机器人网关已启动")
+	case "weixin":
+		wxAdapter := weixin.NewAdapter(weixin.Config{
+			Token:                   cfg.MsgGateway.Weixin.Token,
+			AccountID:               cfg.MsgGateway.Weixin.AccountID,
+			BaseURL:                 cfg.MsgGateway.Weixin.BaseURL,
+			DMPolicy:                cfg.MsgGateway.Weixin.DMPolicy,
+			GroupPolicy:             cfg.MsgGateway.Weixin.GroupPolicy,
+			AllowedUsers:            append([]string(nil), cfg.MsgGateway.Weixin.AllowedUsers...),
+			GroupAllowedUsers:       append([]string(nil), cfg.MsgGateway.Weixin.GroupAllowedUsers...),
+			SplitMultilineMessages:  cfg.MsgGateway.Weixin.SplitMultilineMessages,
+			PollTimeoutMilliseconds: cfg.MsgGateway.Weixin.PollTimeoutMilliseconds,
+			SendChunkDelayMS:        cfg.MsgGateway.Weixin.SendChunkDelayMS,
+		})
+		wxAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			if msg == nil {
+				return nil
+			}
+			text := strings.TrimSpace(msg.Text)
+			if text == "" {
+				return nil
+			}
+			reply, err := a.ChatWithSession(ctx, "weixin:"+msg.Chat.ID, text)
+			if err != nil {
+				return wxAdapter.Send(ctx, msg.Chat.ID, "处理消息失败: "+err.Error())
+			}
+			return wxAdapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, reply)
+		})
+		if err := gm.Register(wxAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "weixin"); err != nil {
+			return err
+		}
+		fmt.Println("Weixin 鄂大・蟾ｲ蜷ｯ蜉ｨ")
+	case "openclawweixin":
+		wxAdapter := openclawweixin.NewAdapter(openclawweixin.Config{
+			AccountID:               cfg.MsgGateway.OpenClawWeixin.AccountID,
+			StateDir:                cfg.MsgGateway.OpenClawWeixin.StateDir,
+			DMPolicy:                cfg.MsgGateway.OpenClawWeixin.DMPolicy,
+			GroupPolicy:             cfg.MsgGateway.OpenClawWeixin.GroupPolicy,
+			AllowedUsers:            append([]string(nil), cfg.MsgGateway.OpenClawWeixin.AllowedUsers...),
+			GroupAllowedUsers:       append([]string(nil), cfg.MsgGateway.OpenClawWeixin.GroupAllowedUsers...),
+			SplitMultilineMessages:  cfg.MsgGateway.OpenClawWeixin.SplitMultilineMessages,
+			PollTimeoutMilliseconds: cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds,
+			SendChunkDelayMS:        cfg.MsgGateway.OpenClawWeixin.SendChunkDelayMS,
+		})
+		wxAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			if msg == nil {
+				return nil
+			}
+			text := strings.TrimSpace(msg.Text)
+			if text == "" {
+				return nil
+			}
+			reply, err := a.ChatWithSession(ctx, "openclawweixin:"+msg.Chat.ID, text)
+			if err != nil {
+				return wxAdapter.Send(ctx, msg.Chat.ID, "openclawweixin gateway error: "+err.Error())
+			}
+			return wxAdapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, reply)
+		})
+		if err := gm.Register(wxAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "openclawweixin"); err != nil {
+			return err
+		}
+		fmt.Println("OpenClaw Weixin gateway started")
 	default:
 		return validateMsgGatewayStartOptions(opts)
 	}

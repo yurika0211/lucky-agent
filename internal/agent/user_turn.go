@@ -7,13 +7,17 @@ import (
 	"github.com/yurika0211/luckyharness/internal/provider"
 )
 
-// UserTurnInput separates routing text from the structured user message payload.
+/**
+ * UserTurnInput 将路由文本与结构化用户消息载荷分开
+ */
 type UserTurnInput struct {
 	Message     provider.Message
 	RoutingText string
 }
 
-// TextUserTurnInput builds a text-only user turn input.
+/**
+ * TextUserTurnInput 构建仅包含文本的用户轮次输入
+ */
 func TextUserTurnInput(text string) UserTurnInput {
 	text = strings.TrimSpace(text)
 	return UserTurnInput{
@@ -25,7 +29,9 @@ func TextUserTurnInput(text string) UserTurnInput {
 	}
 }
 
-// Normalize fills the minimum fields required by the agent loop and providers.
+/**
+ * Normalize 填充 agent loop 和 provider 所需的最小字段
+ */
 func (in UserTurnInput) Normalize() UserTurnInput {
 	msg := in.Message
 	if strings.TrimSpace(msg.Role) == "" {
@@ -68,7 +74,9 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 	}
 }
 
-// WithRoutingText rewrites the routing text and keeps the message payload aligned.
+/**
+ * WithRoutingText 重写路由文本并保持消息载荷一致
+ */
 func (in UserTurnInput) WithRoutingText(text string) UserTurnInput {
 	in.RoutingText = strings.TrimSpace(text)
 	return in.Normalize()

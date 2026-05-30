@@ -394,7 +394,7 @@ func (m *Manager) New() *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	id := fmt.Sprintf("%d", time.Now().UnixNano())
+	id := m.nextSessionIDLocked("")
 	s := NewSession(id, m.dir)
 	s.messagesLoaded = true // 新会话消息已在内存
 	s.messageCount = 0
@@ -424,9 +424,7 @@ func (m *Manager) Ensure(id string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if id == "" {
-		id = fmt.Sprintf("%d", time.Now().UnixNano())
-	}
+	id = m.nextSessionIDLocked(id)
 	if s, ok := m.sessions[id]; ok {
 		return s
 	}
@@ -436,6 +434,20 @@ func (m *Manager) Ensure(id string) *Session {
 	s.messageCount = 0
 	m.sessions[id] = s
 	return s
+}
+
+func (m *Manager) nextSessionIDLocked(preferred string) string {
+	if preferred != "" {
+		return preferred
+	}
+
+	for {
+		id := fmt.Sprintf("%d", time.Now().UnixNano())
+		if _, exists := m.sessions[id]; !exists {
+			return id
+		}
+		time.Sleep(time.Microsecond)
+	}
 }
 
 // List 列出所有会话

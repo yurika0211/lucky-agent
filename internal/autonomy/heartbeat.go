@@ -12,7 +12,9 @@ import (
 // Heartbeat Engine
 // ---------------------------------------------------------------------------
 
-// HeartbeatMode determines what the heartbeat does.
+/**
+ * HeartbeatMode 确定心跳引擎的行为。
+ */
 type HeartbeatMode string
 
 const (
@@ -22,7 +24,7 @@ const (
 	HeartbeatProactive HeartbeatMode = "proactive"
 )
 
-// HeartbeatConfig configures the heartbeat engine.
+// HeartbeatConfig 配置心跳引擎。
 type HeartbeatConfig struct {
 	Mode            HeartbeatMode    // proactive or passive
 	Interval        time.Duration    // how often heartbeat fires
@@ -32,7 +34,9 @@ type HeartbeatConfig struct {
 	OnUrgent        func(msg string) // callback for urgent items
 }
 
-// DefaultHeartbeatConfig returns sensible defaults.
+/**
+ * DefaultHeartbeatConfig 返回合理的默认值。
+ */
 func DefaultHeartbeatConfig() HeartbeatConfig {
 	return HeartbeatConfig{
 		Mode:            HeartbeatProactive,
@@ -43,7 +47,9 @@ func DefaultHeartbeatConfig() HeartbeatConfig {
 	}
 }
 
-// HeartbeatEvent represents a heartbeat event.
+/**
+ * HeartbeatEvent 表示心跳事件。
+ */
 type HeartbeatEvent struct {
 	Timestamp   time.Time
 	Mode        HeartbeatMode
@@ -53,9 +59,11 @@ type HeartbeatEvent struct {
 	Actions     []string // log of actions taken
 }
 
-// HeartbeatEngine drives proactive agent work.
-// Instead of the traditional "HEARTBEAT_OK" pattern, this engine
-// actively pulls tasks from the queue and executes them.
+/**
+ * HeartbeatEngine 驱动主动代理工作。
+ * 与传统的 "HEARTBEAT_OK" 模式不同，此引擎
+ * 从队列中主动拉取任务并执行。
+ */
 type HeartbeatEngine struct {
 	config HeartbeatConfig
 	pool   *WorkerPool
@@ -68,7 +76,9 @@ type HeartbeatEngine struct {
 	lastBeat time.Time
 }
 
-// NewHeartbeatEngine creates a new heartbeat engine.
+/**
+ * NewHeartbeatEngine 创建一个新的心跳引擎。
+ */
 func NewHeartbeatEngine(cfg HeartbeatConfig, pool *WorkerPool, queue *TaskQueue) *HeartbeatEngine {
 	return &HeartbeatEngine{
 		config: cfg,
@@ -79,7 +89,9 @@ func NewHeartbeatEngine(cfg HeartbeatConfig, pool *WorkerPool, queue *TaskQueue)
 	}
 }
 
-// Start begins the heartbeat loop.
+/**
+ * Start 开始心跳循环。
+ */
 func (h *HeartbeatEngine) Start(ctx context.Context) error {
 	h.mu.Lock()
 	if h.running {
@@ -94,7 +106,9 @@ func (h *HeartbeatEngine) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the heartbeat loop.
+/**
+ * Stop 停止心跳循环。
+ */
 func (h *HeartbeatEngine) Stop() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -107,12 +121,16 @@ func (h *HeartbeatEngine) Stop() error {
 	return nil
 }
 
-// Trigger manually triggers a heartbeat cycle.
+/**
+ * Trigger 手动触发一次心跳周期。
+ */
 func (h *HeartbeatEngine) Trigger(ctx context.Context) *HeartbeatEvent {
 	return h.beat(ctx)
 }
 
-// loop is the main heartbeat loop.
+/**
+ * loop 是主心跳循环。
+ */
 func (h *HeartbeatEngine) loop(ctx context.Context) {
 	ticker := time.NewTicker(h.config.Interval)
 	defer ticker.Stop()
@@ -133,7 +151,9 @@ func (h *HeartbeatEngine) loop(ctx context.Context) {
 	}
 }
 
-// isActiveHour checks if the current hour is within active hours.
+/**
+ * isActiveHour 检查当前小时是否在活动小时内。
+ */
 func (h *HeartbeatEngine) isActiveHour(t time.Time) bool {
 	hour := t.Hour()
 	if h.config.ActiveStart <= h.config.ActiveEnd {
@@ -143,7 +163,9 @@ func (h *HeartbeatEngine) isActiveHour(t time.Time) bool {
 	return hour >= h.config.ActiveStart || hour < h.config.ActiveEnd
 }
 
-// beat executes one heartbeat cycle.
+/**
+ * beat 执行一次心跳周期。
+ */
 func (h *HeartbeatEngine) beat(ctx context.Context) *HeartbeatEvent {
 	event := HeartbeatEvent{
 		Timestamp: time.Now(),
@@ -207,14 +229,18 @@ func (h *HeartbeatEngine) beat(ctx context.Context) *HeartbeatEvent {
 	return &event
 }
 
-// LastBeat returns the time of the last heartbeat.
+/**
+ * LastBeat 返回最后一次心跳的时间。
+ */
 func (h *HeartbeatEngine) LastBeat() time.Time {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.lastBeat
 }
 
-// RecentEvents returns the last N heartbeat events.
+/**
+ * RecentEvents 返回最后 N 个心跳事件。
+ */
 func (h *HeartbeatEngine) RecentEvents(n int) []HeartbeatEvent {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -227,6 +253,9 @@ func (h *HeartbeatEngine) RecentEvents(n int) []HeartbeatEvent {
 	return result
 }
 
+/**
+ * min 返回一组整数中的最小值。
+ */
 func min(vals ...int) int {
 	m := vals[0]
 	for _, v := range vals[1:] {
@@ -241,14 +270,18 @@ func min(vals ...int) int {
 // AutonomyKit — Top-level orchestrator
 // ---------------------------------------------------------------------------
 
-// AutonomyConfig configures the autonomy kit.
+/**
+ * AutonomyConfig 配置 AutonomyKit。
+ */
 type AutonomyConfig struct {
 	Pool      PoolConfig
 	Heartbeat HeartbeatConfig
 	QueueBuf  int
 }
 
-// DefaultAutonomyConfig returns sensible defaults.
+/**
+ * DefaultAutonomyConfig 返回默认的 AutonomyConfig。
+ */
 func DefaultAutonomyConfig() AutonomyConfig {
 	return AutonomyConfig{
 		Pool:      DefaultPoolConfig(),
@@ -257,32 +290,37 @@ func DefaultAutonomyConfig() AutonomyConfig {
 	}
 }
 
-// AutonomyKit is the top-level orchestrator for autonomous agent work.
-// It combines WorkerPool, TaskQueue, and HeartbeatEngine into a cohesive
-// system that enables agents to work proactively without human prompting.
-//
-// Architecture:
-//
-//	┌─────────────────────────────────────────────┐
-//	│              AutonomyKit                     │
-//	│                                              │
-//	│  ┌──────────┐  ┌──────────┐  ┌───────────┐ │
-//	│  │TaskQueue │──│WorkerPool│──│Heartbeat   │ │
-//	│  │          │  │          │  │Engine      │ │
-//	│  │ Ready ──→│  │ W1 ──→  │  │ (proactive)│ │
-//	│  │ InProg   │  │ W2 ──→  │  │            │ │
-//	│  │ Blocked  │  │ W3 ──→  │  │ 15m cycle  │ │
-//	│  │ Done     │  │ ...     │  │            │ │
-//	│  └──────────┘  └──────────┘  └───────────┘ │
-//	│       ↑              │                      │
-//	│       │    ┌─────────┘                      │
-//	│       │    ↓                                │
-//	│  ┌──────────────────────┐                   │
-//	│  │  AgentExecutor       │                   │
-//	│  │  (interface)         │                   │
-//	│  │  (isolated session)  │                   │
-//	│  └──────────────────────┘                   │
-//	└─────────────────────────────────────────────┘
+/**
+ * AutonomyKit 是自治代理工作的顶级协调器。
+ * 它将 WorkerPool、TaskQueue 和 HeartbeatEngine 组合成一个连贯的系统，
+ * 使代理能够主动工作而无需人类提示。
+ *
+ * 架构：
+ *
+ *	┌─────────────────────────────────────────────┐
+ *	│              AutonomyKit                     │
+ *	│                                              │
+ *	│  ┌──────────┐  ┌──────────┐  ┌───────────┐ │
+ *	│  │TaskQueue │──│WorkerPool│──│Heartbeat   │ │
+ *	│  │          │  │          │  │Engine      │ │
+ *	│  │ Ready ──→│  │ W1 ──→  │  │ (proactive)│ │
+ *	│  │ InProg   │  │ W2 ──→  │  │            │ │
+ *	│  │ Blocked  │  │ W3 ──→  │  │ 15m cycle  │ │
+ *	│  │ Done     │  │ ...     │  │            │ │
+ *	│  └──────────┘  └──────────┘  └───────────┘ │
+ *	│       ↑              │                      │
+ *	│       │    ┌─────────┘                      │
+ *	│       │    ↓                                │
+ *	│  ┌──────────────────────┐                   │
+ *	│  │  AgentExecutor       │                   │
+ *	│  │  (interface)         │                   │
+ *	│  │  (isolated session)  │                   │
+ *	│  └──────────────────────┘                   │
+ *	└─────────────────────────────────────────────┘
+ *
+ *
+ */
+
 type AutonomyKit struct {
 	config    AutonomyConfig
 	queue     *TaskQueue
@@ -294,7 +332,9 @@ type AutonomyKit struct {
 	started bool
 }
 
-// NewAutonomyKit creates a new autonomy kit.
+/**
+ * NewAutonomyKit 创建一个新的 AutonomyKit，包括任务队列、工作池和心跳引擎。
+ */
 func NewAutonomyKit(cfg AutonomyConfig, executor AgentExecutor) *AutonomyKit {
 	queue := NewTaskQueue(cfg.QueueBuf)
 	pool := NewWorkerPool(cfg.Pool, executor, queue)
@@ -309,7 +349,9 @@ func NewAutonomyKit(cfg AutonomyConfig, executor AgentExecutor) *AutonomyKit {
 	}
 }
 
-// Start starts the autonomy kit (worker pool + heartbeat engine).
+/**
+ * Start 启动 AutonomyKit，包括工作池和心跳引擎。
+ */
 func (ak *AutonomyKit) Start(ctx context.Context) error {
 	ak.mu.Lock()
 	defer ak.mu.Unlock()
@@ -334,7 +376,9 @@ func (ak *AutonomyKit) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the autonomy kit.
+/**
+ * Stop 停止 AutonomyKit，包括心跳引擎和工作池。
+ */
 func (ak *AutonomyKit) Stop() error {
 	ak.mu.Lock()
 	defer ak.mu.Unlock()
@@ -355,12 +399,16 @@ func (ak *AutonomyKit) Stop() error {
 	return nil
 }
 
-// Queue returns the task queue for direct manipulation.
+/**
+ * Queue 返回任务队列，用于直接操作。
+ */
 func (ak *AutonomyKit) Queue() *TaskQueue {
 	return ak.queue
 }
 
-// EnablePersistence loads and enables durable queue state.
+/**
+ * EnablePersistence 加载并启用持久化队列状态。
+ */
 func (ak *AutonomyKit) EnablePersistence(path string) (int, error) {
 	if ak == nil || ak.queue == nil {
 		return 0, nil
@@ -368,12 +416,16 @@ func (ak *AutonomyKit) EnablePersistence(path string) (int, error) {
 	return ak.queue.EnablePersistence(path)
 }
 
-// Pool returns the worker pool.
+/**
+ * Pool 返回工作池。
+ */
 func (ak *AutonomyKit) Pool() *WorkerPool {
 	return ak.pool
 }
 
-// SetExecutor updates the executor used by the worker pool.
+/**
+ * SetExecutor 更新工作池使用的执行器。
+ */
 func (ak *AutonomyKit) SetExecutor(executor AgentExecutor) {
 	ak.mu.Lock()
 	defer ak.mu.Unlock()
@@ -382,22 +434,30 @@ func (ak *AutonomyKit) SetExecutor(executor AgentExecutor) {
 	ak.pool.SetExecutor(executor)
 }
 
-// Heartbeat returns the heartbeat engine.
+/**
+ * Heartbeat 返回心跳引擎。
+ */
 func (ak *AutonomyKit) Heartbeat() *HeartbeatEngine {
 	return ak.heartbeat
 }
 
-// AddTask is a convenience method to add a task to the queue.
+/**
+ * AddTask 是一个便捷方法，用于向队列添加任务。
+ */
 func (ak *AutonomyKit) AddTask(title, description string, priority TaskPriority, tags []string) *QueueTask {
 	return ak.queue.Add(title, description, priority, tags)
 }
 
-// AddTaskWithError adds a task and surfaces persistence failures.
+/**
+ * AddTaskWithError 添加任务并处理持久化失败。
+ */
 func (ak *AutonomyKit) AddTaskWithError(title, description string, priority TaskPriority, tags []string) (*QueueTask, error) {
 	return ak.queue.AddWithError(title, description, priority, tags)
 }
 
-// ScaleUp adds workers to the pool.
+/**
+ * ScaleUp 添加工作线程到工作池。
+ */
 func (ak *AutonomyKit) ScaleUp(ctx context.Context, count int) error {
 	if ak == nil || ak.pool == nil {
 		return fmt.Errorf("autonomy kit not initialized")
@@ -405,7 +465,9 @@ func (ak *AutonomyKit) ScaleUp(ctx context.Context, count int) error {
 	return ak.pool.ScaleUp(ctx, count)
 }
 
-// ScaleDown removes up to count idle workers from the pool.
+/**
+ * ScaleDown 从工作池移除最多 count 个空闲工作线程。
+ */
 func (ak *AutonomyKit) ScaleDown(count int) int {
 	if ak == nil || ak.pool == nil {
 		return 0
@@ -413,7 +475,9 @@ func (ak *AutonomyKit) ScaleDown(count int) int {
 	return ak.pool.ScaleDown(count)
 }
 
-// SetWorkerCount adjusts the pool toward an absolute worker count.
+/**
+ * SetWorkerCount 调整工作池的工作线程数量。
+ */
 func (ak *AutonomyKit) SetWorkerCount(ctx context.Context, count int) (int, error) {
 	if ak == nil || ak.pool == nil {
 		return 0, fmt.Errorf("autonomy kit not initialized")
@@ -434,7 +498,9 @@ func (ak *AutonomyKit) SetWorkerCount(ctx context.Context, count int) (int, erro
 	return ak.pool.Stats().WorkerCount, nil
 }
 
-// Status returns the overall autonomy kit status.
+/**
+ * Status 返回 AutonomyKit 的整体状态。
+ */
 func (ak *AutonomyKit) Status() AutonomyStatus {
 	ak.mu.RLock()
 	started := ak.started
@@ -455,7 +521,9 @@ func (ak *AutonomyKit) Status() AutonomyStatus {
 	}
 }
 
-// AutonomyStatus is a snapshot of the autonomy kit state.
+/**
+ * AutonomyStatus 是 AutonomyKit 状态的快照。
+ */
 type AutonomyStatus struct {
 	Started         bool      `json:"started"`
 	QueueReady      int       `json:"queue_ready"`

@@ -8,6 +8,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/cron"
+	"github.com/yurika0211/luckyharness/internal/session"
 )
 
 func TestParseCronAddSpecSupportsFiveFieldCron(t *testing.T) {
@@ -176,5 +177,35 @@ func TestCronStoreSaveAndLoad(t *testing.T) {
 	}
 	if got := job.Metadata["chatID"]; got != "12345" {
 		t.Fatalf("expected chatID metadata preserved, got %q", got)
+	}
+}
+
+func TestHandleCommandNewAliasCreatesSession(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+
+	current := mgr.New()
+	originalID := current.ID
+
+	handled, exit := handleCommand("/new", nil, &agent.LoopConfig{}, nil, nil, nil, mgr, &current, nil)
+	if !handled {
+		t.Fatal("expected command to be handled")
+	}
+	if exit {
+		t.Fatal("expected command to stay in repl")
+	}
+	if current == nil {
+		t.Fatal("expected current session to be set")
+	}
+	if current.ID == originalID {
+		t.Fatal("expected /new to switch to a fresh session")
+	}
+	if _, ok := mgr.Get(current.ID); !ok {
+		t.Fatalf("expected session %s to be owned by manager", current.ID)
+	}
+	if mgr.Count() != 2 {
+		t.Fatalf("expected 2 sessions, got %d", mgr.Count())
 	}
 }

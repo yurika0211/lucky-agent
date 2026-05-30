@@ -201,6 +201,19 @@ func TestManagerEnsure(t *testing.T) {
 	}
 }
 
+func TestManagerNewGeneratesUniqueIDs(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	first := m.New()
+	second := m.New()
+	if first.ID == second.ID {
+		t.Fatalf("expected unique session IDs, got %q", first.ID)
+	}
+}
+
 func TestLoadMarkdownSessionWithEmbeddedCodeFenceText(t *testing.T) {
 	dir := t.TempDir()
 	content := "# LuckyHarness Session\n\n" +

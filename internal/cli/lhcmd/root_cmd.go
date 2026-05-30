@@ -177,7 +177,18 @@ func newRootCmd() *cobra.Command {
 		Short: "查看消息网关状态",
 		RunE:  runMsgGatewayStatus,
 	}
-	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayStopCmd, msgGatewayStatusCmd)
+	msgGatewayWeixinLoginCmd := &cobra.Command{
+		Use:   "weixin-login",
+		Short: "获取微信登录二维码并写回 iLink 配置",
+		RunE:  runMsgGatewayWeixinLogin,
+	}
+	msgGatewayWeixinLoginCmd.Flags().String("driver", "ilink", "weixin login driver: ilink or openclaw")
+	msgGatewayWeixinLoginCmd.Flags().String("base-url", "", "iLink API base URL")
+	msgGatewayWeixinLoginCmd.Flags().Duration("poll-interval", 2*time.Second, "二维码状态轮询间隔")
+	msgGatewayWeixinLoginCmd.Flags().Duration("timeout", 3*time.Minute, "扫码登录超时时间")
+	msgGatewayWeixinLoginCmd.Flags().Bool("no-save", false, "只打印登录结果，不写入 config.json")
+	msgGatewayWeixinLoginCmd.Flags().Bool("print-status", true, "打印二维码状态变化")
+	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayStopCmd, msgGatewayStatusCmd, msgGatewayWeixinLoginCmd)
 
 	ragCmd := &cobra.Command{
 		Use:   "rag",
@@ -201,6 +212,7 @@ func newRootCmd() *cobra.Command {
 		RunE:  runRAGStats,
 	}
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
+	addDashboardCmd(rootCmd)
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd)
 
 	return rootCmd

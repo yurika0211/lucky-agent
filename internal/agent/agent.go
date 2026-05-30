@@ -43,11 +43,17 @@ type embedderRuntimeConfig struct {
 	Dimension int
 }
 
+/**
+ * soulRuntime 管理 soul.Soul 实例及其相关的模板管理器。
+ */
 type soulRuntime struct {
 	soul    *soul.Soul
 	tmplMgr *soul.TemplateManager
 }
 
+/**
+ * providerRuntime 管理 provider.Provider 实例及其相关的注册、模型目录和令牌存储。
+ */
 type providerRuntime struct {
 	provider   provider.Provider
 	registry   *provider.Registry
@@ -55,6 +61,9 @@ type providerRuntime struct {
 	tokenStore *provider.TokenStore
 }
 
+/**
+ * memoryRuntime 管理内存存储及其相关的短期和中期缓冲区。
+ */
 type memoryRuntime struct {
 	store    *memory.Store
 	short    *memory.ShortTermBuffer
@@ -62,6 +71,9 @@ type memoryRuntime struct {
 	sessions *session.Manager
 }
 
+/**
+ * ragRuntime 管理 RAG 相关的管理器和持久化存储。
+ */
 type ragRuntime struct {
 	manager       *rag.RAGManager
 	persist       *rag.Persistence
@@ -69,6 +81,9 @@ type ragRuntime struct {
 	embedderReg   *embedder.Registry
 }
 
+/**
+ * supportRuntime 管理支持工具和服务的运行时环境。
+ */
 type supportRuntime struct {
 	tools          *tool.Registry
 	toolGateway    *tool.Gateway
@@ -129,11 +144,10 @@ type Agent struct {
 	activeAPIBase         string
 }
 
-/*
-resolveEmbedderRuntimeConfig 从环境变量和主配置中解析嵌入模型运行时配置。
-
-返回值中的布尔值表示是否解析到了任何有效配置项。
-*/
+/**
+ * resolveEmbedderRuntimeConfig 从环境变量和主配置中解析嵌入模型运行时配置。
+ * 返回值中的布尔值表示是否解析到了任何有效配置项。
+ */
 func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool) {
 	cfg := embedderRuntimeConfig{}
 	if c != nil {
@@ -161,12 +175,12 @@ func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool
 		}
 	}
 
-	return cfg, cfg.APIKey != "" || cfg.BaseURL != "" || cfg.Model != "" || cfg.Dimension > 0
+	return cfg, cfg.APIKey != "" && cfg.BaseURL != "" && cfg.Model != "" && cfg.Dimension > 0
 }
 
-/*
-toProviderConfig 将全局配置转换为 provider 层可消费的配置对象。
-*/
+/**
+ * toProviderConfig 将全局配置转换为 provider 层可消费的配置对象。
+ */
 func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) provider.Config {
 	model := c.Model
 	if strings.TrimSpace(modelOverride) != "" {
@@ -208,9 +222,9 @@ func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) p
 	}
 }
 
-/*
-wrapProviderWithMiddleware 按当前配置为 provider 叠加中间件链。
-*/
+/**
+ * wrapProviderWithMiddleware 按当前配置为 provider 叠加中间件链。
+ */
 func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.Provider {
 	if p == nil || c == nil {
 		return p
@@ -259,9 +273,9 @@ func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.
 	return middleware.NewMiddlewareProvider(p, chain)
 }
 
-/*
-maybeRouteModel 根据输入内容与估算 token 数决定是否切换到更合适的模型。
-*/
+/**
+ * maybeRouteModel 根据输入内容与估算 token 数决定是否切换到更合适的模型。
+ */
 func (a *Agent) maybeRouteModel(userInput string) {
 	if a == nil || a.cfg == nil || a.registry == nil {
 		return
@@ -297,6 +311,9 @@ func (a *Agent) maybeRouteModel(userInput string) {
 	}
 }
 
+/**
+ * initSoulRuntime 初始化 soul 运行时，加载或使用默认的 soul 实例。
+ */
 func initSoulRuntime(c *config.Config) soulRuntime {
 	var loadedSoul *soul.Soul
 	if c != nil && strings.TrimSpace(c.SoulPath) != "" {
@@ -313,6 +330,9 @@ func initSoulRuntime(c *config.Config) soulRuntime {
 	}
 }
 
+/**
+ * initProviderRuntime 初始化 provider 运行时，包括注册 provider 工厂、创建模型目录和令牌存储等。
+ */
 func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime, error) {
 	registry := provider.NewRegistry()
 	catalog := provider.NewModelCatalog()
@@ -360,6 +380,9 @@ func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime
 	}, nil
 }
 
+/**
+ * initMemoryRuntime 初始化内存运行时，包括创建内存存储和短/中期记忆缓冲区。
+ */
 func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, error) {
 	mem, err := memory.NewStore(cfg.HomeDir() + "/memory")
 	if err != nil {
@@ -394,6 +417,9 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	}, nil
 }
 
+/**
+ * initRAGRuntime 初始化 RAG 运行时，包括注册嵌入器、创建缓存嵌入器和设置活动嵌入器。
+ */
 func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	embedderReg := embedder.NewRegistry()
 	mockEmb := embedder.NewMockEmbedder(128)
@@ -455,6 +481,9 @@ func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	}, nil
 }
 
+/**
+ * initSupportRuntime 初始化支持运行时，包括注册工具、设置搜索配置和初始化多媒体处理器。
+ */
 func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGManager) supportRuntime {
 	tools := tool.NewRegistry()
 	searchCfg := &tool.WebSearchConfig{
@@ -579,6 +608,9 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 	}
 }
 
+/**
+ * buildAutonomyRuntimeConfig 构建 Autonomy 运行时配置，包括设置最大迭代次数、超时和自动审批等。
+ */
 func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
 	cfg := autonomy.DefaultAutonomyConfig()
 	if c == nil {
@@ -1477,7 +1509,20 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 	return a.ChatWithSessionStreamInput(ctx, sessionID, TextUserTurnInput(userInput))
 }
 
+// ChatWithSessionStreamWithLoopConfig streams chat events using an explicit loop configuration.
+func (a *Agent) ChatWithSessionStreamWithLoopConfig(ctx context.Context, sessionID string, userInput string, loopCfg LoopConfig) (<-chan ChatEvent, error) {
+	return a.ChatWithSessionStreamInputWithLoopConfig(ctx, sessionID, TextUserTurnInput(userInput), loopCfg)
+}
+
 func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string, input UserTurnInput) (<-chan ChatEvent, error) {
+	loopCfg := DefaultLoopConfig()
+	cfg := a.cfg.Get()
+	ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+	loopCfg.AutoApprove = true
+	return a.ChatWithSessionStreamInputWithLoopConfig(ctx, sessionID, input, loopCfg)
+}
+
+func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, sessionID string, input UserTurnInput, loopCfg LoopConfig) (<-chan ChatEvent, error) {
 	sess, ok := a.sessions.Get(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
@@ -1490,10 +1535,6 @@ func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string
 	go func() {
 		defer close(events)
 
-		loopCfg := DefaultLoopConfig()
-		cfg := a.cfg.Get()
-		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
-		loopCfg.AutoApprove = true
 		sanitizeLoopConfig(&loopCfg)
 
 		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())

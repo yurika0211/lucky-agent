@@ -18,7 +18,6 @@ import (
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 type cronTaskMode string
@@ -52,10 +51,9 @@ func startREPL(mgr *config.Manager) error {
 	watcher := cron.NewWatcher(cronEngine)
 
 	// 创建会话管理器
-	home, _ := os.UserHomeDir()
-	sessionMgr, err := session.NewManager(filepath.Join(home, ".luckyharness", "sessions"))
-	if err != nil {
-		return fmt.Errorf("create session manager: %w", err)
+	sessionMgr := a.Sessions()
+	if sessionMgr == nil {
+		return fmt.Errorf("session manager is not initialized")
 	}
 
 	// 创建当前会话
@@ -109,8 +107,7 @@ func startREPL(mgr *config.Manager) error {
 		}
 
 		// 执行 Agent Loop
-		fmt.Print("Lucky> ")
-		result, err := a.RunLoop(ctx, input, loopCfg)
+		result, err := runChatStream(ctx, a, currentSession, input, loopCfg)
 		if err != nil {
 			fmt.Printf("❌ %v\n", err)
 			continue
@@ -119,21 +116,7 @@ func startREPL(mgr *config.Manager) error {
 		fmt.Println(result.Response)
 
 		// 保存到会话
-		currentSession.AddMessage("user", input)
-		currentSession.AddMessage("assistant", result.Response)
 
-		// 显示工具调用信息
-		if len(result.ToolCalls) > 0 {
-			fmt.Println()
-			for _, tc := range result.ToolCalls {
-				fmt.Printf("  🔧 %s(%s) → %s (%v)\n", tc.Name, utils.Truncate(tc.Arguments, 50), utils.Truncate(tc.Result, 80), tc.Duration)
-			}
-		}
-
-		// 显示循环信息
-		if result.Iterations > 1 {
-			fmt.Printf("  🔄 %d iterations | %d tokens\n", result.Iterations, result.TokensUsed)
-		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -383,6 +366,9 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 		},
 		"/session": func(ctx replCommandContext, arg string) (bool, bool) {
 			return handleSessionCommand(arg, ctx.sessionMgr, ctx.currentSession), false
+		},
+		"/new": func(ctx replCommandContext, _ string) (bool, bool) {
+			return handleSessionCommand("new", ctx.sessionMgr, ctx.currentSession), false
 		},
 		"/reload": func(ctx replCommandContext, _ string) (bool, bool) {
 			if err := ctx.cfgMgr.Reload(); err != nil {

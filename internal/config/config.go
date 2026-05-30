@@ -23,61 +23,61 @@ type Config struct {
 	Extra        map[string]string `json:"extra,omitempty"`
 	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
 
-	// v0.3.0: 降级链配置
+	// 降级链配置
 	Fallbacks []FallbackEntry `json:"fallbacks,omitempty"`
 
-	// v0.37.0: Web 搜索配置
+	// Web 搜索配置
 	WebSearch WebSearchConfig `json:"web_search,omitempty"`
 
 	// Embedding 配置（供 RAG / 记忆向量化使用）
 	Embedding EmbeddingConfig `json:"embedding,omitempty"`
 
-	// v0.95.0: 多模态配置
+	// 多模态配置
 	Multimodal MultimodalConfig `json:"multimodal,omitempty"`
 
-	// v0.96.0: 独立图片生成配置
+	// 独立图片生成配置
 	ImageGeneration ImageGenerationConfig `json:"image_generation,omitempty"`
 
-	// v0.97.0: 独立 TTS 配置
+	// 独立 TTS 配置
 	TTS TTSConfig `json:"tts,omitempty"`
 
-	// v0.40.0: 流式输出模式 (native=真流式，simulated=非流式获取 + 模拟推送)
+	// 流式输出模式 (native=真流式，simulated=非流式获取 + 模拟推送)
 	StreamMode string `json:"stream_mode,omitempty"`
 
-	// v0.43.0: 记忆系统配置
+	// 记忆系统配置
 	Memory MemoryConfig `json:"memory,omitempty"`
 
-	// v0.45.0: 模型路由配置
+	// 模型路由配置
 	ModelRouter ModelRouterConfig `json:"model_router,omitempty"`
 
-	// v0.56.0: 限制配置
+	// 限制配置
 	Limits LimitsConfig `json:"limits,omitempty"`
 
-	// v0.56.0: 重试配置
+	// 重试配置
 	Retry RetryConfig `json:"retry,omitempty"`
 
-	// v0.56.0: 熔断器配置
+	// 熔断器配置
 	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker,omitempty"`
 
-	// v0.56.0: 限流配置
+	// 限流配置
 	RateLimit RateLimitConfig `json:"rate_limit,omitempty"`
 
-	// v0.56.0: 上下文配置
+	// 上下文配置
 	Context ContextConfig `json:"context,omitempty"`
 
-	// v0.64.0: Agent Loop 配置
+	// Agent Loop 配置
 	Agent AgentLoopConfig `json:"agent,omitempty"`
 
-	// v0.64.0: API Server 配置
+	// API Server 配置
 	Server ServerConfig `json:"server,omitempty"`
 
-	// v0.64.0: Dashboard 配置
+	// Dashboard 配置
 	Dashboard DashboardConfig `json:"dashboard,omitempty"`
 
-	// v0.95.0: Autonomy 配置
+	// Autonomy 配置
 	Autonomy AutonomyConfig `json:"autonomy,omitempty"`
 
-	// v0.64.0: Messaging Gateway 配置
+	// Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
 }
 
@@ -241,6 +241,8 @@ type MsgGatewayConfig struct {
 	Token      string               `json:"token,omitempty"` // 兼容: telegram token
 	Telegram   MsgGatewayTelegram   `json:"telegram,omitempty"`
 	QQOfficial MsgGatewayQQOfficial `json:"qqofficial,omitempty"`
+	Weixin     MsgGatewayWeixin     `json:"weixin,omitempty"`
+	OpenClawWeixin MsgGatewayOpenClawWeixin `json:"openclawweixin,omitempty"`
 }
 
 // MsgGatewayTelegram Telegram 网关配置
@@ -577,6 +579,20 @@ func DefaultConfig() *Config {
 					"group_and_c2c_messages",
 				},
 			},
+			Weixin: MsgGatewayWeixin{
+				BaseURL:                 "https://ilinkai.weixin.qq.com",
+				DMPolicy:                "open",
+				GroupPolicy:             "disabled",
+				PollTimeoutMilliseconds: 35000,
+				SendChunkDelayMS:        350,
+			},
+			OpenClawWeixin: MsgGatewayOpenClawWeixin{
+				StateDir:                "",
+				DMPolicy:                "open",
+				GroupPolicy:             "disabled",
+				PollTimeoutMilliseconds: 35000,
+				SendChunkDelayMS:        350,
+			},
 		},
 	}
 }
@@ -891,6 +907,18 @@ func normalizeConfig(cfg *Config) {
 	}
 	if len(cfg.MsgGateway.QQOfficial.Intents) == 0 {
 		cfg.MsgGateway.QQOfficial.Intents = append([]string(nil), def.MsgGateway.QQOfficial.Intents...)
+	}
+	if cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds <= 0 {
+		cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds = def.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds
+	}
+	if cfg.MsgGateway.OpenClawWeixin.SendChunkDelayMS <= 0 {
+		cfg.MsgGateway.OpenClawWeixin.SendChunkDelayMS = def.MsgGateway.OpenClawWeixin.SendChunkDelayMS
+	}
+	if strings.TrimSpace(cfg.MsgGateway.OpenClawWeixin.DMPolicy) == "" {
+		cfg.MsgGateway.OpenClawWeixin.DMPolicy = def.MsgGateway.OpenClawWeixin.DMPolicy
+	}
+	if strings.TrimSpace(cfg.MsgGateway.OpenClawWeixin.GroupPolicy) == "" {
+		cfg.MsgGateway.OpenClawWeixin.GroupPolicy = def.MsgGateway.OpenClawWeixin.GroupPolicy
 	}
 }
 
@@ -1268,6 +1296,52 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.MsgGateway.QQOfficial.ReconnectWait = n
+	case "msg_gateway.weixin.token":
+		m.config.MsgGateway.Weixin.Token = value
+	case "msg_gateway.weixin.account_id":
+		m.config.MsgGateway.Weixin.AccountID = value
+	case "msg_gateway.weixin.base_url":
+		m.config.MsgGateway.Weixin.BaseURL = value
+	case "msg_gateway.weixin.dm_policy":
+		m.config.MsgGateway.Weixin.DMPolicy = value
+	case "msg_gateway.weixin.group_policy":
+		m.config.MsgGateway.Weixin.GroupPolicy = value
+	case "msg_gateway.weixin.allowed_users":
+		m.config.MsgGateway.Weixin.AllowedUsers = splitCSV(value)
+	case "msg_gateway.weixin.group_allowed_users":
+		m.config.MsgGateway.Weixin.GroupAllowedUsers = splitCSV(value)
+	case "msg_gateway.weixin.split_multiline_messages":
+		m.config.MsgGateway.Weixin.SplitMultilineMessages = parseBool(value)
+	case "msg_gateway.weixin.poll_timeout_ms":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Weixin.PollTimeoutMilliseconds = n
+	case "msg_gateway.weixin.send_chunk_delay_ms":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Weixin.SendChunkDelayMS = n
+	case "msg_gateway.openclawweixin.account_id":
+		m.config.MsgGateway.OpenClawWeixin.AccountID = value
+	case "msg_gateway.openclawweixin.state_dir":
+		m.config.MsgGateway.OpenClawWeixin.StateDir = value
+	case "msg_gateway.openclawweixin.dm_policy":
+		m.config.MsgGateway.OpenClawWeixin.DMPolicy = value
+	case "msg_gateway.openclawweixin.group_policy":
+		m.config.MsgGateway.OpenClawWeixin.GroupPolicy = value
+	case "msg_gateway.openclawweixin.allowed_users":
+		m.config.MsgGateway.OpenClawWeixin.AllowedUsers = splitCSV(value)
+	case "msg_gateway.openclawweixin.group_allowed_users":
+		m.config.MsgGateway.OpenClawWeixin.GroupAllowedUsers = splitCSV(value)
+	case "msg_gateway.openclawweixin.split_multiline_messages":
+		m.config.MsgGateway.OpenClawWeixin.SplitMultilineMessages = parseBool(value)
+	case "msg_gateway.openclawweixin.poll_timeout_ms":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds = n
+	case "msg_gateway.openclawweixin.send_chunk_delay_ms":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.OpenClawWeixin.SendChunkDelayMS = n
 	case "msg_gateway.qqofficial.intents":
 		m.config.MsgGateway.QQOfficial.Intents = splitCSV(value)
 	case "limits.max_tokens":
@@ -1468,4 +1542,31 @@ func (m *Manager) InitHome() error {
 	}
 
 	return nil
+}
+
+// MsgGatewayWeixin 个人微信 iLink Bot API 配置
+type MsgGatewayWeixin struct {
+	Token                   string   `json:"token,omitempty"`
+	AccountID               string   `json:"account_id,omitempty"`
+	BaseURL                 string   `json:"base_url,omitempty"`
+	DMPolicy                string   `json:"dm_policy,omitempty"`
+	GroupPolicy             string   `json:"group_policy,omitempty"`
+	AllowedUsers            []string `json:"allowed_users,omitempty"`
+	GroupAllowedUsers       []string `json:"group_allowed_users,omitempty"`
+	SplitMultilineMessages  bool     `json:"split_multiline_messages,omitempty"`
+	PollTimeoutMilliseconds int      `json:"poll_timeout_ms,omitempty"`
+	SendChunkDelayMS        int      `json:"send_chunk_delay_ms,omitempty"`
+}
+
+// MsgGatewayOpenClawWeixin OpenClaw 登录的微信渠道配置
+type MsgGatewayOpenClawWeixin struct {
+	AccountID               string   `json:"account_id,omitempty"`
+	StateDir                string   `json:"state_dir,omitempty"`
+	DMPolicy                string   `json:"dm_policy,omitempty"`
+	GroupPolicy             string   `json:"group_policy,omitempty"`
+	AllowedUsers            []string `json:"allowed_users,omitempty"`
+	GroupAllowedUsers       []string `json:"group_allowed_users,omitempty"`
+	SplitMultilineMessages  bool     `json:"split_multiline_messages,omitempty"`
+	PollTimeoutMilliseconds int      `json:"poll_timeout_ms,omitempty"`
+	SendChunkDelayMS        int      `json:"send_chunk_delay_ms,omitempty"`
 }

@@ -1,0 +1,10 @@
+{
+  "name": "@luckyharness/tui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --import tsx src/index.tsx",
+    "start": "node --import tsx src/index.tsx",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

@@ -179,6 +179,18 @@
         "public_guild_messages",
         "group_and_c2c_messages"
       ]
+    },
+    "weixin": {
+      "token": "",
+      "account_id": "",
+      "base_url": "https://ilinkai.weixin.qq.com",
+      "dm_policy": "open",
+      "group_policy": "disabled",
+      "allowed_users": [],
+      "group_allowed_users": [],
+      "split_multiline_messages": false,
+      "poll_timeout_ms": 35000,
+      "send_chunk_delay_ms": 350
     }
   }
 }

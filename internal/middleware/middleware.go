@@ -402,7 +402,9 @@ type MiddlewareProvider struct {
 	chain *Chain
 }
 
-// NewMiddlewareProvider creates a new middleware-wrapped provider.
+/**
+ * NewMiddlewareProvider 创建一个新的 MiddlewareProvider，将给定的 provider 包装在中间件链中。
+ */
 func NewMiddlewareProvider(inner provider.Provider, chain *Chain) *MiddlewareProvider {
 	if chain == nil {
 		chain = NewChain()
@@ -484,5 +486,7 @@ func (mp *MiddlewareProvider) Validate() error {
 }
 
 // Ensure MiddlewareProvider implements Provider
-var _ provider.Provider = (*MiddlewareProvider)(nil)
-var _ provider.FunctionCallingProvider = (*MiddlewareProvider)(nil)
+var (
+	_ provider.Provider                = (*MiddlewareProvider)(nil)
+	_ provider.FunctionCallingProvider = (*MiddlewareProvider)(nil)
+)

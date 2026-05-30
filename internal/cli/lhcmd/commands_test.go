@@ -1,11 +1,16 @@
 package lhcmd
 
 import (
+	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
+
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/gateway/weixin"
 )
 
 func newMsgGatewayStartTestCmd() *cobra.Command {
@@ -73,7 +78,99 @@ func TestValidateMsgGatewayStartOptionsRejectsMissingQQCredentials(t *testing.T)
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "qqofficial 需要") {
+	if !strings.Contains(err.Error(), "qqofficial") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateMsgGatewayStartOptionsRejectsMissingWeixinCredentials(t *testing.T) {
+	err := validateMsgGatewayStartOptions(msgGatewayStartOptions{Platform: "weixin"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "msg_gateway.weixin.token") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateMsgGatewayStartOptionsRejectsMissingOpenClawWeixinAccount(t *testing.T) {
+	err := validateMsgGatewayStartOptions(msgGatewayStartOptions{Platform: "openclawweixin"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "msg_gateway.openclawweixin.account_id") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+type stubWeixinLoginClient struct {
+	statuses []*weixin.QRCodeLogin
+	err      error
+	index    int
+}
+
+func (s *stubWeixinLoginClient) GetQRCodeStatus(ctx context.Context, qrCode string) (*weixin.QRCodeLogin, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if len(s.statuses) == 0 {
+		return nil, fmt.Errorf("no statuses")
+	}
+	if s.index >= len(s.statuses) {
+		return s.statuses[len(s.statuses)-1], nil
+	}
+	v := s.statuses[s.index]
+	s.index++
+	return v, nil
+}
+
+func TestPollWeixinLoginSuccess(t *testing.T) {
+	client := &stubWeixinLoginClient{
+		statuses: []*weixin.QRCodeLogin{
+			{Status: "waiting"},
+			{Status: "confirmed", AccountID: "wx-123", Token: "bot-token", BaseURL: "https://ilink.example.com"},
+		},
+	}
+
+	got, err := pollWeixinLoginWithFetcher(context.Background(), client.GetQRCodeStatus, "qr-code", time.Millisecond, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.AccountID != "wx-123" || got.Token != "bot-token" {
+		t.Fatalf("unexpected login result: %#v", got)
+	}
+}
+
+func TestPollWeixinLoginFailureStatus(t *testing.T) {
+	client := &stubWeixinLoginClient{
+		statuses: []*weixin.QRCodeLogin{
+			{Status: "failed", Description: "scan denied"},
+		},
+	}
+
+	_, err := pollWeixinLoginWithFetcher(context.Background(), client.GetQRCodeStatus, "qr-code", time.Millisecond, false)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "scan denied") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestWeixinLoginDriverFlag(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("driver", "ilink", "")
+	cmd.Flags().String("base-url", "", "")
+	cmd.Flags().Duration("poll-interval", 2*time.Second, "")
+	cmd.Flags().Duration("timeout", 3*time.Minute, "")
+	cmd.Flags().Bool("no-save", false, "")
+	cmd.Flags().Bool("print-status", true, "")
+
+	if err := cmd.Flags().Set("driver", "openclaw"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := cmd.Flags().GetString("driver")
+	if got != "openclaw" {
+		t.Fatalf("expected driver openclaw, got %q", got)
 	}
 }
