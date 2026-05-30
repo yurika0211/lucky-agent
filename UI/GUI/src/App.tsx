@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ChatMessage, DashboardData, DashboardStatus, WsPayload } from './types';
+import type { ChatMessage, DashboardData, DashboardStatus, ThoughtNote, WsPayload } from './types';
 
 type Bubble = ChatMessage;
 
@@ -52,11 +52,11 @@ export function App() {
   const [socketState, setSocketState] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
   const [messages, setMessages] = useState<Bubble[]>([]);
   const [feed, setFeed] = useState<string[]>([]);
+  const [thoughts, setThoughts] = useState<ThoughtNote[]>([]);
   const [composer, setComposer] = useState('');
   const [rawLog, setRawLog] = useState('Waiting for runtime data...');
-  const [assistantDraft, setAssistantDraft] = useState('');
-  const [assistantId, setAssistantId] = useState<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const assistantDraftRef = useRef('');
 
   const effectiveBase = useMemo(() => normalizeApiBase(apiBase) || DEFAULT_API_BASE, [apiBase]);
 
@@ -141,49 +141,64 @@ export function App() {
     setMessages((prev) => prev.map((item) => (item.id === id ? { ...item, body, meta: meta ?? item.meta } : item)));
   }
 
+  function pushThought(kind: ThoughtNote['kind'], text: string, meta?: string) {
+    const next: ThoughtNote = { id: makeId(kind), kind, text, meta: meta || nowLabel() };
+    setThoughts((prev) => [next, ...prev].slice(0, 12));
+  }
+
+  function pushAssistantDraft(chunk: string) {
+    assistantDraftRef.current += chunk;
+  }
+
+  function flushAssistantDraft(finalText?: string) {
+    const text = (finalText ?? assistantDraftRef.current).trim() || '已完成。';
+    pushBubble('assistant', 'LuckyHarness', text, '完成');
+    assistantDraftRef.current = '';
+  }
+
+  function summarizeTool(name: string, display?: string): string {
+    const label = (display || name || '工具').trim();
+    return `我先调用 ${label} 看看当前信息，再把结果并入答复。`;
+  }
+
   function handleWsMessage(msg: WsPayload) {
     const payload = (msg.data || {}) as Record<string, unknown>;
     switch (msg.type) {
-      case 'status':
-        setFeed((prev) => [`status: ${JSON.stringify(payload)}`, ...prev].slice(0, 8));
+      case 'status': {
+        const state = formatValue(payload.state);
+        const message = formatValue(payload.message);
+        if (state !== 'n/a' || message !== 'n/a') {
+          pushThought('status', `当前状态切到 ${state}，${message === 'n/a' ? '我继续往下处理。' : message}`, String(payload.state || 'status'));
+        }
+        setFeed((prev) => [`${String(payload.state || 'status')}: ${String(payload.message || '')}`.trim(), ...prev].slice(0, 4));
         break;
-      case 'reasoning':
-        setFeed((prev) => [`reasoning: ${String(payload.summary || '')}`, ...prev].slice(0, 8));
+      }
+      case 'reasoning': {
+        const summary = String(payload.summary || '').trim();
+        if (summary) {
+          pushThought('reasoning', summary.endsWith('。') || summary.endsWith('.') ? summary : `${summary}。`, '思路');
+        }
         break;
+      }
       case 'tool_call':
-        setFeed((prev) => [`tool_call: ${String(payload.name || 'unknown')}`, ...prev].slice(0, 8));
+        pushThought('tool', summarizeTool(String(payload.name || '工具'), String(payload.display || '')), '工具链');
         break;
       case 'tool_result':
-        setFeed((prev) => [`tool_result: ${String(payload.name || 'unknown')}`, ...prev].slice(0, 8));
+        pushThought(
+          'tool',
+          `工具 ${String(payload.display || payload.name || '调用')} 已返回结果，我继续整理成最终答复。`,
+          '工具链',
+        );
         break;
-      case 'stream_chunk': {
-        const chunk = String(payload.content || '');
-        const next = assistantDraft + chunk;
-        setAssistantDraft(next);
-        if (!assistantId) {
-          const id = makeId('assistant');
-          setAssistantId(id);
-          pushBubble('assistant', 'LuckyHarness', next, 'streaming');
-        } else {
-          updateBubble(assistantId, next, 'streaming');
-        }
+      case 'stream_chunk':
+        pushAssistantDraft(String(payload.content || ''));
         break;
-      }
-      case 'stream_end': {
-        const finalText = String(payload.full_response || assistantDraft);
-        if (!assistantId) {
-          pushBubble('assistant', 'LuckyHarness', finalText, 'done');
-        } else {
-          updateBubble(assistantId, finalText, 'done');
-        }
-        setAssistantDraft('');
-        setAssistantId(null);
+      case 'stream_end':
+        flushAssistantDraft(String(payload.full_response || ''));
         break;
-      }
       case 'error':
         pushBubble('error', 'Runtime Error', String(payload.message || 'unknown error'));
-        setAssistantDraft('');
-        setAssistantId(null);
+        assistantDraftRef.current = '';
         break;
       default:
         setFeed((prev) => [`${msg.type}: ${JSON.stringify(payload)}`, ...prev].slice(0, 8));
@@ -207,8 +222,8 @@ export function App() {
     if (!text || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     pushBubble('user', 'You', text);
     setComposer('');
-    setAssistantDraft('');
-    setAssistantId(null);
+    assistantDraftRef.current = '';
+    setThoughts([]);
     wsRef.current.send(JSON.stringify({ type: 'chat', data: { message: text, stream: true, max_iterations: 8 } }));
   }
 
@@ -237,7 +252,7 @@ export function App() {
         <button className="rail-button" type="button">W</button>
         <button className="rail-button" type="button">T</button>
         <div className="rail-spacer" />
-        <button className="rail-button muted" type="button">⋯</button>
+        <button className="rail-button muted" type="button">站</button>
         <div className="avatar">UI</div>
       </aside>
 
@@ -249,9 +264,7 @@ export function App() {
           </div>
           <div className="hero-copy">
             <h1>OpenAI-style runtime chat.</h1>
-            <p>
-              A focused dashboard for session chat, live runtime state, and streamed tool activity.
-            </p>
+            <p>A focused dashboard for session chat, live runtime state, and tool activity.</p>
           </div>
           <div className="hero-controls">
             <label>
@@ -330,6 +343,25 @@ export function App() {
                   </article>
                 ))
               )}
+            </div>
+
+            <div className="thought-panel">
+              <div className="thought-head">
+                <span>思路与工具链</span>
+                <span>只显示高层过程</span>
+              </div>
+              <div className="thought-list">
+                {thoughts.length === 0 ? (
+                  <div className="thought-empty">模型会先整理思路，再调用工具确认细节，过程会被整理成自然语言摘要。</div>
+                ) : (
+                  thoughts.map((item) => (
+                    <div className={`thought ${item.kind}`} key={item.id}>
+                      <span className="thought-meta">{item.meta}</span>
+                      <span>{item.text}</span>
+                    </div>
+                  ))
+                )}
+              </div>
             </div>
 
             <div className="composer">

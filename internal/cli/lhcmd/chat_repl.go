@@ -107,7 +107,14 @@ func startREPL(mgr *config.Manager) error {
 		}
 
 		// 执行 Agent Loop
-		result, err := runChatStream(ctx, a, currentSession, input, loopCfg)
+		plainText, attachments := parseAttachmentsFromInput(input)
+		var turn agent.UserTurnInput
+		if len(attachments) > 0 {
+			turn = agent.MultimodalUserTurnInput(plainText, attachments)
+		} else {
+			turn = agent.TextUserTurnInput(input)
+		}
+		result, err := runChatStreamInput(ctx, a, currentSession, turn, loopCfg)
 		if err != nil {
 			fmt.Printf("❌ %v\n", err)
 			continue
@@ -458,6 +465,10 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 			return handleEmbedderCommand(arg, ctx.agent), false
 		},
 	}
+}
+
+func executeSingleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, cronStore *cron.Store, watcher *cron.Watcher, sessionMgr *session.Manager, currentSession **session.Session, cfgMgr *config.Manager) (handled bool, exit bool) {
+    return handleCommand(input, a, loopCfg, cronEngine, cronStore, watcher, sessionMgr, currentSession, cfgMgr)
 }
 
 func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, cronStore *cron.Store, watcher *cron.Watcher, sessionMgr *session.Manager, currentSession **session.Session, cfgMgr *config.Manager) (handled bool, exit bool) {

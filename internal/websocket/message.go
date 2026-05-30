@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/yurika0211/luckyharness/internal/gateway"
 )
 
 // MessageType WebSocket 消息类型
@@ -40,10 +42,11 @@ type Message struct {
 
 // ChatData 聊天消息数据
 type ChatData struct {
-	Message   string `json:"message"`
-	Stream    bool   `json:"stream,omitempty"`
-	MaxIter   int    `json:"max_iterations,omitempty"`
-	ProfileID string `json:"profile_id,omitempty"`
+	Message     string               `json:"message"`
+	Stream      bool                 `json:"stream,omitempty"`
+	MaxIter     int                  `json:"max_iterations,omitempty"`
+	ProfileID   string               `json:"profile_id,omitempty"`
+	Attachments []gateway.Attachment `json:"attachments,omitempty"`
 }
 
 // StreamChunkData 流式输出块数据

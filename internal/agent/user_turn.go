@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/provider"
 )
 
@@ -13,6 +14,7 @@ import (
 type UserTurnInput struct {
 	Message     provider.Message
 	RoutingText string
+	Attachments []gateway.Attachment
 }
 
 /**
@@ -26,6 +28,20 @@ func TextUserTurnInput(text string) UserTurnInput {
 			Role:    "user",
 			Content: text,
 		},
+	}
+}
+
+// MultimodalUserTurnInput builds a user turn that includes attachments.
+func MultimodalUserTurnInput(text string, attachments []gateway.Attachment) UserTurnInput {
+	text = strings.TrimSpace(text)
+	msg := provider.Message{
+		Role:    "user",
+		Content: text,
+	}
+	return UserTurnInput{
+		Message:     msg,
+		RoutingText: text,
+		Attachments: append([]gateway.Attachment(nil), attachments...),
 	}
 }
 
@@ -43,34 +59,33 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 		routingText = deriveRoutingTextFromMessage(msg)
 	}
 	if routingText == "" {
+		if len(in.Attachments) > 0 {
+			routingText = attachmentRoutingText(in.Attachments)
+		}
+	}
+	if routingText == "" {
 		routingText = "User sent a multimodal message. Use the provided attachment(s) to answer."
 	}
 	msg.Content = routingText
 
-	if len(msg.ContentParts) > 0 {
-		parts := append([]provider.ContentPart(nil), msg.ContentParts...)
-		hasTextPart := false
-		for i := range parts {
-			if parts[i].Type == "text" {
-				hasTextPart = true
-				if i == 0 {
-					parts[i].Text = routingText
-				}
-				break
-			}
-		}
-		if !hasTextPart {
-			parts = append([]provider.ContentPart{{
-				Type: "text",
-				Text: routingText,
-			}}, parts...)
-		}
-		msg.ContentParts = parts
+	parts := append([]provider.ContentPart(nil), msg.ContentParts...)
+	if len(parts) == 0 && routingText != "" {
+		parts = append(parts, provider.ContentPart{
+			Type: "text",
+			Text: routingText,
+		})
 	}
+	for _, att := range in.Attachments {
+		if part, ok := contentPartFromAttachment(att); ok {
+			parts = append(parts, part)
+		}
+	}
+	msg.ContentParts = parts
 
 	return UserTurnInput{
 		Message:     msg,
 		RoutingText: routingText,
+		Attachments: append([]gateway.Attachment(nil), in.Attachments...),
 	}
 }
 
@@ -112,4 +127,60 @@ func deriveRoutingTextFromMessage(msg provider.Message) string {
 		return fmt.Sprintf("User sent %d images. Use the images to answer.", imageCount)
 	}
 	return ""
+}
+
+func attachmentFromContentPart(part provider.ContentPart) (gateway.Attachment, bool) {
+	if part.Type != "image" || part.Image == nil {
+		return gateway.Attachment{}, false
+	}
+	return gateway.Attachment{
+		Type:     gateway.AttachmentImage,
+		FilePath: strings.TrimSpace(part.Image.FilePath),
+		MimeType: strings.TrimSpace(part.Image.MimeType),
+	}, true
+}
+
+func contentPartFromAttachment(att gateway.Attachment) (provider.ContentPart, bool) {
+	if att.Type != gateway.AttachmentImage {
+		return provider.ContentPart{}, false
+	}
+	return provider.ContentPart{
+		Type: "image",
+		Image: &provider.ImagePart{
+			FilePath: strings.TrimSpace(att.FilePath),
+			MimeType: strings.TrimSpace(att.MimeType),
+		},
+	}, true
+}
+
+func attachmentRoutingText(attachments []gateway.Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	imageCount := 0
+	docCount := 0
+	for _, att := range attachments {
+		switch att.Type {
+		case gateway.AttachmentImage:
+			imageCount++
+		default:
+			docCount++
+		}
+	}
+	parts := make([]string, 0, 2)
+	if imageCount > 0 {
+		if imageCount == 1 {
+			parts = append(parts, "1 image attached")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d images attached", imageCount))
+		}
+	}
+	if docCount > 0 {
+		if docCount == 1 {
+			parts = append(parts, "1 file attached")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d files attached", docCount))
+		}
+	}
+	return "User sent " + strings.Join(parts, " and ") + ". Use the attachments to answer."
 }

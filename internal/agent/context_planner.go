@@ -168,13 +168,15 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	}
 
 	if p.agent == nil {
-		return append(messages, input.Message)
+		return append(messages, p.buildAttachmentMessages(ctx, input)...)
 	}
 
 	// Reserve budget for the current turn using routing text, then append the
 	// structured payload after trimming older context. This preserves current-round
 	// image parts without rewriting the window manager yet.
-	provisional := append(append([]provider.Message(nil), messages...), provider.Message{
+	attachmentMsgs := p.buildAttachmentMessages(ctx, input)
+	provisional := append(append([]provider.Message(nil), messages...), attachmentMsgs...)
+	provisional = append(provisional, provider.Message{
 		Role:    "user",
 		Content: routingText,
 	})
@@ -201,6 +203,30 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 				bucketTokens: report.bucketTokens,
 			})
 		}
+	}
+	return messages
+}
+
+func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input UserTurnInput) []provider.Message {
+	if len(input.Attachments) == 0 {
+		return nil
+	}
+
+	messages := make([]provider.Message, 0, 2)
+	if p.agent != nil {
+		if summary, err := p.agent.AnalyzeAttachments(ctx, input.Attachments); err == nil && strings.TrimSpace(summary) != "" {
+			messages = append(messages, provider.Message{
+				Role:    "system",
+				Content: summary,
+			})
+		}
+	}
+	if len(input.Message.ContentParts) > 0 {
+		messages = append(messages, provider.Message{
+			Role:         "user",
+			Content:      input.RoutingText,
+			ContentParts: input.Message.ContentParts,
+		})
 	}
 	return messages
 }

@@ -90,6 +90,14 @@ func (s *Session) UnsetEnv(key string) {
 	s.UpdatedAt = time.Now()
 }
 
+// SetTitle updates the session title.
+func (s *Session) SetTitle(title string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Title = strings.TrimSpace(title)
+	s.UpdatedAt = time.Now()
+}
+
 // NewSession 创建新会话
 func NewSession(id, dir string) *Session {
 	now := time.Now()

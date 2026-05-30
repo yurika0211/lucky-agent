@@ -83,14 +83,14 @@ type Message struct {
 
 // Attachment represents a media attachment in a message.
 type Attachment struct {
-	Type     AttachmentType // image, audio, video, document
-	FileID   string         // platform-specific file ID
-	FileURL  string         // download URL (if available)
-	FilePath string         // downloaded local file path (if available)
-	FileName string         // original filename
-	MimeType string         // MIME type
-	FileSize int64          // file size in bytes
-	Data     []byte         // downloaded file data (populated on demand)
+	Type     AttachmentType `json:"type,omitempty"`      // image, audio, video, document
+	FileID   string         `json:"file_id,omitempty"`   // platform-specific file ID
+	FileURL  string         `json:"file_url,omitempty"`  // download URL (if available)
+	FilePath string         `json:"file_path,omitempty"` // downloaded local file path (if available)
+	FileName string         `json:"file_name,omitempty"` // original filename
+	MimeType string         `json:"mime_type,omitempty"` // MIME type
+	FileSize int64          `json:"file_size,omitempty"` // file size in bytes
+	Data     []byte         `json:"data,omitempty"`      // downloaded file data (populated on demand)
 }
 
 // AttachmentType represents the type of media attachment.

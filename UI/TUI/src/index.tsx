@@ -1,5 +1,5 @@
 import { render } from 'ink';
-import { App } from './tui-app.tsx';
+import { App } from './tui-app';
 
 function parseArg(name: string, fallback: string): string {
   const idx = process.argv.indexOf(name);

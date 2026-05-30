@@ -51,3 +51,10 @@ export type ChatMessage = {
   body: string;
   meta?: string;
 };
+
+export type ThoughtNote = {
+  id: string;
+  kind: 'reasoning' | 'tool' | 'status';
+  text: string;
+  meta?: string;
+};
