@@ -1012,7 +1012,6 @@ export function App({ apiBase, session, model }: AppProps) {
               {isBubbleKind(item.kind) ? (
                 <Box width="100%" flexDirection="row" justifyContent={item.kind === 'user' ? 'flex-end' : 'flex-start'}>
                   <Box width={Math.max(40, Math.floor(viewportWidth * 0.92))} flexDirection="column">
-                    <Text dimColor>{item.kind === 'user' ? 'You' : 'LuckyHarness'}</Text>
                     <Box
                       width="100%"
                       flexDirection="column"
