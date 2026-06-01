@@ -268,15 +268,15 @@ export function App() {
           </div>
           <div className="hero-controls">
             <label>
-              API Base
+              <span>API Base</span>
               <input value={apiBase} onChange={(e) => setApiBase(e.target.value)} spellCheck={false} />
             </label>
             <label>
-              Session
+              <span>Session</span>
               <input value={session} onChange={(e) => setSession(e.target.value)} spellCheck={false} />
             </label>
             <button className="primary" type="button" onClick={sendMessage} disabled={!connected}>
-              Send
+              Send →
             </button>
           </div>
         </section>
@@ -317,7 +317,7 @@ export function App() {
             <div className="chat-header">
               <div>
                 <div className="eyebrow">Conversation</div>
-                <h2>OpenAI-style chat workspace</h2>
+                <h2>Chat with the runtime</h2>
               </div>
               <div className="chat-status">{socketState.toUpperCase()}</div>
             </div>
@@ -347,7 +347,7 @@ export function App() {
 
             <div className="thought-panel">
               <div className="thought-head">
-                <span>思路与工具链</span>
+                <span>Thought Chain</span>
                 <span>只显示高层过程</span>
               </div>
               <div className="thought-list">
@@ -378,7 +378,7 @@ export function App() {
                   ))}
                 </div>
                 <button className="primary" type="button" onClick={sendMessage} disabled={!connected}>
-                  Send Message
+                  Send → 
                 </button>
               </div>
             </div>
