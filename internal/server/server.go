@@ -815,20 +815,34 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
 		// Agent 暴露 session manager
-		sessions := s.agent.Sessions().List()
+		var sessions []*session.Session
+		if query != "" {
+			matches := s.agent.Sessions().Search(query)
+			sessions = make([]*session.Session, 0, len(matches))
+			for _, info := range matches {
+				if sess, ok := s.agent.Sessions().Get(info.ID); ok {
+					sessions = append(sessions, sess)
+				}
+			}
+		} else {
+			sessions = s.agent.Sessions().List()
+		}
 		type sessionInfo struct {
 			ID           string `json:"id"`
+			Title        string `json:"title"`
 			MessageCount int    `json:"message_count"`
 			CreatedAt    string `json:"created_at"`
 			UpdatedAt    string `json:"updated_at"`
 		}
 
-		var infos []sessionInfo
+		infos := make([]sessionInfo, 0, len(sessions))
 		for _, sess := range sessions {
 			msgs := sess.GetMessages()
 			infos = append(infos, sessionInfo{
 				ID:           sess.ID,
+				Title:        sess.Title,
 				MessageCount: len(msgs),
 				CreatedAt:    sess.CreatedAt.Format(time.RFC3339),
 				UpdatedAt:    sess.UpdatedAt.Format(time.RFC3339),
@@ -856,6 +870,7 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.TrimSpace(body.Title) != "" {
 			sess.SetTitle(body.Title)
+			_ = sess.Save()
 		}
 
 		s.sendJSON(w, http.StatusCreated, map[string]interface{}{
