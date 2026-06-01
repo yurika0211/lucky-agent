@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useApp, useInput } from 'ink';
 import TextInput from 'ink-text-input';
+import { execFileSync } from 'node:child_process';
 
 type WsPayload = { type: string; data?: Record<string, unknown> };
 type StreamItemKind = 'user' | 'assistant' | 'meta' | 'error' | 'reasoning' | 'tool_call' | 'tool_result' | 'status';
@@ -11,7 +12,29 @@ type SessionInfo = { id: string; title: string; message_count: number; created_a
 type SessionsResponse = { sessions?: SessionInfo[] };
 type SessionDetailResponse = { id?: string; title?: string; messages?: Array<Record<string, unknown>> };
 type ApiSessionResponse = SessionInfo & { id?: string };
-type PickerMode = 'resume' | 'new' | 'none';
+type PickerMode = 'resume' | 'commands' | 'none';
+
+type CommandSpec = {
+  name: string;
+  help: string;
+  aliases: string[];
+};
+
+const COMMANDS: CommandSpec[] = [
+  { name: '/review', help: '查看工作区状态和最近提交', aliases: ['review'] },
+  { name: '/resume', help: '恢复历史会话', aliases: ['resume', 'switch'] },
+  { name: '/rename', help: '重命名当前会话', aliases: ['rename'] },
+  { name: '/help', help: '列出可用命令', aliases: ['help'] },
+  { name: '/sessions', help: '刷新会话列表', aliases: ['sessions'] },
+  { name: '/new', help: '创建新会话', aliases: ['new'] },
+];
+
+const CLOVER = [
+  '   .-.-.   ',
+  '  (  *  )  ',
+  '   `-+-´   ',
+  '  .-.-.-.  ',
+];
 
 function normalizeApiBase(value: string): string {
   const raw = value.trim();
@@ -65,11 +88,13 @@ function sessionMessageToItem(message: Record<string, unknown>, index: number): 
   const role = String(message.role || 'meta');
   const kind: StreamItemKind =
     role === 'user' ? 'user' : role === 'assistant' ? 'assistant' : role === 'tool' ? 'tool_result' : 'meta';
+  const body =
+    sanitize(asText(message.content || message.text || message.message || message.reasoning_content || '')) || ' ';
   return {
     id: makeId(`history-${index}`),
     kind,
     title: kind === 'user' ? 'You' : kind === 'assistant' ? 'LuckyHarness' : 'Tool',
-    body: sanitize(asText(message.content || message.text || message.message || '')) || ' ',
+    body,
   };
 }
 
@@ -121,7 +146,7 @@ function stripMarkdown(text: string): string {
     .replace(/`([^`]+)`/g, '$1')
     .replace(/^\s*[-*+]\s+/gm, '• ')
     .replace(/^\s*\d+\.\s+/gm, '• ')
-    .replace(/^---+$/gm, '─'.repeat(20))
+    .replace(/^---+$/gm, '─'.repeat(24))
     .trimEnd();
 }
 
@@ -148,22 +173,14 @@ function wrapText(text: string, width: number): string {
 }
 
 function formatItemBody(item: StreamItem, width: number): string {
-  const maxWidth = Math.max(24, width - 4);
+  const maxWidth = Math.max(24, width - 6);
   const body = stripMarkdown(item.body);
   return body ? wrapText(body, maxWidth) : ' ';
 }
 
-function compactHeader(lines: string[]): string {
-  return lines.filter(Boolean).join(' · ');
-}
-
-function createStatusItem(message: string): StreamItem {
-  return { id: makeId('status'), kind: 'status', title: 'Status', body: message };
-}
-
 function renderDividerLabel(label: string, width: number): string {
   const clean = label.trim();
-  const target = Math.max(24, width);
+  const target = Math.max(32, width);
   const labelText = clean ? ` ${clean} ` : ' ';
   if (target <= labelText.length) return labelText;
   const remaining = target - labelText.length;
@@ -173,11 +190,116 @@ function renderDividerLabel(label: string, width: number): string {
 }
 
 function renderFullDivider(width: number): string {
-  return '-'.repeat(Math.max(24, width));
+  return '-'.repeat(Math.max(32, width));
 }
 
 function isBubbleKind(kind: StreamItemKind): boolean {
   return kind === 'user' || kind === 'assistant';
+}
+
+function compact(lines: string[]): string {
+  return lines.filter(Boolean).join(' · ');
+}
+
+function normalizeCommand(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ');
+}
+
+function parseCommandParts(raw: string): { command: string; arg: string } {
+  const normalized = normalizeCommand(raw);
+  const firstSpace = normalized.indexOf(' ');
+  if (firstSpace < 0) {
+    return { command: normalized.slice(1).toLowerCase(), arg: '' };
+  }
+  return {
+    command: normalized.slice(1, firstSpace).toLowerCase(),
+    arg: normalized.slice(firstSpace + 1).trim(),
+  };
+}
+
+function fallbackModel(model: string, status: string): string {
+  if (model.trim()) return model.trim();
+  const match = status.match(/model[:=]\s*([^\s|]+)/i);
+  return match?.[1] || 'unknown';
+}
+
+function readGitSnippet(args: string[]): string {
+  try {
+    return execFileSync('git', args, { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  } catch (error) {
+    const output = asText((error as { stdout?: unknown; stderr?: unknown }).stdout || (error as { stderr?: unknown }).stderr || error);
+    return output.trim() || 'git unavailable';
+  }
+}
+
+function parseTitle(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ');
+}
+
+function markdownSegments(text: string): string[] {
+  const normalized = text.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+  const out: string[] = [];
+  let codeFence = false;
+  let codeBuffer: string[] = [];
+
+  for (const line of lines) {
+    if (/^```/.test(line.trim())) {
+      if (!codeFence) {
+        codeFence = true;
+        codeBuffer = [];
+        continue;
+      }
+      codeFence = false;
+      out.push(`\`\`\`\n${codeBuffer.join('\n')}\n\`\`\``);
+      continue;
+    }
+    if (codeFence) {
+      codeBuffer.push(line);
+      continue;
+    }
+    out.push(line);
+  }
+
+  if (codeFence && codeBuffer.length > 0) {
+    out.push(`\`\`\`\n${codeBuffer.join('\n')}\n\`\`\``);
+  }
+
+  return out;
+}
+
+function renderMarkdown(text: string, width: number): string[] {
+  const body = stripMarkdown(text);
+  if (!body.trim()) return [' '];
+  return markdownSegments(body).flatMap((line) => {
+    if (/^```/.test(line)) return line.split('\n').map((part) => wrapText(part, Math.max(24, width - 8)));
+    if (/^ {0,3}[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) return wrapLine(line, Math.max(24, width - 4));
+    return wrapText(line, Math.max(24, width - 4)).split('\n');
+  });
+}
+
+function divyTitle(text: string, width: number): string {
+  const max = Math.max(0, width - 2);
+  if (text.length <= max) return text;
+  if (max <= 1) return '…';
+  return `${text.slice(0, max - 1)}…`;
+}
+
+function clamped(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function createStatusItem(message: string): StreamItem {
+  return { id: makeId('status'), kind: 'status', title: 'Status', body: message };
+}
+
+function isToolCallLike(value: unknown): value is {
+  name?: unknown;
+  arguments?: unknown;
+  args?: unknown;
+  function?: { name?: unknown; arguments?: unknown };
+} {
+  return typeof value === 'object' && value !== null;
 }
 
 export function App({ apiBase, session, model }: AppProps) {
@@ -196,18 +318,51 @@ export function App({ apiBase, session, model }: AppProps) {
   const [viewportWidth, setViewportWidth] = useState(process.stdout.columns || 120);
   const [draft, setDraft] = useState('');
   const [draftId, setDraftId] = useState<string | null>(null);
+  const [commandQuery, setCommandQuery] = useState('');
+  const [commandSelection, setCommandSelection] = useState(0);
+  const [sessionFilter, setSessionFilter] = useState('');
+  const [resumeSelection, setResumeSelection] = useState(0);
+  const [reviewOutput, setReviewOutput] = useState<string[]>([]);
+  const [headerTick, setHeaderTick] = useState(0);
+  const [runtimeModel, setRuntimeModel] = useState(model);
   const socketRef = useRef<WebSocket | null>(null);
   const draftRef = useRef('');
   const draftIdRef = useRef<string | null>(null);
   const pendingMessagesRef = useRef<string[]>([]);
   const activeSessionRef = useRef(activeSession);
+  const sessionsRef = useRef<SessionInfo[]>([]);
+  const inputModeRef = useRef<'command' | 'resume' | 'normal'>('normal');
 
   const effectiveBase = useMemo(() => normalizeApiBase(apiBase), [apiBase]);
-  const currentSessionLabel = useMemo(() => sessions.find((item) => item.id === activeSession)?.title?.trim() || activeSession, [activeSession, sessions]);
+  const currentSessionLabel = useMemo(
+    () => sessions.find((item) => item.id === activeSession)?.title?.trim() || activeSession,
+    [activeSession, sessions],
+  );
+  const currentModelLabel = useMemo(() => (runtimeModel.trim() ? runtimeModel.trim() : fallbackModel(model, status)), [model, runtimeModel, status]);
+  const filteredSessions = useMemo(() => {
+    const query = sessionFilter.trim().toLowerCase();
+    if (!query) return sessions;
+    return sessions.filter((item) => {
+      const text = `${item.title || ''} ${item.id} ${item.message_count}`.toLowerCase();
+      return text.includes(query);
+    });
+  }, [sessionFilter, sessions]);
+  const filteredCommands = useMemo(() => {
+    const query = commandQuery.trim().toLowerCase();
+    if (!query) return COMMANDS;
+    return COMMANDS.filter((item) => {
+      const hay = `${item.name} ${item.help} ${item.aliases.join(' ')}`.toLowerCase();
+      return hay.includes(query);
+    });
+  }, [commandQuery]);
 
   useEffect(() => {
     activeSessionRef.current = activeSession;
   }, [activeSession]);
+
+  useEffect(() => {
+    sessionsRef.current = sessions;
+  }, [sessions]);
 
   useEffect(() => {
     const onResize = () => setViewportWidth(process.stdout.columns || 120);
@@ -218,10 +373,18 @@ export function App({ apiBase, session, model }: AppProps) {
     };
   }, []);
 
+  useEffect(() => {
+    const timer = setInterval(() => setHeaderTick((value) => (value + 1) % CLOVER.length), 1200);
+    return () => clearInterval(timer);
+  }, []);
+
   async function refreshSessions() {
     const url = new URL(effectiveBase);
     url.pathname = '/api/v1/sessions';
     url.search = '';
+    if (sessionFilter.trim()) {
+      url.searchParams.set('q', sessionFilter.trim());
+    }
     setSessionLoading(true);
     try {
       const resp = await fetch(url.toString());
@@ -256,7 +419,30 @@ export function App({ apiBase, session, model }: AppProps) {
       const resp = await fetch(url.toString());
       if (!resp.ok) throw new Error(`failed to load session ${sessionId}: ${resp.status}`);
       const data = (await resp.json()) as SessionDetailResponse;
-      const history = (data.messages || []).map((message, index) => sessionMessageToItem(message, index));
+      const history = (data.messages || []).flatMap((message, index) => {
+        const base = sessionMessageToItem(message, index);
+        const reasoning = String(message.reasoning_content || '').trim();
+        const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
+        const extras: StreamItem[] = [];
+        if (reasoning) {
+          extras.push({
+            id: makeId(`history-reasoning-${index}`),
+            kind: 'reasoning',
+            title: 'Thinking',
+            body: reasoning,
+          });
+        }
+        for (const [toolIndex, tool] of toolCalls.entries()) {
+          const toolCall = isToolCallLike(tool) ? tool : {};
+          extras.push({
+            id: makeId(`history-tool-${index}-${toolIndex}`),
+            kind: 'tool_call',
+            title: `Tool: ${String(toolCall.name || toolCall.function?.name || 'unknown')}`,
+            body: asText(toolCall.arguments || toolCall.args || toolCall.function?.arguments || toolCall),
+          });
+        }
+        return [base, ...extras];
+      });
       setItems(history);
       setDraft('');
       setDraftId(null);
@@ -266,6 +452,25 @@ export function App({ apiBase, session, model }: AppProps) {
       setItems([]);
     } finally {
       setHistoryLoading(false);
+    }
+  }
+
+  async function loadRuntimeStatus() {
+    const url = new URL(effectiveBase);
+    url.pathname = '/api/v1/stats';
+    url.search = '';
+    try {
+      const resp = await fetch(url.toString());
+      if (!resp.ok) return;
+      const data = (await resp.json()) as Record<string, unknown>;
+      const provider = String(data.provider || '').trim();
+      const modelName = String(data.model || '').trim();
+      if (modelName) setRuntimeModel(modelName);
+      if (provider || modelName) {
+        setStatus(`Ready ${provider || 'provider'} / ${modelName || 'model'}`);
+      }
+    } catch {
+      // ignore: top bar still falls back to the passed model prop
     }
   }
 
@@ -279,28 +484,28 @@ export function App({ apiBase, session, model }: AppProps) {
     setDraftId(null);
     draftRef.current = '';
     draftIdRef.current = null;
+    setItems([]);
   }
 
   function openPicker(mode: PickerMode) {
     setPickerMode(mode);
     setPickerOpen(true);
-    setPickerIndex(Math.max(0, sessions.findIndex((item) => item.id === activeSessionRef.current)));
-    setStatus(mode === 'resume' ? 'Choose a session' : 'Choose action');
+    inputModeRef.current = mode === 'resume' ? 'resume' : mode === 'commands' ? 'command' : 'normal';
+    if (mode === 'resume') {
+      setResumeSelection(clamped(filteredSessions.findIndex((item) => item.id === activeSessionRef.current), 0, Math.max(0, filteredSessions.length - 1)));
+      setStatus('Choose a session');
+    } else if (mode === 'commands') {
+      setCommandSelection(0);
+      setStatus('Choose a command');
+    }
   }
 
   function closePicker() {
     setPickerOpen(false);
     setPickerMode('none');
-  }
-
-  function confirmPicker() {
-    if (pickerMode === 'resume') {
-      const target = sessions[pickerIndex];
-      if (target) switchSession(target.id);
-    } else if (pickerMode === 'new') {
-      void createSession();
-    }
-    closePicker();
+    setCommandQuery('');
+    setSessionFilter('');
+    inputModeRef.current = 'normal';
   }
 
   async function createSession() {
@@ -320,6 +525,7 @@ export function App({ apiBase, session, model }: AppProps) {
       setActiveSession(created);
       setItems([]);
       await refreshSessions();
+      await loadSessionHistory(created);
     } catch {
       const fallback = `lh-${Date.now()}`;
       setActiveSession(fallback);
@@ -328,8 +534,120 @@ export function App({ apiBase, session, model }: AppProps) {
     }
   }
 
+  async function renameSession() {
+    const currentInput = input.trim();
+    const arg = currentInput.startsWith('/') ? parseCommandParts(currentInput).arg : currentInput;
+    const title = parseTitle(arg);
+    if (!title) {
+      pushItem('error', 'Command', 'Rename needs a title');
+      setStatus('Rename needs a title');
+      return;
+    }
+    const current = activeSessionRef.current;
+    const url = new URL(effectiveBase);
+    url.pathname = '/api/v1/sessions';
+    url.search = '';
+    try {
+      const resp = await fetch(url.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: current, title }),
+      });
+      if (!resp.ok) throw new Error(`failed to rename session: ${resp.status}`);
+      setStatus(`Renamed ${current} -> ${title}`);
+      await refreshSessions();
+    } catch (err) {
+      pushItem('error', 'Command', asText(err));
+      setStatus(`Rename failed: ${title}`);
+    }
+  }
+
+  async function renameSessionByTitle(titleText: string) {
+    const title = parseTitle(titleText);
+    if (!title) {
+      pushItem('error', 'Command', 'Rename needs a title');
+      setStatus('Rename needs a title');
+      return;
+    }
+    const current = activeSessionRef.current;
+    const url = new URL(effectiveBase);
+    url.pathname = '/api/v1/sessions';
+    url.search = '';
+    try {
+      const resp = await fetch(url.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: current, title }),
+      });
+      if (!resp.ok) throw new Error(`failed to rename session: ${resp.status}`);
+      setStatus(`Renamed ${current} -> ${title}`);
+      await refreshSessions();
+    } catch (err) {
+      pushItem('error', 'Command', asText(err));
+      setStatus(`Rename failed: ${title}`);
+    }
+  }
+
+  async function runReview() {
+    const lines: string[] = [];
+    try {
+      const statusUrl = new URL(effectiveBase);
+      statusUrl.pathname = '/api/v1/stats';
+      const sessionsUrl = new URL(effectiveBase);
+      sessionsUrl.pathname = '/api/v1/sessions';
+      const [statusResp, sessionsResp] = await Promise.all([fetch(statusUrl.toString()), fetch(sessionsUrl.toString())]);
+      const statusData = statusResp.ok ? ((await statusResp.json()) as Record<string, unknown>) : {};
+      const sessionsData = sessionsResp.ok ? ((await sessionsResp.json()) as SessionsResponse) : {};
+      const recent = (sessionsData.sessions || []).slice(0, 5);
+      lines.push(`workspace ${process.cwd()}`);
+      lines.push(`provider ${String(statusData.provider || 'unknown')}`);
+      lines.push(`model ${String(statusData.model || currentModelLabel)}`);
+      lines.push('git status');
+      const gitStatus = readGitSnippet(['status', '--short', '--branch']);
+      lines.push(...(gitStatus ? gitStatus.split('\n').slice(0, 8) : ['clean']));
+      lines.push('recent commits');
+      const gitLog = readGitSnippet(['log', '--oneline', '--decorate=short', '-n', '5']);
+      lines.push(...(gitLog ? gitLog.split('\n').slice(0, 5) : ['no commits']));
+      lines.push(`sessions ${recent.length}`);
+      for (const sess of recent) {
+        lines.push(`# ${sess.title || sess.id} (${sess.message_count})`);
+      }
+    } catch (err) {
+      lines.push(`review failed: ${asText(err)}`);
+    }
+    setReviewOutput(lines);
+    pushItem('meta', 'Review', lines.join('\n'));
+    setStatus('Workspace reviewed');
+  }
+
+  function confirmCommandSelection() {
+    const selected = filteredCommands[commandSelection];
+    if (!selected) return;
+    const name = selected.name;
+    closePicker();
+    if (name === '/review') {
+      void runReview();
+    } else if (name === '/resume') {
+      openPicker('resume');
+    } else if (name === '/help') {
+      pushItem('meta', 'Command', `Commands: ${COMMANDS.map((item) => item.name).join(', ')}`);
+    } else if (name === '/new') {
+      void createSession();
+    } else if (name === '/rename') {
+      setInput('/rename ');
+    } else {
+      setInput(`${name} `);
+    }
+  }
+
+  async function refreshAndMaybeSearch(query: string) {
+    setSessionFilter(query);
+    await refreshSessions();
+  }
+
   useEffect(() => {
     void refreshSessions();
+    void loadRuntimeStatus();
   }, [effectiveBase]);
 
   useEffect(() => {
@@ -349,7 +667,7 @@ export function App({ apiBase, session, model }: AppProps) {
     socket.addEventListener('open', () => {
       setSocketState('connected');
       setStatus('Connected');
-      setItems((prev) => [...prev, createStatusItem(`Connected to ${wsUrl.host}`)].slice(-180));
+      setItems((prev) => [...prev, createStatusItem(`Connected to ${wsUrl.host}`)].slice(-220));
       const pending = pendingMessagesRef.current.splice(0);
       for (const text of pending) {
         socket.send(JSON.stringify({ type: 'chat', data: { message: text, stream: true, max_iterations: 8 } }));
@@ -386,7 +704,7 @@ export function App({ apiBase, session, model }: AppProps) {
 
   function pushItem(kind: StreamItemKind, title: string, body: string) {
     const item: StreamItem = { id: makeId(kind), kind, title, body: sanitize(body) };
-    setItems((prev) => [...prev, item].slice(-180));
+    setItems((prev) => [...prev, item].slice(-220));
   }
 
   function updateItem(id: string, body: string) {
@@ -395,10 +713,10 @@ export function App({ apiBase, session, model }: AppProps) {
 
   function insertAfter(id: string | null, nextItem: StreamItem) {
     setItems((prev) => {
-      if (!id) return [...prev, nextItem].slice(-180);
+      if (!id) return [...prev, nextItem].slice(-220);
       const index = prev.findIndex((item) => item.id === id);
-      if (index < 0) return [...prev, nextItem].slice(-180);
-      return [...prev.slice(0, index + 1), nextItem, ...prev.slice(index + 1)].slice(-180);
+      if (index < 0) return [...prev, nextItem].slice(-220);
+      return [...prev.slice(0, index + 1), nextItem, ...prev.slice(index + 1)].slice(-220);
     });
   }
 
@@ -474,19 +792,18 @@ export function App({ apiBase, session, model }: AppProps) {
   }
 
   function runCommand(raw: string): void {
-    const parts = raw.trim().split(/\s+/);
-    const command = parts[0]?.slice(1).toLowerCase();
-    const arg = parts.slice(1).join(' ').trim();
+    const { command, arg } = parseCommandParts(raw);
     switch (command) {
       case 'resume':
       case 'switch':
         if (arg) {
-          if (!sessions.some((item) => item.id === arg)) {
+          const target = sessions.find((item) => item.id === arg || item.title === arg);
+          if (!target) {
             pushItem('error', 'Command', `Session not found: ${arg}`);
             setStatus(`Session not found: ${arg}`);
             return;
           }
-          switchSession(arg);
+          switchSession(target.id);
           return;
         }
         if (sessions.length === 0) {
@@ -494,6 +811,7 @@ export function App({ apiBase, session, model }: AppProps) {
           setStatus('No sessions available');
           return;
         }
+        setSessionFilter('');
         openPicker('resume');
         return;
       case 'sessions':
@@ -501,14 +819,20 @@ export function App({ apiBase, session, model }: AppProps) {
         pushItem('meta', 'Command', 'Session list refreshed');
         return;
       case 'new':
-        if (sessions.length === 0) {
-          void createSession();
-          return;
-        }
-        openPicker('new');
+        void createSession();
         return;
       case 'help':
-        pushItem('meta', 'Command', 'Commands: /resume [session_id], /sessions, /new, /help');
+        pushItem('meta', 'Command', `Commands: ${COMMANDS.map((item) => item.name).join(', ')}`);
+        return;
+      case 'rename':
+        if (arg) {
+          void renameSessionByTitle(arg);
+          return;
+        }
+        void renameSession();
+        return;
+      case 'review':
+        void runReview();
         return;
       default:
         pushItem('error', 'Command', `Unknown command: ${raw}`);
@@ -538,28 +862,75 @@ export function App({ apiBase, session, model }: AppProps) {
     socket.send(JSON.stringify({ type: 'chat', data: { message: text, stream: true, max_iterations: 8 } }));
   }
 
+  function commitResumeSelection() {
+    const target = filteredSessions[resumeSelection];
+    if (target) switchSession(target.id);
+    closePicker();
+  }
+
+  function updateSessionFilter(next: string) {
+    setSessionFilter(next);
+    void refreshAndMaybeSearch(next);
+  }
+
   useInput((inputChar, key) => {
     if (pickerOpen) {
       if (key.escape) {
         closePicker();
         return;
       }
-      if (key.upArrow) {
-        setPickerIndex((prev) => Math.max(0, prev - 1));
-        return;
+      if (pickerMode === 'resume') {
+        if (key.upArrow) {
+          setResumeSelection((prev) => Math.max(0, prev - 1));
+          return;
+        }
+        if (key.downArrow) {
+          setResumeSelection((prev) => Math.min(Math.max(0, filteredSessions.length - 1), prev + 1));
+          return;
+        }
+        if (key.return) {
+          commitResumeSelection();
+          return;
+        }
+        if (key.backspace || key.delete) {
+          updateSessionFilter(sessionFilter.slice(0, -1));
+          return;
+        }
+        if (inputChar) {
+          updateSessionFilter(sessionFilter + inputChar);
+          return;
+        }
       }
-      if (key.downArrow) {
-        setPickerIndex((prev) => Math.min(Math.max(0, sessions.length - 1), prev + 1));
-        return;
-      }
-      if (key.return) {
-        confirmPicker();
-        return;
+      if (pickerMode === 'commands') {
+        if (key.upArrow) {
+          setCommandSelection((prev) => Math.max(0, prev - 1));
+          return;
+        }
+        if (key.downArrow) {
+          setCommandSelection((prev) => Math.min(Math.max(0, filteredCommands.length - 1), prev + 1));
+          return;
+        }
+        if (key.return) {
+          confirmCommandSelection();
+          return;
+        }
+        if (key.backspace || key.delete) {
+          setCommandQuery((prev) => prev.slice(0, -1));
+          return;
+        }
+        if (inputChar) {
+          setCommandQuery((prev) => `${prev}${inputChar}`);
+          return;
+        }
       }
     } else {
       if (key.escape) {
         setInput('');
         setStatus('Input cleared');
+        return;
+      }
+      if (key.tab && input.startsWith('/')) {
+        openPicker('commands');
         return;
       }
       if (key.ctrl && inputChar === 'c') {
@@ -568,58 +939,68 @@ export function App({ apiBase, session, model }: AppProps) {
     }
   });
 
-  const leftWidth = Math.max(24, Math.min(38, Math.floor(viewportWidth * 0.28)));
-  const rightWidth = Math.max(40, viewportWidth - leftWidth - 6);
+  const bannerLine = CLOVER[headerTick % CLOVER.length];
+  const topLineLeft = compact(['LuckyHarness', currentSessionLabel, socketState.toUpperCase()]);
+  const topLineRight = compact([currentModelLabel, activeSession || 'no-session']);
   const feedLines = [
     `session ${currentSessionLabel}`,
     `socket ${socketState}`,
     `state ${status}${sessionLoading ? ' | sessions loading' : ''}${historyLoading ? ' | history loading' : ''}`,
     draft ? `draft ${sanitize(draft).slice(0, 80)}` : '',
   ].filter(Boolean);
+  const timelineWidth = Math.max(32, viewportWidth - 4);
 
   return (
-    <Box flexDirection="column" padding={1}>
-      <Box borderStyle="round" paddingX={1} paddingY={0} marginBottom={1} flexDirection="row" justifyContent="space-between">
-        <Box flexDirection="column">
-          <Text color="greenBright">LuckyHarness</Text>
-          <Text dimColor>{compactHeader([socketState.toUpperCase(), status, activeSession || 'no-session'])}</Text>
-        </Box>
-        <Box flexDirection="column" alignItems="flex-end">
-          <Text dimColor>{model || 'unknown model'}</Text>
-          <Text dimColor>{currentSessionLabel}</Text>
-        </Box>
+    <Box flexDirection="column" paddingX={1} paddingY={0}>
+      <Box justifyContent="space-between">
+        <Text color="greenBright">{divyTitle(topLineLeft, Math.max(12, Math.floor(viewportWidth / 2) - 6))}</Text>
+        <Text color="greenBright">{bannerLine}</Text>
+        <Text color="greenBright">{divyTitle(topLineRight, Math.max(12, Math.floor(viewportWidth / 2) - 6))}</Text>
       </Box>
-
-      <Box borderStyle="round" paddingX={1} paddingY={0} marginBottom={1} justifyContent="space-between">
-        <Text dimColor>API {effectiveBase}</Text>
-        <Text dimColor>/resume [session_id] · /sessions · /new · Esc clears · Ctrl+C quits</Text>
+      <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
+      <Box justifyContent="space-between">
+        <Text dimColor>{`API ${effectiveBase}`}</Text>
+        <Text dimColor>{`/review /resume /rename /help  Esc clears  Ctrl+C quits`}</Text>
       </Box>
+      <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
 
       <Box flexDirection="row" marginBottom={1}>
-        <Box borderStyle="round" paddingX={1} paddingY={0} width={leftWidth} flexDirection="column" marginRight={1}>
+        <Box flexDirection="column" width={Math.max(26, Math.min(42, Math.floor(viewportWidth * 0.3)))}>
           <Text color="whiteBright">Sessions</Text>
-          {sessions.length === 0 ? (
-            <Text dimColor>{sessionLoading ? 'loading...' : 'no sessions'}</Text>
+          <Text dimColor>{sessionFilter ? `filter ${sessionFilter}` : sessionLoading ? 'loading...' : 'latest'}</Text>
+          {filteredSessions.length === 0 ? (
+            <Text dimColor>no sessions</Text>
           ) : (
-            sessions.slice(0, 8).map((item) => (
-              <Text key={item.id} color={item.id === activeSession ? 'greenBright' : 'white'}>
-                {item.id === activeSession ? '▸' : ' '} {item.title || item.id} ({item.message_count})
+            filteredSessions.slice(0, 8).map((item, index) => (
+              <Text key={item.id} color={item.id === activeSession ? 'greenBright' : index === resumeSelection ? 'cyanBright' : 'white'}>
+                {item.id === activeSession ? '▸' : index === resumeSelection ? '›' : ' '} {item.title || item.id} ({item.message_count})
               </Text>
             ))
           )}
         </Box>
-
-        <Box borderStyle="round" paddingX={1} paddingY={0} width={rightWidth} flexDirection="column">
-          <Text color="whiteBright">Feed</Text>
+        <Box flexDirection="column" flexGrow={1} paddingLeft={2}>
+          <Text color="whiteBright">Status</Text>
           {feedLines.map((line) => (
             <Text key={line} dimColor>
               {line}
             </Text>
           ))}
+          {reviewOutput.length > 0 ? (
+            <>
+              <Text dimColor>{renderFullDivider(Math.max(32, Math.floor(viewportWidth * 0.6)))}</Text>
+              {reviewOutput.map((line) => (
+                <Text key={line} dimColor>
+                  {line}
+                </Text>
+              ))}
+            </>
+          ) : null}
         </Box>
       </Box>
 
-      <Box borderStyle="round" paddingX={1} paddingY={0} flexDirection="column" flexGrow={1}>
+      <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
+
+      <Box flexDirection="column" flexGrow={1}>
         {items.length === 0 ? (
           <Box paddingY={1} flexDirection="column">
             <Text>Use the prompt below to talk to LuckyHarness.</Text>
@@ -627,32 +1008,35 @@ export function App({ apiBase, session, model }: AppProps) {
           </Box>
         ) : (
           items.map((item) => (
-            <Box key={item.id} width="100%" flexDirection="column" marginTop={1}>
+            <Box key={item.id} width="100%" flexDirection="column" marginBottom={1}>
               {isBubbleKind(item.kind) ? (
                 <Box width="100%" flexDirection="row" justifyContent={item.kind === 'user' ? 'flex-end' : 'flex-start'}>
-                  <Box
-                    width="92%"
-                    flexDirection="column"
-                    borderStyle={item.kind === 'assistant' ? 'round' : 'double'}
-                    paddingX={1}
-                    paddingY={0}
-                  >
-                    {formatItemBody(item, viewportWidth).split('\n').map((line, index) => (
-                      <Text key={`${item.id}-${index}`} color={kindColor(item.kind)}>
-                        {line || ' '}
-                      </Text>
-                    ))}
+                  <Box width={Math.max(40, Math.floor(viewportWidth * 0.92))} flexDirection="column">
+                    <Text dimColor>{item.kind === 'user' ? 'You' : 'LuckyHarness'}</Text>
+                    <Box
+                      width="100%"
+                      flexDirection="column"
+                      backgroundColor={item.kind === 'user' ? 'black' : undefined}
+                      paddingX={1}
+                      paddingY={0}
+                    >
+                      {renderMarkdown(item.body, viewportWidth).map((line, index) => (
+                        <Text key={`${item.id}-${index}`} color={kindColor(item.kind)}>
+                          {line || ' '}
+                        </Text>
+                      ))}
+                    </Box>
                   </Box>
                 </Box>
               ) : (
                 <Box flexDirection="column" width="100%">
-                  <Text dimColor>{renderDividerLabel(item.kind === 'status' ? item.body : kindLabel(item.kind) || item.title, viewportWidth)}</Text>
+                  <Text dimColor>{renderDividerLabel(item.kind === 'status' ? item.body : kindLabel(item.kind) || item.title, timelineWidth)}</Text>
                   {formatItemBody(item, viewportWidth).split('\n').map((line, index) => (
                     <Text key={`${item.id}-${index}`} color={kindColor(item.kind)}>
                       {line || ' '}
                     </Text>
                   ))}
-                  <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
+                  <Text dimColor>{renderFullDivider(timelineWidth)}</Text>
                 </Box>
               )}
             </Box>
@@ -663,40 +1047,46 @@ export function App({ apiBase, session, model }: AppProps) {
       {pickerOpen ? (
         <Box
           position="absolute"
-          top={6}
-          left={Math.max(2, Math.floor((viewportWidth - Math.min(72, viewportWidth - 4)) / 2))}
-          width={Math.min(72, viewportWidth - 4)}
-          borderStyle="double"
+          top={5}
+          left={Math.max(2, Math.floor((viewportWidth - Math.min(80, viewportWidth - 4)) / 2))}
+          width={Math.min(80, viewportWidth - 4)}
           flexDirection="column"
           paddingX={1}
           paddingY={0}
         >
-          <Text color="greenBright">{pickerMode === 'resume' ? 'Resume session' : 'Create session'}</Text>
-          <Text dimColor>Use up/down and Enter</Text>
+          <Text color="greenBright">{pickerMode === 'resume' ? 'Resume session' : 'Command palette'}</Text>
+          <Text dimColor>{pickerMode === 'resume' ? 'Type to filter, arrows to move, Enter to resume' : 'Type to filter, arrows to move, Enter to run'}</Text>
+          {pickerMode === 'resume' ? <Text dimColor>{sessionFilter ? `search ${sessionFilter}` : 'search sessions'}</Text> : null}
+          {pickerMode === 'commands' ? <Text dimColor>{commandQuery ? `search ${commandQuery}` : 'search commands'}</Text> : null}
           <Box marginTop={1} flexDirection="column">
             {pickerMode === 'resume' ? (
-              sessions.length === 0 ? (
+              filteredSessions.length === 0 ? (
                 <Text dimColor>No sessions available</Text>
               ) : (
-                sessions.map((item, index) => (
-                  <Text key={item.id} color={index === pickerIndex ? 'greenBright' : 'white'}>
-                    {index === pickerIndex ? '▸' : ' '} {item.title || item.id}  {item.id}
+                filteredSessions.slice(0, 12).map((item, index) => (
+                  <Text key={item.id} color={index === resumeSelection ? 'greenBright' : 'white'}>
+                    {index === resumeSelection ? '▸' : ' '} {item.title || item.id}  {item.id}
                   </Text>
                 ))
               )
             ) : (
-              <Text dimColor>Press Enter to create a new session</Text>
+              filteredCommands.map((item, index) => (
+                <Text key={item.name} color={index === commandSelection ? 'greenBright' : 'white'}>
+                  {index === commandSelection ? '▸' : ' '} {item.name} - {item.help}
+                </Text>
+              ))
             )}
           </Box>
         </Box>
       ) : null}
 
-      <Box borderStyle="round" paddingX={1} paddingY={0} marginTop={1} flexDirection="column">
+      <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
+      <Box flexDirection="column">
         <Text color="greenBright">Prompt</Text>
         <TextInput value={input} onChange={setInput} onSubmit={send} placeholder="Type a message or /resume" />
         <Box marginTop={1} justifyContent="space-between">
           <Text dimColor>Enter sends</Text>
-          <Text dimColor>Ctrl+C quits</Text>
+          <Text dimColor>Tab command palette</Text>
         </Box>
       </Box>
     </Box>

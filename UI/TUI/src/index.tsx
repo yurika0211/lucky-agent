@@ -1,3 +1,4 @@
+import { createElement } from 'react';
 import { render } from 'ink';
 import { App } from './tui-app';
 
@@ -18,4 +19,4 @@ if (!process.stdin.isTTY) {
   process.exit(1);
 }
 
-render(<App apiBase={apiBase} session={session} model={model} />);
+render(createElement(App, { apiBase, session, model }));
