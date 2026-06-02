@@ -272,6 +272,9 @@ func (cb *CircuitBreaker) RecordSuccess() {
 	case StateClosed:
 		cb.consecutiveFailures = 0
 	case StateHalfOpen:
+		if cb.halfOpenRequests > 0 {
+			cb.halfOpenRequests--
+		}
 		cb.halfOpenSuccesses++
 		if cb.halfOpenSuccesses >= cb.config.SuccessThreshold {
 			cb.transition(StateClosed)
@@ -294,6 +297,9 @@ func (cb *CircuitBreaker) RecordFailure() {
 			cb.transition(StateOpen)
 		}
 	case StateHalfOpen:
+		if cb.halfOpenRequests > 0 {
+			cb.halfOpenRequests--
+		}
 		// Any failure in HalfOpen → back to Open
 		cb.transition(StateOpen)
 	}

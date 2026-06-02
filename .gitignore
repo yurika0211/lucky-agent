@@ -12,7 +12,9 @@ tmp
 config.json
 .codex
 .lh-home*
-docs
+docs/*
+!docs/tui-message-display-optimization.md
+!docs/tui-product-grade-plan.md
 GA
 bin
 
@@ -23,5 +25,5 @@ notes
 tmp
 skill
 
-UI\node_modules
+UI/node_modules
 UI/node_modules/

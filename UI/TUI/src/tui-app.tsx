@@ -6,13 +6,14 @@ import { execFileSync } from 'node:child_process';
 type WsPayload = { type: string; data?: Record<string, unknown> };
 type StreamItemKind = 'user' | 'assistant' | 'meta' | 'error' | 'reasoning' | 'tool_call' | 'tool_result' | 'status';
 
-type StreamItem = { id: string; kind: StreamItemKind; title: string; body: string };
+type StreamItem = { id: string; kind: StreamItemKind; title: string; body: string; createdAt?: number };
 type AppProps = { apiBase: string; session: string; model: string };
 type SessionInfo = { id: string; title: string; message_count: number; created_at: string; updated_at: string };
 type SessionsResponse = { sessions?: SessionInfo[] };
 type SessionDetailResponse = { id?: string; title?: string; messages?: Array<Record<string, unknown>> };
 type ApiSessionResponse = SessionInfo & { id?: string };
 type PickerMode = 'resume' | 'commands' | 'none';
+type RenderLine = { id: string; text: string; color: ReturnType<typeof kindColor> };
 
 type CommandSpec = {
   name: string;
@@ -27,13 +28,6 @@ const COMMANDS: CommandSpec[] = [
   { name: '/help', help: '列出可用命令', aliases: ['help'] },
   { name: '/sessions', help: '刷新会话列表', aliases: ['sessions'] },
   { name: '/new', help: '创建新会话', aliases: ['new'] },
-];
-
-const CLOVER = [
-  '   .-.-.   ',
-  '  (  *  )  ',
-  '   `-+-´   ',
-  '  .-.-.-.  ',
 ];
 
 function normalizeApiBase(value: string): string {
@@ -95,6 +89,7 @@ function sessionMessageToItem(message: Record<string, unknown>, index: number): 
     kind,
     title: kind === 'user' ? 'You' : kind === 'assistant' ? 'LuckyHarness' : 'Tool',
     body,
+    createdAt: safeDate(String(message.created_at || message.createdAt || message.timestamp || '')) || undefined,
   };
 }
 
@@ -135,19 +130,17 @@ function kindLabel(kind: StreamItemKind): string {
   }
 }
 
-function stripMarkdown(text: string): string {
-  return text
-    .replace(/\r\n/g, '\n')
-    .replace(/^>\s?/gm, '')
-    .replace(/^#{1,6}\s+/gm, '')
+function stripMarkdownLine(line: string): string {
+  return line
+    .replace(/^>\s?/g, '| ')
+    .replace(/^#{1,6}\s+/g, '')
     .replace(/\*\*(.*?)\*\*/g, '$1')
     .replace(/__(.*?)__/g, '$1')
     .replace(/\*(.*?)\*/g, '$1')
     .replace(/`([^`]+)`/g, '$1')
-    .replace(/^\s*[-*+]\s+/gm, '• ')
-    .replace(/^\s*\d+\.\s+/gm, '• ')
-    .replace(/^---+$/gm, '─'.repeat(24))
-    .trimEnd();
+    .replace(/^\s*[-*+]\s+/g, '- ')
+    .replace(/^\s*\d+\.\s+/g, '- ')
+    .replace(/^---+$/g, '-'.repeat(24));
 }
 
 function wrapLine(line: string, width: number): string[] {
@@ -165,6 +158,16 @@ function wrapLine(line: string, width: number): string[] {
   return out;
 }
 
+function wrapCodeLine(line: string, width: number): string[] {
+  const target = Math.max(8, width);
+  if (!line) return [''];
+  const out: string[] = [];
+  for (let offset = 0; offset < line.length; offset += target) {
+    out.push(line.slice(offset, offset + target));
+  }
+  return out.length ? out : [''];
+}
+
 function wrapText(text: string, width: number): string {
   return text
     .split('\n')
@@ -172,29 +175,61 @@ function wrapText(text: string, width: number): string {
     .join('\n');
 }
 
-function formatItemBody(item: StreamItem, width: number): string {
-  const maxWidth = Math.max(24, width - 6);
-  const body = stripMarkdown(item.body);
-  return body ? wrapText(body, maxWidth) : ' ';
+function clampLines(lines: string[], maxLines: number): string[] {
+  if (lines.length <= maxLines) return lines;
+  const hidden = lines.length - maxLines;
+  return [...lines.slice(0, maxLines), `... ${hidden} more lines hidden in this view`];
 }
 
-function renderDividerLabel(label: string, width: number): string {
-  const clean = label.trim();
-  const target = Math.max(32, width);
-  const labelText = clean ? ` ${clean} ` : ' ';
-  if (target <= labelText.length) return labelText;
-  const remaining = target - labelText.length;
-  const left = Math.floor(remaining / 2);
-  const right = remaining - left;
-  return `${'-'.repeat(left)}${labelText}${'-'.repeat(right)}`;
+function eventKind(item: StreamItem): string {
+  switch (item.kind) {
+    case 'reasoning':
+      return 'thinking';
+    case 'tool_call':
+      return item.title.replace(/^Tool:\s*/i, 'tool');
+    case 'tool_result':
+      return item.title.replace(/^Result:\s*/i, 'result');
+    case 'status':
+      return 'status';
+    case 'error':
+      return 'error';
+    case 'meta':
+      return item.title || 'meta';
+    default:
+      return kindLabel(item.kind).toLowerCase();
+  }
 }
 
-function renderFullDivider(width: number): string {
-  return '-'.repeat(Math.max(32, width));
+function firstMeaningfulLine(text: string): string {
+  return sanitize(text)
+    .split('\n')
+    .map((line) => stripMarkdownLine(line).trim())
+    .find(Boolean) || '';
 }
 
-function isBubbleKind(kind: StreamItemKind): boolean {
-  return kind === 'user' || kind === 'assistant';
+function compactEventHeader(item: StreamItem, width: number): string {
+  const prefix = ['•', eventKind(item)].filter(Boolean).join(' ');
+  const summary = firstMeaningfulLine(item.body);
+  const text = summary ? `${prefix}: ${summary}` : prefix;
+  return divyTitle(text, Math.max(24, width));
+}
+
+function auxLineLimit(kind: StreamItemKind): number {
+  switch (kind) {
+    case 'status':
+      return 0;
+    case 'reasoning':
+      return 2;
+    case 'tool_call':
+    case 'tool_result':
+      return 4;
+    case 'meta':
+      return 3;
+    case 'error':
+      return 3;
+    default:
+      return 4;
+  }
 }
 
 function compact(lines: string[]): string {
@@ -269,12 +304,20 @@ function markdownSegments(text: string): string[] {
 }
 
 function renderMarkdown(text: string, width: number): string[] {
-  const body = stripMarkdown(text);
+  const body = sanitize(text);
   if (!body.trim()) return [' '];
   return markdownSegments(body).flatMap((line) => {
-    if (/^```/.test(line)) return line.split('\n').map((part) => wrapText(part, Math.max(24, width - 8)));
-    if (/^ {0,3}[-*+]\s+/.test(line) || /^\s*\d+\.\s+/.test(line)) return wrapLine(line, Math.max(24, width - 4));
-    return wrapText(line, Math.max(24, width - 4)).split('\n');
+    const lineWidth = Math.max(24, width);
+    if (/^```/.test(line)) {
+      const codeLines = line.split('\n');
+      return codeLines.flatMap((part, index) => {
+        if (index === 0 || index === codeLines.length - 1) return [part];
+        return wrapCodeLine(`  ${part}`, Math.max(12, lineWidth - 2));
+      });
+    }
+    const cleaned = stripMarkdownLine(line);
+    if (/^\s*[-*+]\s+/.test(cleaned)) return wrapLine(cleaned, Math.max(24, lineWidth - 2));
+    return wrapText(cleaned, lineWidth).split('\n');
   });
 }
 
@@ -289,10 +332,6 @@ function clamped(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function createStatusItem(message: string): StreamItem {
-  return { id: makeId('status'), kind: 'status', title: 'Status', body: message };
-}
-
 function isToolCallLike(value: unknown): value is {
   name?: unknown;
   arguments?: unknown;
@@ -302,6 +341,59 @@ function isToolCallLike(value: unknown): value is {
   return typeof value === 'object' && value !== null;
 }
 
+function renderItemLines(item: StreamItem, width: number): RenderLine[] {
+  const lines: RenderLine[] = [];
+  const color = kindColor(item.kind);
+  const contentWidth = Math.max(28, width - 4);
+  if (item.kind === 'user') {
+    const content = renderMarkdown(item.body, contentWidth);
+    for (const [index, line] of content.entries()) {
+      lines.push({
+        id: `${item.id}-user-${index}`,
+        text: `${index === 0 ? '› ' : '  '}${line || ' '}`,
+        color: 'greenBright',
+      });
+    }
+    lines.push({ id: `${item.id}-gap`, text: ' ', color: 'whiteBright' });
+    return lines;
+  }
+
+  if (item.kind === 'assistant') {
+    lines.push({
+      id: `${item.id}-head`,
+      text: 'assistant',
+      color: 'cyanBright',
+    });
+    const content = renderMarkdown(item.body, contentWidth);
+    for (const [index, line] of content.entries()) {
+      lines.push({
+        id: `${item.id}-assistant-${index}`,
+        text: line || ' ',
+        color,
+      });
+    }
+    lines.push({ id: `${item.id}-gap`, text: ' ', color: 'whiteBright' });
+    return lines;
+  }
+
+  lines.push({
+    id: `${item.id}-head`,
+    text: compactEventHeader(item, width - 2),
+    color,
+  });
+  const rendered = renderMarkdown(item.body, contentWidth);
+  const limit = auxLineLimit(item.kind);
+  const bodyLines = limit <= 0 ? [] : clampLines(rendered.slice(1), limit);
+  for (const [index, line] of bodyLines.entries()) {
+    lines.push({
+      id: `${item.id}-body-${index}`,
+      text: `  ${line || ' '}`,
+      color,
+    });
+  }
+  return lines;
+}
+
 export function App({ apiBase, session, model }: AppProps) {
   const { exit } = useApp();
   const [input, setInput] = useState('');
@@ -309,22 +401,22 @@ export function App({ apiBase, session, model }: AppProps) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [activeSession, setActiveSession] = useState(session);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [pickerIndex, setPickerIndex] = useState(0);
   const [pickerMode, setPickerMode] = useState<PickerMode>('none');
   const [socketState, setSocketState] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
   const [status, setStatus] = useState('Booting');
   const [sessionLoading, setSessionLoading] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(process.stdout.columns || 120);
+  const [viewportHeight, setViewportHeight] = useState(process.stdout.rows || 40);
   const [draft, setDraft] = useState('');
   const [draftId, setDraftId] = useState<string | null>(null);
   const [commandQuery, setCommandQuery] = useState('');
   const [commandSelection, setCommandSelection] = useState(0);
   const [sessionFilter, setSessionFilter] = useState('');
   const [resumeSelection, setResumeSelection] = useState(0);
-  const [reviewOutput, setReviewOutput] = useState<string[]>([]);
-  const [headerTick, setHeaderTick] = useState(0);
   const [runtimeModel, setRuntimeModel] = useState(model);
+  const [scrollOffset, setScrollOffset] = useState(0);
+  const [autoFollowBottom, setAutoFollowBottom] = useState(true);
   const socketRef = useRef<WebSocket | null>(null);
   const draftRef = useRef('');
   const draftIdRef = useRef<string | null>(null);
@@ -332,6 +424,9 @@ export function App({ apiBase, session, model }: AppProps) {
   const activeSessionRef = useRef(activeSession);
   const sessionsRef = useRef<SessionInfo[]>([]);
   const inputModeRef = useRef<'command' | 'resume' | 'normal'>('normal');
+  const totalTranscriptLinesRef = useRef(0);
+  const streamingRef = useRef(false);
+  const transcriptVersionRef = useRef(0);
 
   const effectiveBase = useMemo(() => normalizeApiBase(apiBase), [apiBase]);
   const currentSessionLabel = useMemo(
@@ -365,17 +460,15 @@ export function App({ apiBase, session, model }: AppProps) {
   }, [sessions]);
 
   useEffect(() => {
-    const onResize = () => setViewportWidth(process.stdout.columns || 120);
+    const onResize = () => {
+      setViewportWidth(process.stdout.columns || 120);
+      setViewportHeight(process.stdout.rows || 40);
+    };
     process.stdout?.on?.('resize', onResize);
     onResize();
     return () => {
       process.stdout?.off?.('resize', onResize);
     };
-  }, []);
-
-  useEffect(() => {
-    const timer = setInterval(() => setHeaderTick((value) => (value + 1) % CLOVER.length), 1200);
-    return () => clearInterval(timer);
   }, []);
 
   async function refreshSessions() {
@@ -411,6 +504,7 @@ export function App({ apiBase, session, model }: AppProps) {
   }
 
   async function loadSessionHistory(sessionId: string) {
+    const startedAtVersion = transcriptVersionRef.current;
     const url = new URL(effectiveBase);
     url.pathname = `/api/v1/sessions/${encodeURIComponent(sessionId)}`;
     url.search = '';
@@ -443,12 +537,30 @@ export function App({ apiBase, session, model }: AppProps) {
         }
         return [base, ...extras];
       });
+      if (
+        activeSessionRef.current !== sessionId ||
+        transcriptVersionRef.current !== startedAtVersion ||
+        streamingRef.current ||
+        draftIdRef.current
+      ) {
+        return;
+      }
+      transcriptVersionRef.current += 1;
       setItems(history);
       setDraft('');
       setDraftId(null);
       draftRef.current = '';
       draftIdRef.current = null;
     } catch {
+      if (
+        activeSessionRef.current !== sessionId ||
+        transcriptVersionRef.current !== startedAtVersion ||
+        streamingRef.current ||
+        draftIdRef.current
+      ) {
+        return;
+      }
+      transcriptVersionRef.current += 1;
       setItems([]);
     } finally {
       setHistoryLoading(false);
@@ -477,6 +589,8 @@ export function App({ apiBase, session, model }: AppProps) {
   function switchSession(nextSession: string) {
     const trimmed = nextSession.trim();
     if (!trimmed || trimmed === activeSessionRef.current) return;
+    activeSessionRef.current = trimmed;
+    transcriptVersionRef.current += 1;
     setActiveSession(trimmed);
     setStatus(`Resumed ${trimmed}`);
     setInput('');
@@ -522,12 +636,16 @@ export function App({ apiBase, session, model }: AppProps) {
       const data = (await resp.json()) as ApiSessionResponse;
       const created = String(data.id || '').trim();
       if (!created) throw new Error('missing session id');
+      activeSessionRef.current = created;
+      transcriptVersionRef.current += 1;
       setActiveSession(created);
       setItems([]);
       await refreshSessions();
       await loadSessionHistory(created);
     } catch {
       const fallback = `lh-${Date.now()}`;
+      activeSessionRef.current = fallback;
+      transcriptVersionRef.current += 1;
       setActiveSession(fallback);
       setItems([]);
       await refreshSessions();
@@ -615,7 +733,6 @@ export function App({ apiBase, session, model }: AppProps) {
     } catch (err) {
       lines.push(`review failed: ${asText(err)}`);
     }
-    setReviewOutput(lines);
     pushItem('meta', 'Review', lines.join('\n'));
     setStatus('Workspace reviewed');
   }
@@ -667,10 +784,10 @@ export function App({ apiBase, session, model }: AppProps) {
     socket.addEventListener('open', () => {
       setSocketState('connected');
       setStatus('Connected');
-      setItems((prev) => [...prev, createStatusItem(`Connected to ${wsUrl.host}`)].slice(-220));
       const pending = pendingMessagesRef.current.splice(0);
       for (const text of pending) {
         socket.send(JSON.stringify({ type: 'chat', data: { message: text, stream: true, max_iterations: 8 } }));
+        streamingRef.current = true;
         pushItem('user', 'You', text);
       }
     });
@@ -703,20 +820,45 @@ export function App({ apiBase, session, model }: AppProps) {
   }, [effectiveBase, activeSession]);
 
   function pushItem(kind: StreamItemKind, title: string, body: string) {
-    const item: StreamItem = { id: makeId(kind), kind, title, body: sanitize(body) };
+    const item: StreamItem = { id: makeId(kind), kind, title, body: sanitize(body), createdAt: Date.now() };
+    transcriptVersionRef.current += 1;
     setItems((prev) => [...prev, item].slice(-220));
   }
 
   function updateItem(id: string, body: string) {
+    transcriptVersionRef.current += 1;
     setItems((prev) => prev.map((item) => (item.id === id ? { ...item, body: sanitize(body) } : item)));
   }
 
-  function insertAfter(id: string | null, nextItem: StreamItem) {
+  function upsertAssistantDraft(id: string, body: string) {
+    const clean = sanitize(body);
+    transcriptVersionRef.current += 1;
     setItems((prev) => {
-      if (!id) return [...prev, nextItem].slice(-220);
       const index = prev.findIndex((item) => item.id === id);
-      if (index < 0) return [...prev, nextItem].slice(-220);
-      return [...prev.slice(0, index + 1), nextItem, ...prev.slice(index + 1)].slice(-220);
+      if (index >= 0) {
+        const next = [...prev];
+        next[index] = { ...next[index], body: clean };
+        return next;
+      }
+      const item: StreamItem = {
+        id,
+        kind: 'assistant',
+        title: 'LuckyHarness',
+        body: clean,
+        createdAt: Date.now(),
+      };
+      return [...prev, item].slice(-220);
+    });
+  }
+
+  function insertAfter(id: string | null, nextItem: StreamItem) {
+    const item = nextItem.createdAt ? nextItem : { ...nextItem, createdAt: Date.now() };
+    transcriptVersionRef.current += 1;
+    setItems((prev) => {
+      if (!id) return [...prev, item].slice(-220);
+      const index = prev.findIndex((item) => item.id === id);
+      if (index < 0) return [...prev, item].slice(-220);
+      return [...prev.slice(0, index + 1), item, ...prev.slice(index + 1)].slice(-220);
     });
   }
 
@@ -724,9 +866,8 @@ export function App({ apiBase, session, model }: AppProps) {
     const data = (msg.data || {}) as Record<string, unknown>;
     switch (msg.type) {
       case 'status':
-        if (typeof data.state === 'string') setStatus(data.state);
         if (data.message || data.text || data.summary || data.state) {
-          pushItem('status', 'Status', asText(data.message || data.text || data.summary || data.state));
+          setStatus(asText(data.message || data.text || data.summary || data.state));
         }
         break;
       case 'reasoning':
@@ -761,16 +902,15 @@ export function App({ apiBase, session, model }: AppProps) {
           const id = makeId('assistant');
           draftIdRef.current = id;
           setDraftId(id);
-          pushItem('assistant', 'LuckyHarness', next);
-        } else {
-          updateItem(draftIdRef.current, next);
         }
+        upsertAssistantDraft(draftIdRef.current, next);
         break;
       }
       case 'stream_end': {
         const finalText = sanitize(String(data.full_response || draftRef.current || ''));
-        if (!draftIdRef.current) pushItem('assistant', 'LuckyHarness', finalText);
-        else updateItem(draftIdRef.current, finalText);
+        if (draftIdRef.current) upsertAssistantDraft(draftIdRef.current, finalText);
+        else if (finalText) pushItem('assistant', 'LuckyHarness', finalText);
+        streamingRef.current = false;
         draftRef.current = '';
         draftIdRef.current = null;
         setDraft('');
@@ -780,6 +920,7 @@ export function App({ apiBase, session, model }: AppProps) {
       }
       case 'error':
         pushItem('error', 'Runtime Error', String(data.message || 'unknown error'));
+        streamingRef.current = false;
         draftRef.current = '';
         draftIdRef.current = null;
         setDraft('');
@@ -855,6 +996,7 @@ export function App({ apiBase, session, model }: AppProps) {
       return;
     }
     pushItem('user', 'You', text);
+    streamingRef.current = true;
     draftRef.current = '';
     draftIdRef.current = null;
     setDraft('');
@@ -871,6 +1013,11 @@ export function App({ apiBase, session, model }: AppProps) {
   function updateSessionFilter(next: string) {
     setSessionFilter(next);
     void refreshAndMaybeSearch(next);
+  }
+
+  function moveScroll(nextOffset: number, followBottom: boolean) {
+    setAutoFollowBottom(followBottom);
+    setScrollOffset(clamped(nextOffset, 0, Math.max(0, transcriptLines.length - transcriptHeight)));
   }
 
   useInput((inputChar, key) => {
@@ -924,6 +1071,34 @@ export function App({ apiBase, session, model }: AppProps) {
         }
       }
     } else {
+      if (key.pageUp) {
+        moveScroll(normalizedScrollOffset - transcriptHeight + 2, false);
+        return;
+      }
+      if (key.pageDown) {
+        const next = normalizedScrollOffset + transcriptHeight - 2;
+        const bottom = Math.max(0, transcriptLines.length - transcriptHeight);
+        moveScroll(next, next >= bottom);
+        return;
+      }
+      if (key.home) {
+        moveScroll(0, false);
+        return;
+      }
+      if (key.end) {
+        moveScroll(Math.max(0, transcriptLines.length - transcriptHeight), true);
+        return;
+      }
+      if (key.upArrow && input.length === 0) {
+        moveScroll(normalizedScrollOffset - 1, false);
+        return;
+      }
+      if (key.downArrow && input.length === 0) {
+        const next = normalizedScrollOffset + 1;
+        const bottom = Math.max(0, transcriptLines.length - transcriptHeight);
+        moveScroll(next, next >= bottom);
+        return;
+      }
       if (key.escape) {
         setInput('');
         setStatus('Input cleared');
@@ -939,107 +1114,58 @@ export function App({ apiBase, session, model }: AppProps) {
     }
   });
 
-  const bannerLine = CLOVER[headerTick % CLOVER.length];
-  const topLineLeft = compact(['LuckyHarness', currentSessionLabel, socketState.toUpperCase()]);
-  const topLineRight = compact([currentModelLabel, activeSession || 'no-session']);
-  const feedLines = [
-    `session ${currentSessionLabel}`,
-    `socket ${socketState}`,
-    `state ${status}${sessionLoading ? ' | sessions loading' : ''}${historyLoading ? ' | history loading' : ''}`,
-    draft ? `draft ${sanitize(draft).slice(0, 80)}` : '',
-  ].filter(Boolean);
-  const timelineWidth = Math.max(32, viewportWidth - 4);
+  const headerLeft = compact(['LuckyHarness', currentModelLabel, socketState]);
+  const headerRight = compact([currentSessionLabel, status]);
+  const transcriptHeight = Math.max(8, viewportHeight - (pickerOpen ? 12 : 6));
+  const transcriptLines = useMemo(() => items.flatMap((item) => renderItemLines(item, viewportWidth)), [items, viewportWidth]);
+  const maxScrollOffset = Math.max(0, transcriptLines.length - transcriptHeight);
+  const normalizedScrollOffset = autoFollowBottom ? maxScrollOffset : Math.min(scrollOffset, maxScrollOffset);
+  const visibleTranscriptLines = transcriptLines.slice(normalizedScrollOffset, normalizedScrollOffset + transcriptHeight);
+
+  useEffect(() => {
+    const nextTotal = transcriptLines.length;
+    const prevTotal = totalTranscriptLinesRef.current;
+    totalTranscriptLinesRef.current = nextTotal;
+    if (autoFollowBottom) {
+      setScrollOffset(Math.max(0, nextTotal - transcriptHeight));
+      return;
+    }
+    if (nextTotal < prevTotal) {
+      setScrollOffset((prev) => Math.min(prev, Math.max(0, nextTotal - transcriptHeight)));
+    }
+  }, [autoFollowBottom, transcriptHeight, transcriptLines.length]);
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={0}>
       <Box justifyContent="space-between">
-        <Text color="greenBright">{divyTitle(topLineLeft, Math.max(12, Math.floor(viewportWidth / 2) - 6))}</Text>
-        <Text color="greenBright">{bannerLine}</Text>
-        <Text color="greenBright">{divyTitle(topLineRight, Math.max(12, Math.floor(viewportWidth / 2) - 6))}</Text>
+        <Text color="greenBright">{divyTitle(headerLeft, Math.max(12, Math.floor(viewportWidth / 2) - 2))}</Text>
+        <Text dimColor>{divyTitle(headerRight, Math.max(12, Math.floor(viewportWidth / 2) - 2))}</Text>
       </Box>
-      <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
       <Box justifyContent="space-between">
-        <Text dimColor>{`API ${effectiveBase}`}</Text>
-        <Text dimColor>{`/review /resume /rename /help  Esc clears  Ctrl+C quits`}</Text>
-      </Box>
-      <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
-
-      <Box flexDirection="row" marginBottom={1}>
-        <Box flexDirection="column" width={Math.max(26, Math.min(42, Math.floor(viewportWidth * 0.3)))}>
-          <Text color="whiteBright">Sessions</Text>
-          <Text dimColor>{sessionFilter ? `filter ${sessionFilter}` : sessionLoading ? 'loading...' : 'latest'}</Text>
-          {filteredSessions.length === 0 ? (
-            <Text dimColor>no sessions</Text>
-          ) : (
-            filteredSessions.slice(0, 8).map((item, index) => (
-              <Text key={item.id} color={item.id === activeSession ? 'greenBright' : index === resumeSelection ? 'cyanBright' : 'white'}>
-                {item.id === activeSession ? '▸' : index === resumeSelection ? '›' : ' '} {item.title || item.id} ({item.message_count})
-              </Text>
-            ))
-          )}
-        </Box>
-        <Box flexDirection="column" flexGrow={1} paddingLeft={2}>
-          <Text color="whiteBright">Status</Text>
-          {feedLines.map((line) => (
-            <Text key={line} dimColor>
-              {line}
-            </Text>
-          ))}
-          {reviewOutput.length > 0 ? (
-            <>
-              <Text dimColor>{renderFullDivider(Math.max(32, Math.floor(viewportWidth * 0.6)))}</Text>
-              {reviewOutput.map((line) => (
-                <Text key={line} dimColor>
-                  {line}
-                </Text>
-              ))}
-            </>
-          ) : null}
-        </Box>
+        <Text dimColor>{effectiveBase}</Text>
+        <Text dimColor>{autoFollowBottom ? 'live' : `scroll ${normalizedScrollOffset + 1}-${Math.min(transcriptLines.length, normalizedScrollOffset + transcriptHeight)} / ${transcriptLines.length}`}</Text>
       </Box>
 
-      <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
-
-      <Box flexDirection="column" flexGrow={1}>
+      <Box flexDirection="column" flexGrow={1} marginTop={1}>
         {items.length === 0 ? (
-          <Box paddingY={1} flexDirection="column">
-            <Text>Use the prompt below to talk to LuckyHarness.</Text>
-            <Text dimColor>Reasoning, tool calls, and tool results appear inline in the same stream.</Text>
+          <Box paddingY={1} flexDirection="column" minHeight={transcriptHeight}>
+            <Text color="cyanBright">assistant</Text>
+            <Text>Ready. Ask a question or run a slash command.</Text>
+            <Text dimColor>/resume to switch sessions, /review for repo context, Tab after / for commands.</Text>
           </Box>
         ) : (
-          items.map((item) => (
-            <Box key={item.id} width="100%" flexDirection="column" marginBottom={1}>
-              {isBubbleKind(item.kind) ? (
-                <Box width="100%" flexDirection="row" justifyContent={item.kind === 'user' ? 'flex-end' : 'flex-start'}>
-                  <Box width={Math.max(40, Math.floor(viewportWidth * 0.92))} flexDirection="column">
-                    <Box
-                      width="100%"
-                      flexDirection="column"
-                      backgroundColor={item.kind === 'user' ? 'black' : undefined}
-                      paddingX={1}
-                      paddingY={0}
-                    >
-                      {renderMarkdown(item.body, viewportWidth).map((line, index) => (
-                        <Text key={`${item.id}-${index}`} color={kindColor(item.kind)}>
-                          {line || ' '}
-                        </Text>
-                      ))}
-                    </Box>
-                  </Box>
-                </Box>
-              ) : (
-                <Box flexDirection="column" width="100%">
-                  <Text dimColor>{renderDividerLabel(item.kind === 'status' ? item.body : kindLabel(item.kind) || item.title, timelineWidth)}</Text>
-                  {formatItemBody(item, viewportWidth).split('\n').map((line, index) => (
-                    <Text key={`${item.id}-${index}`} color={kindColor(item.kind)}>
-                      {line || ' '}
-                    </Text>
-                  ))}
-                  <Text dimColor>{renderFullDivider(timelineWidth)}</Text>
-                </Box>
-              )}
-            </Box>
-          ))
+          <Box flexDirection="column" minHeight={transcriptHeight}>
+            {visibleTranscriptLines.map((line) => (
+              <Text key={line.id} color={line.color}>
+                {line.text || ' '}
+              </Text>
+            ))}
+            {visibleTranscriptLines.length < transcriptHeight
+              ? Array.from({ length: transcriptHeight - visibleTranscriptLines.length }, (_, index) => (
+                  <Text key={`pad-${index}`}>{' '}</Text>
+                ))
+              : null}
+          </Box>
         )}
       </Box>
 
@@ -1079,13 +1205,14 @@ export function App({ apiBase, session, model }: AppProps) {
         </Box>
       ) : null}
 
-      <Text dimColor>{renderFullDivider(viewportWidth)}</Text>
-      <Box flexDirection="column">
-        <Text color="greenBright">Prompt</Text>
-        <TextInput value={input} onChange={setInput} onSubmit={send} placeholder="Type a message or /resume" />
-        <Box marginTop={1} justifyContent="space-between">
-          <Text dimColor>Enter sends</Text>
-          <Text dimColor>Tab command palette</Text>
+      <Box flexDirection="column" marginTop={1}>
+        <Box>
+          <Text color="greenBright">› </Text>
+          <TextInput value={input} onChange={setInput} onSubmit={send} placeholder="message or /command" />
+        </Box>
+        <Box justifyContent="space-between">
+          <Text dimColor>Enter send · Esc clear · Ctrl+C quit</Text>
+          <Text dimColor>PgUp/PgDn scroll · Tab commands</Text>
         </Box>
       </Box>
     </Box>
