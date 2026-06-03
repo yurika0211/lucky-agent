@@ -899,9 +899,12 @@ func TestV054SendChunkWithMockBot(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	err = adapter.sendChunk(ctx, 12345, 0, "test message")
+	messageID, err := adapter.sendChunk(ctx, 12345, 0, "test message")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+	if messageID == 0 {
+		t.Fatal("expected message ID")
 	}
 }
 
@@ -913,9 +916,12 @@ func TestV054SendChunkWithReply(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	err = adapter.sendChunk(ctx, 12345, 42, "reply message")
+	messageID, err := adapter.sendChunk(ctx, 12345, 42, "reply message")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+	if messageID == 0 {
+		t.Fatal("expected message ID")
 	}
 }
 
@@ -2713,6 +2719,7 @@ type mockAgentProvider struct {
 	progressFn    func(ctx context.Context, userInput string, round int, observations []string) (string, error)
 	analyzeFn     func(ctx context.Context, attachments []gateway.Attachment) (string, error)
 	switchModelFn func(modelID string) error
+	replyAnchors  map[string]string
 }
 
 func (m *mockAgentProvider) Sessions() *session.Manager {
@@ -2815,6 +2822,14 @@ func (m *mockAgentProvider) Memory() *memory.Store {
 	return m.memoryVal
 }
 
+func (m *mockAgentProvider) ResolveExternalReplyAnchor(platform, chatID, messageID string) (string, bool) {
+	if m.replyAnchors == nil {
+		return "", false
+	}
+	sessionID, ok := m.replyAnchors[platform+"|"+chatID+"|"+messageID]
+	return sessionID, ok
+}
+
 type mockConfigProvider struct {
 	snap agentConfigSnapshot
 }
@@ -2889,10 +2904,12 @@ func newHandlerWithMockAgent(t *testing.T) (*Handler, mockBotServer) {
 	handler := &Handler{
 		adapter:            adapter,
 		agent:              mockAgent,
+		commands:           make(map[string]telegramCommandHandler),
 		sessions:           make(map[string]string),
 		chatStreamTimeout:  defaultChatStreamTimeout,
 		progressAsMessages: true,
 	}
+	handler.commands = handler.buildCommandRegistry()
 
 	return handler, server
 }
@@ -3176,6 +3193,101 @@ func TestV054HandleSessionWithSession(t *testing.T) {
 	_ = sid
 }
 
+func TestV054HandleSessionsListsRecentSessions(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	s1 := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("First project discussion")
+	s1.AddMessage("user", "hello")
+	s2 := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Second project discussion")
+	handler.setSessionID("12345", s2.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/sessions",
+		IsCommand: true,
+		Command:   "sessions",
+	}
+
+	if err := handler.handleSessions(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleResumeSwitchesSessionByFullID(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	oldSess := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Old session")
+	newSess := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("New session")
+	handler.setSessionID("12345", oldSess.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume " + newSess.ID,
+		IsCommand: true,
+		Command:   "resume",
+		Args:      newSess.ID,
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != newSess.ID {
+		t.Fatalf("expected switched session %q, got %q", newSess.ID, got)
+	}
+}
+
+func TestV054HandleSessionSwitchesByPrefix(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	target := handler.agent.(*mockAgentProvider).sessions.Ensure("session-target-abc")
+	target.SetTitle("Target")
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/session session-target",
+		IsCommand: true,
+		Command:   "session",
+		Args:      "session-target",
+	}
+
+	if err := handler.handleSession(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != target.ID {
+		t.Fatalf("expected switched session %q, got %q", target.ID, got)
+	}
+}
+
+func TestV054HandleResumeMissingSessionDoesNotSwitch(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	current := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Current session")
+	handler.setSessionID("12345", current.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume missing",
+		IsCommand: true,
+		Command:   "resume",
+		Args:      "missing",
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != current.ID {
+		t.Fatalf("expected current session to remain %q, got %q", current.ID, got)
+	}
+}
+
 func TestV054HandleSkills(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()
@@ -3291,6 +3403,39 @@ func TestV054HandleCronAdd(t *testing.T) {
 	err := handler.handleCron(ctx, msg)
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCronAddBindsCurrentSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	mockAgent := handler.agent.(*mockAgentProvider)
+	tool.NewCronToolService(mockAgent.cronEngine, nil, func(id, mode, command string, metadata map[string]string) func() error {
+		return func() error { return nil }
+	}).RegisterTools(mockAgent.toolsVal)
+
+	sess := mockAgent.sessions.NewWithTitle("telegram cron")
+	handler.setSessionID("12345", sess.ID)
+
+	msg := &gateway.Message{
+		ID:        "77",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/cron add tg-bound 每小时 follow up",
+		IsCommand: true,
+		Command:   "cron",
+		Args:      "add tg-bound 每小时 follow up",
+	}
+
+	if err := handler.handleCron(context.Background(), msg); err != nil {
+		t.Fatalf("handleCron error = %v", err)
+	}
+	job, ok := mockAgent.cronEngine.GetJob("tg-bound")
+	if !ok {
+		t.Fatal("expected cron job to be added")
+	}
+	if got := job.Metadata["session_id"]; got != sess.ID {
+		t.Fatalf("expected cron job session_id %q, got %q", sess.ID, got)
 	}
 }
 
@@ -3534,6 +3679,55 @@ func TestV054HandleMessageNonCommandWithAttachments(t *testing.T) {
 	}
 }
 
+func TestV054HandleMessageReplyToCronAnchorUsesAnchoredSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	sessions := handler.agent.(*mockAgentProvider).sessions
+	oldSess := sessions.NewWithTitle("old chat")
+	cronSess := sessions.NewWithTitle("cron result")
+	handler.setSessionID("12345", oldSess.ID)
+	handler.agent.(*mockAgentProvider).replyAnchors = map[string]string{
+		"telegram|12345|9001": cronSess.ID,
+	}
+
+	usedSessionID := ""
+	handler.agent.(*mockAgentProvider).chatStreamIn = func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+		usedSessionID = sessionID
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "anchored response"}
+		close(ch)
+		return ch, nil
+	}
+
+	err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID: "2",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{ID: "user-1"},
+		Text:   "继续查一下",
+		ReplyTo: &gateway.Message{
+			ID:   "9001",
+			Chat: gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error = %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for usedSessionID == "" && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if usedSessionID != cronSess.ID {
+		t.Fatalf("expected anchored session %q, got %q", cronSess.ID, usedSessionID)
+	}
+	if got := handler.currentSessionID("12345"); got != cronSess.ID {
+		t.Fatalf("expected chat session to switch to anchored session %q, got %q", cronSess.ID, got)
+	}
+}
+
 func TestV054HandleMessageGroupNonCommand(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()
@@ -3576,6 +3770,7 @@ func TestV054HandleCommandAll(t *testing.T) {
 		{"reset", ""},
 		{"history", ""},
 		{"session", ""},
+		{"sessions", ""},
 		{"skills", ""},
 		{"cron", "list"},
 		{"metrics", ""},

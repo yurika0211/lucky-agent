@@ -208,26 +208,37 @@ func (a *Adapter) Stop() error {
 
 // Send sends a message to a chat, splitting if necessary.
 func (a *Adapter) Send(ctx context.Context, chatID string, message string) error {
+	_, err := a.SendWithReceipt(ctx, chatID, message)
+	return err
+}
+
+// SendWithReceipt sends a message and returns the first Telegram message ID.
+func (a *Adapter) SendWithReceipt(ctx context.Context, chatID string, message string) (gateway.SentMessage, error) {
 	if !a.running || a.bot == nil {
-		return fmt.Errorf("telegram: adapter not running")
+		return gateway.SentMessage{}, fmt.Errorf("telegram: adapter not running")
 	}
 
 	message = sanitizeOutgoingText(message)
 	chunks := a.splitMessage(message)
 	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+		return gateway.SentMessage{}, fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
 	}
 
+	receipt := gateway.SentMessage{ChatID: chatID}
 	for _, chunk := range chunks {
-		if err := a.sendChunk(ctx, chatIDInt, 0, chunk); err != nil {
-			return err
+		sentID, err := a.sendChunk(ctx, chatIDInt, 0, chunk)
+		if err != nil {
+			return gateway.SentMessage{}, err
+		}
+		if receipt.ID == "" && sentID > 0 {
+			receipt.ID = strconv.Itoa(sentID)
 		}
 		// Rate limit between chunks
 		a.waitRateLimit(chatID)
 	}
 
-	return nil
+	return receipt, nil
 }
 
 // SendHTML sends a pre-rendered Telegram HTML message without markdown reformatting.
@@ -258,34 +269,45 @@ func (a *Adapter) SendHTML(ctx context.Context, chatID string, message string) e
 
 // SendWithReply sends a message as a reply to a specific message.
 func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	_, err := a.SendWithReplyReceipt(ctx, chatID, replyToMsgID, message)
+	return err
+}
+
+// SendWithReplyReceipt sends a reply and returns the first Telegram message ID.
+func (a *Adapter) SendWithReplyReceipt(ctx context.Context, chatID string, replyToMsgID string, message string) (gateway.SentMessage, error) {
 	if !a.running || a.bot == nil {
-		return fmt.Errorf("telegram: adapter not running")
+		return gateway.SentMessage{}, fmt.Errorf("telegram: adapter not running")
 	}
 
 	message = sanitizeOutgoingText(message)
 	chunks := a.splitMessage(message)
 	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+		return gateway.SentMessage{}, fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
 	}
 
 	replyToID, err := strconv.Atoi(replyToMsgID)
 	if err != nil {
-		return fmt.Errorf("telegram: invalid reply-to message ID %q: %w", replyToMsgID, err)
+		return gateway.SentMessage{}, fmt.Errorf("telegram: invalid reply-to message ID %q: %w", replyToMsgID, err)
 	}
 
+	receipt := gateway.SentMessage{ChatID: chatID}
 	for i, chunk := range chunks {
 		replyID := 0
 		if i == 0 {
 			replyID = replyToID
 		}
-		if err := a.sendChunk(ctx, chatIDInt, replyID, chunk); err != nil {
-			return err
+		sentID, err := a.sendChunk(ctx, chatIDInt, replyID, chunk)
+		if err != nil {
+			return gateway.SentMessage{}, err
+		}
+		if receipt.ID == "" && sentID > 0 {
+			receipt.ID = strconv.Itoa(sentID)
 		}
 		a.waitRateLimit(chatID)
 	}
 
-	return nil
+	return receipt, nil
 }
 
 // SendWithReplyHTML sends a pre-rendered Telegram HTML message as a reply.
@@ -1136,7 +1158,7 @@ func (a *Adapter) isReplyToBot(tgMsg *tgbotapi.Message) bool {
 }
 
 // sendChunk sends a single message chunk to Telegram.
-func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text string) error {
+func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text string) (int, error) {
 	plainText := text
 	msg := tgbotapi.NewMessage(chatID, formatTelegramRichText(text))
 	if replyTo > 0 {
@@ -1144,18 +1166,18 @@ func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text s
 	}
 	msg.ParseMode = tgbotapi.ModeHTML
 
-	_, err := a.bot.Send(msg)
+	sent, err := a.bot.Send(msg)
 	if err != nil {
 		// If rich text rendering fails, fall back to plain text.
 		msg.ParseMode = ""
 		msg.Text = plainText
-		_, err = a.bot.Send(msg)
+		sent, err = a.bot.Send(msg)
 		if err != nil {
-			return fmt.Errorf("telegram: send message: %w", err)
+			return 0, fmt.Errorf("telegram: send message: %w", err)
 		}
 	}
 
-	return nil
+	return sent.MessageID, nil
 }
 
 func (a *Adapter) sendChunkHTML(_ context.Context, chatID int64, replyTo int, text string) error {

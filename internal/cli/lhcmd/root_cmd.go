@@ -87,6 +87,7 @@ func newRootCmd() *cobra.Command {
 	chatCmd.Flags().StringVarP(&provider_, "provider", "p", "", "LLM 提供商")
 	chatCmd.Flags().StringVarP(&model_, "model", "m", "", "模型名称")
 	chatCmd.Flags().BoolVar(&yolo, "yolo", false, "自动批准所有工具调用")
+	chatCmd.Flags().SetInterspersed(false)
 
 	configCmd := &cobra.Command{
 		Use:   "config",

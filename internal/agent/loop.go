@@ -68,6 +68,7 @@ type LoopConfig struct {
 	ToolOnlyIterationLimit int           // 连续纯工具轮次上限
 	DuplicateFetchLimit    int           // 同一 URL 抓取上限
 	DisabledTools          []string      // 本轮对模型隐藏的工具名
+	Ephemeral              bool          // 临时后台执行，不写会话外持久化上下文
 }
 
 // DefaultLoopConfig 返回默认 Loop 配置
@@ -313,12 +314,14 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		}
 
 		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
-		if a.ragManager != nil {
+		if !loopCfg.Ephemeral && a.ragManager != nil {
 			a.indexConversationTurn(routingText, response)
 		}
 
-		if saveErr := a.saveFinalAnswerDocument(sessionID, routingText, response); saveErr != nil {
-			logger.Warn("save final answer document failed", "session_id", sessionID, "error", saveErr)
+		if !loopCfg.Ephemeral {
+			if saveErr := a.saveFinalAnswerDocument(sessionID, routingText, response); saveErr != nil {
+				logger.Warn("save final answer document failed", "session_id", sessionID, "error", saveErr)
+			}
 		}
 
 		// v0.24.1: 保存会话到磁盘

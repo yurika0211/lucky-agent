@@ -58,6 +58,10 @@ type activeRouteRecorder interface {
 	RecordRecentChatTarget(platform, chatID, replyToMsgID string)
 }
 
+type replyAnchorResolver interface {
+	ResolveExternalReplyAnchor(platform, chatID, messageID string) (sessionID string, ok bool)
+}
+
 type telegramSender interface {
 	gateway.StreamGateway
 	SendPhoto(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error
@@ -151,6 +155,10 @@ func (a agentProviderAdapter) Metrics() *metrics.Metrics {
 
 func (a agentProviderAdapter) Memory() *memory.Store {
 	return a.inner.Memory()
+}
+
+func (a agentProviderAdapter) ResolveExternalReplyAnchor(platform, chatID, messageID string) (string, bool) {
+	return a.inner.ResolveExternalReplyAnchor(platform, chatID, messageID)
 }
 
 // agentConfigWrapper 将 *config.Manager 适配为 agentConfigProvider 接口。
@@ -279,20 +287,22 @@ func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 		"chat": func(ctx context.Context, msg *gateway.Message) error {
 			return h.dispatchChatAsync(ctx, msg, agent.TextUserTurnInput(msg.Args))
 		},
-		"model":   h.handleModel,
-		"soul":    h.handleSoul,
-		"tools":   h.handleTools,
-		"reset":   h.handleReset,
-		"history": h.handleHistory,
-		"session": h.handleSession,
-		"skills":  h.handleSkills,
-		"cron":    h.handleCron,
-		"metrics": h.handleMetrics,
-		"health":  h.handleHealth,
-		"new":     h.handleNew,
-		"stop":    h.handleStop,
-		"status":  h.handleStatus,
-		"restart": h.handleRestart,
+		"model":    h.handleModel,
+		"soul":     h.handleSoul,
+		"tools":    h.handleTools,
+		"reset":    h.handleReset,
+		"history":  h.handleHistory,
+		"session":  h.handleSession,
+		"sessions": h.handleSessions,
+		"resume":   h.handleResume,
+		"skills":   h.handleSkills,
+		"cron":     h.handleCron,
+		"metrics":  h.handleMetrics,
+		"health":   h.handleHealth,
+		"new":      h.handleNew,
+		"stop":     h.handleStop,
+		"status":   h.handleStatus,
+		"restart":  h.handleRestart,
 	}
 }
 
@@ -426,6 +436,18 @@ func (h *Handler) routeRecorder() activeRouteRecorder {
 	if h.agent != nil {
 		if recorder, ok := any(h.agent).(activeRouteRecorder); ok {
 			return recorder
+		}
+	}
+	return nil
+}
+
+func (h *Handler) replyAnchorResolver() replyAnchorResolver {
+	if h == nil {
+		return nil
+	}
+	if h.agent != nil {
+		if resolver, ok := h.agent.(replyAnchorResolver); ok {
+			return resolver
 		}
 	}
 	return nil
@@ -642,6 +664,76 @@ func (h *Handler) setSessionID(chatID, sessionID string) {
 	h.mu.Unlock()
 }
 
+func (h *Handler) currentSessionID(chatID string) string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.sessions[chatID]
+}
+
+func (h *Handler) bindSessionID(chatID, sessionID string) {
+	chatID = strings.TrimSpace(chatID)
+	sessionID = strings.TrimSpace(sessionID)
+	if chatID == "" || sessionID == "" {
+		return
+	}
+	h.mu.Lock()
+	h.sessions[chatID] = sessionID
+	h.mu.Unlock()
+	h.saveChatSessions()
+}
+
+func shortSessionID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+func truncateForTelegramList(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-3]) + "..."
+}
+
+func findSessionByIDOrPrefix(sessions *session.Manager, query string) (*session.Session, string, bool) {
+	if sessions == nil {
+		return nil, "", false
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, "", false
+	}
+	if sess, ok := sessions.Get(query); ok {
+		return sess, query, true
+	}
+
+	var matched *session.Session
+	var matchedID string
+	for _, info := range sessions.ListInfo() {
+		if !strings.HasPrefix(info.ID, query) {
+			continue
+		}
+		if matched != nil {
+			return nil, "", false
+		}
+		if sess, ok := sessions.Get(info.ID); ok {
+			matched = sess
+			matchedID = info.ID
+		}
+	}
+	if matched == nil {
+		return nil, "", false
+	}
+	return matched, matchedID, true
+}
+
 func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
 	msgCopy := *msg
 	position, startWorker := h.enqueueChatRequest(msg.Chat.ID, &queuedChatRequest{
@@ -811,6 +903,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 		return h.handleCommand(ctx, msg)
 	}
 
+	h.bindSessionFromReplyAnchor(msg)
 	input := h.buildUserTurnInput(ctx, msg.Text, msg.Attachments)
 
 	// Regular text in private chats → forward to Agent
@@ -820,6 +913,26 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 
 	// Group chats: only respond if mentioned or replied to (already filtered by adapter)
 	return h.dispatchChatAsync(ctx, msg, input)
+}
+
+func (h *Handler) bindSessionFromReplyAnchor(msg *gateway.Message) {
+	if h == nil || msg == nil || msg.ReplyTo == nil {
+		return
+	}
+	resolver := h.replyAnchorResolver()
+	if resolver == nil {
+		return
+	}
+	sessionID, ok := resolver.ResolveExternalReplyAnchor("telegram", msg.Chat.ID, msg.ReplyTo.ID)
+	if !ok {
+		return
+	}
+	if sessions := h.sessionManager(); sessions != nil {
+		if _, exists := sessions.Get(sessionID); !exists {
+			return
+		}
+	}
+	h.bindSessionID(msg.Chat.ID, sessionID)
 }
 
 func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attachments []gateway.Attachment) agent.UserTurnInput {
@@ -888,7 +1001,9 @@ I'm an AI assistant powered by LuckyHarness.
 /health — System health check
 /reset — Reset conversation
 /history — Show conversation history
-/session — Show current session info
+/session [id] — Show current session info or switch session
+/sessions — List recent sessions
+/resume <id> — Switch to an existing session
 /help — Show this help
 
 You can also just type a message directly!
@@ -918,7 +1033,9 @@ func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
 *💬 会话管理*
 /reset — 重置对话
 /history — 查看对话历史
-/session — 查看会话信息
+/session \[id] — 查看会话信息/切换到指定会话
+/sessions — 列出最近会话
+/resume <id> — 切换到已有会话
 /new — 开启新对话（清空历史）
 /stop — 停止当前任务
 /status — 查看状态
@@ -2026,7 +2143,7 @@ func (h *Handler) handleTools(ctx context.Context, msg *gateway.Message) error {
 // handleReset resets the conversation for this chat.
 func (h *Handler) handleReset(ctx context.Context, msg *gateway.Message) error {
 	newID := h.resetSession(msg.Chat.ID)
-	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🔄 Conversation reset. New session: `%s`", newID[:8]))
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🔄 Conversation reset. New session: `%s`", shortSessionID(newID)))
 }
 
 // handleHistory shows the conversation history for this chat.
@@ -2081,8 +2198,12 @@ func (h *Handler) handleHistory(ctx context.Context, msg *gateway.Message) error
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
 }
 
-// handleSession shows current session info.
+// handleSession shows current session info, or switches when an ID is supplied.
 func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error {
+	if strings.TrimSpace(msg.Args) != "" {
+		return h.handleSessionSwitch(ctx, msg, strings.TrimSpace(msg.Args))
+	}
+
 	h.mu.RLock()
 	sessionID, ok := h.sessions[msg.Chat.ID]
 	h.mu.RUnlock()
@@ -2093,15 +2214,15 @@ func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error
 
 	sessions := h.sessionManager()
 	if sessions == nil {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", sessionID[:8]))
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", shortSessionID(sessionID)))
 	}
 	sess, ok := sessions.Get(sessionID)
 	if !ok {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", sessionID[:8]))
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", shortSessionID(sessionID)))
 	}
 
 	info := fmt.Sprintf("📋 *Session Info:*\n\n• ID: `%s`\n• Title: %s\n• Messages: %d\n• Created: %s\n• Updated: %s",
-		sessionID[:8],
+		sessionID,
 		sess.Title,
 		sess.MessageCount(),
 		sess.CreatedAt.Format("2006-01-02 15:04"),
@@ -2109,6 +2230,93 @@ func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error
 	)
 
 	return h.adapter.Send(ctx, msg.Chat.ID, info)
+}
+
+// handleSessions lists recent sessions so Telegram users can pick one to resume.
+func (h *Handler) handleSessions(ctx context.Context, msg *gateway.Message) error {
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
+	}
+
+	infos := sessions.ListInfo()
+	if len(infos) == 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "No sessions yet. Send a message to start one!")
+	}
+
+	currentID := h.currentSessionID(msg.Chat.ID)
+	var sb strings.Builder
+	sb.WriteString("📚 *Recent Sessions:*\n\n")
+
+	limit := 10
+	if len(infos) < limit {
+		limit = len(infos)
+	}
+	for i := 0; i < limit; i++ {
+		info := infos[i]
+		marker := "•"
+		if info.ID == currentID {
+			marker = "✅"
+		}
+		title := strings.TrimSpace(info.Title)
+		if title == "" {
+			title = "(untitled)"
+		}
+		sb.WriteString(fmt.Sprintf("%s `%s` — %s (%d msgs, updated %s)\n",
+			marker,
+			info.ID,
+			truncateForTelegramList(title, 48),
+			info.MessageCount,
+			info.UpdatedAt.Format("01-02 15:04"),
+		))
+	}
+	if len(infos) > limit {
+		sb.WriteString(fmt.Sprintf("\n... and %d more", len(infos)-limit))
+	}
+	sb.WriteString("\n\nUse `/resume <id>` or `/session <id>` to switch.")
+
+	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) handleResume(ctx context.Context, msg *gateway.Message) error {
+	sessionID := strings.TrimSpace(msg.Args)
+	if sessionID == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /resume <session_id>")
+	}
+	return h.handleSessionSwitch(ctx, msg, sessionID)
+}
+
+func (h *Handler) handleSessionSwitch(ctx context.Context, msg *gateway.Message, sessionID string) error {
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
+	}
+
+	sess, matchedID, ok := findSessionByIDOrPrefix(sessions, sessionID)
+	if !ok {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. Use /sessions to list recent sessions.", sessionID))
+	}
+
+	h.mu.Lock()
+	oldSessionID, hadOld := h.sessions[msg.Chat.ID]
+	h.sessions[msg.Chat.ID] = matchedID
+	h.mu.Unlock()
+
+	h.saveChatSessions()
+
+	title := strings.TrimSpace(sess.Title)
+	if title == "" {
+		title = "(untitled)"
+	}
+	if hadOld && oldSessionID == matchedID {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Already on session `%s` — %s", shortSessionID(matchedID), truncateForTelegramList(title, 60)))
+	}
+
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched session: `%s`\nTitle: %s\nMessages: %d",
+		shortSessionID(matchedID),
+		truncateForTelegramList(title, 80),
+		sess.MessageCount(),
+	))
 }
 
 // handleSkills lists loaded skills.
@@ -2182,6 +2390,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		if strings.TrimSpace(command) == "" {
 			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Missing prompt/command for cron job.")
 		}
+		sessionID := h.getSessionID(msg.Chat.ID)
 
 		tools := h.tools()
 		if tools == nil {
@@ -2195,6 +2404,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 			"platform":            "telegram",
 			"chat_id":             msg.Chat.ID,
 			"reply_to_message_id": msg.ID,
+			"session_id":          sessionID,
 		})
 		if err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to add job: %s", err.Error()))

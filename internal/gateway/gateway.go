@@ -23,6 +23,22 @@ type Gateway interface {
 	IsRunning() bool
 }
 
+// SentMessage describes a message emitted by a gateway.
+type SentMessage struct {
+	ID     string
+	ChatID string
+}
+
+// ReceiptGateway extends Gateway with message receipts for reply chaining.
+// Callers should type-assert this interface only when they need the outbound
+// platform message ID; plain Gateway implementations remain valid.
+type ReceiptGateway interface {
+	Gateway
+
+	SendWithReceipt(ctx context.Context, chatID string, message string) (SentMessage, error)
+	SendWithReplyReceipt(ctx context.Context, chatID string, replyToMsgID string, message string) (SentMessage, error)
+}
+
 // StreamGateway extends Gateway with streaming message support.
 // Adapters that support real-time message editing (like Telegram) should implement this.
 type StreamGateway interface {

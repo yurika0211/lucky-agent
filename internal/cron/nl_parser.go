@@ -74,7 +74,11 @@ func parseIntervalHour(input string) (Schedule, error) {
 	if idx := strings.Index(input, "每"); idx >= 0 {
 		afterMei := input[idx+len("每"):]
 		if len(afterMei) > 0 && !strings.HasPrefix(afterMei, "小") {
-			parsed, err := strconv.Atoi(strings.TrimSuffix(afterMei, "小时"))
+			afterMei = normalizeChineseScheduleNumerals(afterMei)
+			num := strings.TrimSuffix(afterMei, "小时")
+			num = strings.TrimSuffix(num, "个")
+			num = strings.TrimSpace(num)
+			parsed, err := strconv.Atoi(num)
 			if err == nil && parsed > 0 {
 				n = parsed
 			}
@@ -83,13 +87,36 @@ func parseIntervalHour(input string) (Schedule, error) {
 	return IntervalSchedule{Interval: time.Duration(n) * time.Hour}, nil
 }
 
+func normalizeChineseScheduleNumerals(input string) string {
+	replacer := strings.NewReplacer(
+		"零", "0",
+		"〇", "0",
+		"一", "1",
+		"二", "2",
+		"两", "2",
+		"三", "3",
+		"四", "4",
+		"五", "5",
+		"六", "6",
+		"七", "7",
+		"八", "8",
+		"九", "9",
+		"十", "10",
+	)
+	return replacer.Replace(input)
+}
+
 func parseIntervalMinute(input string) (Schedule, error) {
 	// "每30分钟" → 30m
 	n := 1
 	if idx := strings.Index(input, "每"); idx >= 0 {
 		afterMei := input[idx+len("每"):]
 		if len(afterMei) > 0 && !strings.HasPrefix(afterMei, "分") {
-			parsed, err := strconv.Atoi(strings.TrimSuffix(afterMei, "分钟"))
+			afterMei = normalizeChineseScheduleNumerals(afterMei)
+			num := strings.TrimSuffix(afterMei, "分钟")
+			num = strings.TrimSuffix(num, "个")
+			num = strings.TrimSpace(num)
+			parsed, err := strconv.Atoi(num)
 			if err == nil && parsed > 0 {
 				n = parsed
 			}

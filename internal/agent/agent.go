@@ -137,6 +137,7 @@ type Agent struct {
 	heartbeatMu           sync.Mutex
 	heartbeatSessionID    string
 	recentTarget          recentChatTarget
+	externalReplyAnchors  map[string]externalReplyAnchor
 	contextCache          *contextMessageCache
 	mediaProcessor        *multimodal.Processor
 	chatCount             int // 对话计数，用于触发自动摘要
