@@ -16,8 +16,11 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/cron"
+	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -2757,6 +2760,9 @@ type mockAgentProvider struct {
 	cronEngine    *cron.Engine
 	metricsVal    *metrics.Metrics
 	memoryVal     *memory.Store
+	catalogVal    *provider.ModelCatalog
+	ragVal        *rag.RAGManager
+	embedderReg   *embedder.Registry
 	chatFunc      func(ctx context.Context, userInput string) (string, error)
 	chatSessFn    func(ctx context.Context, sessionID, userInput string) (string, error)
 	chatInputFn   func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
@@ -2868,6 +2874,86 @@ func (m *mockAgentProvider) Memory() *memory.Store {
 	return m.memoryVal
 }
 
+func (m *mockAgentProvider) Remember(content, category string) error {
+	if m.memoryVal == nil {
+		return nil
+	}
+	return m.memoryVal.Save(content, category)
+}
+
+func (m *mockAgentProvider) RememberLongTerm(content, category string) error {
+	if m.memoryVal == nil {
+		return nil
+	}
+	return m.memoryVal.SaveLongTerm(content, category)
+}
+
+func (m *mockAgentProvider) Recall(query string) []memory.Entry {
+	if m.memoryVal == nil {
+		return nil
+	}
+	return m.memoryVal.Search(query)
+}
+
+func (m *mockAgentProvider) MemoryStats() map[memory.Tier]int {
+	if m.memoryVal == nil {
+		return map[memory.Tier]int{}
+	}
+	return m.memoryVal.Stats()
+}
+
+func (m *mockAgentProvider) DecayMemory(threshold float64) int {
+	if m.memoryVal == nil {
+		return 0
+	}
+	return m.memoryVal.Decay(threshold)
+}
+
+func (m *mockAgentProvider) PromoteMemory(id string) error {
+	if m.memoryVal == nil {
+		return nil
+	}
+	return m.memoryVal.Promote(id)
+}
+
+func (m *mockAgentProvider) Catalog() *provider.ModelCatalog {
+	if m.catalogVal != nil {
+		return m.catalogVal
+	}
+	return provider.NewModelCatalog()
+}
+
+func (m *mockAgentProvider) RAG() *rag.RAGManager {
+	return m.ragVal
+}
+
+func (m *mockAgentProvider) ConnectMCPServer(name, url, apiKey string) {}
+
+func (m *mockAgentProvider) ContextWindowConfig() contextWindowSnapshot {
+	return contextWindowSnapshot{
+		MaxTokens:            4096,
+		ReservedTokens:       1024,
+		Strategy:             "low_priority_first",
+		SlidingWindowSize:    10,
+		MaxConversationTurns: 50,
+		MemoryBudget:         800,
+		SummarizeThreshold:   0.8,
+	}
+}
+
+func (m *mockAgentProvider) ContextCacheStats() map[string]any {
+	return map[string]any{"entries": 0, "hits": 0, "misses": 0}
+}
+
+func (m *mockAgentProvider) EmbedderRegistry() *embedder.Registry {
+	if m.embedderReg != nil {
+		return m.embedderReg
+	}
+	reg := embedder.NewRegistry()
+	reg.Register("mock-128", embedder.NewMockEmbedder(128))
+	return reg
+}
+
 func (m *mockAgentProvider) ResolveExternalReplyAnchor(platform, chatID, messageID string) (string, bool) {
 	if m.replyAnchors == nil {
 		return "", false
@@ -2937,8 +3023,12 @@ func newHandlerWithMockAgent(t *testing.T) (*Handler, mockBotServer) {
 	mockAgent := &mockAgentProvider{
 		sessions: sessMgr,
 		configSnap: agentConfigSnapshot{
+			HomeDir:            t.TempDir(),
+			ConfigFile:         "config.json",
 			Model:              "test-model",
 			Provider:           "test-provider",
+			DashboardAddr:      ":8765",
+			MsgGatewayAPIAddr:  "127.0.0.1:9090",
 			ProgressAsMessages: true,
 		},
 		toolsVal:   tool.NewRegistry(),
@@ -2950,7 +3040,10 @@ func newHandlerWithMockAgent(t *testing.T) (*Handler, mockBotServer) {
 	handler := &Handler{
 		adapter:            adapter,
 		agent:              mockAgent,
+		state:              mockAgent,
+		chat:               mockAgent,
 		commands:           make(map[string]telegramCommandHandler),
+		watcher:            cron.NewWatcher(mockAgent.cronEngine),
 		sessions:           make(map[string]string),
 		chatStreamTimeout:  defaultChatStreamTimeout,
 		progressAsMessages: true,
@@ -3801,6 +3894,39 @@ func TestV054HandleMessageReplyToCronAnchorUsesAnchoredSession(t *testing.T) {
 	}
 }
 
+func TestV054HandleRenameCommandRenamesCurrentTelegramSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	sessions := handler.agent.(*mockAgentProvider).sessions
+	current := sessions.NewWithTitle("old title")
+	handler.setSessionID("12345", current.ID)
+
+	err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID: "3",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender:    gateway.User{ID: "user-1"},
+		Text:      "/rename project notes",
+		IsCommand: true,
+		Command:   "rename",
+		Args:      "project notes",
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error = %v", err)
+	}
+
+	renamed, ok := sessions.Get(current.ID)
+	if !ok {
+		t.Fatalf("current session not found after rename")
+	}
+	if renamed.Title != "project notes" {
+		t.Fatalf("expected session title to be renamed, got %q", renamed.Title)
+	}
+}
+
 func TestV054HandleMessageGroupNonCommand(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()
@@ -3837,17 +3963,44 @@ func TestV054HandleCommandAll(t *testing.T) {
 	}{
 		{"start", ""},
 		{"help", ""},
+		{"review", ""},
+		{"init", ""},
+		{"config", "list"},
+		{"version", ""},
 		{"model", ""},
+		{"models", ""},
 		{"soul", ""},
 		{"tools", ""},
+		{"mcp", "local http://127.0.0.1:3333"},
+		{"approve", "missing_tool"},
+		{"deny", "missing_tool"},
+		{"cron", "list"},
+		{"watch", "list"},
+		{"dashboard", "status"},
+		{"msg_gateway", "status"},
+		{"rag", "stats"},
+		{"context", ""},
+		{"fc", "tools"},
+		{"embedder", "list"},
+		{"metrics", ""},
+		{"health", ""},
+		{"remember", "hello memory"},
+		{"remember_long", "hello long memory"},
+		{"recall", "hello"},
+		{"memstats", ""},
+		{"memdecay", ""},
+		{"promote", "missing-memory"},
+		{"profile", "list"},
 		{"reset", ""},
 		{"history", ""},
 		{"session", ""},
 		{"sessions", ""},
+		{"resume", "missing-session"},
+		{"rename", "new title"},
 		{"skills", ""},
-		{"cron", "list"},
-		{"metrics", ""},
-		{"health", ""},
+		{"new", ""},
+		{"stop", ""},
+		{"status", ""},
 	}
 
 	for _, tc := range commands {
@@ -3867,6 +4020,66 @@ func TestV054HandleCommandAll(t *testing.T) {
 		if err != nil {
 			t.Errorf("handleCommand(%s): expected no error, got: %v", tc.cmd, err)
 		}
+	}
+}
+
+func TestV054HandleCommandNormalizesTUIStyleAliases(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	for _, tc := range []struct {
+		command    string
+		args       string
+		normalized string
+	}{
+		{command: "msg-gateway", args: "status", normalized: "msg_gateway"},
+		{command: "remember-long", args: "persist this", normalized: "remember_long"},
+	} {
+		msg := &gateway.Message{
+			ID: "1",
+			Chat: gateway.Chat{
+				ID:   "12345",
+				Type: gateway.ChatPrivate,
+			},
+			Text:      "/" + tc.command,
+			IsCommand: true,
+			Command:   tc.command,
+			Args:      tc.args,
+		}
+		if err := handler.handleCommand(ctx, msg); err != nil {
+			t.Fatalf("handleCommand(%s) error = %v", tc.command, err)
+		}
+		if msg.Command != tc.normalized {
+			t.Fatalf("expected command %q to normalize to %q, got %q", tc.command, tc.normalized, msg.Command)
+		}
+	}
+}
+
+func TestV054HandleWatchCommandAddsAndListsPattern(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/watch add logs *.log 1m",
+		IsCommand: true,
+		Command:   "watch",
+		Args:      "add logs *.log 1m",
+	}
+	if err := handler.handleCommand(context.Background(), msg); err != nil {
+		t.Fatalf("handleCommand(/watch add) error = %v", err)
+	}
+	patterns := handler.watcherService().ListPatterns()
+	if len(patterns) != 1 {
+		t.Fatalf("expected one watch pattern, got %d", len(patterns))
+	}
+	if patterns[0].ID != "logs" || patterns[0].Pattern != "*.log" {
+		t.Fatalf("unexpected watch pattern: %#v", patterns[0])
 	}
 }
 

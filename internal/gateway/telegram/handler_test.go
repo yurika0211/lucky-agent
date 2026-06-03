@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,53 @@ func TestTelegramCommandSpecsCoverHandlerRegistry(t *testing.T) {
 	}
 	assert.Contains(t, telegramWelcomeMessage(), "/new")
 	assert.Contains(t, telegramHelpMessage(), "/restart")
+}
+
+func TestTelegramCommandSpecsIncludeTUICompatibleCommands(t *testing.T) {
+	allowedName := regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
+	seen := make(map[string]struct{})
+	for _, spec := range telegramCommandSpecs() {
+		if !allowedName.MatchString(spec.Command) {
+			t.Fatalf("command %q does not satisfy Telegram command naming rules", spec.Command)
+		}
+		seen[spec.Command] = struct{}{}
+	}
+	for _, name := range []string{
+		"review",
+		"init",
+		"config",
+		"version",
+		"rename",
+		"chat",
+		"models",
+		"rag",
+		"context",
+		"fc",
+		"embedder",
+		"remember",
+		"remember_long",
+		"recall",
+		"memstats",
+		"memdecay",
+		"promote",
+		"mcp",
+		"approve",
+		"deny",
+		"cron",
+		"watch",
+		"dashboard",
+		"msg_gateway",
+		"profile",
+	} {
+		if _, ok := seen[name]; !ok {
+			t.Fatalf("expected Telegram command metadata to include %q", name)
+		}
+	}
+	for _, localOnly := range []string{"exit", "quit", "q", "clear", "jobs", "lh", "serve", "msg-gateway", "remember-long"} {
+		if _, ok := seen[localOnly]; ok {
+			t.Fatalf("local-only TUI command %q should not be exposed as Telegram bot command", localOnly)
+		}
+	}
 }
 
 func TestTelegramBotCommandsEncodeAllSupportedCommands(t *testing.T) {
