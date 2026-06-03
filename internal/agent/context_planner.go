@@ -120,7 +120,11 @@ BuildInput 根据结构化用户输入、会话和预算生成最终上下文消
 func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, input UserTurnInput) []provider.Message {
 	input = input.Normalize()
 	routingText := input.RoutingText
-	allowCache := len(input.Message.ContentParts) == 0
+	hasStructuredParts := len(input.Message.ContentParts) > 0
+	if hasStructuredParts && !p.supportsImageContentParts() {
+		input.Message = stripContentParts(input.Message)
+	}
+	allowCache := !hasStructuredParts
 
 	if allowCache {
 		if key, ok := p.cacheKey(sess, routingText); ok && p.agent != nil && p.agent.contextCache != nil {
@@ -221,7 +225,7 @@ func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input User
 			})
 		}
 	}
-	if len(input.Message.ContentParts) > 0 {
+	if len(input.Message.ContentParts) > 0 && p.supportsImageContentParts() {
 		messages = append(messages, provider.Message{
 			Role:         "user",
 			Content:      input.RoutingText,
@@ -229,6 +233,34 @@ func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input User
 		})
 	}
 	return messages
+}
+
+func (p *contextPlanner) supportsImageContentParts() bool {
+	if p == nil || p.agent == nil || p.agent.catalog == nil {
+		return false
+	}
+	model := strings.TrimSpace(p.agent.activeModel)
+	if model == "" && p.agent.cfg != nil {
+		model = strings.TrimSpace(p.agent.cfg.Get().Model)
+	}
+	if model == "" {
+		return false
+	}
+	info, err := p.agent.catalog.Get(model)
+	if err != nil || info == nil {
+		return false
+	}
+	for _, capability := range info.Capabilities {
+		if strings.EqualFold(strings.TrimSpace(capability), "vision") {
+			return true
+		}
+	}
+	return false
+}
+
+func stripContentParts(msg provider.Message) provider.Message {
+	msg.ContentParts = nil
+	return msg
 }
 
 /*

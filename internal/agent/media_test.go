@@ -8,8 +8,10 @@ import (
 	"testing"
 
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/multimodal"
+	"github.com/yurika0211/luckyharness/internal/provider"
 )
 
 type namedAttachmentProvider struct{}
@@ -154,4 +156,103 @@ func TestAnalyzeAttachmentsUsesConfiguredProvider(t *testing.T) {
 	if !strings.Contains(out, "attachment provider summary") {
 		t.Fatalf("expected configured provider output, got %q", out)
 	}
+}
+
+func TestContextPlannerDropsImagePartsForNonVisionModel(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(namedAttachmentProvider{}, true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+
+	a := &Agent{
+		catalog:        provider.NewModelCatalog(),
+		contextWin:     contextx.NewContextWindow(contextx.DefaultWindowConfig()),
+		contextEst:     contextx.NewTokenEstimator(4096),
+		mediaProcessor: processor,
+		activeModel:    "deepseek-v4-flash",
+	}
+	planner := newContextPlanner(a, contextBuildOptions{
+		IncludeRAG:     false,
+		IncludeHistory: false,
+	})
+
+	input := MultimodalUserTurnInput("describe it", []gateway.Attachment{
+		{
+			Type:     gateway.AttachmentImage,
+			FileName: "screen.png",
+			MimeType: "image/png",
+			Data:     []byte("fake-image"),
+		},
+	})
+
+	messages := planner.BuildInput(context.Background(), nil, input)
+	if !messagesContainText(messages, "attachment provider summary") {
+		t.Fatalf("expected multimodal analysis summary, got %+v", messages)
+	}
+	for _, msg := range messages {
+		if len(msg.ContentParts) > 0 {
+			t.Fatalf("expected no image content parts for non-vision model, got %+v", msg.ContentParts)
+		}
+	}
+}
+
+func TestContextPlannerKeepsImagePartsForVisionModel(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(namedAttachmentProvider{}, true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+
+	a := &Agent{
+		catalog:        provider.NewModelCatalog(),
+		contextWin:     contextx.NewContextWindow(contextx.DefaultWindowConfig()),
+		contextEst:     contextx.NewTokenEstimator(4096),
+		mediaProcessor: processor,
+		activeModel:    "gpt-5.4-mini",
+	}
+	planner := newContextPlanner(a, contextBuildOptions{
+		IncludeRAG:     false,
+		IncludeHistory: false,
+	})
+
+	input := MultimodalUserTurnInput("describe it", []gateway.Attachment{
+		{
+			Type:     gateway.AttachmentImage,
+			FileName: "screen.png",
+			FilePath: "/tmp/screen.png",
+			MimeType: "image/png",
+		},
+	})
+
+	messages := planner.BuildInput(context.Background(), nil, input)
+	if !messagesContainText(messages, "attachment provider summary") {
+		t.Fatalf("expected multimodal analysis summary, got %+v", messages)
+	}
+	if !messagesContainImagePart(messages) {
+		t.Fatalf("expected image content parts for vision model, got %+v", messages)
+	}
+}
+
+func messagesContainText(messages []provider.Message, needle string) bool {
+	for _, msg := range messages {
+		if strings.Contains(msg.Content, needle) {
+			return true
+		}
+		for _, part := range msg.ContentParts {
+			if strings.Contains(part.Text, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func messagesContainImagePart(messages []provider.Message) bool {
+	for _, msg := range messages {
+		for _, part := range msg.ContentParts {
+			if part.Type == "image" {
+				return true
+			}
+		}
+	}
+	return false
 }
