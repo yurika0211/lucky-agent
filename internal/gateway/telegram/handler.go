@@ -281,18 +281,18 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 }
 
 func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
-	return map[string]telegramCommandHandler{
-		"start": h.handleStart,
-		"help":  h.handleHelp,
+	handlers := map[string]telegramCommandHandler{
+		"start":   h.handleStart,
+		"help":    h.handleHelp,
+		"model":   h.handleModel,
+		"soul":    h.handleSoul,
+		"tools":   h.handleTools,
+		"reset":   h.handleReset,
+		"history": h.handleHistory,
+		"session": h.handleSession,
 		"chat": func(ctx context.Context, msg *gateway.Message) error {
 			return h.dispatchChatAsync(ctx, msg, agent.TextUserTurnInput(msg.Args))
 		},
-		"model":    h.handleModel,
-		"soul":     h.handleSoul,
-		"tools":    h.handleTools,
-		"reset":    h.handleReset,
-		"history":  h.handleHistory,
-		"session":  h.handleSession,
 		"sessions": h.handleSessions,
 		"resume":   h.handleResume,
 		"skills":   h.handleSkills,
@@ -304,6 +304,13 @@ func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 		"status":   h.handleStatus,
 		"restart":  h.handleRestart,
 	}
+	registry := make(map[string]telegramCommandHandler, len(handlers))
+	for _, name := range telegramCommandNames() {
+		if handler, ok := handlers[name]; ok {
+			registry[name] = handler
+		}
+	}
+	return registry
 }
 
 func resolveRandomMemeConfig() (string, float64, time.Duration) {
@@ -903,8 +910,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 		return h.handleCommand(ctx, msg)
 	}
 
-	h.bindSessionFromReplyAnchor(msg)
+	replyAnchored := h.bindSessionFromReplyAnchor(msg)
 	input := h.buildUserTurnInput(ctx, msg.Text, msg.Attachments)
+	if replyAnchored {
+		input = h.withReplyAnchorContext(input, msg)
+	}
 
 	// Regular text in private chats → forward to Agent
 	if msg.Chat.Type == gateway.ChatPrivate {
@@ -915,24 +925,25 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 	return h.dispatchChatAsync(ctx, msg, input)
 }
 
-func (h *Handler) bindSessionFromReplyAnchor(msg *gateway.Message) {
+func (h *Handler) bindSessionFromReplyAnchor(msg *gateway.Message) bool {
 	if h == nil || msg == nil || msg.ReplyTo == nil {
-		return
+		return false
 	}
 	resolver := h.replyAnchorResolver()
 	if resolver == nil {
-		return
+		return false
 	}
 	sessionID, ok := resolver.ResolveExternalReplyAnchor("telegram", msg.Chat.ID, msg.ReplyTo.ID)
 	if !ok {
-		return
+		return false
 	}
 	if sessions := h.sessionManager(); sessions != nil {
 		if _, exists := sessions.Get(sessionID); !exists {
-			return
+			return false
 		}
 	}
 	h.bindSessionID(msg.Chat.ID, sessionID)
+	return true
 }
 
 func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attachments []gateway.Attachment) agent.UserTurnInput {
@@ -942,6 +953,35 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 	}
 
 	return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
+}
+
+func (h *Handler) withReplyAnchorContext(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
+	if msg == nil || msg.ReplyTo == nil {
+		return input
+	}
+	repliedText := strings.TrimSpace(msg.ReplyTo.Text)
+	if repliedText == "" {
+		return input
+	}
+
+	input = input.Normalize()
+	userRequest := strings.TrimSpace(input.RoutingText)
+	if userRequest == "" {
+		userRequest = "(no additional text)"
+	}
+
+	replyAwareText := fmt.Sprintf(`You are answering a Telegram reply to a previous LuckyHarness or cron message.
+
+[Replied Telegram message]
+%s
+
+[User request]
+%s
+
+Use the replied message as the primary context for this turn. If the user asks "看看", "看一眼摘要", "摘要", "总结", or "summary", summarize the replied message directly. Do not consult unrelated runtime, cron, or session state unless the user explicitly asks for a fresh status check.`, repliedText, userRequest)
+
+	input.Message.ContentParts = nil
+	return input.WithRoutingText(replyAwareText)
 }
 
 func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
@@ -986,68 +1026,12 @@ func (h *Handler) handleCommand(ctx context.Context, msg *gateway.Message) error
 
 // handleStart sends a welcome message.
 func (h *Handler) handleStart(ctx context.Context, msg *gateway.Message) error {
-	welcome := `🍀 *LuckyHarness Bot*
-
-I'm an AI assistant powered by LuckyHarness.
-
-*Available commands:*
-/chat _message_ — Send a message to the AI
-/model — Show current model
-/soul — Show current SOUL info
-/tools — List available tools
-/skills — List loaded skills
-/cron — Manage scheduled tasks
-/metrics — Show usage metrics
-/health — System health check
-/reset — Reset conversation
-/history — Show conversation history
-/session [id] — Show current session info or switch session
-/sessions — List recent sessions
-/resume <id> — Switch to an existing session
-/help — Show this help
-
-You can also just type a message directly!
-Send me photos, voice messages, or files!`
-
-	return h.adapter.Send(ctx, msg.Chat.ID, welcome)
+	return h.adapter.Send(ctx, msg.Chat.ID, telegramWelcomeMessage())
 }
 
 // handleHelp lists available commands.
 func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
-	help := `*Available Commands:*
-
-*🍀 基础命令*
-/start — 欢迎消息
-/help — 显示此帮助
-/chat _消息_ — 发送消息给 AI
-
-*⚙️ 系统管理*
-/model \[name] — 查看/设置当前模型
-/soul — 查看 SOUL 信息
-/tools — 列出可用工具
-/skills — 列出已加载技能
-/cron \[list|add|remove] — 管理定时任务
-/metrics — 查看使用指标
-/health — 系统健康检查
-
-*💬 会话管理*
-/reset — 重置对话
-/history — 查看对话历史
-/session \[id] — 查看会话信息/切换到指定会话
-/sessions — 列出最近会话
-/resume <id> — 切换到已有会话
-/new — 开启新对话（清空历史）
-/stop — 停止当前任务
-/status — 查看状态
-/restart — 重启 bot
-
-*Tips:*
-• 私聊直接发送消息即可
-• 群聊需要 @bot 或回复 bot 消息
-• Each chat has its own conversation session
-• Send photos, voice, or files for multimodal processing`
-
-	return h.adapter.Send(ctx, msg.Chat.ID, help)
+	return h.adapter.Send(ctx, msg.Chat.ID, telegramHelpMessage())
 }
 
 // handleChat sends a message to the agent and returns the response.

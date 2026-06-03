@@ -92,6 +92,9 @@ func (a *Adapter) Start(ctx context.Context) error {
 
 	a.bot = bot
 	a.botUsername = bot.Self.UserName
+	if err := a.registerBotCommands(); err != nil {
+		fmt.Printf("[telegram] warning: failed to register bot commands: %v\n", err)
+	}
 
 	// Create cancellable context for the polling loop
 	pollCtx, cancel := context.WithCancel(ctx)
@@ -102,6 +105,18 @@ func (a *Adapter) Start(ctx context.Context) error {
 	go a.poll(pollCtx)
 
 	return nil
+}
+
+func (a *Adapter) registerBotCommands() error {
+	if a == nil || a.bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
+	}
+	commands := telegramBotCommands()
+	if len(commands) == 0 {
+		return nil
+	}
+	_, err := a.bot.Request(tgbotapi.NewSetMyCommands(commands...))
+	return err
 }
 
 func (a *Adapter) newHTTPClient() (*http.Client, error) {

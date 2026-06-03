@@ -92,6 +92,8 @@ func defaultMockBotResponse(r *http.Request) map[string]any {
 		}
 	case containsMethod(r.URL.Path, "sendChatAction"), containsMethod(r.URL.Path, "setMessageReaction"):
 		return map[string]any{"ok": true}
+	case containsMethod(r.URL.Path, "setMyCommands"):
+		return map[string]any{"ok": true, "result": true}
 	case containsMethod(r.URL.Path, "getFile"):
 		return map[string]any{
 			"ok": true,
@@ -144,6 +146,50 @@ func newAdapterWithMockBot() (*Adapter, mockBotServer, error) {
 	adapter.running = true
 
 	return adapter, mockBotServer{}, nil
+}
+
+func TestV054RegisterBotCommandsWithMockBot(t *testing.T) {
+	var rawCommands string
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMyCommands") {
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			rawCommands = r.Form.Get("commands")
+			return map[string]any{"ok": true, "result": true}
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("newMockBot() error = %v", err)
+	}
+
+	adapter := NewAdapter(Config{Token: bot.Token})
+	adapter.bot = bot
+
+	if err := adapter.registerBotCommands(); err != nil {
+		t.Fatalf("registerBotCommands() error = %v", err)
+	}
+	if strings.TrimSpace(rawCommands) == "" {
+		t.Fatal("expected setMyCommands payload")
+	}
+
+	var commands []tgbotapi.BotCommand
+	if err := json.Unmarshal([]byte(rawCommands), &commands); err != nil {
+		t.Fatalf("decode commands payload: %v\npayload=%s", err, rawCommands)
+	}
+	if len(commands) != len(telegramCommandSpecs()) {
+		t.Fatalf("expected %d commands, got %d: %#v", len(telegramCommandSpecs()), len(commands), commands)
+	}
+	seen := make(map[string]string, len(commands))
+	for _, command := range commands {
+		seen[command.Command] = command.Description
+	}
+	for _, name := range telegramCommandNames() {
+		if seen[name] == "" {
+			t.Fatalf("expected command %q to be registered; got %#v", name, seen)
+		}
+	}
 }
 
 // ============================================================
@@ -3691,9 +3737,18 @@ func TestV054HandleMessageReplyToCronAnchorUsesAnchoredSession(t *testing.T) {
 		"telegram|12345|9001": cronSess.ID,
 	}
 
-	usedSessionID := ""
+	type capturedTurn struct {
+		sessionID      string
+		routingText    string
+		messageContent string
+	}
+	captured := make(chan capturedTurn, 1)
 	handler.agent.(*mockAgentProvider).chatStreamIn = func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
-		usedSessionID = sessionID
+		captured <- capturedTurn{
+			sessionID:      sessionID,
+			routingText:    input.RoutingText,
+			messageContent: input.Message.Content,
+		}
 		ch := make(chan agent.ChatEvent, 1)
 		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "anchored response"}
 		close(ch)
@@ -3707,24 +3762,42 @@ func TestV054HandleMessageReplyToCronAnchorUsesAnchoredSession(t *testing.T) {
 			Type: gateway.ChatPrivate,
 		},
 		Sender: gateway.User{ID: "user-1"},
-		Text:   "继续查一下",
+		Text:   "看一眼摘要",
 		ReplyTo: &gateway.Message{
 			ID:   "9001",
 			Chat: gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+			Text: "当前状态一览：定时任务 job1 已完成，摘要：RAG 命中了课程 A 第一章，发现重点是检索召回和上下文拼接。",
 		},
 	})
 	if err != nil {
 		t.Fatalf("HandleMessage error = %v", err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
-	for usedSessionID == "" && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	var gotTurn capturedTurn
+	select {
+	case gotTurn = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for anchored chat turn")
 	}
-	if usedSessionID != cronSess.ID {
-		t.Fatalf("expected anchored session %q, got %q", cronSess.ID, usedSessionID)
+	if gotTurn.sessionID != cronSess.ID {
+		t.Fatalf("expected anchored session %q, got %q", cronSess.ID, gotTurn.sessionID)
 	}
 	if got := handler.currentSessionID("12345"); got != cronSess.ID {
 		t.Fatalf("expected chat session to switch to anchored session %q, got %q", cronSess.ID, got)
+	}
+	if !strings.Contains(gotTurn.routingText, "[Replied Telegram message]") {
+		t.Fatalf("expected routing text to include replied message context, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "定时任务 job1 已完成") {
+		t.Fatalf("expected routing text to include replied cron message, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "[User request]\n看一眼摘要") {
+		t.Fatalf("expected routing text to include user reply request, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "Do not consult unrelated runtime, cron, or session state") {
+		t.Fatalf("expected routing text to discourage unrelated runtime inspection, got: %s", gotTurn.routingText)
+	}
+	if gotTurn.messageContent != gotTurn.routingText {
+		t.Fatalf("expected message content to match reply-aware routing text\ncontent=%s\nrouting=%s", gotTurn.messageContent, gotTurn.routingText)
 	}
 }
 
