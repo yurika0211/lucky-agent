@@ -223,6 +223,10 @@ func (s *Session) LastMessage() *provider.Message {
 func (s *Session) MessageCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.messageCountLocked()
+}
+
+func (s *Session) messageCountLocked() int {
 	if s.messagesLoaded {
 		return len(s.Messages)
 	}
@@ -480,7 +484,7 @@ func (m *Manager) ListInfo() []SessionInfo {
 		infos = append(infos, SessionInfo{
 			ID:           s.ID,
 			Title:        s.Title,
-			MessageCount: len(s.Messages),
+			MessageCount: s.messageCountLocked(),
 			CreatedAt:    s.CreatedAt,
 			UpdatedAt:    s.UpdatedAt,
 		})
@@ -509,7 +513,7 @@ func (m *Manager) Search(query string) []SessionInfo {
 			results = append(results, SessionInfo{
 				ID:           s.ID,
 				Title:        s.Title,
-				MessageCount: len(s.Messages),
+				MessageCount: s.messageCountLocked(),
 				CreatedAt:    s.CreatedAt,
 				UpdatedAt:    s.UpdatedAt,
 			})
@@ -523,7 +527,7 @@ func (m *Manager) Search(query string) []SessionInfo {
 				results = append(results, SessionInfo{
 					ID:           s.ID,
 					Title:        s.Title,
-					MessageCount: len(s.Messages),
+					MessageCount: s.messageCountLocked(),
 					CreatedAt:    s.CreatedAt,
 					UpdatedAt:    s.UpdatedAt,
 				})

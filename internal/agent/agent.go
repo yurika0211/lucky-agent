@@ -160,23 +160,36 @@ func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool
 		}
 	}
 
+	parsed := cfg.hasAny()
 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_KEY")); v != "" {
 		cfg.APIKey = v
+		parsed = true
 	}
 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_NAME")); v != "" {
 		cfg.Model = v
+		parsed = true
 	}
 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_URL")); v != "" {
 		cfg.BaseURL = v
+		parsed = true
 	}
 	if dim := os.Getenv("EMBEDDING_MODEL_DIMENSION"); dim != "" {
 		dim = strings.TrimSpace(dim)
 		if d, err := strconv.Atoi(dim); err == nil && d > 0 {
 			cfg.Dimension = d
+			parsed = true
 		}
 	}
 
-	return cfg, cfg.APIKey != "" && cfg.BaseURL != "" && cfg.Model != "" && cfg.Dimension > 0
+	return cfg, parsed
+}
+
+func (cfg embedderRuntimeConfig) hasAny() bool {
+	return cfg.APIKey != "" || cfg.BaseURL != "" || cfg.Model != "" || cfg.Dimension > 0
+}
+
+func (cfg embedderRuntimeConfig) ready() bool {
+	return cfg.APIKey != "" && cfg.BaseURL != "" && cfg.Model != "" && cfg.Dimension > 0
 }
 
 /**
@@ -426,7 +439,7 @@ func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	mockEmb := embedder.NewMockEmbedder(128)
 	embedderReg.Register("mock-128", mockEmb)
 
-	if embCfg, ok := resolveEmbedderRuntimeConfig(c); ok {
+	if embCfg, ok := resolveEmbedderRuntimeConfig(c); ok && embCfg.ready() {
 		openaiEmb := embedder.NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{
 			APIKey:    embCfg.APIKey,
 			Model:     embCfg.Model,
@@ -1539,6 +1552,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 		sanitizeLoopConfig(&loopCfg)
 
 		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
+		sess.AddProviderMessage(input.Message)
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
 
 		state := &streamConvergenceState{
@@ -1689,6 +1703,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				ReasoningContent: reasoning.String(),
 				ToolCalls:        toolCalls,
 			})
+			if sess != nil {
+				sess.AddProviderMessage(provider.Message{
+					Role:             "assistant",
+					Content:          assistantContent,
+					ReasoningContent: reasoning.String(),
+					ToolCalls:        toolCalls,
+				})
+			}
 
 			emitChatToolCallEvents(events, toolCalls)
 			executed := a.executeToolCallsOrdered(
@@ -1712,7 +1734,18 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 					ToolCallID: execResult.ToolCall.ID,
 					Name:       execResult.ToolCall.Name,
 				})
+				if sess != nil {
+					sess.AddProviderMessage(provider.Message{
+						Role:       "tool",
+						Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, nil, nil),
+						ToolCallID: execResult.ToolCall.ID,
+						Name:       execResult.ToolCall.Name,
+					})
+				}
 				state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
+			}
+			if sess != nil {
+				_ = sess.Save()
 			}
 
 			// 裁剪上下文，继续下一轮
@@ -1848,6 +1881,14 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			ReasoningContent: resp.ReasoningContent,
 			ToolCalls:        resp.ToolCalls,
 		})
+		if sess != nil {
+			sess.AddProviderMessage(provider.Message{
+				Role:             "assistant",
+				Content:          resp.Content,
+				ReasoningContent: resp.ReasoningContent,
+				ToolCalls:        resp.ToolCalls,
+			})
+		}
 
 		emitChatToolCallEvents(events, resp.ToolCalls)
 		executed := a.executeToolCallsOrdered(
@@ -1871,7 +1912,18 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 				ToolCallID: execResult.ToolCall.ID,
 				Name:       execResult.ToolCall.Name,
 			})
+			if sess != nil {
+				sess.AddProviderMessage(provider.Message{
+					Role:       "tool",
+					Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, nil, nil),
+					ToolCallID: execResult.ToolCall.ID,
+					Name:       execResult.ToolCall.Name,
+				})
+			}
 			state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
+		}
+		if sess != nil {
+			_ = sess.Save()
 		}
 
 		// 裁剪上下文，递归继续
@@ -1968,7 +2020,6 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, t
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
 	response = utils.SanitizeToolProtocolOutput(response)
-	sess.AddProviderMessage(turnInput.Message)
 	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
 	_ = sess.Save()
 
@@ -1991,7 +2042,7 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, t
 		a.midTerm.ExpireOldSummaries(time.Duration(expireDays) * 24 * time.Hour)
 	}
 
-	if a.ragManager != nil {
+	if a.ragManager != nil && autoIndexFinalAnswersEnabled() {
 		a.indexConversationTurn(routingText, response)
 	}
 

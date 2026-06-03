@@ -1,4 +1,4 @@
-.PHONY: build test clean init run serve chat tg qq weixin dashboard ui-install ui-build ui-dev ui-typecheck
+.PHONY: build install test clean init run serve chat tg qq weixin dashboard tui ui-install ui-build ui-dev ui-typecheck
 
 HOME_DIR := $(CURDIR)/.lh-home
 
@@ -19,6 +19,11 @@ endif
 
 build:
 	go build -o lh ./cmd/lh
+
+install: build
+	mkdir -p "$$HOME/.luckyharness/runtime"
+	printf '%s\n' "$(CURDIR)/UI" > "$$HOME/.luckyharness/runtime/tui-ui-dir"
+	go install ./cmd/lh
 
 test:
 	go test ./...
@@ -45,6 +50,9 @@ weixin:
 
 dashboard:
 	$(RUN_WITH_HOME) $(LH_CMD) dashboard start
+
+tui:
+	$(RUN_WITH_HOME) $(LH_CMD) tui
 
 ui-install:
 	cd UI && npm install

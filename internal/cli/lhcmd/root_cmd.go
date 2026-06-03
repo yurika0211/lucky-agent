@@ -42,6 +42,12 @@ func newRootCmd() *cobra.Command {
 		Use:   "lh",
 		Short: "LuckyHarness bot-first CLI",
 		Long:  "LuckyHarness 精简版命令行入口，面向聊天与消息网关工作流。",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !isInteractiveTerminal() {
+				return cmd.Help()
+			}
+			return runTUI("", "http://127.0.0.1:9090", "dashboard-main", "")
+		},
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			initCommandLogger()
 
@@ -214,6 +220,7 @@ func newRootCmd() *cobra.Command {
 	}
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
 	addDashboardCmd(rootCmd)
+	addTUICmd(rootCmd)
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd)
 
 	return rootCmd

@@ -39,8 +39,36 @@ export type DashboardData = {
   cron_jobs?: Array<{ id?: string; status?: string }>;
 };
 
+export type RuntimeSession = {
+  id: string;
+  title?: string;
+  message_count?: number;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type ProviderMessage = {
+  role?: string;
+  content?: string;
+  name?: string;
+  tool_call_id?: string;
+};
+
+export type SessionHistory = RuntimeSession & {
+  messages?: ProviderMessage[];
+};
+
+export type SessionsResponse = {
+  sessions?: RuntimeSession[];
+  count?: number;
+};
+
 export type WsPayload = {
   type: string;
+  id?: string;
+  parent_id?: string;
+  session_id?: string;
+  timestamp?: string;
   data?: Record<string, unknown>;
 };
 
@@ -56,5 +84,13 @@ export type ThoughtNote = {
   id: string;
   kind: 'reasoning' | 'tool' | 'status';
   text: string;
+  meta?: string;
+};
+
+export type ActivityNote = {
+  id: string;
+  kind: 'reasoning' | 'tool' | 'status' | 'error' | 'socket';
+  title: string;
+  body: string;
   meta?: string;
 };

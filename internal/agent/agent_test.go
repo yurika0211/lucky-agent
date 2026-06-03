@@ -808,7 +808,8 @@ func (p *loopingFunctionProvider) ChatStreamWithOptions(ctx context.Context, mes
 }
 
 type streamToolThenFinalProvider struct {
-	callCount int
+	callCount       int
+	streamCallCount int
 }
 
 func (p *streamToolThenFinalProvider) Name() string { return "stream-tool-final" }
@@ -818,6 +819,9 @@ func (p *streamToolThenFinalProvider) Chat(ctx context.Context, messages []provi
 }
 
 func (p *streamToolThenFinalProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
+	if hasToolMessage(messages, "rag_search") {
+		return &provider.Response{Content: "final answer from retrieved course material"}, nil
+	}
 	p.callCount++
 	if p.callCount == 1 {
 		return &provider.Response{
@@ -836,77 +840,118 @@ func (p *streamToolThenFinalProvider) ChatStream(ctx context.Context, messages [
 }
 
 func (p *streamToolThenFinalProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
-	return nil, fmt.Errorf("unexpected ChatStreamWithOptions call")
+	p.streamCallCount++
+	ch := make(chan provider.StreamChunk, 2)
+	go func() {
+		defer close(ch)
+		if p.streamCallCount == 1 && !hasToolMessage(messages, "rag_search") {
+			ch <- provider.StreamChunk{
+				ToolCallDeltas: []provider.StreamToolCallDelta{{
+					Index:     0,
+					ID:        "call-rag-1",
+					Name:      "rag_search",
+					Arguments: `{"query":"course chapter"}`,
+				}},
+			}
+			ch <- provider.StreamChunk{Done: true, FinishReason: "tool_calls"}
+			return
+		}
+		ch <- provider.StreamChunk{Content: "final answer from retrieved course material"}
+		ch <- provider.StreamChunk{Done: true, FinishReason: "stop"}
+	}()
+	return ch, nil
 }
 
 func (p *streamToolThenFinalProvider) Validate() error { return nil }
 
-func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
-	sessMgr, err := session.NewManager(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewManager() error = %v", err)
-	}
-	sess := sessMgr.New()
-	memStore, err := memory.NewStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewStore() error = %v", err)
-	}
-	registry := tool.NewRegistry()
-	registry.Register(&tool.Tool{
-		Name:       "rag_search",
-		Permission: tool.PermAuto,
-		Parameters: map[string]tool.Param{
-			"query": {Type: "string", Required: true},
-		},
-		Handler: func(args map[string]any) (string, error) {
-			return "找到 1 条课程资料：第一章的正确内容", nil
-		},
-		ParallelSafe: true,
-	})
-
-	a := &Agent{
-		provider:   &streamToolThenFinalProvider{},
-		sessions:   sessMgr,
-		memory:     memStore,
-		shortTerm:  memory.NewShortTermBuffer(8),
-		tools:      registry,
-		metrics:    metrics.NewMetrics(),
-		contextEst: contextx.NewTokenEstimator(4096),
-		contextWin: contextx.NewContextWindow(contextx.DefaultWindowConfig()),
-	}
-
-	events, err := a.ChatWithSessionStreamInputWithLoopConfig(context.Background(), sess.ID, TextUserTurnInput("问第一章"), LoopConfig{
-		MaxIterations:          3,
-		Timeout:                time.Second,
-		AutoApprove:            true,
-		RepeatToolCallLimit:    3,
-		ToolOnlyIterationLimit: 3,
-		DuplicateFetchLimit:    1,
-	})
-	if err != nil {
-		t.Fatalf("ChatWithSessionStreamInputWithLoopConfig() error = %v", err)
-	}
-	for evt := range events {
-		if evt.Type == ChatEventError {
-			t.Fatalf("unexpected stream error: %v", evt.Err)
+func hasToolMessage(messages []provider.Message, name string) bool {
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.Name == name {
+			return true
 		}
 	}
+	return false
+}
 
-	messages := sess.GetMessages()
-	if len(messages) != 4 {
-		t.Fatalf("expected user, assistant tool-call, tool result, final assistant; got %d messages: %#v", len(messages), messages)
-	}
-	if messages[0].Role != "user" || !strings.Contains(messages[0].Content, "第一章") {
-		t.Fatalf("expected first message to be user turn, got %#v", messages[0])
-	}
-	if messages[1].Role != "assistant" || len(messages[1].ToolCalls) != 1 || messages[1].ToolCalls[0].Name != "rag_search" {
-		t.Fatalf("expected assistant rag_search tool call, got %#v", messages[1])
-	}
-	if messages[2].Role != "tool" || messages[2].Name != "rag_search" || !strings.Contains(messages[2].Content, "第一章的正确内容") {
-		t.Fatalf("expected persisted rag_search tool result, got %#v", messages[2])
-	}
-	if messages[3].Role != "assistant" || !strings.Contains(messages[3].Content, "final answer") {
-		t.Fatalf("expected final assistant answer, got %#v", messages[3])
+func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
+	for _, mode := range []string{"simulated", "native"} {
+		t.Run(mode, func(t *testing.T) {
+			sessMgr, err := session.NewManager(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+			sess := sessMgr.New()
+			memStore, err := memory.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			cfg, err := config.NewManagerWithDir(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewManagerWithDir() error = %v", err)
+			}
+			if err := cfg.Set("stream_mode", mode); err != nil {
+				t.Fatalf("Set(stream_mode) error = %v", err)
+			}
+			registry := tool.NewRegistry()
+			registry.Register(&tool.Tool{
+				Name:       "rag_search",
+				Permission: tool.PermAuto,
+				Parameters: map[string]tool.Param{
+					"query": {Type: "string", Required: true},
+				},
+				Handler: func(args map[string]any) (string, error) {
+					return "找到 1 条课程资料：第一章的正确内容", nil
+				},
+				ParallelSafe: true,
+			})
+
+			a := &Agent{
+				provider:   &streamToolThenFinalProvider{},
+				sessions:   sessMgr,
+				memory:     memStore,
+				shortTerm:  memory.NewShortTermBuffer(8),
+				tools:      registry,
+				gateway:    tool.NewGateway(registry),
+				cfg:        cfg,
+				metrics:    metrics.NewMetrics(),
+				contextEst: contextx.NewTokenEstimator(4096),
+				contextWin: contextx.NewContextWindow(contextx.DefaultWindowConfig()),
+			}
+
+			events, err := a.ChatWithSessionStreamInputWithLoopConfig(context.Background(), sess.ID, TextUserTurnInput("问第一章"), LoopConfig{
+				MaxIterations:          3,
+				Timeout:                time.Second,
+				AutoApprove:            true,
+				RepeatToolCallLimit:    3,
+				ToolOnlyIterationLimit: 3,
+				DuplicateFetchLimit:    1,
+			})
+			if err != nil {
+				t.Fatalf("ChatWithSessionStreamInputWithLoopConfig() error = %v", err)
+			}
+			for evt := range events {
+				if evt.Type == ChatEventError {
+					t.Fatalf("unexpected stream error: %v", evt.Err)
+				}
+			}
+
+			messages := sess.GetMessages()
+			if len(messages) != 4 {
+				t.Fatalf("expected user, assistant tool-call, tool result, final assistant; got %d messages: %#v", len(messages), messages)
+			}
+			if messages[0].Role != "user" || !strings.Contains(messages[0].Content, "第一章") {
+				t.Fatalf("expected first message to be user turn, got %#v", messages[0])
+			}
+			if messages[1].Role != "assistant" || len(messages[1].ToolCalls) != 1 || messages[1].ToolCalls[0].Name != "rag_search" {
+				t.Fatalf("expected assistant rag_search tool call, got %#v", messages[1])
+			}
+			if messages[2].Role != "tool" || messages[2].Name != "rag_search" || !strings.Contains(messages[2].Content, "第一章的正确内容") {
+				t.Fatalf("expected persisted rag_search tool result, got %#v", messages[2])
+			}
+			if messages[3].Role != "assistant" || !strings.Contains(messages[3].Content, "final answer") {
+				t.Fatalf("expected final assistant answer, got %#v", messages[3])
+			}
+		})
 	}
 }
 

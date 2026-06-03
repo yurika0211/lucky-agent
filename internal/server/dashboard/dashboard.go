@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +70,7 @@ func (d *Dashboard) Start() error {
 	mux.HandleFunc("/api/status", d.handleStatus)
 	mux.HandleFunc("/api/data", d.handleData)
 	mux.HandleFunc("/api/health", d.handleHealth)
+	mux.HandleFunc("/lh-api/", d.handleAPIProxy)
 	mux.HandleFunc("/", d.handleSPA)
 
 	d.server = &http.Server{
@@ -162,6 +165,69 @@ func (d *Dashboard) handleData(w http.ResponseWriter, _ *http.Request) {
 func (d *Dashboard) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+func (d *Dashboard) handleAPIProxy(w http.ResponseWriter, r *http.Request) {
+	target, err := d.runtimeAPIBase()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	originalDirector := proxy.Director
+	proxy.Director = func(req *http.Request) {
+		originalDirector(req)
+		req.URL.Scheme = target.Scheme
+		req.URL.Host = target.Host
+		req.URL.Path = "/api/" + strings.TrimPrefix(r.URL.Path, "/lh-api/")
+		req.URL.RawPath = ""
+		req.URL.RawQuery = r.URL.RawQuery
+		req.Host = target.Host
+	}
+	proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, proxyErr error) {
+		http.Error(rw, fmt.Sprintf("proxy runtime API: %v", proxyErr), http.StatusBadGateway)
+	}
+	proxy.ServeHTTP(w, r)
+}
+
+func (d *Dashboard) runtimeAPIBase() (*url.URL, error) {
+	raw := strings.TrimSpace(d.dashboardValue("api_addr"))
+	if raw == "" {
+		raw = "127.0.0.1:9090"
+	}
+	if strings.HasPrefix(raw, ":") {
+		raw = "127.0.0.1" + raw
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "http://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid runtime API address %q", raw)
+	}
+	if parsed.Host == "" {
+		return nil, fmt.Errorf("invalid runtime API address %q", raw)
+	}
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	return parsed, nil
+}
+
+func (d *Dashboard) dashboardValue(key string) string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	for _, p := range d.providers {
+		if p == nil {
+			continue
+		}
+		if v, ok := p.DashboardData()[key]; ok {
+			return fmt.Sprint(v)
+		}
+	}
+	return ""
 }
 
 func (d *Dashboard) handleSPA(w http.ResponseWriter, r *http.Request) {

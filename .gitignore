@@ -15,6 +15,12 @@ config.json
 docs/*
 !docs/tui-message-display-optimization.md
 !docs/tui-product-grade-plan.md
+!docs/tui-slash-command-dropdown-plan.md
+!docs/tui-command-picker-dock-plan.md
+!docs/gui-hermes-parity-checklist.md
+!docs/tui-message-collapse-redesign.md
+!docs/tui-picker-scroll-window-plan.md
+!docs/tui-managed-background-jobs-plan.md
 GA
 bin
 
@@ -27,3 +33,6 @@ skill
 
 UI/node_modules
 UI/node_modules/
+UI/GUI/node_modules/
+nul
+docs/

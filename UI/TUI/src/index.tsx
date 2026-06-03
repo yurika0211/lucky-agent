@@ -19,4 +19,7 @@ if (!process.stdin.isTTY) {
   process.exit(1);
 }
 
-render(createElement(App, { apiBase, session, model }));
+render(createElement(App, { apiBase, session, model }), {
+  alternateScreen: true,
+  exitOnCtrlC: false,
+});

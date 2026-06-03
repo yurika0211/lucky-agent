@@ -113,6 +113,36 @@ func TestHandleData(t *testing.T) {
 	}
 }
 
+func TestHandleAPIProxy(t *testing.T) {
+	runtime := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/sessions" {
+			t.Errorf("expected proxied path /api/v1/sessions, got %s", r.URL.Path)
+		}
+		if r.URL.RawQuery != "q=resume" {
+			t.Errorf("expected query q=resume, got %s", r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"sessions":[{"id":"s1"}]}`))
+	}))
+	defer runtime.Close()
+
+	d := New(DefaultConfig())
+	d.AddProvider(&mockDataProvider{data: map[string]interface{}{
+		"api_addr": runtime.URL,
+	}})
+
+	req := httptest.NewRequest("GET", "/lh-api/v1/sessions?q=resume", nil)
+	w := httptest.NewRecorder()
+	d.handleAPIProxy(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !contains(w.Body.String(), `"id":"s1"`) {
+		t.Fatalf("expected proxied response body, got %s", w.Body.String())
+	}
+}
+
 func TestHandleSPA(t *testing.T) {
 	d := New(DefaultConfig())
 

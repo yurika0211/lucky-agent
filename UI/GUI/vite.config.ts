@@ -14,6 +14,11 @@ export default defineConfig({
         changeOrigin: true,
         ws: true,
       },
+      '/lh-api': {
+        target: 'http://127.0.0.1:9090',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/lh-api/, '/api'),
+      },
     },
   },
   build: {

@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -122,6 +123,9 @@ func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult
 	// Filter by minimum score
 	var filtered []SearchResult
 	for _, sr := range results {
+		if shouldExcludeRAGSearchResult(sr) {
+			continue
+		}
 		if sr.Score >= r.config.MinScore {
 			filtered = append(filtered, sr)
 		}
@@ -197,6 +201,27 @@ func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult
 	})
 
 	return out, nil
+}
+
+func shouldExcludeRAGSearchResult(sr SearchResult) bool {
+	if includeGeneratedRAGSources() {
+		return false
+	}
+	source := strings.TrimSpace(sr.Metadata["source"])
+	return strings.HasPrefix(source, "conversation/final/")
+}
+
+func includeGeneratedRAGSources() bool {
+	value := strings.TrimSpace(os.Getenv("LH_RAG_INCLUDE_GENERATED"))
+	if value == "" {
+		return false
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func summarizeQueryForLog(query string) string {

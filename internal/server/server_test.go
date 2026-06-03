@@ -369,6 +369,50 @@ func TestHandleSessionsSearch(t *testing.T) {
 	}
 }
 
+func TestHandleSessionsPagination(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	a.Sessions().Ensure("session-a").SetTitle("Session A")
+	a.Sessions().Ensure("session-b").SetTitle("Session B")
+	a.Sessions().Ensure("session-c").SetTitle("Session C")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?limit=2&offset=1", nil)
+	w := httptest.NewRecorder()
+	s.handleSessions(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	sessions, ok := resp["sessions"].([]any)
+	if !ok {
+		t.Fatalf("expected sessions array, got %T", resp["sessions"])
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected 2 paged sessions, got %d", len(sessions))
+	}
+	if resp["count"] != float64(2) {
+		t.Fatalf("expected count 2, got %v", resp["count"])
+	}
+	if resp["total"] != float64(3) {
+		t.Fatalf("expected total 3, got %v", resp["total"])
+	}
+	if resp["offset"] != float64(1) {
+		t.Fatalf("expected offset 1, got %v", resp["offset"])
+	}
+	if resp["limit"] != float64(2) {
+		t.Fatalf("expected limit 2, got %v", resp["limit"])
+	}
+	if resp["has_more"] != false {
+		t.Fatalf("expected has_more false, got %v", resp["has_more"])
+	}
+}
+
 func TestHandleChatSyncEmptyMessage(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())

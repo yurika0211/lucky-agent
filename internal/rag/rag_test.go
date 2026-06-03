@@ -661,6 +661,39 @@ func TestRetrieverFilterSource(t *testing.T) {
 	}
 }
 
+func TestRetrieverExcludesGeneratedFinalAnswersByDefault(t *testing.T) {
+	t.Setenv("LH_RAG_INCLUDE_GENERATED", "")
+
+	e := NewMockEmbedder(64)
+	store := NewVectorStore(64)
+	idx := NewIndexer(store, e)
+
+	if _, err := idx.IndexText("course/chapter1.md", "Course Chapter 1", "第一章课程原始资料：正确内容。"); err != nil {
+		t.Fatalf("IndexText(course) error = %v", err)
+	}
+	if _, err := idx.IndexText("conversation/final/abc123", "Generated Answer", "模型生成的错误答案。"); err != nil {
+		t.Fatalf("IndexText(generated) error = %v", err)
+	}
+
+	config := DefaultRetrieverConfig()
+	config.TopK = 10
+	config.MinScore = 0.0
+	retriever := NewRetriever(store, idx, e, config)
+
+	results, err := retriever.Search(context.Background(), "第一章")
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected course source result")
+	}
+	for _, result := range results {
+		if strings.HasPrefix(result.DocSource, "conversation/final/") {
+			t.Fatalf("generated final answer should be excluded by default, got %#v", result)
+		}
+	}
+}
+
 func TestRetrieverBuildContext(t *testing.T) {
 	results := []RetrievalResult{
 		{

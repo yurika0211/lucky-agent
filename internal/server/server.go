@@ -33,6 +33,11 @@ import (
 
 var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
+const (
+	defaultSessionsLimit = 50
+	maxSessionsLimit     = 200
+)
+
 // Server 是 LuckyHarness 的 HTTP API Server
 type Server struct {
 	mu      sync.RWMutex
@@ -100,13 +105,13 @@ type ServerStats struct {
 
 // ChatRequest 聊天请求
 type ChatRequest struct {
-	Message     string                  `json:"message"`
-	SessionID   string                  `json:"session_id,omitempty"`
-	Stream      bool                    `json:"stream,omitempty"`
-	MaxIter     int                     `json:"max_iterations,omitempty"`
-	AutoApprove bool                    `json:"auto_approve,omitempty"`
-	Metadata    map[string]string       `json:"metadata,omitempty"`
-	Attachments []gateway.Attachment    `json:"attachments,omitempty"`
+	Message     string               `json:"message"`
+	SessionID   string               `json:"session_id,omitempty"`
+	Stream      bool                 `json:"stream,omitempty"`
+	MaxIter     int                  `json:"max_iterations,omitempty"`
+	AutoApprove bool                 `json:"auto_approve,omitempty"`
+	Metadata    map[string]string    `json:"metadata,omitempty"`
+	Attachments []gateway.Attachment `json:"attachments,omitempty"`
 }
 
 // ChatResponse 聊天响应
@@ -811,23 +816,43 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 	s.sendJSON(w, http.StatusOK, resp)
 }
 
+func boundedQueryInt(r *http.Request, name string, fallback, minValue, maxValue int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // handleSessions 会话列表
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		query := strings.TrimSpace(r.URL.Query().Get("q"))
-		// Agent 暴露 session manager
-		var sessions []*session.Session
+		limit := boundedQueryInt(r, "limit", defaultSessionsLimit, 1, maxSessionsLimit)
+		offset := boundedQueryInt(r, "offset", 0, 0, 1_000_000)
+		var sessions []session.SessionInfo
 		if query != "" {
-			matches := s.agent.Sessions().Search(query)
-			sessions = make([]*session.Session, 0, len(matches))
-			for _, info := range matches {
-				if sess, ok := s.agent.Sessions().Get(info.ID); ok {
-					sessions = append(sessions, sess)
-				}
-			}
+			sessions = s.agent.Sessions().Search(query)
 		} else {
-			sessions = s.agent.Sessions().List()
+			sessions = s.agent.Sessions().ListInfo()
 		}
 		type sessionInfo struct {
 			ID           string `json:"id"`
@@ -837,13 +862,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt    string `json:"updated_at"`
 		}
 
-		infos := make([]sessionInfo, 0, len(sessions))
-		for _, sess := range sessions {
-			msgs := sess.GetMessages()
+		total := len(sessions)
+		start := minInt(offset, total)
+		end := minInt(start+limit, total)
+		page := sessions[start:end]
+		infos := make([]sessionInfo, 0, len(page))
+		for _, sess := range page {
 			infos = append(infos, sessionInfo{
 				ID:           sess.ID,
 				Title:        sess.Title,
-				MessageCount: len(msgs),
+				MessageCount: sess.MessageCount,
 				CreatedAt:    sess.CreatedAt.Format(time.RFC3339),
 				UpdatedAt:    sess.UpdatedAt.Format(time.RFC3339),
 			})
@@ -852,6 +880,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		s.sendJSON(w, http.StatusOK, map[string]interface{}{
 			"sessions": infos,
 			"count":    len(infos),
+			"total":    total,
+			"limit":    limit,
+			"offset":   start,
+			"has_more": end < total,
 		})
 	case http.MethodPost:
 		var body struct {

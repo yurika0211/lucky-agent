@@ -313,8 +313,9 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 			sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
 		}
 
-		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
-		if !loopCfg.Ephemeral && a.ragManager != nil {
+		// Final answers are not indexed into RAG by default: indexed source
+		// material should stay separate from model-generated conclusions.
+		if !loopCfg.Ephemeral && a.ragManager != nil && autoIndexFinalAnswersEnabled() {
 			a.indexConversationTurn(routingText, response)
 		}
 
@@ -850,6 +851,19 @@ func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 			_ = ctx.Err()
 		}
 	}()
+}
+
+func autoIndexFinalAnswersEnabled() bool {
+	value := strings.TrimSpace(os.Getenv("LH_RAG_INDEX_FINAL_ANSWERS"))
+	if value == "" {
+		return false
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 /*
