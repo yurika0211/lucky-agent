@@ -929,10 +929,20 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ChatWithSessionStreamInputWithLoopConfig() error = %v", err)
 			}
+			var doneContent string
 			for evt := range events {
 				if evt.Type == ChatEventError {
 					t.Fatalf("unexpected stream error: %v", evt.Err)
 				}
+				if evt.Type == ChatEventDone {
+					doneContent = evt.Content
+				}
+			}
+			if !strings.Contains(doneContent, naturalCitationHeader) {
+				t.Fatalf("expected done content to include natural citations, got %q", doneContent)
+			}
+			if !strings.Contains(doneContent, "我参考了本地 RAG 检索中关于“course chapter”的资料。") {
+				t.Fatalf("expected done content to cite rag_search, got %q", doneContent)
 			}
 
 			messages := sess.GetMessages()
@@ -951,16 +961,26 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 			if messages[3].Role != "assistant" || !strings.Contains(messages[3].Content, "final answer") {
 				t.Fatalf("expected final assistant answer, got %#v", messages[3])
 			}
+			if !strings.Contains(messages[3].Content, naturalCitationHeader) {
+				t.Fatalf("expected persisted final assistant answer to include citations, got %#v", messages[3])
+			}
 		})
 	}
 }
 
 type cronNotifyGateway struct {
-	mu       sync.Mutex
-	name     string
-	running  bool
-	messages []string
-	nextID   int
+	mu         sync.Mutex
+	name       string
+	running    bool
+	messages   []string
+	deliveries []cronNotifyDelivery
+	nextID     int
+}
+
+type cronNotifyDelivery struct {
+	chatID       string
+	replyToMsgID string
+	message      string
 }
 
 func (g *cronNotifyGateway) Name() string { return g.name }
@@ -989,6 +1009,7 @@ func (g *cronNotifyGateway) SendWithReceipt(ctx context.Context, chatID string, 
 	g.nextID++
 	id := fmt.Sprintf("%d", g.nextID)
 	g.messages = append(g.messages, message)
+	g.deliveries = append(g.deliveries, cronNotifyDelivery{chatID: chatID, message: message})
 	return msggateway.SentMessage{ID: id, ChatID: chatID}, nil
 }
 
@@ -1003,6 +1024,7 @@ func (g *cronNotifyGateway) SendWithReplyReceipt(ctx context.Context, chatID str
 	g.nextID++
 	id := fmt.Sprintf("%d", g.nextID)
 	g.messages = append(g.messages, message)
+	g.deliveries = append(g.deliveries, cronNotifyDelivery{chatID: chatID, replyToMsgID: replyToMsgID, message: message})
 	return msggateway.SentMessage{ID: id, ChatID: chatID}, nil
 }
 
@@ -1016,6 +1038,12 @@ func (g *cronNotifyGateway) messageSnapshot() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]string(nil), g.messages...)
+}
+
+func (g *cronNotifyGateway) deliverySnapshot() []cronNotifyDelivery {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]cronNotifyDelivery(nil), g.deliveries...)
 }
 
 type staticChatProvider struct {
@@ -2617,8 +2645,58 @@ func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
 	if len(gw.messageSnapshot()) == 0 {
 		t.Fatal("expected telegram notification to be sent")
 	}
+	deliveries := gw.deliverySnapshot()
+	if len(deliveries) != 1 {
+		t.Fatalf("expected 1 telegram delivery, got %d", len(deliveries))
+	}
+	if got := deliveries[0].chatID; got != "12345" {
+		t.Fatalf("expected telegram notification chat ID 12345, got %q", got)
+	}
+	if got := deliveries[0].replyToMsgID; got != "77" {
+		t.Fatalf("expected telegram notification to reply to 77, got %q", got)
+	}
 	if got, ok := a.ResolveExternalReplyAnchor("telegram", "12345", "1"); !ok || got != "session-telegram-cron" {
 		t.Fatalf("expected cron notification reply anchor to resolve session-telegram-cron, got %q ok=%v", got, ok)
+	}
+}
+
+func TestCronNotificationHonorsSnakeCaseTelegramMetadata(t *testing.T) {
+	gm := msggateway.NewGatewayManager()
+	gw := &cronNotifyGateway{name: "telegram", running: true}
+	if err := gm.Register(gw); err != nil {
+		t.Fatalf("register gateway: %v", err)
+	}
+	a := &Agent{msgGateway: gm}
+	a.RecordRecentChatTarget("telegram", "fallback-chat", "fallback-reply")
+
+	a.sendCronNotification(map[string]string{
+		"platform":            "telegram",
+		"chat_id":             "snake-chat",
+		"reply_to_message_id": "snake-reply",
+		"session_id":          "snake-session",
+	}, cronNotificationPayload{
+		JobID:     "snake-job",
+		Mode:      "agent",
+		Command:   "summarize something",
+		Outcome:   "succeeded",
+		RawResult: "done",
+	})
+
+	deliveries := gw.deliverySnapshot()
+	if len(deliveries) != 1 {
+		t.Fatalf("expected 1 telegram delivery, got %d", len(deliveries))
+	}
+	if got := deliveries[0].chatID; got != "snake-chat" {
+		t.Fatalf("expected snake_case chat_id to be honored, got %q", got)
+	}
+	if got := deliveries[0].replyToMsgID; got != "snake-reply" {
+		t.Fatalf("expected snake_case reply_to_message_id to be honored, got %q", got)
+	}
+	if got, ok := a.ResolveExternalReplyAnchor("telegram", "snake-chat", "1"); !ok || got != "snake-session" {
+		t.Fatalf("expected snake_case cron notification reply anchor to resolve snake-session, got %q ok=%v", got, ok)
+	}
+	if _, ok := a.ResolveExternalReplyAnchor("telegram", "fallback-chat", "1"); ok {
+		t.Fatal("expected snake_case metadata to avoid falling back to recent telegram target")
 	}
 }
 

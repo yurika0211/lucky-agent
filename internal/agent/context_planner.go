@@ -531,16 +531,21 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 		lines = append(lines, fmt.Sprintf("- [%s/%s%s] %s", e.Category, e.Tier.String(), graphHint, truncate(e.Content, 140)))
 	}
 	routeLines := memoryRouteLines(route)
-	content := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
+	header := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
 	if vault := p.agent.memoryVaultPath(); vault != "" {
-		content += " at " + vault
+		header += " at " + vault
 	}
-	content += ". Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked.\n"
+	header += ". Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked."
 	if len(routeLines) > 0 {
-		content += "\n[Memory Router]\n" + strings.Join(routeLines, "\n") + "\n\n"
+		header += "\n\n[Memory Router]\n" + strings.Join(routeLines, "\n")
 	}
-	content += strings.Join(lines, "\n")
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(160, p.budget.Memory/2))}
+	bodyBudget := utils.MaxInt(64, utils.MaxInt(160, p.budget.Memory/2)-p.est.Estimate(header)-16)
+	body := p.fitTextToBudget(strings.Join(lines, "\n"), bodyBudget)
+	content := header
+	if body != "" {
+		content += "\n\n" + body
+	}
+	return provider.Message{Role: "system", Content: content}
 }
 
 func memoryRouteLines(route memory.RouteAnalysis) []string {

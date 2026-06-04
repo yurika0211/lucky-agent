@@ -305,6 +305,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	}
 	finalize := func(response string) {
 		response = utils.SanitizeToolProtocolOutput(response)
+		response = appendNaturalCitations(response, result.ToolCalls)
 		result.Response = response
 		result.State = StateDone
 

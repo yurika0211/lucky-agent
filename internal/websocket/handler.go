@@ -245,7 +245,8 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			client.Send <- msg
 
 		case agent.ChatEventDone:
-			if fullResponse.Len() == 0 && evt.Content != "" {
+			if evt.Content != "" {
+				fullResponse.Reset()
 				fullResponse.WriteString(evt.Content)
 			}
 			endMsg, _ := NewMessage(TypeStreamEnd, client.SessionID, StreamEndData{

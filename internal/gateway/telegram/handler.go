@@ -1180,9 +1180,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 		return h.handleCommand(ctx, msg)
 	}
 
-	replyAnchored := h.bindSessionFromReplyAnchor(msg)
+	h.bindSessionFromReplyAnchor(msg)
 	input := h.buildUserTurnInput(ctx, msg.Text, msg.Attachments)
-	if replyAnchored {
+	if msg.ReplyTo != nil {
 		input = h.withReplyAnchorContext(input, msg)
 	}
 
@@ -1960,7 +1960,8 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 						toolTraceSent = true
 					}
 				}
-				if finalContent.Len() == 0 {
+				if evt.Content != "" {
+					finalContent.Reset()
 					finalContent.WriteString(evt.Content)
 				}
 				finalOutput := strings.TrimSpace(finalContent.String())
@@ -2161,7 +2162,8 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						toolTraceSent = true
 					}
 				}
-				if finalContent.Len() == 0 {
+				if evt.Content != "" {
+					finalContent.Reset()
 					finalContent.WriteString(evt.Content)
 				}
 				finalOutput := finalContent.String()

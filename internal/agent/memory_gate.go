@@ -412,13 +412,13 @@ func (a *Agent) continueAfterStreamMemoryGate(
 			ToolCallID: execResult.ToolCall.ID,
 			Name:       execResult.ToolCall.Name,
 		})
-		state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
+		state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result, execResult.Duration)
 	}
 
 	messages = append(messages, state.memoryGate.synthesisPrompt())
 	messages = a.fitContextWindow(messages)
 	if remaining <= 1 {
-		a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+		a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 		return true
 	}
 	nextRound := round + 1

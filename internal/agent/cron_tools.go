@@ -216,8 +216,8 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 		metadata = map[string]string{}
 	}
 	platform := strings.TrimSpace(metadata["platform"])
-	chatID := strings.TrimSpace(metadata["chatID"])
-	replyToMsgID := strings.TrimSpace(metadata["replyToMsgID"])
+	chatID := firstCronMetadataValue(metadata, "chatID", "chat_id")
+	replyToMsgID := firstCronMetadataValue(metadata, "replyToMsgID", "reply_to_message_id")
 	sessionID := strings.TrimSpace(metadata["session_id"])
 	if platform == "" || chatID == "" {
 		target := a.pickRecentChatTarget()
@@ -260,6 +260,15 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 		return
 	}
 	_ = gw.Send(sendCtx, chatID, message)
+}
+
+func firstCronMetadataValue(metadata map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (a *Agent) formatCronNotification(payload cronNotificationPayload) string {

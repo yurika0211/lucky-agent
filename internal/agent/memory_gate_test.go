@@ -82,8 +82,14 @@ func TestMemoryGateAutoExecutesRequiredToolsBeforeDirectAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunLoopWithSessionInput() error = %v", err)
 	}
-	if result.Response != "checked answer" {
+	if !strings.Contains(result.Response, "checked answer") {
 		t.Fatalf("expected checked final answer, got %q", result.Response)
+	}
+	if !strings.Contains(result.Response, naturalCitationHeader) {
+		t.Fatalf("expected final answer to include natural citations, got %q", result.Response)
+	}
+	if !strings.Contains(result.Response, "我用当前时间工具核对了") || !strings.Contains(result.Response, "我参考了关于") {
+		t.Fatalf("expected citations for current_time and web_search, got %q", result.Response)
 	}
 	if prov.callCount != 2 {
 		t.Fatalf("expected provider to be called twice, got %d", prov.callCount)

@@ -3971,6 +3971,75 @@ func TestV054HandleMessageReplyToCronAnchorUsesAnchoredSession(t *testing.T) {
 	}
 }
 
+func TestV054HandleMessageReplyWithoutAnchorStillIncludesRepliedText(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	sessions := handler.agent.(*mockAgentProvider).sessions
+	currentSess := sessions.NewWithTitle("current chat")
+	handler.setSessionID("12345", currentSess.ID)
+
+	type capturedTurn struct {
+		sessionID      string
+		routingText    string
+		messageContent string
+	}
+	captured := make(chan capturedTurn, 1)
+	handler.agent.(*mockAgentProvider).chatStreamIn = func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+		captured <- capturedTurn{
+			sessionID:      sessionID,
+			routingText:    input.RoutingText,
+			messageContent: input.Message.Content,
+		}
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "reply-aware response"}
+		close(ch)
+		return ch, nil
+	}
+
+	err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID: "3",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{ID: "user-1"},
+		Text:   "可以",
+		ReplyTo: &gateway.Message{
+			ID:   "9002",
+			Chat: gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+			Text: "我刚跑完这个定时任务：发现 RAG 课程笔记里第一章缺少索引，需要补一次重建。",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error = %v", err)
+	}
+	var gotTurn capturedTurn
+	select {
+	case gotTurn = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reply-aware chat turn")
+	}
+	if gotTurn.sessionID != currentSess.ID {
+		t.Fatalf("expected current session %q without anchor, got %q", currentSess.ID, gotTurn.sessionID)
+	}
+	if got := handler.currentSessionID("12345"); got != currentSess.ID {
+		t.Fatalf("expected chat session to remain %q without anchor, got %q", currentSess.ID, got)
+	}
+	if !strings.Contains(gotTurn.routingText, "[Replied Telegram message]") {
+		t.Fatalf("expected routing text to include replied message context, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "第一章缺少索引") {
+		t.Fatalf("expected routing text to include replied cron text, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "[User request]\n可以") {
+		t.Fatalf("expected routing text to include terse user reply, got: %s", gotTurn.routingText)
+	}
+	if gotTurn.messageContent != gotTurn.routingText {
+		t.Fatalf("expected message content to match reply-aware routing text\ncontent=%s\nrouting=%s", gotTurn.messageContent, gotTurn.routingText)
+	}
+}
+
 func TestV054HandleRenameCommandRenamesCurrentTelegramSession(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()

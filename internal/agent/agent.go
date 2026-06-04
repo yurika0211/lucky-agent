@@ -1308,13 +1308,18 @@ func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provid
 	chunks := make(chan provider.StreamChunk, 64)
 	go func() {
 		defer close(chunks)
+		var streamed strings.Builder
 		for evt := range events {
 			switch evt.Type {
 			case ChatEventContent:
 				if evt.Content != "" {
+					streamed.WriteString(evt.Content)
 					chunks <- provider.StreamChunk{Content: evt.Content}
 				}
 			case ChatEventDone:
+				if delta := strings.TrimPrefix(evt.Content, streamed.String()); delta != "" {
+					chunks <- provider.StreamChunk{Content: delta}
+				}
 				chunks <- provider.StreamChunk{Done: true, FinishReason: "stop"}
 				return
 			case ChatEventError:
@@ -1412,6 +1417,7 @@ type streamConvergenceState struct {
 	duplicateFetchLimit      int
 	disabledTools            []string
 	memoryGate               *memoryToolGate
+	citationToolCalls        []toolCallLog
 }
 
 /*
@@ -1475,9 +1481,9 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 }
 
 /*
-rememberToolCallResult 记录一次工具调用的结果，供循环保护和摘要使用。
+rememberToolCallResult 记录一次工具调用的结果，供循环保护、摘要和最终引用使用。
 */
-func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result string) {
+func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result string, duration time.Duration) {
 	if s.toolCallLastResult == nil {
 		s.toolCallLastResult = make(map[string]string)
 	}
@@ -1488,6 +1494,12 @@ func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result 
 		}
 		s.toolURLLastResult[key] = result
 	}
+	s.citationToolCalls = append(s.citationToolCalls, toolCallLog{
+		Name:      name,
+		Arguments: arguments,
+		Result:    result,
+		Duration:  duration,
+	})
 }
 
 /*
@@ -1591,11 +1603,11 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	}
 	if remaining <= 0 {
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
-			a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1692,7 +1704,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
 					return
 				}
-				a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
+				a.finalizeStreamWithState(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs), state)
 				return
 			}
 
@@ -1742,7 +1754,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 						Name:       execResult.ToolCall.Name,
 					})
 				}
-				state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
+				state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result, execResult.Duration)
 			}
 			if sess != nil {
 				_ = sess.Save()
@@ -1756,7 +1768,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			}
 			if remaining <= 1 {
 				if state.hasContinuation() {
-					a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+					a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 					return
 				}
 				events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1798,9 +1810,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()))
+			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()), state)
 		} else {
-			a.finalizeStream(events, sess, turnInput, emptyFinalResponseMessage)
+			a.finalizeStreamWithState(events, sess, turnInput, emptyFinalResponseMessage, state)
 		}
 		return
 	}
@@ -1823,7 +1835,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		if partial == "" {
 			partial = clean
 		}
-		a.finalizeStream(events, sess, turnInput, partial+lengthTruncatedNotice)
+		a.finalizeStreamWithState(events, sess, turnInput, partial+lengthTruncatedNotice, state)
 		return
 	}
 	state.lengthRecoveryCount = 0
@@ -1833,7 +1845,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		appendContinuation(&state.continuedResponse, response)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 	}
-	a.finalizeStream(events, sess, turnInput, finalResponse)
+	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state)
 }
 
 // streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
@@ -1846,11 +1858,11 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	}
 	if remaining <= 0 {
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
-			a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1872,7 +1884,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
 				return
 			}
-			a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
+			a.finalizeStreamWithState(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs), state)
 			return
 		}
 		messages = append(messages, provider.Message{
@@ -1920,7 +1932,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 					Name:       execResult.ToolCall.Name,
 				})
 			}
-			state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
+			state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result, execResult.Duration)
 		}
 		if sess != nil {
 			_ = sess.Save()
@@ -1934,7 +1946,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 		if remaining <= 1 {
 			if state.hasContinuation() {
-				a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+				a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 				return
 			}
 			events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1966,9 +1978,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()))
+			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()), state)
 		} else {
-			a.finalizeStream(events, sess, turnInput, emptyFinalResponseMessage)
+			a.finalizeStreamWithState(events, sess, turnInput, emptyFinalResponseMessage, state)
 		}
 		return
 	}
@@ -1996,7 +2008,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		if partial == "" {
 			partial = clean
 		}
-		a.finalizeStream(events, sess, turnInput, partial+lengthTruncatedNotice)
+		a.finalizeStreamWithState(events, sess, turnInput, partial+lengthTruncatedNotice, state)
 		return
 	}
 	state.lengthRecoveryCount = 0
@@ -2012,16 +2024,23 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		appendContinuation(&state.continuedResponse, response)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 	}
-	a.finalizeStream(events, sess, turnInput, finalResponse)
+	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state)
 }
 
 // finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引
-func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string) {
+func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
 	response = utils.SanitizeToolProtocolOutput(response)
-	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
-	_ = sess.Save()
+	var logs []toolCallLog
+	if len(citationLogs) > 0 {
+		logs = citationLogs[0]
+	}
+	response = appendNaturalCitations(response, logs)
+	if sess != nil {
+		sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
+		_ = sess.Save()
+	}
 
 	a.chatCount++
 	a.saveConversationMemory(routingText, response)
@@ -2048,6 +2067,14 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, t
 
 	a.metrics.RecordChatRequest()
 	events <- ChatEvent{Type: ChatEventDone, Content: response}
+}
+
+func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, state *streamConvergenceState) {
+	if state == nil {
+		a.finalizeStream(events, sess, turnInput, response)
+		return
+	}
+	a.finalizeStream(events, sess, turnInput, response, state.citationToolCalls)
 }
 
 // streamToolCallAcc 流式 tool_calls 增量累积器
@@ -2362,15 +2389,15 @@ func (a *Agent) Registry() *provider.Registry {
 
 // SwitchModel 切换模型（通过 catalog 推断 provider）
 func (a *Agent) SwitchModel(modelID string) error {
-	providerName, err := a.catalog.ResolveProvider(modelID)
+	modelInfo, err := a.catalog.Get(modelID)
 	if err != nil {
-		return fmt.Errorf("resolve provider for model %s: %w", modelID, err)
+		return fmt.Errorf("model %s is not registered in catalog: %w", modelID, err)
 	}
 
 	cfg := a.cfg.Get()
 	pCfg := provider.Config{
 		LlmProvider: provider.LlmProvider{
-			Name:    providerName,
+			Name:    modelInfo.Provider,
 			APIKey:  cfg.APIKey,
 			BaseURL: cfg.APIBase,
 			Model:   modelID,
@@ -2379,7 +2406,7 @@ func (a *Agent) SwitchModel(modelID string) error {
 
 	p, err := a.registry.Resolve(pCfg)
 	if err != nil {
-		return fmt.Errorf("create provider %s: %w", providerName, err)
+		return fmt.Errorf("create provider %s: %w", modelInfo.Provider, err)
 	}
 
 	a.provider = wrapProviderWithMiddleware(p, cfg)
