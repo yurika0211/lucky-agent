@@ -96,6 +96,12 @@ type agentConfigProvider interface {
 	Get() agentConfigSnapshot
 }
 
+type mutableAgentConfigProvider interface {
+	agentConfigProvider
+	Set(key, value string) error
+	Save() error
+}
+
 // agentConfigSnapshot 是 config 快照的最小子集。
 type agentConfigSnapshot struct {
 	HomeDir                   string
@@ -123,6 +129,7 @@ type agentConfigSnapshot struct {
 	ProgressAsNaturalLanguage bool
 	ProgressSummaryWithLLM    bool
 	ShowToolDetailsInResult   bool
+	ModelRouterEnabled        bool
 }
 
 type contextWindowSnapshot struct {
@@ -302,7 +309,16 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 		ProgressAsNaturalLanguage: cfg.MsgGateway.Telegram.ProgressAsNaturalLanguage,
 		ProgressSummaryWithLLM:    cfg.MsgGateway.Telegram.ProgressSummaryWithLLM,
 		ShowToolDetailsInResult:   cfg.MsgGateway.Telegram.ShowToolDetailsInResult,
+		ModelRouterEnabled:        cfg.ModelRouter.Enable,
 	}
+}
+
+func (w agentConfigWrapper) Set(key, value string) error {
+	return w.mgr.Set(key, value)
+}
+
+func (w agentConfigWrapper) Save() error {
+	return w.mgr.Save()
 }
 
 type telegramCommandHandler func(ctx context.Context, msg *gateway.Message) error
@@ -897,36 +913,102 @@ func maskSecret(secret string) string {
 	return secret[:8] + "..."
 }
 
-func findSessionByIDOrPrefix(sessions *session.Manager, query string) (*session.Session, string, bool) {
+type sessionLookupStatus int
+
+const (
+	sessionLookupNotFound sessionLookupStatus = iota
+	sessionLookupMatched
+	sessionLookupAmbiguous
+)
+
+type sessionLookupResult struct {
+	status  sessionLookupStatus
+	session *session.Session
+	id      string
+	matches []session.SessionInfo
+}
+
+func normalizeSessionLookupText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
+}
+
+func findSessionByIDTitleOrPrefix(sessions *session.Manager, query string) sessionLookupResult {
 	if sessions == nil {
-		return nil, "", false
+		return sessionLookupResult{status: sessionLookupNotFound}
 	}
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, "", false
+		return sessionLookupResult{status: sessionLookupNotFound}
 	}
 	if sess, ok := sessions.Get(query); ok {
-		return sess, query, true
+		return sessionLookupResult{status: sessionLookupMatched, session: sess, id: query}
 	}
 
-	var matched *session.Session
-	var matchedID string
-	for _, info := range sessions.ListInfo() {
-		if !strings.HasPrefix(info.ID, query) {
-			continue
-		}
-		if matched != nil {
-			return nil, "", false
-		}
-		if sess, ok := sessions.Get(info.ID); ok {
-			matched = sess
-			matchedID = info.ID
+	infos := sessions.ListInfo()
+	if result := uniqueSessionMatch(sessions, infos, func(info session.SessionInfo) bool {
+		return strings.HasPrefix(info.ID, query)
+	}); result.status != sessionLookupNotFound {
+		return result
+	}
+
+	normalizedQuery := normalizeSessionLookupText(query)
+	if result := uniqueSessionMatch(sessions, infos, func(info session.SessionInfo) bool {
+		return normalizeSessionLookupText(info.Title) == normalizedQuery
+	}); result.status != sessionLookupNotFound {
+		return result
+	}
+	if result := uniqueSessionMatch(sessions, infos, func(info session.SessionInfo) bool {
+		title := normalizeSessionLookupText(info.Title)
+		return title != "" && strings.HasPrefix(title, normalizedQuery)
+	}); result.status != sessionLookupNotFound {
+		return result
+	}
+	return uniqueSessionMatch(sessions, infos, func(info session.SessionInfo) bool {
+		title := normalizeSessionLookupText(info.Title)
+		return title != "" && strings.Contains(title, normalizedQuery)
+	})
+}
+
+func uniqueSessionMatch(sessions *session.Manager, infos []session.SessionInfo, match func(session.SessionInfo) bool) sessionLookupResult {
+	matches := make([]session.SessionInfo, 0, 2)
+	for _, info := range infos {
+		if match(info) {
+			matches = append(matches, info)
 		}
 	}
-	if matched == nil {
-		return nil, "", false
+	if len(matches) == 0 {
+		return sessionLookupResult{status: sessionLookupNotFound}
 	}
-	return matched, matchedID, true
+	if len(matches) > 1 {
+		return sessionLookupResult{status: sessionLookupAmbiguous, matches: matches}
+	}
+	sess, ok := sessions.Get(matches[0].ID)
+	if !ok {
+		return sessionLookupResult{status: sessionLookupNotFound}
+	}
+	return sessionLookupResult{status: sessionLookupMatched, session: sess, id: matches[0].ID}
+}
+
+func formatAmbiguousSessionSwitchMessage(query string, matches []session.SessionInfo) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Multiple sessions match `%s`:\n\n", query))
+	limit := min(len(matches), 5)
+	for i := 0; i < limit; i++ {
+		title := strings.TrimSpace(matches[i].Title)
+		if title == "" {
+			title = "(untitled)"
+		}
+		sb.WriteString(fmt.Sprintf("• `%s` — %s (%d msgs)\n",
+			matches[i].ID,
+			truncateForTelegramList(title, 56),
+			matches[i].MessageCount,
+		))
+	}
+	if len(matches) > limit {
+		sb.WriteString(fmt.Sprintf("\n... and %d more", len(matches)-limit))
+	}
+	sb.WriteString("\n\nUse `/resume <id>` or rename one session.")
+	return sb.String()
 }
 
 func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
@@ -2266,21 +2348,52 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, inpu
 
 // handleModel shows or sets the current model.
 func (h *Handler) handleModel(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
 	if msg.Args == "" {
-		// Show current model
 		cfg := h.configSnapshot()
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Current model: %s (provider: %s)", cfg.Model, cfg.Provider))
+		routerNote := ""
+		if cfg.ModelRouterEnabled {
+			routerNote = "\nModel router is enabled; future turns may still route by task."
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Current configured model: %s (provider: %s)%s", cfg.Model, cfg.Provider, routerNote))
 	}
 
-	// Set model
-	if h.state == nil {
+	modelID := strings.TrimSpace(msg.Args)
+	if state == nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Model switching unavailable")
 	}
-	if err := h.state.SwitchModel(msg.Args); err != nil {
+	providerName := ""
+	if catalog := state.Catalog(); catalog != nil {
+		if resolved, err := catalog.ResolveProvider(modelID); err == nil {
+			providerName = resolved
+		}
+	}
+	if err := state.SwitchModel(modelID); err != nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to switch model: %s", err.Error()))
 	}
 
-	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched to model: %s", msg.Args))
+	cfgProvider := state.Config()
+	if mutable, ok := cfgProvider.(mutableAgentConfigProvider); ok {
+		if providerName != "" {
+			if err := mutable.Set("provider", providerName); err != nil {
+				return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⚠️ Switched runtime model to `%s`, but failed to update provider config: %s", modelID, err.Error()))
+			}
+		}
+		if err := mutable.Set("model", modelID); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⚠️ Switched runtime model to `%s`, but failed to update config: %s", modelID, err.Error()))
+		}
+		if err := mutable.Save(); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⚠️ Switched runtime model to `%s`, but failed to save config: %s", modelID, err.Error()))
+		}
+		cfg := mutable.Get()
+		routerNote := ""
+		if cfg.ModelRouterEnabled {
+			routerNote = "\nModel router is enabled; future turns may still route by task."
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched model: `%s`\nSaved to config.%s", modelID, routerNote))
+	}
+
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched runtime model: `%s`\nThis config provider does not support saving, so restart may restore the configured model.", modelID))
 }
 
 func (h *Handler) handleReview(ctx context.Context, msg *gateway.Message) error {
@@ -2696,7 +2809,7 @@ func (h *Handler) handleSessions(ctx context.Context, msg *gateway.Message) erro
 	if len(infos) > limit {
 		sb.WriteString(fmt.Sprintf("\n... and %d more", len(infos)-limit))
 	}
-	sb.WriteString("\n\nUse `/resume <id>` or `/session <id>` to switch.")
+	sb.WriteString("\n\nUse `/resume <title>` or `/resume <id>` to switch.")
 
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
 }
@@ -2704,7 +2817,7 @@ func (h *Handler) handleSessions(ctx context.Context, msg *gateway.Message) erro
 func (h *Handler) handleResume(ctx context.Context, msg *gateway.Message) error {
 	sessionID := strings.TrimSpace(msg.Args)
 	if sessionID == "" {
-		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /resume <session_id>")
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /resume <session_title_or_id>")
 	}
 	return h.handleSessionSwitch(ctx, msg, sessionID)
 }
@@ -2730,17 +2843,23 @@ func (h *Handler) handleRename(ctx context.Context, msg *gateway.Message) error 
 	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Renamed current session to: %s", truncateForTelegramList(title, 120)))
 }
 
-func (h *Handler) handleSessionSwitch(ctx context.Context, msg *gateway.Message, sessionID string) error {
+func (h *Handler) handleSessionSwitch(ctx context.Context, msg *gateway.Message, sessionQuery string) error {
 	sessions := h.sessionManager()
 	if sessions == nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
 	}
 
-	sess, matchedID, ok := findSessionByIDOrPrefix(sessions, sessionID)
-	if !ok {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. Use /sessions to list recent sessions.", sessionID))
+	result := findSessionByIDTitleOrPrefix(sessions, sessionQuery)
+	switch result.status {
+	case sessionLookupMatched:
+	case sessionLookupAmbiguous:
+		return h.adapter.Send(ctx, msg.Chat.ID, formatAmbiguousSessionSwitchMessage(sessionQuery, result.matches))
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. Use /sessions to list recent sessions.", sessionQuery))
 	}
 
+	sess := result.session
+	matchedID := result.id
 	h.mu.Lock()
 	oldSessionID, hadOld := h.sessions[msg.Chat.ID]
 	h.sessions[msg.Chat.ID] = matchedID

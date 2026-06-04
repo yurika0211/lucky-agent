@@ -3379,6 +3379,57 @@ func TestV054HandleResumeSwitchesSessionByFullID(t *testing.T) {
 	}
 }
 
+func TestV054HandleResumeSwitchesSessionByTitle(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	oldSess := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Old session")
+	target := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Release checklist")
+	handler.setSessionID("12345", oldSess.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume Release checklist",
+		IsCommand: true,
+		Command:   "resume",
+		Args:      "Release checklist",
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != target.ID {
+		t.Fatalf("expected switched session %q, got %q", target.ID, got)
+	}
+}
+
+func TestV054HandleResumeSwitchesSessionByUniqueTitleFragment(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	oldSess := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Old session")
+	target := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Telegram resume title support")
+	handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Billing notes")
+	handler.setSessionID("12345", oldSess.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume title support",
+		IsCommand: true,
+		Command:   "resume",
+		Args:      "title support",
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != target.ID {
+		t.Fatalf("expected switched session %q, got %q", target.ID, got)
+	}
+}
+
 func TestV054HandleSessionSwitchesByPrefix(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()
@@ -3400,6 +3451,32 @@ func TestV054HandleSessionSwitchesByPrefix(t *testing.T) {
 	}
 	if got := handler.currentSessionID("12345"); got != target.ID {
 		t.Fatalf("expected switched session %q, got %q", target.ID, got)
+	}
+}
+
+func TestV054HandleResumeAmbiguousTitleDoesNotSwitch(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	current := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Current session")
+	handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Project alpha")
+	handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Project beta")
+	handler.setSessionID("12345", current.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume Project",
+		IsCommand: true,
+		Command:   "resume",
+		Args:      "Project",
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != current.ID {
+		t.Fatalf("expected current session to remain %q, got %q", current.ID, got)
 	}
 }
 
