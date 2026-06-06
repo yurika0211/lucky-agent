@@ -451,6 +451,11 @@ func (s *Store) Route(query string) RouteAnalysis {
 	text := routeAnalysisText(query, entries)
 	hasOutdoor := routeTextHasAny(text, "outdoor plan", "outdoor", "park", "公园", "户外", "出门", "外出", "踏青", "郊游")
 	hasChild := routeTextHasAny(text, "daughter", "child", "kid", "女儿", "孩子", "小孩", "儿童", "小朋友")
+	if hasOutdoor {
+		entries = s.includeRouteLocationEntries(entries, 3)
+		route.Entries = entries
+		text = routeAnalysisText(query, entries)
+	}
 	hasPollen := routeTextHasAny(text, "pollen allergy", "pollen", "hay fever", "allergy", "花粉", "花粉过敏", "花粉症", "过敏")
 	pollenInactive := routeStateInactive(entries, "pollen")
 	hasActivePollenRisk := hasPollen && !pollenInactive
@@ -465,6 +470,9 @@ func (s *Store) Route(query string) RouteAnalysis {
 	if pollenInactive {
 		route.RiskFlags = append(route.RiskFlags, "pollen_allergy_inactive_or_resolved")
 		route.Constraints = append(route.Constraints, "Latest temporal memory says the pollen-allergy state is inactive/resolved; do not apply older allergy risk unless new evidence contradicts it.")
+	}
+	if len(route.SupersededRefs) > 0 && hasPollen {
+		route.Constraints = append(route.Constraints, "Do not apply older allergy risk unless new evidence contradicts it.")
 	}
 	if hasActivePollenRisk {
 		route.RiskFlags = append(route.RiskFlags, "pollen_allergy")
@@ -507,6 +515,38 @@ func (s *Store) Route(query string) RouteAnalysis {
 	route.Clarifications = dedupSlice(route.Clarifications)
 	route.EvidenceRefs = routeEvidenceRefs(entries, 6)
 	return route
+}
+
+func (s *Store) includeRouteLocationEntries(entries []Entry, limit int) []Entry {
+	if s == nil || limit <= 0 {
+		return entries
+	}
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		seen[e.ID] = struct{}{}
+	}
+	now := time.Now()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var added int
+	for _, e := range s.entries {
+		if e == nil || !entryIsActive(e, now) {
+			continue
+		}
+		if _, ok := seen[e.ID]; ok {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(e.Category), "location") {
+			continue
+		}
+		entries = append(entries, *e)
+		seen[e.ID] = struct{}{}
+		added++
+		if added >= limit {
+			break
+		}
+	}
+	return entries
 }
 
 func prioritizeRiskFlags(flags []string) []string {

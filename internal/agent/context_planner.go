@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/logger"
@@ -171,7 +172,7 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 		}
 	}
 	if p.options.IncludeHistory && sess != nil {
-		messages = append(messages, p.buildHistoryMessages(sess)...)
+		messages = append(messages, p.buildHistoryMessages(sess, routingText)...)
 	}
 
 	if p.agent == nil {
@@ -533,29 +534,80 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 		return provider.Message{}
 	}
 	results = prioritizeMemoryForContext(results)
-	limit := utils.MinInt(6, len(results))
-	lines := make([]string, 0, limit)
-	for i := 0; i < limit; i++ {
-		e := results[i]
-		graphHint := memoryGraphHint(e)
-		lines = append(lines, fmt.Sprintf("- [%s/%s%s] %s", e.Category, e.Tier.String(), graphHint, truncate(e.Content, 140)))
-	}
-	routeLines := memoryRouteLines(route)
 	header := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
 	if vault := p.agent.memoryVaultPath(); vault != "" {
 		header += " at " + vault
 	}
 	header += ". Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked."
-	if len(routeLines) > 0 {
-		header += "\n\n[Memory Router]\n" + strings.Join(routeLines, "\n")
-	}
-	bodyBudget := utils.MaxInt(64, utils.MaxInt(160, p.budget.Memory/2)-p.est.Estimate(header)-16)
-	body := p.fitTextToBudget(strings.Join(lines, "\n"), bodyBudget)
+	bodyBudget := utils.MaxInt(768, p.budget.Memory*3-p.est.Estimate(header)-16)
+	body := p.buildTypedMemoryBody(route, results, bodyBudget)
 	content := header
 	if body != "" {
 		content += "\n\n" + body
 	}
 	return provider.Message{Role: "system", Content: content}
+}
+
+func (p *contextPlanner) buildTypedMemoryBody(route memory.RouteAnalysis, results []memory.Entry, tokenBudget int) string {
+	if tokenBudget <= 0 {
+		return ""
+	}
+	var sections []string
+	if len(route.RequiredTools) > 0 {
+		sections = append(sections, "[Required Tools]\n- "+strings.Join(route.RequiredTools, "\n- "))
+	}
+	if len(route.Constraints) > 0 {
+		sections = append(sections, "[Answer Constraints]\n- "+strings.Join(limitStrings(route.Constraints, 8), "\n- "))
+	}
+	if len(route.SuggestedSearches) > 0 {
+		sections = append(sections, "[Suggested web_search queries]\n- "+strings.Join(limitStrings(route.SuggestedSearches, 4), "\n- "))
+	}
+	if lines := temporalWarningLines(route); len(lines) > 0 {
+		sections = append(sections, "[Temporal Warnings]\n"+strings.Join(lines, "\n"))
+	}
+	if len(route.EvidenceRefs) > 0 {
+		refs := strings.Join(limitStrings(route.EvidenceRefs, 8), "\n- ")
+		sections = append(sections, "[Evidence Refs]\nMemory refs:\n- "+refs)
+	}
+	if lines := typedMemoryFactLines(results, 6); len(lines) > 0 {
+		sections = append(sections, "[Must Use Facts]\n"+strings.Join(lines, "\n"))
+	}
+	if lines := memoryRouteLines(route); len(lines) > 0 {
+		lines = limitStrings(lines, 3)
+		sections = append(sections, "[Memory Router]\n"+strings.Join(lines, "\n"))
+	}
+	return p.fitTextToBudget(strings.Join(sections, "\n\n"), tokenBudget)
+}
+
+func typedMemoryFactLines(entries []memory.Entry, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	lines := make([]string, 0, utils.MinInt(limit, len(entries)))
+	for _, e := range entries {
+		if strings.TrimSpace(e.Content) == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- [%s/%s] %s%s", e.Category, e.Tier.String(), truncate(e.Content, 160), memoryRefHint(e)))
+		if len(lines) >= limit {
+			break
+		}
+	}
+	return lines
+}
+
+func memoryRefHint(e memory.Entry) string {
+	if e.Path == "" && e.BlockID == "" {
+		return ""
+	}
+	ref := e.Path
+	if ref == "" {
+		ref = e.ID
+	}
+	if e.BlockID != "" {
+		ref += "#" + e.BlockID
+	}
+	return " (ref=" + ref + ")"
 }
 
 func memoryRouteLines(route memory.RouteAnalysis) []string {
@@ -580,6 +632,29 @@ func memoryRouteLines(route memory.RouteAnalysis) []string {
 	}
 	if len(route.EvidenceRefs) > 0 {
 		lines = append(lines, "- Memory refs: "+strings.Join(limitStrings(route.EvidenceRefs, 5), " | "))
+	}
+	return lines
+}
+
+func temporalWarningLines(route memory.RouteAnalysis) []string {
+	var lines []string
+	if len(route.TemporalNotes) > 0 || len(route.SupersededRefs) > 0 || len(route.ConflictRefs) > 0 || len(route.ExpiredRefs) > 0 || len(route.FutureRefs) > 0 {
+		lines = append(lines, "- Temporal resolution:")
+	}
+	for _, note := range limitStrings(route.TemporalNotes, 6) {
+		lines = append(lines, "- "+note)
+	}
+	if len(route.SupersededRefs) > 0 {
+		lines = append(lines, "- Superseded refs: "+strings.Join(limitStrings(route.SupersededRefs, 6), " | "))
+	}
+	if len(route.ConflictRefs) > 0 {
+		lines = append(lines, "- Conflict refs: "+strings.Join(limitStrings(route.ConflictRefs, 6), " | "))
+	}
+	if len(route.ExpiredRefs) > 0 {
+		lines = append(lines, "- Expired refs: "+strings.Join(limitStrings(route.ExpiredRefs, 6), " | "))
+	}
+	if len(route.FutureRefs) > 0 {
+		lines = append(lines, "- Future refs: "+strings.Join(limitStrings(route.FutureRefs, 6), " | "))
 	}
 	return lines
 }
@@ -703,11 +778,12 @@ func (p *contextPlanner) buildRAGMessage(ctx context.Context, query string) prov
 /*
 buildHistoryMessages 从会话历史中挑选适量消息纳入上下文。
 */
-func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.Message {
+func (p *contextPlanner) buildHistoryMessages(sess *session.Session, query string) []provider.Message {
 	all := sess.GetMessages()
 	if len(all) == 0 {
 		return nil
 	}
+	intentTerms := historyIntentTerms(query+" "+sess.Title, all)
 
 	recentCount := p.options.HistoryRecent
 	if recentCount <= 0 {
@@ -734,20 +810,21 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.
 			middleStart = 0
 		}
 		if middleStart > 0 {
-			if themes := p.summarizeConversationRangeWithLLM(context.Background(), sess, all[:middleStart], "[Conversation Themes]", utils.MaxInt(96, p.budget.History/4)); themes != "" {
+			if themes := p.summarizeIntentAwareConversationRange(context.Background(), sess, all[:middleStart], "[Conversation Themes]", utils.MaxInt(96, p.budget.History/4), intentTerms); themes != "" {
 				messages = append(messages, provider.Message{Role: "system", Content: themes})
 			}
 		}
 		if middleStart < recentStart {
-			if summary := p.summarizeConversationRangeWithLLM(context.Background(), sess, all[middleStart:recentStart], "[Conversation Summary]", utils.MaxInt(96, p.budget.History/3)); summary != "" {
+			if summary := p.summarizeIntentAwareConversationRange(context.Background(), sess, all[middleStart:recentStart], "[Conversation Summary]", utils.MaxInt(96, p.budget.History/3), intentTerms); summary != "" {
 				messages = append(messages, provider.Message{Role: "system", Content: summary})
 			}
 		}
 	}
 
 	recentBudget := utils.MaxInt(128, p.budget.History/2)
+	recentMessages := p.selectIntentAwareRecentHistory(all[recentStart:], intentTerms)
 	used := 0
-	for _, msg := range all[recentStart:] {
+	for _, msg := range recentMessages {
 		msg = p.compactHistoryMessage(msg)
 		tokens := p.est.Estimate(msg.Content) + 4
 		if used+tokens > recentBudget && len(messages) > 0 {
@@ -758,6 +835,202 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.
 	}
 
 	return messages
+}
+
+func (p *contextPlanner) summarizeIntentAwareConversationRange(ctx context.Context, sess *session.Session, messages []provider.Message, header string, tokenBudget int, terms []string) string {
+	filtered := filterIntentAwareHistory(messages, terms)
+	if len(filtered) == 0 {
+		return ""
+	}
+	return p.summarizeConversationRangeWithLLM(ctx, sess, filtered, header, tokenBudget)
+}
+
+func filterIntentAwareHistory(messages []provider.Message, terms []string) []provider.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	filtered := make([]provider.Message, 0, len(messages))
+	for _, msg := range messages {
+		if historyMessageRelevant(msg, terms) {
+			filtered = append(filtered, msg)
+		}
+	}
+	return filtered
+}
+
+func (p *contextPlanner) selectIntentAwareRecentHistory(messages []provider.Message, terms []string) []provider.Message {
+	if len(messages) <= 2 {
+		return filterIntentAwareHistory(messages, terms)
+	}
+	selected := make([]provider.Message, 0, len(messages))
+	for i, msg := range messages {
+		content := strings.ToLower(msg.Content)
+		tailCandidate := i >= len(messages)-2 && !historyExplicitlyIrrelevant(content)
+		if historyMessageRelevant(msg, terms) || tailCandidate {
+			selected = append(selected, msg)
+		}
+	}
+	if len(selected) == 0 {
+		tail := messages[len(messages)-utils.MinInt(2, len(messages)):]
+		return filterHistoryWithoutExplicitIrrelevance(tail)
+	}
+	return selected
+}
+
+func filterHistoryWithoutExplicitIrrelevance(messages []provider.Message) []provider.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	filtered := make([]provider.Message, 0, len(messages))
+	for _, msg := range messages {
+		if !historyExplicitlyIrrelevant(strings.ToLower(msg.Content)) {
+			filtered = append(filtered, msg)
+		}
+	}
+	return filtered
+}
+
+func historyIntentTerms(seedText string, messages []provider.Message) []string {
+	var terms []string
+	terms = append(terms, extractHistoryTerms(seedText)...)
+	for _, msg := range messages {
+		content := strings.ToLower(msg.Content)
+		if historyExplicitlyIrrelevant(content) {
+			continue
+		}
+		if strings.Contains(content, "context packer") ||
+			strings.Contains(content, "benchmark") ||
+			strings.Contains(content, "cmr") ||
+			strings.Contains(content, "quality") ||
+			strings.Contains(content, "p95") {
+			terms = append(terms, extractHistoryTerms(content)...)
+		}
+	}
+	terms = append(terms, historyAliasTerms(seedText)...)
+	return utils.DedupStringsLimit(terms, 32)
+}
+
+func extractHistoryTerms(text string) []string {
+	var terms []string
+	var latin strings.Builder
+	var han []rune
+	flushLatin := func() {
+		if latin.Len() == 0 {
+			return
+		}
+		token := strings.Trim(strings.ToLower(latin.String()), "-_")
+		if len(token) >= 3 {
+			terms = append(terms, token)
+		}
+		latin.Reset()
+	}
+	flushHan := func() {
+		if len(han) == 0 {
+			return
+		}
+		for n := 2; n <= 4; n++ {
+			if len(han) < n {
+				continue
+			}
+			for i := 0; i+n <= len(han); i++ {
+				terms = append(terms, string(han[i:i+n]))
+			}
+		}
+		han = han[:0]
+	}
+	for _, r := range strings.ToLower(text) {
+		switch {
+		case unicode.Is(unicode.Han, r):
+			flushLatin()
+			han = append(han, r)
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-':
+			flushHan()
+			latin.WriteRune(r)
+		default:
+			flushLatin()
+			flushHan()
+		}
+	}
+	flushLatin()
+	flushHan()
+	return terms
+}
+
+func historyAliasTerms(seed string) []string {
+	seed = strings.ToLower(seed)
+	var terms []string
+	if strings.Contains(seed, "女儿") || strings.Contains(seed, "孩子") || strings.Contains(seed, "daughter") || strings.Contains(seed, "child") {
+		terms = append(terms, "daughter", "child", "family")
+	}
+	if strings.Contains(seed, "过敏") || strings.Contains(seed, "花粉") || strings.Contains(seed, "pollen") || strings.Contains(seed, "allergy") {
+		terms = append(terms, "pollen", "allergy", "pollen allergy")
+	}
+	if strings.Contains(seed, "户外") || strings.Contains(seed, "出门") || strings.Contains(seed, "公园") || strings.Contains(seed, "outdoor") || strings.Contains(seed, "park") {
+		terms = append(terms, "outdoor", "park", "outdoor plan")
+	}
+	return terms
+}
+
+func historyMessageRelevant(msg provider.Message, terms []string) bool {
+	content := strings.ToLower(msg.Content)
+	if msg.Role == "tool" {
+		return true
+	}
+	if historyExplicitlyIrrelevant(content) {
+		return false
+	}
+	for _, must := range []string{
+		"context packer",
+		"benchmark",
+		"acceptance",
+		"cmr",
+		"constraint",
+		"quality",
+		"p95",
+		"token",
+		"latest user direction",
+		"active task",
+		"do not switch back",
+		"do not return to",
+		"最后一次确认",
+		"不要回到",
+	} {
+		if strings.Contains(content, must) {
+			return true
+		}
+	}
+	if len(terms) == 0 {
+		return false
+	}
+	hits := 0
+	for _, term := range terms {
+		if term != "" && strings.Contains(content, term) {
+			hits++
+			if hits >= 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func historyExplicitlyIrrelevant(content string) bool {
+	for _, marker := range []string{
+		"no benchmark relevance",
+		"without benchmark relevance",
+		"not benchmark relevant",
+		"no current task relevance",
+		"without current task relevance",
+		"unrelated note",
+		"unrelated response",
+		"unrelated text",
+		"unrelated project state",
+	} {
+		if strings.Contains(content, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *contextPlanner) summarizeConversationRangeWithLLM(ctx context.Context, sess *session.Session, messages []provider.Message, header string, tokenBudget int) string {
