@@ -13,6 +13,11 @@ go run ./cmd/lh-cache-bench --help
 The tool uses the normal LuckyHarness config and writes upstream captures through
 `LH_UPSTREAM_CAPTURE_DIR`.
 
+By default the benchmark copies the active config into a temporary
+LuckyHarness home. This avoids existing sessions, cron jobs, autonomy queues,
+and other local runtime state from polluting captures. Pass
+`--isolated-home=false` only when intentionally measuring the real local home.
+
 ## Recommended A/B Run
 
 Run the same command on the baseline branch and on the fixed branch:
@@ -24,6 +29,7 @@ go run ./cmd/lh-cache-bench \
   --rounds 20 \
   --delay 65s \
   --model deepseek-v4-flash \
+  --pure \
   --out /tmp/lh-cache-bench/baseline.jsonl \
   --capture-dir /tmp/lh-cache-bench/baseline-capture
 ```
@@ -35,6 +41,7 @@ go run ./cmd/lh-cache-bench \
   --rounds 20 \
   --delay 65s \
   --model deepseek-v4-flash \
+  --pure \
   --out /tmp/lh-cache-bench/fixed.jsonl \
   --capture-dir /tmp/lh-cache-bench/fixed-capture
 ```
@@ -50,7 +57,19 @@ hit cache.
 - `tool`: reuses one session and asks the model to run `pwd` via the shell tool.
 - `all`: runs all scenarios in order.
 
-For a pure prompt-cache test that hides tools from the provider request, add:
+For a pure prompt-cache test that hides tools from the provider request, prefer:
+
+```bash
+--pure
+```
+
+`--pure` expands to:
+
+```text
+--no-tools --max-iterations 1 --auto-approve=false
+```
+
+If you need to tune those switches manually, use:
 
 ```bash
 --no-tools
@@ -71,6 +90,15 @@ record per scenario. Key fields:
 - `uncached_prompt_tokens`
 - `provider_calls`
 - `missing_usage_calls`
+- `capture_errors`
+- `tool_rounds`
+- `tool_calls`
+- `tool_names`
+- `system_prompt_hash`
+- `system_prompt_bytes`
+- `system_prompt_tokens`
+- `system_prompt_stable`
+- `clean`
 - `duration_ms`
 
 Compare variants with:
@@ -87,7 +115,12 @@ jq -s '
     cached_ratio,
     avg_uncached_prompt_tokens,
     errors,
-    missing_usage_calls
+    capture_errors,
+    missing_usage_calls,
+    tool_rounds,
+    tool_calls,
+    system_prompt_stable,
+    clean
   })
 ' /tmp/lh-cache-bench/*.jsonl
 ```
@@ -109,3 +142,7 @@ uncached_reduction = baseline.uncached_prompt_tokens - fixed.uncached_prompt_tok
 
 If removing dynamic system prompt metadata is effective, `same-session` and
 `tool` should show the largest lift, especially with `--delay 65s`.
+
+Treat `clean=false` as a warning that the run is not a pure A/B cache signal.
+Common causes are model-visible tool calls, capture errors, missing usage
+records, per-round errors, or changing system prompt hashes.

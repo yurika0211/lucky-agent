@@ -100,6 +100,16 @@ func aggregateCaptureUsage(prefixes []string) (usageTotals, []string, int) {
 	return totals, files, missing
 }
 
+func countCaptureErrors(prefixes []string) int {
+	count := 0
+	for _, prefix := range prefixes {
+		if _, err := os.Stat(prefix + ".error.txt"); err == nil {
+			count++
+		}
+	}
+	return count
+}
+
 func readCaptureUsage(prefix string) (capturedUsage, string) {
 	if usage, ok := readJSONCaptureUsage(prefix + ".response.body.txt"); ok {
 		return usage, prefix + ".response.body.txt"

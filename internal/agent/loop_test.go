@@ -63,6 +63,25 @@ func TestFilterFunctionTools(t *testing.T) {
 	}
 }
 
+func TestNormalizeToolChoiceForToolsDropsUnavailableForcedTool(t *testing.T) {
+	choice := map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name": "skill_read",
+		},
+	}
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "web_search"}},
+	}
+
+	if got := normalizeToolChoiceForTools(choice, tools); got != "auto" {
+		t.Fatalf("expected auto after forced tool is unavailable, got %#v", got)
+	}
+	if got := normalizeToolChoiceForTools(choice, nil); got != "none" {
+		t.Fatalf("expected none without tools, got %#v", got)
+	}
+}
+
 func TestApplySimpleTaskLoopTuningDefaults(t *testing.T) {
 	loopCfg := LoopConfig{
 		MaxIterations:          10,

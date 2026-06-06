@@ -17,6 +17,7 @@ func (a *Agent) buildLoopCallOptions(userInput string, loopCfg LoopConfig) provi
 	fcMgr := function.NewManager(a.tools)
 	opts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
 	opts.Tools = filterFunctionTools(opts.Tools, loopCfg.DisabledTools)
+	opts.ToolChoice = normalizeToolChoiceForTools(opts.ToolChoice, opts.Tools)
 	if len(opts.Tools) == 0 {
 		opts.ToolChoice = "none"
 	}
@@ -50,6 +51,35 @@ func filterFunctionTools(tools []map[string]any, disabled []string) []map[string
 
 func functionToolNameFromSchema(tool map[string]any) string {
 	fn, ok := tool["function"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := fn["name"].(string)
+	return strings.TrimSpace(name)
+}
+
+func normalizeToolChoiceForTools(choice any, tools []map[string]any) any {
+	name := forcedToolChoiceName(choice)
+	if name == "" {
+		return choice
+	}
+	for _, t := range tools {
+		if functionToolNameFromSchema(t) == name {
+			return choice
+		}
+	}
+	if len(tools) == 0 {
+		return "none"
+	}
+	return "auto"
+}
+
+func forcedToolChoiceName(choice any) string {
+	m, ok := choice.(map[string]any)
+	if !ok {
+		return ""
+	}
+	fn, ok := m["function"].(map[string]any)
 	if !ok {
 		return ""
 	}

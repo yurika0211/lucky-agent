@@ -1563,7 +1563,9 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 
 		sanitizeLoopConfig(&loopCfg)
 
-		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
+		buildOpts := defaultContextBuildOptions()
+		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
+		messages := a.buildContextMessagesForInput(ctx, sess, input, buildOpts)
 		sess.AddProviderMessage(input.Message)
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
 

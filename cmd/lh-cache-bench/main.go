@@ -30,7 +30,9 @@ type benchConfig struct {
 	MaxIterations  int
 	Timeout        time.Duration
 	AutoApprove    bool
+	Pure           bool
 	NoTools        bool
+	IsolatedHome   bool
 	KeepSessions   bool
 	DisabledTools  string
 	PromptOverride string
@@ -50,8 +52,12 @@ type benchRecord struct {
 	ToolNames             []string  `json:"tool_names,omitempty"`
 	ResponseChars         int       `json:"response_chars"`
 	ProviderCalls         int       `json:"provider_calls"`
+	CaptureErrors         int       `json:"capture_errors,omitempty"`
 	CaptureFiles          []string  `json:"capture_files,omitempty"`
 	MissingUsageCalls     int       `json:"missing_usage_calls,omitempty"`
+	SystemPromptHash      string    `json:"system_prompt_hash,omitempty"`
+	SystemPromptBytes     int       `json:"system_prompt_bytes,omitempty"`
+	SystemPromptTokens    int       `json:"system_prompt_tokens,omitempty"`
 	PromptTokens          int       `json:"prompt_tokens"`
 	CachedPromptTokens    int       `json:"cached_prompt_tokens"`
 	CacheCreation5MTokens int       `json:"cache_creation_5m_tokens,omitempty"`
@@ -65,18 +71,27 @@ type benchRecord struct {
 }
 
 type benchSummary struct {
-	Type                  string  `json:"type"`
-	Variant               string  `json:"variant"`
-	Scenario              string  `json:"scenario"`
-	Rounds                int     `json:"rounds"`
-	Errors                int     `json:"errors"`
-	ProviderCalls         int     `json:"provider_calls"`
-	MissingUsageCalls     int     `json:"missing_usage_calls"`
-	AvgDurationMS         float64 `json:"avg_duration_ms"`
-	AvgPromptTokens       float64 `json:"avg_prompt_tokens"`
-	AvgCachedPromptTokens float64 `json:"avg_cached_prompt_tokens"`
-	AvgUncachedTokens     float64 `json:"avg_uncached_prompt_tokens"`
-	CachedRatio           float64 `json:"cached_ratio"`
+	Type                  string   `json:"type"`
+	Variant               string   `json:"variant"`
+	Scenario              string   `json:"scenario"`
+	Rounds                int      `json:"rounds"`
+	Errors                int      `json:"errors"`
+	ProviderCalls         int      `json:"provider_calls"`
+	CaptureErrors         int      `json:"capture_errors"`
+	MissingUsageCalls     int      `json:"missing_usage_calls"`
+	ToolRounds            int      `json:"tool_rounds"`
+	ToolCalls             int      `json:"tool_calls"`
+	ToolNames             []string `json:"tool_names,omitempty"`
+	SystemPromptHashes    []string `json:"system_prompt_hashes,omitempty"`
+	SystemPromptStable    bool     `json:"system_prompt_stable"`
+	AvgSystemPromptBytes  float64  `json:"avg_system_prompt_bytes,omitempty"`
+	AvgSystemPromptTokens float64  `json:"avg_system_prompt_tokens,omitempty"`
+	Clean                 bool     `json:"clean"`
+	AvgDurationMS         float64  `json:"avg_duration_ms"`
+	AvgPromptTokens       float64  `json:"avg_prompt_tokens"`
+	AvgCachedPromptTokens float64  `json:"avg_cached_prompt_tokens"`
+	AvgUncachedTokens     float64  `json:"avg_uncached_prompt_tokens"`
+	CachedRatio           float64  `json:"cached_ratio"`
 }
 
 func main() {
@@ -105,7 +120,9 @@ func parseFlags() benchConfig {
 	flag.IntVar(&cfg.MaxIterations, "max-iterations", 3, "agent loop max iterations per round")
 	flag.DurationVar(&cfg.Timeout, "timeout", 60*time.Second, "timeout per agent loop iteration")
 	flag.BoolVar(&cfg.AutoApprove, "auto-approve", true, "auto-approve tool calls during benchmark")
+	flag.BoolVar(&cfg.Pure, "pure", false, "pure prompt-cache mode: no model-visible tools, max-iterations=1, auto-approve=false")
 	flag.BoolVar(&cfg.NoTools, "no-tools", false, "hide all model-visible tools for the benchmark call options")
+	flag.BoolVar(&cfg.IsolatedHome, "isolated-home", true, "run with a temporary LuckyHarness home copied from config to avoid cron/session/autonomy noise")
 	flag.BoolVar(&cfg.KeepSessions, "keep-sessions", false, "keep benchmark sessions in the normal LuckyHarness session store")
 	flag.StringVar(&cfg.DisabledTools, "disable-tools", "", "comma-separated model-visible tool names to hide")
 	flag.StringVar(&cfg.PromptOverride, "prompt", "", "fixed prompt override for all rounds")
@@ -116,6 +133,11 @@ func parseFlags() benchConfig {
 func run(cfg benchConfig) error {
 	if cfg.Rounds <= 0 {
 		return fmt.Errorf("rounds must be positive")
+	}
+	if cfg.Pure {
+		cfg.NoTools = true
+		cfg.MaxIterations = 1
+		cfg.AutoApprove = false
 	}
 	if strings.TrimSpace(cfg.CaptureDir) == "" {
 		return fmt.Errorf("capture-dir must not be empty")
@@ -136,13 +158,11 @@ func run(cfg benchConfig) error {
 	defer out.Close()
 	enc := json.NewEncoder(out)
 
-	mgr, err := config.NewManager()
+	mgr, cleanup, err := newBenchmarkConfigManager(cfg)
 	if err != nil {
-		return fmt.Errorf("new config manager: %w", err)
+		return err
 	}
-	if err := mgr.Load(); err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
+	defer cleanup()
 	applyConfigOverrides(mgr, cfg)
 
 	a, err := agent.New(mgr)
@@ -192,6 +212,56 @@ func applyConfigOverrides(mgr *config.Manager, cfg benchConfig) {
 	if strings.TrimSpace(cfg.APIBase) != "" {
 		_ = mgr.Set("api_base", strings.TrimSpace(cfg.APIBase))
 	}
+}
+
+func newBenchmarkConfigManager(cfg benchConfig) (*config.Manager, func(), error) {
+	source, err := config.NewManager()
+	if err != nil {
+		return nil, nil, fmt.Errorf("new config manager: %w", err)
+	}
+	if err := source.Load(); err != nil {
+		return nil, nil, fmt.Errorf("load config: %w", err)
+	}
+	if !cfg.IsolatedHome {
+		return source, func() {}, nil
+	}
+
+	tmpDir, err := os.MkdirTemp("", "lh-cache-bench-home-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create isolated home: %w", err)
+	}
+	cleanup := func() {
+		_ = os.RemoveAll(tmpDir)
+	}
+	isolated, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("new isolated config manager: %w", err)
+	}
+	if err := isolated.InitHome(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("init isolated home: %w", err)
+	}
+	src := source.Get()
+	data, err := json.MarshalIndent(src, "", "  ")
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("marshal isolated config: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "config.json"), data, 0o600); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("write isolated config: %w", err)
+	}
+	if err := isolated.Load(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("load isolated config: %w", err)
+	}
+	_ = isolated.Set("soul_path", filepath.Join(tmpDir, "SOUL.md"))
+	if err := isolated.Save(); err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("save isolated config: %w", err)
+	}
+	return isolated, cleanup, nil
 }
 
 func expandScenarios(raw string) ([]string, error) {
@@ -281,6 +351,8 @@ func runScenario(ctx context.Context, a *agent.Agent, cfg benchConfig, scenario 
 		}
 		prefixes := diffCapturePrefixes(before, after)
 		usage, files, missing := aggregateCaptureUsage(prefixes)
+		captureErrors := countCaptureErrors(prefixes)
+		fingerprint := aggregatePromptFingerprint(prefixes)
 
 		record := benchRecord{
 			Type:                  "round",
@@ -292,8 +364,12 @@ func runScenario(ctx context.Context, a *agent.Agent, cfg benchConfig, scenario 
 			StartedAt:             started,
 			DurationMS:            duration.Milliseconds(),
 			ProviderCalls:         len(prefixes),
+			CaptureErrors:         captureErrors,
 			CaptureFiles:          files,
 			MissingUsageCalls:     missing,
+			SystemPromptHash:      fingerprint.Hash,
+			SystemPromptBytes:     fingerprint.Bytes,
+			SystemPromptTokens:    fingerprint.EstimatedTokens,
 			PromptTokens:          usage.PromptTokens,
 			CachedPromptTokens:    usage.CachedPromptTokens,
 			CacheCreation5MTokens: usage.CacheCreation5MTokens,
@@ -362,24 +438,48 @@ func summarizeRecords(variant, scenario string, records []benchRecord) benchSumm
 		Scenario: scenario,
 		Rounds:   len(records),
 	}
-	var duration, prompt, cached, uncached int
+	var duration, prompt, cached, uncached, promptBytes, promptTokens int
+	toolNames := map[string]struct{}{}
+	promptHashes := map[string]struct{}{}
 	for _, r := range records {
 		duration += int(r.DurationMS)
 		prompt += r.PromptTokens
 		cached += r.CachedPromptTokens
 		uncached += r.UncachedPromptTokens
+		promptBytes += r.SystemPromptBytes
+		promptTokens += r.SystemPromptTokens
 		s.ProviderCalls += r.ProviderCalls
+		s.CaptureErrors += r.CaptureErrors
 		s.MissingUsageCalls += r.MissingUsageCalls
+		s.ToolCalls += r.ToolCalls
+		if r.ToolCalls > 0 {
+			s.ToolRounds++
+		}
+		for _, name := range r.ToolNames {
+			name = strings.TrimSpace(name)
+			if name != "" {
+				toolNames[name] = struct{}{}
+			}
+		}
+		if strings.TrimSpace(r.SystemPromptHash) != "" {
+			promptHashes[r.SystemPromptHash] = struct{}{}
+		}
 		if r.Error != "" {
 			s.Errors++
 		}
 	}
+	s.ToolNames = sortedKeys(toolNames)
+	s.SystemPromptHashes = sortedKeys(promptHashes)
+	s.SystemPromptStable = len(s.SystemPromptHashes) <= 1
+	s.Clean = s.Errors == 0 && s.CaptureErrors == 0 && s.MissingUsageCalls == 0 && s.ToolCalls == 0 && s.SystemPromptStable
 	if len(records) > 0 {
 		n := float64(len(records))
 		s.AvgDurationMS = float64(duration) / n
 		s.AvgPromptTokens = float64(prompt) / n
 		s.AvgCachedPromptTokens = float64(cached) / n
 		s.AvgUncachedTokens = float64(uncached) / n
+		s.AvgSystemPromptBytes = float64(promptBytes) / n
+		s.AvgSystemPromptTokens = float64(promptTokens) / n
 	}
 	if prompt > 0 {
 		s.CachedRatio = float64(cached) / float64(prompt)
@@ -389,7 +489,7 @@ func summarizeRecords(variant, scenario string, records []benchRecord) benchSumm
 
 func printSummary(s benchSummary) {
 	fmt.Fprintf(os.Stderr,
-		"summary scenario=%s rounds=%d calls=%d avg_prompt=%.0f avg_cached=%.0f ratio=%.1f%% errors=%d missing_usage=%d\n",
+		"summary scenario=%s rounds=%d calls=%d avg_prompt=%.0f avg_cached=%.0f ratio=%.1f%% errors=%d capture_errors=%d missing_usage=%d tool_rounds=%d tool_calls=%d prompt_hashes=%d clean=%t\n",
 		s.Scenario,
 		s.Rounds,
 		s.ProviderCalls,
@@ -397,7 +497,12 @@ func printSummary(s benchSummary) {
 		s.AvgCachedPromptTokens,
 		s.CachedRatio*100,
 		s.Errors,
+		s.CaptureErrors,
 		s.MissingUsageCalls,
+		s.ToolRounds,
+		s.ToolCalls,
+		len(s.SystemPromptHashes),
+		s.Clean,
 	)
 }
 
@@ -438,6 +543,18 @@ func dedupStrings(values []string) []string {
 			continue
 		}
 		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func sortedKeys(values map[string]struct{}) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for value := range values {
 		out = append(out, value)
 	}
 	sort.Strings(out)

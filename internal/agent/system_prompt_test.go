@@ -105,6 +105,49 @@ func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptOmitsDisabledToolGuidance(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "remember", Enabled: true, Description: "Save memory"})
+	reg.Register(&tool.Tool{Name: "recall", Enabled: true, Description: "Read memory"})
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true, Description: "Read a skill"})
+
+	a := &Agent{
+		cfg:   mgr,
+		soul:  soul.Default(),
+		tools: reg,
+		skills: []*tool.SkillInfo{
+			{
+				Name:        "obsidian",
+				Description: "Use when working with Obsidian notes.",
+				Summary:     "Use when editing Obsidian vault notes.",
+			},
+		},
+	}
+
+	prompt := a.buildSystemPromptWithOptions(nil, systemPromptOptions{
+		DisabledTools: []string{"remember", "recall", "skill_read"},
+	})
+	for _, notWant := range []string{
+		"Tool-use policy:",
+		"Model-visible tools:",
+		"Skill-routing policy:",
+		"Available skills:",
+		"Memory and retrieval policy:",
+		"skill_read",
+		"- remember:",
+		"- recall:",
+	} {
+		if strings.Contains(prompt, notWant) {
+			t.Fatalf("did not expect disabled tool guidance %q in prompt:\n%s", notWant, prompt)
+		}
+	}
+}
+
 func TestBuildSystemPromptPinsLuckyHarnessMarkdownMemoryVault(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))

@@ -102,3 +102,19 @@ func TestAggregateCaptureUsage(t *testing.T) {
 		t.Fatalf("unexpected totals: %+v", totals)
 	}
 }
+
+func TestCountCaptureErrors(t *testing.T) {
+	dir := t.TempDir()
+	prefix1 := filepath.Join(dir, "one")
+	prefix2 := filepath.Join(dir, "two")
+	if err := os.WriteFile(prefix1+".error.txt", []byte("timeout"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(prefix2+".response.body.txt", []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := countCaptureErrors([]string{prefix1, prefix2}); got != 1 {
+		t.Fatalf("countCaptureErrors() = %d", got)
+	}
+}

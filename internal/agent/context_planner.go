@@ -25,6 +25,7 @@ type contextBuildOptions struct {
 	IncludeHistory bool
 	HistoryRecent  int
 	HistoryMiddle  int
+	DisabledTools  []string
 }
 
 /*
@@ -141,15 +142,17 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	// 构建系统提示词
 	systemPrompt := ""
 	if p.agent != nil {
-		systemPrompt = p.agent.buildSystemPrompt(sess)
+		systemPrompt = p.agent.buildSystemPromptWithOptions(sess, systemPromptOptions{
+			DisabledTools: p.options.DisabledTools,
+		})
 	}
 	systemParts := []string{p.fitTextToBudget(aOrEmpty(systemPrompt), p.budget.System)}
 	if p.agent == nil || p.agent.provider == nil {
-		if tools := p.buildToolCatalog(); tools != "" {
+		if tools := p.buildToolCatalog(p.options.DisabledTools); tools != "" {
 			systemParts = append(systemParts, tools)
 		}
 	} else if _, ok := p.agent.provider.(provider.FunctionCallingProvider); !ok {
-		if tools := p.buildToolCatalog(); tools != "" {
+		if tools := p.buildToolCatalog(p.options.DisabledTools); tools != "" {
 			systemParts = append(systemParts, tools)
 		}
 	}
@@ -159,7 +162,9 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	}
 	// 拼接skill的内容
 	if p.agent != nil {
-		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHint(routingText)); skillHint != "" {
+		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHintWithOptions(routingText, skillRouteOptions{
+			DisabledTools: p.options.DisabledTools,
+		})); skillHint != "" {
 			messages = append(messages, provider.Message{Role: "system", Content: skillHint})
 		}
 	}
@@ -448,24 +453,32 @@ func resolveTokenEstimator(a *Agent, maxTokens int) *contextx.TokenEstimator {
 /*
 buildToolCatalog 构造供非 function-calling 模型参考的工具目录文本。
 */
-func (p *contextPlanner) buildToolCatalog() string {
+func (p *contextPlanner) buildToolCatalog(disabled []string) string {
 	if p.agent == nil || p.agent.tools == nil {
 		return ""
 	}
 	tools := p.agent.Tools().ListModelVisible()
+	disabledSet := makeToolNameSet(disabled)
 	if len(tools) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("[Available Tools]\n")
 	for _, t := range tools {
+		if t == nil || toolNameInSet(disabledSet, t.Name) {
+			continue
+		}
 		permLabel := "🟢"
 		if t.Permission == tool.PermApprove {
 			permLabel = "🟡"
 		}
 		b.WriteString(fmt.Sprintf("- %s %s: %s\n", permLabel, t.Name, t.Description))
 	}
-	return p.fitTextToBudget(b.String(), utils.MaxInt(96, p.budget.System/4))
+	content := strings.TrimSpace(b.String())
+	if content == "[Available Tools]" {
+		return ""
+	}
+	return p.fitTextToBudget(content, utils.MaxInt(96, p.budget.System/4))
 }
 
 /*

@@ -20,6 +20,10 @@ var contextThreatPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)do\s+not\s+tell\s+the\s+user`),
 }
 
+type systemPromptOptions struct {
+	DisabledTools []string
+}
+
 /*
 buildSystemPrompt 组装 Agent 的系统提示词。
 
@@ -28,27 +32,33 @@ buildSystemPrompt 组装 Agent 的系统提示词。
 完整 system prompt。
 */
 func (a *Agent) buildSystemPrompt(sess *session.Session) string {
+	return a.buildSystemPromptWithOptions(sess, systemPromptOptions{})
+}
+
+func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemPromptOptions) string {
 	parts := make([]string, 0, 16)
-	toolNames := a.enabledToolNames()
+	toolNames := a.enabledToolNamesExcept(opts.DisabledTools)
 	manualBlock := a.buildLuckyHarnessManualPrompt(sess)
 	contextBlock := a.buildContextFilesPrompt(sess)
 
 	if core := a.buildCorePromptBlock(); core != "" {
 		parts = append(parts, core)
 	}
-	if toolPolicy := a.buildToolPolicyPromptBlock(); toolPolicy != "" {
-		parts = append(parts, toolPolicy)
-	}
-	if toolInventory := a.buildToolInventoryPromptBlock(toolNames); toolInventory != "" {
-		parts = append(parts, toolInventory)
+	if len(toolNames) > 0 {
+		if toolPolicy := a.buildToolPolicyPromptBlock(); toolPolicy != "" {
+			parts = append(parts, toolPolicy)
+		}
+		if toolInventory := a.buildToolInventoryPromptBlock(toolNames); toolInventory != "" {
+			parts = append(parts, toolInventory)
+		}
 	}
 	if len(a.skills) > 0 && slices.Contains(toolNames, "skill_read") {
 		if skillPolicy := a.buildSkillPolicyPromptBlock(); skillPolicy != "" {
 			parts = append(parts, skillPolicy)
 		}
-	}
-	if skillsBlock := a.buildSkillsPromptBlock(); skillsBlock != "" {
-		parts = append(parts, skillsBlock)
+		if skillsBlock := a.buildSkillsPromptBlock(); skillsBlock != "" {
+			parts = append(parts, skillsBlock)
+		}
 	}
 	if slices.Contains(toolNames, "remember") || slices.Contains(toolNames, "recall") || slices.Contains(toolNames, "rag_search") || slices.Contains(toolNames, "rag_index") {
 		if mr := a.buildMemoryRAGPolicyPromptBlock(); mr != "" {
@@ -290,18 +300,45 @@ enabledToolNames 返回当前已启用工具的名称列表。
 是否需要注入记忆、技能、工具相关的附加说明。
 */
 func (a *Agent) enabledToolNames() []string {
+	return a.enabledToolNamesExcept(nil)
+}
+
+func (a *Agent) enabledToolNamesExcept(disabled []string) []string {
 	if a == nil || a.tools == nil {
 		return nil
 	}
+	disabledSet := makeToolNameSet(disabled)
 	tools := a.tools.ListModelVisible()
 	names := make([]string, 0, len(tools))
 	for _, t := range tools {
-		if t == nil || strings.TrimSpace(t.Name) == "" {
+		if t == nil || strings.TrimSpace(t.Name) == "" || toolNameInSet(disabledSet, t.Name) {
 			continue
 		}
 		names = append(names, t.Name)
 	}
 	return names
+}
+
+func makeToolNameSet(names []string) map[string]struct{} {
+	if len(names) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			set[name] = struct{}{}
+		}
+	}
+	return set
+}
+
+func toolNameInSet(set map[string]struct{}, name string) bool {
+	if len(set) == 0 {
+		return false
+	}
+	_, ok := set[strings.TrimSpace(name)]
+	return ok
 }
 
 /*
