@@ -17,6 +17,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/cron"
 	msggateway "github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/multimodal"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
@@ -226,10 +227,10 @@ func TestSanitizeLoopConfig_Defaults(t *testing.T) {
 }
 
 func TestSanitizeLoopConfig_ExceedsMax(t *testing.T) {
-	cfg := LoopConfig{MaxIterations: 200, Timeout: 30 * time.Minute}
+	cfg := LoopConfig{MaxIterations: 400, Timeout: 30 * time.Minute}
 	sanitizeLoopConfig(&cfg)
-	if cfg.MaxIterations != 100 {
-		t.Errorf("expected MaxIterations capped at 100, got %d", cfg.MaxIterations)
+	if cfg.MaxIterations != 300 {
+		t.Errorf("expected MaxIterations capped at 300, got %d", cfg.MaxIterations)
 	}
 	if cfg.Timeout != 10*time.Minute {
 		t.Errorf("expected Timeout capped at 10m, got %v", cfg.Timeout)
@@ -806,11 +807,180 @@ func (p *loopingFunctionProvider) ChatStreamWithOptions(ctx context.Context, mes
 	return nil, fmt.Errorf("unexpected ChatStreamWithOptions call")
 }
 
+type streamToolThenFinalProvider struct {
+	callCount       int
+	streamCallCount int
+}
+
+func (p *streamToolThenFinalProvider) Name() string { return "stream-tool-final" }
+
+func (p *streamToolThenFinalProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	return nil, fmt.Errorf("unexpected Chat call")
+}
+
+func (p *streamToolThenFinalProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
+	if hasToolMessage(messages, "rag_search") {
+		return &provider.Response{Content: "final answer from retrieved course material"}, nil
+	}
+	p.callCount++
+	if p.callCount == 1 {
+		return &provider.Response{
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call-rag-1",
+				Name:      "rag_search",
+				Arguments: `{"query":"course chapter"}`,
+			}},
+		}, nil
+	}
+	return &provider.Response{Content: "final answer from retrieved course material"}, nil
+}
+
+func (p *streamToolThenFinalProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
+	return nil, fmt.Errorf("unexpected ChatStream call")
+}
+
+func (p *streamToolThenFinalProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
+	p.streamCallCount++
+	ch := make(chan provider.StreamChunk, 2)
+	go func() {
+		defer close(ch)
+		if p.streamCallCount == 1 && !hasToolMessage(messages, "rag_search") {
+			ch <- provider.StreamChunk{
+				ToolCallDeltas: []provider.StreamToolCallDelta{{
+					Index:     0,
+					ID:        "call-rag-1",
+					Name:      "rag_search",
+					Arguments: `{"query":"course chapter"}`,
+				}},
+			}
+			ch <- provider.StreamChunk{Done: true, FinishReason: "tool_calls"}
+			return
+		}
+		ch <- provider.StreamChunk{Content: "final answer from retrieved course material"}
+		ch <- provider.StreamChunk{Done: true, FinishReason: "stop"}
+	}()
+	return ch, nil
+}
+
+func (p *streamToolThenFinalProvider) Validate() error { return nil }
+
+func hasToolMessage(messages []provider.Message, name string) bool {
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
+	for _, mode := range []string{"simulated", "native"} {
+		t.Run(mode, func(t *testing.T) {
+			sessMgr, err := session.NewManager(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+			sess := sessMgr.New()
+			memStore, err := memory.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			cfg, err := config.NewManagerWithDir(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewManagerWithDir() error = %v", err)
+			}
+			if err := cfg.Set("stream_mode", mode); err != nil {
+				t.Fatalf("Set(stream_mode) error = %v", err)
+			}
+			registry := tool.NewRegistry()
+			registry.Register(&tool.Tool{
+				Name:       "rag_search",
+				Permission: tool.PermAuto,
+				Parameters: map[string]tool.Param{
+					"query": {Type: "string", Required: true},
+				},
+				Handler: func(args map[string]any) (string, error) {
+					return "找到 1 条课程资料：第一章的正确内容", nil
+				},
+				ParallelSafe: true,
+			})
+
+			a := &Agent{
+				provider:   &streamToolThenFinalProvider{},
+				sessions:   sessMgr,
+				memory:     memStore,
+				shortTerm:  memory.NewShortTermBuffer(8),
+				tools:      registry,
+				gateway:    tool.NewGateway(registry),
+				cfg:        cfg,
+				metrics:    metrics.NewMetrics(),
+				contextEst: contextx.NewTokenEstimator(4096),
+				contextWin: contextx.NewContextWindow(contextx.DefaultWindowConfig()),
+			}
+
+			events, err := a.ChatWithSessionStreamInputWithLoopConfig(context.Background(), sess.ID, TextUserTurnInput("问第一章"), LoopConfig{
+				MaxIterations:          3,
+				Timeout:                time.Second,
+				AutoApprove:            true,
+				RepeatToolCallLimit:    3,
+				ToolOnlyIterationLimit: 3,
+				DuplicateFetchLimit:    1,
+			})
+			if err != nil {
+				t.Fatalf("ChatWithSessionStreamInputWithLoopConfig() error = %v", err)
+			}
+			var doneContent string
+			for evt := range events {
+				if evt.Type == ChatEventError {
+					t.Fatalf("unexpected stream error: %v", evt.Err)
+				}
+				if evt.Type == ChatEventDone {
+					doneContent = evt.Content
+				}
+			}
+			if !strings.Contains(doneContent, naturalCitationHeader) {
+				t.Fatalf("expected done content to include natural citations, got %q", doneContent)
+			}
+			if !strings.Contains(doneContent, "我参考了本地 RAG 检索中关于“course chapter”的资料。") {
+				t.Fatalf("expected done content to cite rag_search, got %q", doneContent)
+			}
+
+			messages := sess.GetMessages()
+			if len(messages) != 4 {
+				t.Fatalf("expected user, assistant tool-call, tool result, final assistant; got %d messages: %#v", len(messages), messages)
+			}
+			if messages[0].Role != "user" || !strings.Contains(messages[0].Content, "第一章") {
+				t.Fatalf("expected first message to be user turn, got %#v", messages[0])
+			}
+			if messages[1].Role != "assistant" || len(messages[1].ToolCalls) != 1 || messages[1].ToolCalls[0].Name != "rag_search" {
+				t.Fatalf("expected assistant rag_search tool call, got %#v", messages[1])
+			}
+			if messages[2].Role != "tool" || messages[2].Name != "rag_search" || !strings.Contains(messages[2].Content, "第一章的正确内容") {
+				t.Fatalf("expected persisted rag_search tool result, got %#v", messages[2])
+			}
+			if messages[3].Role != "assistant" || !strings.Contains(messages[3].Content, "final answer") {
+				t.Fatalf("expected final assistant answer, got %#v", messages[3])
+			}
+			if !strings.Contains(messages[3].Content, naturalCitationHeader) {
+				t.Fatalf("expected persisted final assistant answer to include citations, got %#v", messages[3])
+			}
+		})
+	}
+}
+
 type cronNotifyGateway struct {
-	mu       sync.Mutex
-	name     string
-	running  bool
-	messages []string
+	mu         sync.Mutex
+	name       string
+	running    bool
+	messages   []string
+	deliveries []cronNotifyDelivery
+	nextID     int
+}
+
+type cronNotifyDelivery struct {
+	chatID       string
+	replyToMsgID string
+	message      string
 }
 
 func (g *cronNotifyGateway) Name() string { return g.name }
@@ -829,17 +999,33 @@ func (g *cronNotifyGateway) Stop() error {
 }
 
 func (g *cronNotifyGateway) Send(ctx context.Context, chatID string, message string) error {
+	_, err := g.SendWithReceipt(ctx, chatID, message)
+	return err
+}
+
+func (g *cronNotifyGateway) SendWithReceipt(ctx context.Context, chatID string, message string) (msggateway.SentMessage, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.nextID++
+	id := fmt.Sprintf("%d", g.nextID)
 	g.messages = append(g.messages, message)
-	return nil
+	g.deliveries = append(g.deliveries, cronNotifyDelivery{chatID: chatID, message: message})
+	return msggateway.SentMessage{ID: id, ChatID: chatID}, nil
 }
 
 func (g *cronNotifyGateway) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	_, err := g.SendWithReplyReceipt(ctx, chatID, replyToMsgID, message)
+	return err
+}
+
+func (g *cronNotifyGateway) SendWithReplyReceipt(ctx context.Context, chatID string, replyToMsgID string, message string) (msggateway.SentMessage, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	g.nextID++
+	id := fmt.Sprintf("%d", g.nextID)
 	g.messages = append(g.messages, message)
-	return nil
+	g.deliveries = append(g.deliveries, cronNotifyDelivery{chatID: chatID, replyToMsgID: replyToMsgID, message: message})
+	return msggateway.SentMessage{ID: id, ChatID: chatID}, nil
 }
 
 func (g *cronNotifyGateway) IsRunning() bool {
@@ -852,6 +1038,12 @@ func (g *cronNotifyGateway) messageSnapshot() []string {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]string(nil), g.messages...)
+}
+
+func (g *cronNotifyGateway) deliverySnapshot() []cronNotifyDelivery {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]cronNotifyDelivery(nil), g.deliveries...)
 }
 
 type staticChatProvider struct {
@@ -2293,8 +2485,81 @@ func TestCronAddAgentModeExecutesLoop(t *testing.T) {
 	if got := job.Metadata["mode"]; got != "agent" {
 		t.Fatalf("expected agent mode metadata, got %q", got)
 	}
+	if got := strings.TrimSpace(job.Metadata["session_id"]); got != "" {
+		t.Fatalf("expected cron agent job to be sessionless by default, got session_id %q", got)
+	}
+	beforeSessions := a.Sessions().Count()
 	if err := job.Task(); err != nil {
 		t.Fatalf("agent cron task error = %v", err)
+	}
+	if afterSessions := a.Sessions().Count(); afterSessions != beforeSessions {
+		t.Fatalf("expected sessionless cron task not to create chat sessions, before=%d after=%d", beforeSessions, afterSessions)
+	}
+}
+
+func TestCronAddAgentModeCanBindExplicitSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &mockProvider{name: "test-mock"}
+
+	sess := a.Sessions().NewWithTitle("bound cron context")
+	if _, err := a.Tools().Call("cron_add", map[string]any{
+		"id":         "agent-job-bound",
+		"schedule":   "每小时",
+		"mode":       "agent",
+		"command":    "say hello from bound cron agent",
+		"session_id": sess.ID,
+	}); err != nil {
+		t.Fatalf("cron_add(agent bound) error = %v", err)
+	}
+
+	job, ok := a.CronEngine().GetJob("agent-job-bound")
+	if !ok {
+		t.Fatal("expected agent-job-bound to exist")
+	}
+	if got := job.Metadata["session_id"]; got != sess.ID {
+		t.Fatalf("expected explicit session_id %q, got %q", sess.ID, got)
+	}
+	if err := job.Task(); err != nil {
+		t.Fatalf("bound agent cron task error = %v", err)
+	}
+	if got := sess.MessageCount(); got == 0 {
+		t.Fatal("expected bound cron task to append messages to explicit session")
+	}
+}
+
+func TestRunLoopEphemeralSkipsFinalAnswerPersistence(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &mockProvider{name: "test-mock"}
+
+	loopCfg := DefaultLoopConfig()
+	loopCfg.Ephemeral = true
+	if _, err := a.RunLoop(context.Background(), "background check", loopCfg); err != nil {
+		t.Fatalf("RunLoop(ephemeral) error = %v", err)
+	}
+
+	dir := filepath.Join(cfg.HomeDir(), "knowledge", "final_answers")
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("expected ephemeral loop not to write final answer documents, stat err=%v", err)
 	}
 }
 
@@ -2365,6 +2630,7 @@ func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
 		"platform":            "telegram",
 		"chat_id":             "12345",
 		"reply_to_message_id": "77",
+		"session_id":          "session-telegram-cron",
 	}); err != nil {
 		t.Fatalf("cron_add(agent telegram) error = %v", err)
 	}
@@ -2378,6 +2644,59 @@ func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
 	}
 	if len(gw.messageSnapshot()) == 0 {
 		t.Fatal("expected telegram notification to be sent")
+	}
+	deliveries := gw.deliverySnapshot()
+	if len(deliveries) != 1 {
+		t.Fatalf("expected 1 telegram delivery, got %d", len(deliveries))
+	}
+	if got := deliveries[0].chatID; got != "12345" {
+		t.Fatalf("expected telegram notification chat ID 12345, got %q", got)
+	}
+	if got := deliveries[0].replyToMsgID; got != "77" {
+		t.Fatalf("expected telegram notification to reply to 77, got %q", got)
+	}
+	if got, ok := a.ResolveExternalReplyAnchor("telegram", "12345", "1"); !ok || got != "session-telegram-cron" {
+		t.Fatalf("expected cron notification reply anchor to resolve session-telegram-cron, got %q ok=%v", got, ok)
+	}
+}
+
+func TestCronNotificationHonorsSnakeCaseTelegramMetadata(t *testing.T) {
+	gm := msggateway.NewGatewayManager()
+	gw := &cronNotifyGateway{name: "telegram", running: true}
+	if err := gm.Register(gw); err != nil {
+		t.Fatalf("register gateway: %v", err)
+	}
+	a := &Agent{msgGateway: gm}
+	a.RecordRecentChatTarget("telegram", "fallback-chat", "fallback-reply")
+
+	a.sendCronNotification(map[string]string{
+		"platform":            "telegram",
+		"chat_id":             "snake-chat",
+		"reply_to_message_id": "snake-reply",
+		"session_id":          "snake-session",
+	}, cronNotificationPayload{
+		JobID:     "snake-job",
+		Mode:      "agent",
+		Command:   "summarize something",
+		Outcome:   "succeeded",
+		RawResult: "done",
+	})
+
+	deliveries := gw.deliverySnapshot()
+	if len(deliveries) != 1 {
+		t.Fatalf("expected 1 telegram delivery, got %d", len(deliveries))
+	}
+	if got := deliveries[0].chatID; got != "snake-chat" {
+		t.Fatalf("expected snake_case chat_id to be honored, got %q", got)
+	}
+	if got := deliveries[0].replyToMsgID; got != "snake-reply" {
+		t.Fatalf("expected snake_case reply_to_message_id to be honored, got %q", got)
+	}
+	if got, ok := a.ResolveExternalReplyAnchor("telegram", "snake-chat", "1"); !ok || got != "snake-session" {
+		t.Fatalf("expected snake_case cron notification reply anchor to resolve snake-session, got %q ok=%v", got, ok)
+	}
+	if _, ok := a.ResolveExternalReplyAnchor("telegram", "fallback-chat", "1"); ok {
+		t.Fatal("expected snake_case metadata to avoid falling back to recent telegram target")
 	}
 }
 

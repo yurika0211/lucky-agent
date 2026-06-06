@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -1073,6 +1074,23 @@ func TestShellTool(t *testing.T) {
 	}
 }
 
+func TestBuildShellCommandWindowsUsesBash(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific test")
+	}
+
+	cmd, err := buildShellCommand("echo hello")
+	if err != nil {
+		t.Fatalf("buildShellCommand: %v", err)
+	}
+	if len(cmd.Args) < 2 {
+		t.Fatalf("unexpected command args: %#v", cmd.Args)
+	}
+	if strings.Contains(strings.Join(cmd.Args, " "), "sh -c") {
+		t.Fatalf("expected non-sh shell command on windows, got %#v", cmd.Args)
+	}
+}
+
 func TestPathTraversal(t *testing.T) {
 	err := validatePath("../../etc/passwd")
 	if err == nil {
@@ -1196,6 +1214,25 @@ func TestSandboxPathValidationAllowsProjectLocalHome(t *testing.T) {
 
 	if err := validatePath(filepath.Join(projectHome, "skills")); err != nil {
 		t.Fatalf("expected project-local lh home to be allowed, got %v", err)
+	}
+}
+
+func TestSandboxPathValidationUsesWindowsHomeAndTemp(t *testing.T) {
+	tmpDir := t.TempDir()
+	windowsHome := filepath.Join(tmpDir, "Users", "Alice")
+	if err := os.MkdirAll(filepath.Join(windowsHome, ".luckyharness"), 0755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	t.Setenv("HOME", windowsHome)
+	t.Setenv("USERPROFILE", windowsHome)
+	t.Setenv("TEMP", filepath.Join(tmpDir, "Temp"))
+	t.Setenv("TMP", filepath.Join(tmpDir, "Temp"))
+
+	if err := validatePath(filepath.Join(windowsHome, ".luckyharness", "memory.md")); err != nil {
+		t.Fatalf("expected windows home luckyharness path to pass, got %v", err)
+	}
+	if err := validatePath(filepath.Join(os.TempDir(), "scratch.txt")); err != nil {
+		t.Fatalf("expected temp path to pass, got %v", err)
 	}
 }
 

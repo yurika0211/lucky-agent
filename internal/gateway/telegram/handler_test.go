@@ -2,7 +2,9 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +27,90 @@ func TestNewHandler(t *testing.T) {
 	require.NotNil(t, h)
 	assert.Equal(t, adapter, h.adapter)
 	assert.NotNil(t, h.sessions)
+}
+
+func TestTelegramCommandSpecsCoverHandlerRegistry(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test"})
+	h := NewHandler(adapter, nil)
+
+	specs := telegramCommandSpecs()
+	assert.NotEmpty(t, specs)
+	assert.Len(t, telegramBotCommands(), len(specs))
+
+	seen := make(map[string]struct{}, len(specs))
+	for _, spec := range specs {
+		assert.NotEmpty(t, spec.Command)
+		assert.NotEmpty(t, spec.Usage)
+		assert.NotEmpty(t, spec.Description)
+		assert.NotContains(t, seen, spec.Command)
+		seen[spec.Command] = struct{}{}
+		if _, ok := h.commands[spec.Command]; !ok {
+			t.Fatalf("command %q is exposed in Telegram menu but not routed", spec.Command)
+		}
+	}
+	for command := range h.commands {
+		if _, ok := seen[command]; !ok {
+			t.Fatalf("command %q is routed but missing from Telegram menu metadata", command)
+		}
+	}
+	assert.Contains(t, telegramWelcomeMessage(), "/new")
+	assert.Contains(t, telegramHelpMessage(), "/restart")
+}
+
+func TestTelegramCommandSpecsIncludeTUICompatibleCommands(t *testing.T) {
+	allowedName := regexp.MustCompile(`^[a-z0-9_]{1,32}$`)
+	seen := make(map[string]struct{})
+	for _, spec := range telegramCommandSpecs() {
+		if !allowedName.MatchString(spec.Command) {
+			t.Fatalf("command %q does not satisfy Telegram command naming rules", spec.Command)
+		}
+		seen[spec.Command] = struct{}{}
+	}
+	for _, name := range []string{
+		"review",
+		"init",
+		"config",
+		"version",
+		"rename",
+		"chat",
+		"models",
+		"rag",
+		"context",
+		"fc",
+		"embedder",
+		"remember",
+		"remember_long",
+		"recall",
+		"memstats",
+		"memdecay",
+		"promote",
+		"mcp",
+		"approve",
+		"deny",
+		"cron",
+		"watch",
+		"dashboard",
+		"msg_gateway",
+		"profile",
+	} {
+		if _, ok := seen[name]; !ok {
+			t.Fatalf("expected Telegram command metadata to include %q", name)
+		}
+	}
+	for _, localOnly := range []string{"exit", "quit", "q", "clear", "jobs", "lh", "serve", "msg-gateway", "remember-long"} {
+		if _, ok := seen[localOnly]; ok {
+			t.Fatalf("local-only TUI command %q should not be exposed as Telegram bot command", localOnly)
+		}
+	}
+}
+
+func TestTelegramBotCommandsEncodeAllSupportedCommands(t *testing.T) {
+	data, err := json.Marshal(telegramBotCommands())
+	require.NoError(t, err)
+	payload := string(data)
+	for _, name := range telegramCommandNames() {
+		assert.Contains(t, payload, `"command":"`+name+`"`)
+	}
 }
 
 // TestSetSessionID verifies direct session ID assignment.

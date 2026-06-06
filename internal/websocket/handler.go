@@ -17,6 +17,8 @@ type agentRuntime interface {
 	Chat(ctx context.Context, userInput string) (string, error)
 	ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error)
 	ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	ChatWithSessionInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
+	ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 	Sessions() *session.Manager
 	Tools() *tool.Registry
 }
@@ -104,7 +106,8 @@ func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatDa
 	client.Send <- status
 
 	sessionID := h.ensureSession(client.SessionID)
-	result, err := h.agent.ChatWithSession(ctx, sessionID, data.Message)
+	turn := agent.MultimodalUserTurnInput(data.Message, data.Attachments)
+	result, err := h.agent.ChatWithSessionInput(ctx, sessionID, turn)
 	if err != nil {
 		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{
 			Code:    "AGENT_ERROR",
@@ -140,7 +143,8 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 	client.Send <- status
 
 	sessionID := h.ensureSession(client.SessionID)
-	streamCh, err := h.agent.ChatWithSessionStream(ctx, sessionID, data.Message)
+	turn := agent.MultimodalUserTurnInput(data.Message, data.Attachments)
+	streamCh, err := h.agent.ChatWithSessionStreamInput(ctx, sessionID, turn)
 	if err != nil {
 		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{
 			Code:    "AGENT_ERROR",
@@ -241,7 +245,8 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			client.Send <- msg
 
 		case agent.ChatEventDone:
-			if fullResponse.Len() == 0 && evt.Content != "" {
+			if evt.Content != "" {
+				fullResponse.Reset()
 				fullResponse.WriteString(evt.Content)
 			}
 			endMsg, _ := NewMessage(TypeStreamEnd, client.SessionID, StreamEndData{

@@ -120,7 +120,11 @@ BuildInput 根据结构化用户输入、会话和预算生成最终上下文消
 func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, input UserTurnInput) []provider.Message {
 	input = input.Normalize()
 	routingText := input.RoutingText
-	allowCache := len(input.Message.ContentParts) == 0
+	hasStructuredParts := len(input.Message.ContentParts) > 0
+	if hasStructuredParts && !p.supportsImageContentParts() {
+		input.Message = stripContentParts(input.Message)
+	}
+	allowCache := !hasStructuredParts
 
 	if allowCache {
 		if key, ok := p.cacheKey(sess, routingText); ok && p.agent != nil && p.agent.contextCache != nil {
@@ -168,13 +172,15 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	}
 
 	if p.agent == nil {
-		return append(messages, input.Message)
+		return append(messages, p.buildAttachmentMessages(ctx, input)...)
 	}
 
 	// Reserve budget for the current turn using routing text, then append the
 	// structured payload after trimming older context. This preserves current-round
 	// image parts without rewriting the window manager yet.
-	provisional := append(append([]provider.Message(nil), messages...), provider.Message{
+	attachmentMsgs := p.buildAttachmentMessages(ctx, input)
+	provisional := append(append([]provider.Message(nil), messages...), attachmentMsgs...)
+	provisional = append(provisional, provider.Message{
 		Role:    "user",
 		Content: routingText,
 	})
@@ -203,6 +209,58 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 		}
 	}
 	return messages
+}
+
+func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input UserTurnInput) []provider.Message {
+	if len(input.Attachments) == 0 {
+		return nil
+	}
+
+	messages := make([]provider.Message, 0, 2)
+	if p.agent != nil {
+		if summary, err := p.agent.AnalyzeAttachments(ctx, input.Attachments); err == nil && strings.TrimSpace(summary) != "" {
+			messages = append(messages, provider.Message{
+				Role:    "system",
+				Content: summary,
+			})
+		}
+	}
+	if len(input.Message.ContentParts) > 0 && p.supportsImageContentParts() {
+		messages = append(messages, provider.Message{
+			Role:         "user",
+			Content:      input.RoutingText,
+			ContentParts: input.Message.ContentParts,
+		})
+	}
+	return messages
+}
+
+func (p *contextPlanner) supportsImageContentParts() bool {
+	if p == nil || p.agent == nil || p.agent.catalog == nil {
+		return false
+	}
+	model := strings.TrimSpace(p.agent.activeModel)
+	if model == "" && p.agent.cfg != nil {
+		model = strings.TrimSpace(p.agent.cfg.Get().Model)
+	}
+	if model == "" {
+		return false
+	}
+	info, err := p.agent.catalog.Get(model)
+	if err != nil || info == nil {
+		return false
+	}
+	for _, capability := range info.Capabilities {
+		if strings.EqualFold(strings.TrimSpace(capability), "vision") {
+			return true
+		}
+	}
+	return false
+}
+
+func stripContentParts(msg provider.Message) provider.Message {
+	msg.ContentParts = nil
+	return msg
 }
 
 /*
@@ -473,16 +531,21 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 		lines = append(lines, fmt.Sprintf("- [%s/%s%s] %s", e.Category, e.Tier.String(), graphHint, truncate(e.Content, 140)))
 	}
 	routeLines := memoryRouteLines(route)
-	content := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
+	header := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
 	if vault := p.agent.memoryVaultPath(); vault != "" {
-		content += " at " + vault
+		header += " at " + vault
 	}
-	content += ". Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked.\n"
+	header += ". Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked."
 	if len(routeLines) > 0 {
-		content += "\n[Memory Router]\n" + strings.Join(routeLines, "\n") + "\n\n"
+		header += "\n\n[Memory Router]\n" + strings.Join(routeLines, "\n")
 	}
-	content += strings.Join(lines, "\n")
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(160, p.budget.Memory/2))}
+	bodyBudget := utils.MaxInt(64, utils.MaxInt(160, p.budget.Memory/2)-p.est.Estimate(header)-16)
+	body := p.fitTextToBudget(strings.Join(lines, "\n"), bodyBudget)
+	content := header
+	if body != "" {
+		content += "\n\n" + body
+	}
+	return provider.Message{Role: "system", Content: content}
 }
 
 func memoryRouteLines(route memory.RouteAnalysis) []string {

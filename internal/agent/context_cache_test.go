@@ -56,3 +56,35 @@ func TestSessionLastMessageSignatureIgnoresSessionUpdatedAtChanges(t *testing.T)
 		t.Fatalf("expected same signature after non-message session mutation, got %q vs %q", sig1, sig2)
 	}
 }
+
+func TestContextPlannerCacheKeyChangesWhenSessionHistoryChanges(t *testing.T) {
+	planner := &contextPlanner{
+		agent: &Agent{
+			contextCache: newContextMessageCache(8),
+		},
+		options: defaultContextBuildOptions(),
+		budget: contextBudget{
+			System:     256,
+			Memory:     128,
+			RAG:        256,
+			History:    256,
+			ToolResult: 256,
+		},
+	}
+	sess := session.NewSession("cache-test", t.TempDir())
+	sess.AddProviderMessage(provider.Message{Role: "user", Content: "hello"})
+
+	key1, ok := planner.cacheKey(sess, "same input")
+	if !ok {
+		t.Fatal("expected cache key")
+	}
+
+	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: "new history"})
+	key2, ok := planner.cacheKey(sess, "same input")
+	if !ok {
+		t.Fatal("expected cache key after session mutation")
+	}
+	if key1 == key2 {
+		t.Fatal("expected cache key to change after session history changes")
+	}
+}

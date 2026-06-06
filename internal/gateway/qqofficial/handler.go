@@ -951,7 +951,8 @@ func (h *Handler) handleChatStream(ctx context.Context, msg *gateway.Message, in
 			case agent.ChatEventContent:
 				finalContent.WriteString(evt.Content)
 			case agent.ChatEventDone:
-				if strings.TrimSpace(finalContent.String()) == "" {
+				if evt.Content != "" {
+					finalContent.Reset()
 					finalContent.WriteString(evt.Content)
 				}
 				out := strings.TrimSpace(finalContent.String())

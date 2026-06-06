@@ -4,16 +4,22 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/provider"
 )
 
-// UserTurnInput separates routing text from the structured user message payload.
+/**
+ * UserTurnInput 将路由文本与结构化用户消息载荷分开
+ */
 type UserTurnInput struct {
 	Message     provider.Message
 	RoutingText string
+	Attachments []gateway.Attachment
 }
 
-// TextUserTurnInput builds a text-only user turn input.
+/**
+ * TextUserTurnInput 构建仅包含文本的用户轮次输入
+ */
 func TextUserTurnInput(text string) UserTurnInput {
 	text = strings.TrimSpace(text)
 	return UserTurnInput{
@@ -25,7 +31,23 @@ func TextUserTurnInput(text string) UserTurnInput {
 	}
 }
 
-// Normalize fills the minimum fields required by the agent loop and providers.
+// MultimodalUserTurnInput builds a user turn that includes attachments.
+func MultimodalUserTurnInput(text string, attachments []gateway.Attachment) UserTurnInput {
+	text = strings.TrimSpace(text)
+	msg := provider.Message{
+		Role:    "user",
+		Content: text,
+	}
+	return UserTurnInput{
+		Message:     msg,
+		RoutingText: text,
+		Attachments: append([]gateway.Attachment(nil), attachments...),
+	}
+}
+
+/**
+ * Normalize 填充 agent loop 和 provider 所需的最小字段
+ */
 func (in UserTurnInput) Normalize() UserTurnInput {
 	msg := in.Message
 	if strings.TrimSpace(msg.Role) == "" {
@@ -37,38 +59,39 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 		routingText = deriveRoutingTextFromMessage(msg)
 	}
 	if routingText == "" {
+		if len(in.Attachments) > 0 {
+			routingText = attachmentRoutingText(in.Attachments)
+		}
+	}
+	if routingText == "" {
 		routingText = "User sent a multimodal message. Use the provided attachment(s) to answer."
 	}
 	msg.Content = routingText
 
-	if len(msg.ContentParts) > 0 {
-		parts := append([]provider.ContentPart(nil), msg.ContentParts...)
-		hasTextPart := false
-		for i := range parts {
-			if parts[i].Type == "text" {
-				hasTextPart = true
-				if i == 0 {
-					parts[i].Text = routingText
-				}
-				break
-			}
-		}
-		if !hasTextPart {
-			parts = append([]provider.ContentPart{{
-				Type: "text",
-				Text: routingText,
-			}}, parts...)
-		}
-		msg.ContentParts = parts
+	parts := append([]provider.ContentPart(nil), msg.ContentParts...)
+	if len(parts) == 0 && routingText != "" {
+		parts = append(parts, provider.ContentPart{
+			Type: "text",
+			Text: routingText,
+		})
 	}
+	for _, att := range in.Attachments {
+		if part, ok := contentPartFromAttachment(att); ok {
+			parts = append(parts, part)
+		}
+	}
+	msg.ContentParts = parts
 
 	return UserTurnInput{
 		Message:     msg,
 		RoutingText: routingText,
+		Attachments: append([]gateway.Attachment(nil), in.Attachments...),
 	}
 }
 
-// WithRoutingText rewrites the routing text and keeps the message payload aligned.
+/**
+ * WithRoutingText 重写路由文本并保持消息载荷一致
+ */
 func (in UserTurnInput) WithRoutingText(text string) UserTurnInput {
 	in.RoutingText = strings.TrimSpace(text)
 	return in.Normalize()
@@ -104,4 +127,60 @@ func deriveRoutingTextFromMessage(msg provider.Message) string {
 		return fmt.Sprintf("User sent %d images. Use the images to answer.", imageCount)
 	}
 	return ""
+}
+
+func attachmentFromContentPart(part provider.ContentPart) (gateway.Attachment, bool) {
+	if part.Type != "image" || part.Image == nil {
+		return gateway.Attachment{}, false
+	}
+	return gateway.Attachment{
+		Type:     gateway.AttachmentImage,
+		FilePath: strings.TrimSpace(part.Image.FilePath),
+		MimeType: strings.TrimSpace(part.Image.MimeType),
+	}, true
+}
+
+func contentPartFromAttachment(att gateway.Attachment) (provider.ContentPart, bool) {
+	if att.Type != gateway.AttachmentImage {
+		return provider.ContentPart{}, false
+	}
+	return provider.ContentPart{
+		Type: "image",
+		Image: &provider.ImagePart{
+			FilePath: strings.TrimSpace(att.FilePath),
+			MimeType: strings.TrimSpace(att.MimeType),
+		},
+	}, true
+}
+
+func attachmentRoutingText(attachments []gateway.Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	imageCount := 0
+	docCount := 0
+	for _, att := range attachments {
+		switch att.Type {
+		case gateway.AttachmentImage:
+			imageCount++
+		default:
+			docCount++
+		}
+	}
+	parts := make([]string, 0, 2)
+	if imageCount > 0 {
+		if imageCount == 1 {
+			parts = append(parts, "1 image attached")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d images attached", imageCount))
+		}
+	}
+	if docCount > 0 {
+		if docCount == 1 {
+			parts = append(parts, "1 file attached")
+		} else {
+			parts = append(parts, fmt.Sprintf("%d files attached", docCount))
+		}
+	}
+	return "User sent " + strings.Join(parts, " and ") + ". Use the attachments to answer."
 }

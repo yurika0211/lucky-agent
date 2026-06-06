@@ -58,6 +58,8 @@ type stubAgentRuntime struct {
 	chatFn         func(ctx context.Context, userInput string) (string, error)
 	chatSessFn     func(ctx context.Context, sessionID, userInput string) (string, error)
 	chatStreamSess func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	chatInputFn    func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
+	chatStreamInputFn func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 }
 
 func (s *stubAgentRuntime) Chat(ctx context.Context, userInput string) (string, error) {
@@ -81,6 +83,20 @@ func (s *stubAgentRuntime) ChatWithSessionStream(ctx context.Context, sessionID,
 	ch := make(chan agent.ChatEvent)
 	close(ch)
 	return ch, nil
+}
+
+func (s *stubAgentRuntime) ChatWithSessionInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error) {
+	if s.chatInputFn != nil {
+		return s.chatInputFn(ctx, sessionID, input)
+	}
+	return "", nil
+}
+
+func (s *stubAgentRuntime) ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+	if s.chatStreamInputFn != nil {
+		return s.chatStreamInputFn(ctx, sessionID, input)
+	}
+	return s.ChatWithSessionStream(ctx, sessionID, input.RoutingText)
 }
 
 func (s *stubAgentRuntime) Sessions() *session.Manager {

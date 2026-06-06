@@ -58,6 +58,10 @@ func (p *replDashboardProvider) DashboardData() map[string]interface{} {
 	data["model"] = cfg.Model
 	data["stream_mode"] = cfg.StreamMode
 	data["soul_path"] = cfg.SoulPath
+	data["api_addr"] = cfg.MsgGateway.APIAddr
+	if strings.TrimSpace(data["api_addr"].(string)) == "" {
+		data["api_addr"] = cfg.Server.Addr
+	}
 	data["telegram_platform"] = cfg.MsgGateway.Platform
 	data["telegram_proxy"] = cfg.MsgGateway.Telegram.Proxy
 	data["telegram_timeout_seconds"] = cfg.MsgGateway.Telegram.ChatTimeoutSeconds

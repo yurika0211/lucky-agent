@@ -319,6 +319,8 @@ func telegramToolTraceVisibility(name string) string {
 		lower == "rag_index",
 		strings.HasPrefix(lower, "cron"):
 		return "compact"
+	case strings.HasPrefix(lower, "skill_") && strings.HasSuffix(lower, "_run"):
+		return "compact"
 	case strings.HasPrefix(lower, "skill_"),
 		strings.HasPrefix(lower, "delegate_"),
 		strings.HasPrefix(lower, "autonomy_"),

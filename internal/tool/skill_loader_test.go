@@ -3,6 +3,7 @@ package tool
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -296,5 +297,22 @@ func TestCLICommandToToolDef(t *testing.T) {
 	}
 	if _, ok := def.Parameters["args"]; !ok {
 		t.Fatal("expected args parameter")
+	}
+}
+
+func TestBuildSkillScriptCommandWindowsAvoidsBinSh(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows-specific test")
+	}
+
+	cmd, err := buildSkillScriptCommand(`C:\tmp\skill\scripts\run.sh`)
+	if err != nil {
+		t.Fatalf("buildSkillScriptCommand: %v", err)
+	}
+	if len(cmd) == 0 {
+		t.Fatal("expected non-empty command")
+	}
+	if cmd[0] == "/bin/sh" {
+		t.Fatalf("expected windows command not to use /bin/sh, got %#v", cmd)
 	}
 }

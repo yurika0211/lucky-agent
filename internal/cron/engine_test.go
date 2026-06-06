@@ -119,7 +119,7 @@ func TestParseCronExpr(t *testing.T) {
 		{"0 9-17 * * *", false, []int{0}, []int{9, 10, 11, 12, 13, 14, 15, 16, 17}},
 		{"0 9,12,18 * * *", false, []int{0}, []int{9, 12, 18}},
 		{"0 9 * * 1-5", false, []int{0}, []int{9}},
-		{"* * * *", true, []int{}, []int{}}, // only 4 fields
+		{"* * * *", true, []int{}, []int{}},    // only 4 fields
 		{"60 * * * *", true, []int{}, []int{}}, // invalid minute
 		{"0 25 * * *", true, []int{}, []int{}}, // invalid hour
 	}
@@ -345,6 +345,7 @@ func TestParseNaturalLanguage(t *testing.T) {
 	}{
 		{"每天9点", false},
 		{"每小时", false},
+		{"每六个小时", false},
 		{"每30分钟", false},
 		{"每周一9点", false},
 		{"无效输入", true},

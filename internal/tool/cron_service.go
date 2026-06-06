@@ -52,6 +52,7 @@ func (s *CronToolService) RegisterTools(r *Registry) {
 			"platform":            {Type: "string", Description: "Optional notification platform", Required: false},
 			"chat_id":             {Type: "string", Description: "Optional target chat ID for notification delivery", Required: false},
 			"reply_to_message_id": {Type: "string", Description: "Optional reply target message ID", Required: false},
+			"session_id":          {Type: "string", Description: "Optional existing session ID to use as agent-mode context. Omit to run cron out of chat sessions.", Required: false},
 		},
 		Handler: s.HandleCron,
 	})
@@ -69,6 +70,7 @@ func (s *CronToolService) RegisterTools(r *Registry) {
 			"platform":            {Type: "string", Description: "Optional notification platform, e.g. telegram", Required: false},
 			"chat_id":             {Type: "string", Description: "Optional target chat ID for notification delivery", Required: false},
 			"reply_to_message_id": {Type: "string", Description: "Optional reply target message ID", Required: false},
+			"session_id":          {Type: "string", Description: "Optional existing session ID to use as agent-mode context. Omit to run cron out of chat sessions.", Required: false},
 		},
 		Handler: s.HandleAdd,
 	})
@@ -186,7 +188,9 @@ func (s *CronToolService) HandleAdd(args map[string]any) (string, error) {
 		"mode":          mode,
 		"command":       command,
 		"schedule_text": scheduleText,
-		"session_id":    "cron-" + id,
+	}
+	if sessionID, ok := args["session_id"].(string); ok && strings.TrimSpace(sessionID) != "" {
+		meta["session_id"] = strings.TrimSpace(sessionID)
 	}
 	if platform, ok := args["platform"].(string); ok && strings.TrimSpace(platform) != "" {
 		meta["platform"] = strings.TrimSpace(platform)

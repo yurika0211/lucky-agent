@@ -90,6 +90,14 @@ func (s *Session) UnsetEnv(key string) {
 	s.UpdatedAt = time.Now()
 }
 
+// SetTitle updates the session title.
+func (s *Session) SetTitle(title string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Title = strings.TrimSpace(title)
+	s.UpdatedAt = time.Now()
+}
+
 // NewSession 创建新会话
 func NewSession(id, dir string) *Session {
 	now := time.Now()
@@ -215,6 +223,10 @@ func (s *Session) LastMessage() *provider.Message {
 func (s *Session) MessageCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.messageCountLocked()
+}
+
+func (s *Session) messageCountLocked() int {
 	if s.messagesLoaded {
 		return len(s.Messages)
 	}
@@ -394,7 +406,7 @@ func (m *Manager) New() *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	id := fmt.Sprintf("%d", time.Now().UnixNano())
+	id := m.nextSessionIDLocked("")
 	s := NewSession(id, m.dir)
 	s.messagesLoaded = true // 新会话消息已在内存
 	s.messageCount = 0
@@ -424,9 +436,7 @@ func (m *Manager) Ensure(id string) *Session {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if id == "" {
-		id = fmt.Sprintf("%d", time.Now().UnixNano())
-	}
+	id = m.nextSessionIDLocked(id)
 	if s, ok := m.sessions[id]; ok {
 		return s
 	}
@@ -436,6 +446,20 @@ func (m *Manager) Ensure(id string) *Session {
 	s.messageCount = 0
 	m.sessions[id] = s
 	return s
+}
+
+func (m *Manager) nextSessionIDLocked(preferred string) string {
+	if preferred != "" {
+		return preferred
+	}
+
+	for {
+		id := fmt.Sprintf("%d", time.Now().UnixNano())
+		if _, exists := m.sessions[id]; !exists {
+			return id
+		}
+		time.Sleep(time.Microsecond)
+	}
 }
 
 // List 列出所有会话
@@ -460,7 +484,7 @@ func (m *Manager) ListInfo() []SessionInfo {
 		infos = append(infos, SessionInfo{
 			ID:           s.ID,
 			Title:        s.Title,
-			MessageCount: len(s.Messages),
+			MessageCount: s.messageCountLocked(),
 			CreatedAt:    s.CreatedAt,
 			UpdatedAt:    s.UpdatedAt,
 		})
@@ -489,7 +513,7 @@ func (m *Manager) Search(query string) []SessionInfo {
 			results = append(results, SessionInfo{
 				ID:           s.ID,
 				Title:        s.Title,
-				MessageCount: len(s.Messages),
+				MessageCount: s.messageCountLocked(),
 				CreatedAt:    s.CreatedAt,
 				UpdatedAt:    s.UpdatedAt,
 			})
@@ -503,7 +527,7 @@ func (m *Manager) Search(query string) []SessionInfo {
 				results = append(results, SessionInfo{
 					ID:           s.ID,
 					Title:        s.Title,
-					MessageCount: len(s.Messages),
+					MessageCount: s.messageCountLocked(),
 					CreatedAt:    s.CreatedAt,
 					UpdatedAt:    s.UpdatedAt,
 				})

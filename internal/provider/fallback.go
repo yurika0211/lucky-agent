@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -121,6 +122,9 @@ func (fc *FallbackChain) Chat(ctx context.Context, messages []Message) (*Respons
 
 		resp, err := fc.chain[i].Chat(ctx, messages)
 		if err != nil {
+			if !shouldFallbackOnError(err) {
+				return nil, err
+			}
 			fc.recordFailure(i, err)
 			log.Printf("[fallback] provider %s failed: %v, trying next", fc.chain[i].Name(), err)
 			continue
@@ -148,6 +152,9 @@ func (fc *FallbackChain) ChatStream(ctx context.Context, messages []Message) (<-
 
 		ch, err := fc.chain[i].ChatStream(ctx, messages)
 		if err != nil {
+			if !shouldFallbackOnError(err) {
+				return nil, err
+			}
 			fc.recordFailure(i, err)
 			log.Printf("[fallback] provider %s stream failed: %v, trying next", fc.chain[i].Name(), err)
 			continue
@@ -158,6 +165,33 @@ func (fc *FallbackChain) ChatStream(ctx context.Context, messages []Message) (<-
 	}
 
 	return nil, fmt.Errorf("all %d providers failed in fallback chain", len(fc.chain))
+}
+
+func shouldFallbackOnError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	if msg == "context deadline exceeded" || msg == "context canceled" {
+		return true
+	}
+	if strings.Contains(msg, "429") || strings.Contains(msg, "rate limit") || strings.Contains(msg, "too many requests") {
+		return true
+	}
+	if strings.Contains(msg, "500") || strings.Contains(msg, "502") || strings.Contains(msg, "503") || strings.Contains(msg, "504") {
+		return true
+	}
+	if strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "timeout") {
+		return true
+	}
+	if strings.Contains(msg, "temporary") || strings.Contains(msg, "temporarily unavailable") {
+		return true
+	}
+	if strings.Contains(msg, "eof") || strings.Contains(msg, "tls") {
+		return true
+	}
+	return false
 }
 
 // Validate 验证降级链中至少有一个可用 provider
@@ -320,6 +354,9 @@ func (fc *FallbackChain) ChatWithOptions(ctx context.Context, messages []Message
 		if fcProvider, ok := p.(FunctionCallingProvider); ok && len(opts.Tools) > 0 {
 			resp, err := fcProvider.ChatWithOptions(ctx, messages, opts)
 			if err != nil {
+				if !shouldFallbackOnError(err) {
+					return nil, err
+				}
 				fc.recordFailure(i, err)
 				log.Printf("[fallback] provider %s ChatWithOptions failed: %v, trying next", p.Name(), err)
 				continue
@@ -331,6 +368,9 @@ func (fc *FallbackChain) ChatWithOptions(ctx context.Context, messages []Message
 		// Provider 不支持 function calling，回退到普通 Chat
 		resp, err := p.Chat(ctx, messages)
 		if err != nil {
+			if !shouldFallbackOnError(err) {
+				return nil, err
+			}
 			fc.recordFailure(i, err)
 			log.Printf("[fallback] provider %s Chat failed: %v, trying next", p.Name(), err)
 			continue
@@ -358,6 +398,9 @@ func (fc *FallbackChain) ChatStreamWithOptions(ctx context.Context, messages []M
 		if fcProvider, ok := p.(FunctionCallingProvider); ok && len(opts.Tools) > 0 {
 			ch, err := fcProvider.ChatStreamWithOptions(ctx, messages, opts)
 			if err != nil {
+				if !shouldFallbackOnError(err) {
+					return nil, err
+				}
 				fc.recordFailure(i, err)
 				log.Printf("[fallback] provider %s ChatStreamWithOptions failed: %v, trying next", p.Name(), err)
 				continue
@@ -369,6 +412,9 @@ func (fc *FallbackChain) ChatStreamWithOptions(ctx context.Context, messages []M
 		// Provider 不支持 function calling，回退到普通 ChatStream
 		ch, err := p.ChatStream(ctx, messages)
 		if err != nil {
+			if !shouldFallbackOnError(err) {
+				return nil, err
+			}
 			fc.recordFailure(i, err)
 			log.Printf("[fallback] provider %s ChatStream failed: %v, trying next", p.Name(), err)
 			continue

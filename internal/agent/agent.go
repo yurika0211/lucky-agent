@@ -43,11 +43,17 @@ type embedderRuntimeConfig struct {
 	Dimension int
 }
 
+/**
+ * soulRuntime 管理 soul.Soul 实例及其相关的模板管理器。
+ */
 type soulRuntime struct {
 	soul    *soul.Soul
 	tmplMgr *soul.TemplateManager
 }
 
+/**
+ * providerRuntime 管理 provider.Provider 实例及其相关的注册、模型目录和令牌存储。
+ */
 type providerRuntime struct {
 	provider   provider.Provider
 	registry   *provider.Registry
@@ -55,6 +61,9 @@ type providerRuntime struct {
 	tokenStore *provider.TokenStore
 }
 
+/**
+ * memoryRuntime 管理内存存储及其相关的短期和中期缓冲区。
+ */
 type memoryRuntime struct {
 	store    *memory.Store
 	short    *memory.ShortTermBuffer
@@ -62,6 +71,9 @@ type memoryRuntime struct {
 	sessions *session.Manager
 }
 
+/**
+ * ragRuntime 管理 RAG 相关的管理器和持久化存储。
+ */
 type ragRuntime struct {
 	manager       *rag.RAGManager
 	persist       *rag.Persistence
@@ -69,6 +81,9 @@ type ragRuntime struct {
 	embedderReg   *embedder.Registry
 }
 
+/**
+ * supportRuntime 管理支持工具和服务的运行时环境。
+ */
 type supportRuntime struct {
 	tools          *tool.Registry
 	toolGateway    *tool.Gateway
@@ -122,6 +137,7 @@ type Agent struct {
 	heartbeatMu           sync.Mutex
 	heartbeatSessionID    string
 	recentTarget          recentChatTarget
+	externalReplyAnchors  map[string]externalReplyAnchor
 	contextCache          *contextMessageCache
 	mediaProcessor        *multimodal.Processor
 	chatCount             int // 对话计数，用于触发自动摘要
@@ -129,11 +145,10 @@ type Agent struct {
 	activeAPIBase         string
 }
 
-/*
-resolveEmbedderRuntimeConfig 从环境变量和主配置中解析嵌入模型运行时配置。
-
-返回值中的布尔值表示是否解析到了任何有效配置项。
-*/
+/**
+ * resolveEmbedderRuntimeConfig 从环境变量和主配置中解析嵌入模型运行时配置。
+ * 返回值中的布尔值表示是否解析到了任何有效配置项。
+ */
 func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool) {
 	cfg := embedderRuntimeConfig{}
 	if c != nil {
@@ -145,28 +160,41 @@ func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool
 		}
 	}
 
+	parsed := cfg.hasAny()
 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_KEY")); v != "" {
 		cfg.APIKey = v
+		parsed = true
 	}
 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_NAME")); v != "" {
 		cfg.Model = v
+		parsed = true
 	}
 	if v := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_URL")); v != "" {
 		cfg.BaseURL = v
+		parsed = true
 	}
 	if dim := os.Getenv("EMBEDDING_MODEL_DIMENSION"); dim != "" {
 		dim = strings.TrimSpace(dim)
 		if d, err := strconv.Atoi(dim); err == nil && d > 0 {
 			cfg.Dimension = d
+			parsed = true
 		}
 	}
 
-	return cfg, cfg.APIKey != "" || cfg.BaseURL != "" || cfg.Model != "" || cfg.Dimension > 0
+	return cfg, parsed
 }
 
-/*
-toProviderConfig 将全局配置转换为 provider 层可消费的配置对象。
-*/
+func (cfg embedderRuntimeConfig) hasAny() bool {
+	return cfg.APIKey != "" || cfg.BaseURL != "" || cfg.Model != "" || cfg.Dimension > 0
+}
+
+func (cfg embedderRuntimeConfig) ready() bool {
+	return cfg.APIKey != "" && cfg.BaseURL != "" && cfg.Model != "" && cfg.Dimension > 0
+}
+
+/**
+ * toProviderConfig 将全局配置转换为 provider 层可消费的配置对象。
+ */
 func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) provider.Config {
 	model := c.Model
 	if strings.TrimSpace(modelOverride) != "" {
@@ -208,9 +236,9 @@ func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) p
 	}
 }
 
-/*
-wrapProviderWithMiddleware 按当前配置为 provider 叠加中间件链。
-*/
+/**
+ * wrapProviderWithMiddleware 按当前配置为 provider 叠加中间件链。
+ */
 func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.Provider {
 	if p == nil || c == nil {
 		return p
@@ -259,9 +287,9 @@ func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.
 	return middleware.NewMiddlewareProvider(p, chain)
 }
 
-/*
-maybeRouteModel 根据输入内容与估算 token 数决定是否切换到更合适的模型。
-*/
+/**
+ * maybeRouteModel 根据输入内容与估算 token 数决定是否切换到更合适的模型。
+ */
 func (a *Agent) maybeRouteModel(userInput string) {
 	if a == nil || a.cfg == nil || a.registry == nil {
 		return
@@ -297,6 +325,9 @@ func (a *Agent) maybeRouteModel(userInput string) {
 	}
 }
 
+/**
+ * initSoulRuntime 初始化 soul 运行时，加载或使用默认的 soul 实例。
+ */
 func initSoulRuntime(c *config.Config) soulRuntime {
 	var loadedSoul *soul.Soul
 	if c != nil && strings.TrimSpace(c.SoulPath) != "" {
@@ -313,6 +344,9 @@ func initSoulRuntime(c *config.Config) soulRuntime {
 	}
 }
 
+/**
+ * initProviderRuntime 初始化 provider 运行时，包括注册 provider 工厂、创建模型目录和令牌存储等。
+ */
 func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime, error) {
 	registry := provider.NewRegistry()
 	catalog := provider.NewModelCatalog()
@@ -360,6 +394,9 @@ func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime
 	}, nil
 }
 
+/**
+ * initMemoryRuntime 初始化内存运行时，包括创建内存存储和短/中期记忆缓冲区。
+ */
 func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, error) {
 	mem, err := memory.NewStore(cfg.HomeDir() + "/memory")
 	if err != nil {
@@ -394,12 +431,15 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	}, nil
 }
 
+/**
+ * initRAGRuntime 初始化 RAG 运行时，包括注册嵌入器、创建缓存嵌入器和设置活动嵌入器。
+ */
 func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	embedderReg := embedder.NewRegistry()
 	mockEmb := embedder.NewMockEmbedder(128)
 	embedderReg.Register("mock-128", mockEmb)
 
-	if embCfg, ok := resolveEmbedderRuntimeConfig(c); ok {
+	if embCfg, ok := resolveEmbedderRuntimeConfig(c); ok && embCfg.ready() {
 		openaiEmb := embedder.NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{
 			APIKey:    embCfg.APIKey,
 			Model:     embCfg.Model,
@@ -455,6 +495,9 @@ func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	}, nil
 }
 
+/**
+ * initSupportRuntime 初始化支持运行时，包括注册工具、设置搜索配置和初始化多媒体处理器。
+ */
 func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGManager) supportRuntime {
 	tools := tool.NewRegistry()
 	searchCfg := &tool.WebSearchConfig{
@@ -579,6 +622,9 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 	}
 }
 
+/**
+ * buildAutonomyRuntimeConfig 构建 Autonomy 运行时配置，包括设置最大迭代次数、超时和自动审批等。
+ */
 func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
 	cfg := autonomy.DefaultAutonomyConfig()
 	if c == nil {
@@ -1262,13 +1308,18 @@ func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provid
 	chunks := make(chan provider.StreamChunk, 64)
 	go func() {
 		defer close(chunks)
+		var streamed strings.Builder
 		for evt := range events {
 			switch evt.Type {
 			case ChatEventContent:
 				if evt.Content != "" {
+					streamed.WriteString(evt.Content)
 					chunks <- provider.StreamChunk{Content: evt.Content}
 				}
 			case ChatEventDone:
+				if delta := strings.TrimPrefix(evt.Content, streamed.String()); delta != "" {
+					chunks <- provider.StreamChunk{Content: delta}
+				}
 				chunks <- provider.StreamChunk{Done: true, FinishReason: "stop"}
 				return
 			case ChatEventError:
@@ -1366,6 +1417,7 @@ type streamConvergenceState struct {
 	duplicateFetchLimit      int
 	disabledTools            []string
 	memoryGate               *memoryToolGate
+	citationToolCalls        []toolCallLog
 }
 
 /*
@@ -1429,9 +1481,9 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 }
 
 /*
-rememberToolCallResult 记录一次工具调用的结果，供循环保护和摘要使用。
+rememberToolCallResult 记录一次工具调用的结果，供循环保护、摘要和最终引用使用。
 */
-func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result string) {
+func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result string, duration time.Duration) {
 	if s.toolCallLastResult == nil {
 		s.toolCallLastResult = make(map[string]string)
 	}
@@ -1442,6 +1494,12 @@ func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result 
 		}
 		s.toolURLLastResult[key] = result
 	}
+	s.citationToolCalls = append(s.citationToolCalls, toolCallLog{
+		Name:      name,
+		Arguments: arguments,
+		Result:    result,
+		Duration:  duration,
+	})
 }
 
 /*
@@ -1477,7 +1535,20 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 	return a.ChatWithSessionStreamInput(ctx, sessionID, TextUserTurnInput(userInput))
 }
 
+// ChatWithSessionStreamWithLoopConfig streams chat events using an explicit loop configuration.
+func (a *Agent) ChatWithSessionStreamWithLoopConfig(ctx context.Context, sessionID string, userInput string, loopCfg LoopConfig) (<-chan ChatEvent, error) {
+	return a.ChatWithSessionStreamInputWithLoopConfig(ctx, sessionID, TextUserTurnInput(userInput), loopCfg)
+}
+
 func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string, input UserTurnInput) (<-chan ChatEvent, error) {
+	loopCfg := DefaultLoopConfig()
+	cfg := a.cfg.Get()
+	ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+	loopCfg.AutoApprove = true
+	return a.ChatWithSessionStreamInputWithLoopConfig(ctx, sessionID, input, loopCfg)
+}
+
+func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, sessionID string, input UserTurnInput, loopCfg LoopConfig) (<-chan ChatEvent, error) {
 	sess, ok := a.sessions.Get(sessionID)
 	if !ok {
 		return nil, fmt.Errorf("session not found: %s", sessionID)
@@ -1490,13 +1561,10 @@ func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string
 	go func() {
 		defer close(events)
 
-		loopCfg := DefaultLoopConfig()
-		cfg := a.cfg.Get()
-		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
-		loopCfg.AutoApprove = true
 		sanitizeLoopConfig(&loopCfg)
 
 		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
+		sess.AddProviderMessage(input.Message)
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
 
 		state := &streamConvergenceState{
@@ -1535,11 +1603,11 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	}
 	if remaining <= 0 {
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
-			a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1636,7 +1704,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
 					return
 				}
-				a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
+				a.finalizeStreamWithState(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs), state)
 				return
 			}
 
@@ -1647,6 +1715,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				ReasoningContent: reasoning.String(),
 				ToolCalls:        toolCalls,
 			})
+			if sess != nil {
+				sess.AddProviderMessage(provider.Message{
+					Role:             "assistant",
+					Content:          assistantContent,
+					ReasoningContent: reasoning.String(),
+					ToolCalls:        toolCalls,
+				})
+			}
 
 			emitChatToolCallEvents(events, toolCalls)
 			executed := a.executeToolCallsOrdered(
@@ -1670,7 +1746,18 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 					ToolCallID: execResult.ToolCall.ID,
 					Name:       execResult.ToolCall.Name,
 				})
-				state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
+				if sess != nil {
+					sess.AddProviderMessage(provider.Message{
+						Role:       "tool",
+						Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, nil, nil),
+						ToolCallID: execResult.ToolCall.ID,
+						Name:       execResult.ToolCall.Name,
+					})
+				}
+				state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result, execResult.Duration)
+			}
+			if sess != nil {
+				_ = sess.Save()
 			}
 
 			// 裁剪上下文，继续下一轮
@@ -1681,7 +1768,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			}
 			if remaining <= 1 {
 				if state.hasContinuation() {
-					a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+					a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 					return
 				}
 				events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1723,9 +1810,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()))
+			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()), state)
 		} else {
-			a.finalizeStream(events, sess, turnInput, emptyFinalResponseMessage)
+			a.finalizeStreamWithState(events, sess, turnInput, emptyFinalResponseMessage, state)
 		}
 		return
 	}
@@ -1748,7 +1835,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		if partial == "" {
 			partial = clean
 		}
-		a.finalizeStream(events, sess, turnInput, partial+lengthTruncatedNotice)
+		a.finalizeStreamWithState(events, sess, turnInput, partial+lengthTruncatedNotice, state)
 		return
 	}
 	state.lengthRecoveryCount = 0
@@ -1758,7 +1845,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		appendContinuation(&state.continuedResponse, response)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 	}
-	a.finalizeStream(events, sess, turnInput, finalResponse)
+	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state)
 }
 
 // streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
@@ -1771,11 +1858,11 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	}
 	if remaining <= 0 {
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
-			a.finalizeStream(events, sess, turnInput, state.memoryGate.incompleteMessage())
+			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1797,7 +1884,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
 				return
 			}
-			a.finalizeStream(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs))
+			a.finalizeStreamWithState(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs), state)
 			return
 		}
 		messages = append(messages, provider.Message{
@@ -1806,6 +1893,14 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			ReasoningContent: resp.ReasoningContent,
 			ToolCalls:        resp.ToolCalls,
 		})
+		if sess != nil {
+			sess.AddProviderMessage(provider.Message{
+				Role:             "assistant",
+				Content:          resp.Content,
+				ReasoningContent: resp.ReasoningContent,
+				ToolCalls:        resp.ToolCalls,
+			})
+		}
 
 		emitChatToolCallEvents(events, resp.ToolCalls)
 		executed := a.executeToolCallsOrdered(
@@ -1829,7 +1924,18 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 				ToolCallID: execResult.ToolCall.ID,
 				Name:       execResult.ToolCall.Name,
 			})
-			state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
+			if sess != nil {
+				sess.AddProviderMessage(provider.Message{
+					Role:       "tool",
+					Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, nil, nil),
+					ToolCallID: execResult.ToolCall.ID,
+					Name:       execResult.ToolCall.Name,
+				})
+			}
+			state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result, execResult.Duration)
+		}
+		if sess != nil {
+			_ = sess.Save()
 		}
 
 		// 裁剪上下文，递归继续
@@ -1840,7 +1946,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 		if remaining <= 1 {
 			if state.hasContinuation() {
-				a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+				a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 				return
 			}
 			events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
@@ -1872,9 +1978,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			return
 		}
 		if state.hasContinuation() {
-			a.finalizeStream(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()))
+			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String()), state)
 		} else {
-			a.finalizeStream(events, sess, turnInput, emptyFinalResponseMessage)
+			a.finalizeStreamWithState(events, sess, turnInput, emptyFinalResponseMessage, state)
 		}
 		return
 	}
@@ -1902,7 +2008,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		if partial == "" {
 			partial = clean
 		}
-		a.finalizeStream(events, sess, turnInput, partial+lengthTruncatedNotice)
+		a.finalizeStreamWithState(events, sess, turnInput, partial+lengthTruncatedNotice, state)
 		return
 	}
 	state.lengthRecoveryCount = 0
@@ -1918,17 +2024,23 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		appendContinuation(&state.continuedResponse, response)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 	}
-	a.finalizeStream(events, sess, turnInput, finalResponse)
+	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state)
 }
 
 // finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引
-func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string) {
+func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
 	response = utils.SanitizeToolProtocolOutput(response)
-	sess.AddProviderMessage(turnInput.Message)
-	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
-	_ = sess.Save()
+	var logs []toolCallLog
+	if len(citationLogs) > 0 {
+		logs = citationLogs[0]
+	}
+	response = appendNaturalCitations(response, logs)
+	if sess != nil {
+		sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
+		_ = sess.Save()
+	}
 
 	a.chatCount++
 	a.saveConversationMemory(routingText, response)
@@ -1949,12 +2061,20 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, t
 		a.midTerm.ExpireOldSummaries(time.Duration(expireDays) * 24 * time.Hour)
 	}
 
-	if a.ragManager != nil {
+	if a.ragManager != nil && autoIndexFinalAnswersEnabled() {
 		a.indexConversationTurn(routingText, response)
 	}
 
 	a.metrics.RecordChatRequest()
 	events <- ChatEvent{Type: ChatEventDone, Content: response}
+}
+
+func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, state *streamConvergenceState) {
+	if state == nil {
+		a.finalizeStream(events, sess, turnInput, response)
+		return
+	}
+	a.finalizeStream(events, sess, turnInput, response, state.citationToolCalls)
 }
 
 // streamToolCallAcc 流式 tool_calls 增量累积器
@@ -2269,15 +2389,15 @@ func (a *Agent) Registry() *provider.Registry {
 
 // SwitchModel 切换模型（通过 catalog 推断 provider）
 func (a *Agent) SwitchModel(modelID string) error {
-	providerName, err := a.catalog.ResolveProvider(modelID)
+	modelInfo, err := a.catalog.Get(modelID)
 	if err != nil {
-		return fmt.Errorf("resolve provider for model %s: %w", modelID, err)
+		return fmt.Errorf("model %s is not registered in catalog: %w", modelID, err)
 	}
 
 	cfg := a.cfg.Get()
 	pCfg := provider.Config{
 		LlmProvider: provider.LlmProvider{
-			Name:    providerName,
+			Name:    modelInfo.Provider,
 			APIKey:  cfg.APIKey,
 			BaseURL: cfg.APIBase,
 			Model:   modelID,
@@ -2286,7 +2406,7 @@ func (a *Agent) SwitchModel(modelID string) error {
 
 	p, err := a.registry.Resolve(pCfg)
 	if err != nil {
-		return fmt.Errorf("create provider %s: %w", providerName, err)
+		return fmt.Errorf("create provider %s: %w", modelInfo.Provider, err)
 	}
 
 	a.provider = wrapProviderWithMiddleware(p, cfg)

@@ -109,6 +109,36 @@ func TestFallbackChainChatFallback(t *testing.T) {
 	}
 }
 
+func TestFallbackChainChatNoFallbackOnRequestError(t *testing.T) {
+	registry := NewRegistry()
+	registry.RegisterFactory("mock1", func(cfg Config) Provider {
+		return &mockProvider{name: "mock1", chatErr: fmt.Errorf("API error 400: invalid request")}
+	})
+	registry.RegisterFactory("mock2", func(cfg Config) Provider {
+		return &mockProvider{name: "mock2"}
+	})
+
+	configs := []FallbackConfig{
+		{Name: "mock1", APIKey: "test", Model: "test"},
+		{Name: "mock2", APIKey: "test", Model: "test"},
+	}
+
+	chain, _ := NewFallbackChain(configs, registry)
+	_, err := chain.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}})
+	if err == nil {
+		t.Fatal("expected primary request error")
+	}
+	if err.Error() != "API error 400: invalid request" {
+		t.Fatalf("expected original request error, got %v", err)
+	}
+	if got := chain.failCounts[0]; got != 0 {
+		t.Fatalf("expected primary fail count to remain 0 for request error, got %d", got)
+	}
+	if got := chain.ActiveIndex(); got != 0 {
+		t.Fatalf("expected active provider to remain primary, got index %d", got)
+	}
+}
+
 func TestFallbackChainAllFail(t *testing.T) {
 	registry := NewRegistry()
 	registry.RegisterFactory("mock1", func(cfg Config) Provider {
@@ -158,7 +188,7 @@ func TestFallbackChainStreamSuccess(t *testing.T) {
 func TestFallbackChainCooldown(t *testing.T) {
 	registry := NewRegistry()
 	registry.RegisterFactory("mock1", func(cfg Config) Provider {
-		return &mockProvider{name: "mock1", chatErr: fmt.Errorf("fail")}
+		return &mockProvider{name: "mock1", chatErr: fmt.Errorf("connection refused")}
 	})
 	registry.RegisterFactory("mock2", func(cfg Config) Provider {
 		return &mockProvider{name: "mock2"}
@@ -185,6 +215,36 @@ func TestFallbackChainCooldown(t *testing.T) {
 	// mock1 应该在冷却中
 	if chain.isAvailable(0) {
 		t.Error("mock1 should be in cooldown")
+	}
+}
+
+func TestFallbackChainStreamNoFallbackOnRequestError(t *testing.T) {
+	registry := NewRegistry()
+	registry.RegisterFactory("mock1", func(cfg Config) Provider {
+		return &mockProvider{name: "mock1", streamErr: fmt.Errorf("API error 401: unauthorized")}
+	})
+	registry.RegisterFactory("mock2", func(cfg Config) Provider {
+		return &mockProvider{name: "mock2"}
+	})
+
+	configs := []FallbackConfig{
+		{Name: "mock1", APIKey: "test", Model: "test"},
+		{Name: "mock2", APIKey: "test", Model: "test"},
+	}
+
+	chain, _ := NewFallbackChain(configs, registry)
+	_, err := chain.ChatStream(context.Background(), []Message{{Role: "user", Content: "hi"}})
+	if err == nil {
+		t.Fatal("expected primary stream request error")
+	}
+	if err.Error() != "API error 401: unauthorized" {
+		t.Fatalf("expected original stream error, got %v", err)
+	}
+	if got := chain.failCounts[0]; got != 0 {
+		t.Fatalf("expected primary fail count to remain 0 for stream request error, got %d", got)
+	}
+	if got := chain.ActiveIndex(); got != 0 {
+		t.Fatalf("expected active provider to remain primary, got index %d", got)
 	}
 }
 
@@ -258,7 +318,7 @@ func TestFallbackChainValidateAllInvalid(t *testing.T) {
 func TestFallbackChainOnSwitch(t *testing.T) {
 	registry := NewRegistry()
 	registry.RegisterFactory("mock1", func(cfg Config) Provider {
-		return &mockProvider{name: "mock1", chatErr: fmt.Errorf("fail")}
+		return &mockProvider{name: "mock1", chatErr: fmt.Errorf("connection refused")}
 	})
 	registry.RegisterFactory("mock2", func(cfg Config) Provider {
 		return &mockProvider{name: "mock2"}

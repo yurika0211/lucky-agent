@@ -18,6 +18,7 @@ import (
 	jsoniter "github.com/json-iterator/go"
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/collab"
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
@@ -31,6 +32,11 @@ import (
 )
 
 var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
+
+const (
+	defaultSessionsLimit = 50
+	maxSessionsLimit     = 200
+)
 
 // Server 是 LuckyHarness 的 HTTP API Server
 type Server struct {
@@ -99,12 +105,13 @@ type ServerStats struct {
 
 // ChatRequest 聊天请求
 type ChatRequest struct {
-	Message     string            `json:"message"`
-	SessionID   string            `json:"session_id,omitempty"`
-	Stream      bool              `json:"stream,omitempty"`
-	MaxIter     int               `json:"max_iterations,omitempty"`
-	AutoApprove bool              `json:"auto_approve,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	Message     string               `json:"message"`
+	SessionID   string               `json:"session_id,omitempty"`
+	Stream      bool                 `json:"stream,omitempty"`
+	MaxIter     int                  `json:"max_iterations,omitempty"`
+	AutoApprove bool                 `json:"auto_approve,omitempty"`
+	Metadata    map[string]string    `json:"metadata,omitempty"`
+	Attachments []gateway.Attachment `json:"attachments,omitempty"`
 }
 
 // ChatResponse 聊天响应
@@ -314,6 +321,7 @@ func (s *Server) Start() error {
 		{path: "/api/v1/chat", handler: s.handleChat},
 		{path: "/api/v1/chat/sync", handler: s.handleChatSync},
 		{path: "/api/v1/sessions", handler: s.handleSessions},
+		{path: "/api/v1/sessions/", handler: s.handleSessionByID},
 		{path: "/api/v1/memory", handler: s.handleMemory},
 		{path: "/api/v1/memory/recall", handler: s.handleMemoryRecall},
 		{path: "/api/v1/memory/stats", handler: s.handleMemoryStats},
@@ -568,7 +576,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Message == "" {
+	if req.Message == "" && len(req.Attachments) == 0 {
 		s.sendError(w, "message is required", http.StatusBadRequest, "")
 		return
 	}
@@ -606,7 +614,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			sessionID = sess.ID
 		}
 	}
-	events, err := s.agent.ChatWithSessionStream(ctx, sessionID, req.Message)
+	turn := agent.MultimodalUserTurnInput(req.Message, req.Attachments)
+	events, err := s.agent.ChatWithSessionStreamInputWithLoopConfig(ctx, sessionID, turn, loopCfg)
 	if err != nil {
 		s.sendSSEError(w, flusher, err.Error())
 		return
@@ -658,7 +667,7 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Message == "" {
+	if req.Message == "" && len(req.Attachments) == 0 {
 		s.sendError(w, "message is required", http.StatusBadRequest, "")
 		return
 	}
@@ -676,6 +685,7 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequest, loopCfg agent.LoopConfig, ctx context.Context, start time.Time) {
+	turn := agent.MultimodalUserTurnInput(req.Message, req.Attachments)
 	// v0.56.0: 检测内置命令
 	if strings.HasPrefix(req.Message, "/") {
 		parts := strings.SplitN(strings.TrimPrefix(req.Message, "/"), " ", 2)
@@ -772,9 +782,9 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			Timeout:       loopCfg.Timeout,
 			AutoApprove:   loopCfg.AutoApprove,
 		}
-		result, err = s.agent.RunLoopWithSession(ctx, sess, req.Message, loopCfgWithSession)
+		result, err = s.agent.RunLoopWithSessionInput(ctx, sess, turn, loopCfgWithSession)
 	} else {
-		result, err = s.agent.RunLoop(ctx, req.Message, loopCfg)
+		result, err = s.agent.RunLoopWithSessionInput(ctx, nil, turn, loopCfg)
 	}
 	if err != nil {
 		s.stats.mu.Lock()
@@ -806,36 +816,135 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 	s.sendJSON(w, http.StatusOK, resp)
 }
 
+func boundedQueryInt(r *http.Request, name string, fallback, minValue, maxValue int) int {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // handleSessions 会话列表
 func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
+		limit := boundedQueryInt(r, "limit", defaultSessionsLimit, 1, maxSessionsLimit)
+		offset := boundedQueryInt(r, "offset", 0, 0, 1_000_000)
+		var sessions []session.SessionInfo
+		if query != "" {
+			sessions = s.agent.Sessions().Search(query)
+		} else {
+			sessions = s.agent.Sessions().ListInfo()
+		}
+		type sessionInfo struct {
+			ID           string `json:"id"`
+			Title        string `json:"title"`
+			MessageCount int    `json:"message_count"`
+			CreatedAt    string `json:"created_at"`
+			UpdatedAt    string `json:"updated_at"`
+		}
+
+		total := len(sessions)
+		start := minInt(offset, total)
+		end := minInt(start+limit, total)
+		page := sessions[start:end]
+		infos := make([]sessionInfo, 0, len(page))
+		for _, sess := range page {
+			infos = append(infos, sessionInfo{
+				ID:           sess.ID,
+				Title:        sess.Title,
+				MessageCount: sess.MessageCount,
+				CreatedAt:    sess.CreatedAt.Format(time.RFC3339),
+				UpdatedAt:    sess.UpdatedAt.Format(time.RFC3339),
+			})
+		}
+
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"sessions": infos,
+			"count":    len(infos),
+			"total":    total,
+			"limit":    limit,
+			"offset":   start,
+			"has_more": end < total,
+		})
+	case http.MethodPost:
+		var body struct {
+			ID    string `json:"id"`
+			Title string `json:"title"`
+		}
+		if err := jsonAPI.NewDecoder(r.Body).Decode(&body); err != nil && err != io.EOF {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+
+		sess := s.agent.Sessions().Ensure(strings.TrimSpace(body.ID))
+		if sess == nil {
+			s.sendError(w, "create session failed", http.StatusInternalServerError, "")
+			return
+		}
+		if strings.TrimSpace(body.Title) != "" {
+			sess.SetTitle(body.Title)
+			_ = sess.Save()
+		}
+
+		s.sendJSON(w, http.StatusCreated, map[string]interface{}{
+			"id":            sess.ID,
+			"title":         sess.Title,
+			"message_count": sess.MessageCount(),
+			"created_at":    sess.CreatedAt.Format(time.RFC3339),
+			"updated_at":    sess.UpdatedAt.Format(time.RFC3339),
+		})
+	default:
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+	}
+}
+
+// handleSessionByID returns the full history for a single session.
+func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
 		return
 	}
 
-	// Agent 暴露 session manager
-	sessions := s.agent.Sessions().List()
-	type sessionInfo struct {
-		ID           string `json:"id"`
-		MessageCount int    `json:"message_count"`
-		CreatedAt    string `json:"created_at"`
-		UpdatedAt    string `json:"updated_at"`
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
+	id = strings.Trim(id, "/")
+	if id == "" {
+		s.sendError(w, "session id is required", http.StatusBadRequest, "")
+		return
 	}
 
-	var infos []sessionInfo
-	for _, sess := range sessions {
-		msgs := sess.GetMessages()
-		infos = append(infos, sessionInfo{
-			ID:           sess.ID,
-			MessageCount: len(msgs),
-			CreatedAt:    sess.CreatedAt.Format(time.RFC3339),
-			UpdatedAt:    sess.UpdatedAt.Format(time.RFC3339),
-		})
+	sess, ok := s.agent.Sessions().Get(id)
+	if !ok {
+		s.sendError(w, "session not found", http.StatusNotFound, id)
+		return
 	}
 
+	messages := sess.GetMessages()
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"sessions": infos,
-		"count":    len(infos),
+		"id":            sess.ID,
+		"title":         sess.Title,
+		"message_count": len(messages),
+		"created_at":    sess.CreatedAt.Format(time.RFC3339),
+		"updated_at":    sess.UpdatedAt.Format(time.RFC3339),
+		"messages":      messages,
 	})
 }
 
@@ -992,7 +1101,17 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		contextCache = s.agent.ContextCacheStats()
 	}
 
+	providerName := ""
+	modelName := ""
+	if s.agent != nil && s.agent.Config() != nil {
+		cfg := s.agent.Config().Get()
+		providerName = cfg.Provider
+		modelName = cfg.Model
+	}
+
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"provider":       providerName,
+		"model":          modelName,
 		"total_requests": stats.TotalReqs,
 		"chat_requests":  stats.ChatReqs,
 		"error_requests": stats.ErrorReqs,

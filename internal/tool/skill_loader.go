@@ -638,17 +638,7 @@ func executeScriptWithCommand(scriptPath string, commandParts []string, args map
 }
 
 func buildSkillScriptCommand(scriptPath string, args ...string) ([]string, error) {
-	ext := filepath.Ext(scriptPath)
-	switch ext {
-	case ".sh":
-		return append([]string{"/bin/sh", scriptPath}, args...), nil
-	case ".py":
-		return append([]string{"python3", scriptPath}, args...), nil
-	case ".js":
-		return append([]string{"node", scriptPath}, args...), nil
-	default:
-		return append([]string{"/bin/sh", scriptPath}, args...), nil
-	}
+	return buildScriptCommand(scriptPath, args...)
 }
 
 // extractSummary 从 SKILL.md 提取精简摘要，用于注入 system prompt

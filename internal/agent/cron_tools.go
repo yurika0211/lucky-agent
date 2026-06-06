@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/cron"
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
 )
@@ -92,11 +93,18 @@ func (a *Agent) restoreCronJobs() (int, error) {
 		for k, v := range job.Metadata {
 			metadata[k] = v
 		}
-		if strings.TrimSpace(metadata["session_id"]) == "" {
-			metadata["session_id"] = "cron-" + job.ID
+		if isLegacyAutoCronSessionID(job.ID, metadata["session_id"]) {
+			delete(metadata, "session_id")
+			delete(job.Metadata, "session_id")
 		}
 		return a.buildCronTask(job.ID, mode, command, metadata), metadata, nil
 	})
+}
+
+func isLegacyAutoCronSessionID(jobID, sessionID string) bool {
+	jobID = strings.TrimSpace(jobID)
+	sessionID = strings.TrimSpace(sessionID)
+	return jobID != "" && sessionID == "cron-"+jobID
 }
 
 /*
@@ -125,12 +133,13 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, meta
 			if sessionID != "" {
 				if existing, ok := a.Sessions().Get(sessionID); ok {
 					sess = existing
+				} else {
+					sess = session.NewSession(sessionID, a.Sessions().Dir())
+					sess.Title = "cron-" + id
+					a.Sessions().Upsert(sess)
 				}
-			}
-			if sess == nil {
-				sess = session.NewSession(sessionID, a.Sessions().Dir())
-				sess.Title = "cron-" + id
-				a.Sessions().Upsert(sess)
+			} else {
+				runCfg.Ephemeral = true
 			}
 			result, err := a.RunLoopWithSession(context.Background(), sess, command, runCfg)
 			if err != nil {
@@ -203,9 +212,13 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	if a == nil || a.msgGateway == nil || strings.TrimSpace(message) == "" {
 		return
 	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
 	platform := strings.TrimSpace(metadata["platform"])
-	chatID := strings.TrimSpace(metadata["chatID"])
-	replyToMsgID := strings.TrimSpace(metadata["replyToMsgID"])
+	chatID := firstCronMetadataValue(metadata, "chatID", "chat_id")
+	replyToMsgID := firstCronMetadataValue(metadata, "replyToMsgID", "reply_to_message_id")
+	sessionID := strings.TrimSpace(metadata["session_id"])
 	if platform == "" || chatID == "" {
 		target := a.pickRecentChatTarget()
 		if platform == "" {
@@ -227,11 +240,35 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	}
 	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	if receiptGW, ok := gw.(gateway.ReceiptGateway); ok {
+		var (
+			sent gateway.SentMessage
+			err  error
+		)
+		if replyToMsgID != "" {
+			sent, err = receiptGW.SendWithReplyReceipt(sendCtx, chatID, replyToMsgID, message)
+		} else {
+			sent, err = receiptGW.SendWithReceipt(sendCtx, chatID, message)
+		}
+		if err == nil && strings.TrimSpace(sent.ID) != "" && sessionID != "" {
+			a.RecordExternalReplyAnchor(platform, chatID, sent.ID, sessionID, payload.JobID)
+		}
+		return
+	}
 	if replyToMsgID != "" {
 		_ = gw.SendWithReply(sendCtx, chatID, replyToMsgID, message)
 		return
 	}
 	_ = gw.Send(sendCtx, chatID, message)
+}
+
+func firstCronMetadataValue(metadata map[string]string, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (a *Agent) formatCronNotification(payload cronNotificationPayload) string {

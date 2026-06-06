@@ -3,7 +3,9 @@ package websocket
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -12,7 +14,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/logger"
 )
 
-// Client WebSocket 客户端连接
+// Client represents a single websocket connection.
 type Client struct {
 	ID         string
 	SessionID  string
@@ -23,22 +25,22 @@ type Client struct {
 	mu         sync.Mutex
 }
 
-// Hub WebSocket 连接管理中心
+// Hub coordinates websocket clients and session broadcasts.
 type Hub struct {
-	mu          sync.RWMutex
-	clients     map[string]*Client          // clientID → Client
-	sessions    map[string]map[string]bool  // sessionID → set of clientIDs
-	register    chan *Client
-	unregister  chan *Client
-	broadcast   chan *Message
-	handler     MessageHandler
-	upgrader    websocket.Upgrader
-	stats       HubStats
-	ctx         context.Context
-	cancel      context.CancelFunc
+	mu         sync.RWMutex
+	clients    map[string]*Client
+	sessions   map[string]map[string]bool
+	register   chan *Client
+	unregister chan *Client
+	broadcast  chan *Message
+	handler    MessageHandler
+	upgrader   websocket.Upgrader
+	stats      HubStats
+	ctx        context.Context
+	cancel     context.CancelFunc
 }
 
-// HubStats Hub 统计信息
+// HubStats tracks hub counters.
 type HubStats struct {
 	mu            sync.RWMutex
 	TotalConns    int64
@@ -47,34 +49,34 @@ type HubStats struct {
 	Errors        int64
 }
 
-// MessageHandler 消息处理接口
+// MessageHandler processes messages received from a client.
 type MessageHandler interface {
 	HandleMessage(client *Client, msg *Message)
 }
 
-// HubConfig Hub 配置
+// HubConfig controls websocket timings and buffer sizes.
 type HubConfig struct {
-	WriteWait      time.Duration // 写超时，默认 10s
-	PongWait       time.Duration // Pong 超时，默认 60s
-	PingPeriod     time.Duration // Ping 间隔，默认 54s (必须 < PongWait)
-	MaxMessageSize int64         // 最大消息大小，默认 64KB
-	ReadBufferSize int           // 读缓冲区，默认 1024
-	WriteBufferSize int          // 写缓冲区，默认 1024
+	WriteWait       time.Duration
+	PongWait        time.Duration
+	PingPeriod      time.Duration
+	MaxMessageSize  int64
+	ReadBufferSize  int
+	WriteBufferSize int
 }
 
-// DefaultHubConfig 返回默认 Hub 配置
+// DefaultHubConfig returns sane defaults for local websocket chat usage.
 func DefaultHubConfig() HubConfig {
 	return HubConfig{
-		WriteWait:      10 * time.Second,
-		PongWait:       60 * time.Second,
-		PingPeriod:     54 * time.Second,
-		MaxMessageSize: 64 * 1024,
-		ReadBufferSize: 1024,
+		WriteWait:       10 * time.Second,
+		PongWait:        60 * time.Second,
+		PingPeriod:      54 * time.Second,
+		MaxMessageSize:  64 * 1024,
+		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
 	}
 }
 
-// NewHub 创建 WebSocket Hub
+// NewHub constructs a websocket hub.
 func NewHub(handler MessageHandler, cfg HubConfig) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Hub{
@@ -88,14 +90,23 @@ func NewHub(handler MessageHandler, cfg HubConfig) *Hub {
 			ReadBufferSize:  cfg.ReadBufferSize,
 			WriteBufferSize: cfg.WriteBufferSize,
 			CheckOrigin: func(r *http.Request) bool {
-				// 仅允许同源 WebSocket 连接
 				origin := r.Header.Get("Origin")
 				if origin == "" {
-					return true // 非浏览器客户端无 Origin
+					return true
 				}
-				// 检查 Origin 是否与 Host 同源
-				host := r.Host
-				return strings.HasPrefix(origin, "http://"+host) || strings.HasPrefix(origin, "https://"+host)
+
+				originURL, err := url.Parse(origin)
+				if err != nil {
+					return false
+				}
+
+				originHost := originURL.Hostname()
+				requestHost := r.Host
+				if host, _, err := net.SplitHostPort(r.Host); err == nil {
+					requestHost = host
+				}
+
+				return sameHostOrLoopback(originHost, requestHost)
 			},
 		},
 		ctx:    ctx,
@@ -103,7 +114,27 @@ func NewHub(handler MessageHandler, cfg HubConfig) *Hub {
 	}
 }
 
-// Run 启动 Hub 事件循环
+func sameHostOrLoopback(originHost, requestHost string) bool {
+	originHost = strings.TrimSpace(strings.Trim(originHost, "[]"))
+	requestHost = strings.TrimSpace(strings.Trim(requestHost, "[]"))
+	if originHost == "" || requestHost == "" {
+		return false
+	}
+	if strings.EqualFold(originHost, requestHost) {
+		return true
+	}
+	return isLoopbackHost(originHost) && isLoopbackHost(requestHost)
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// Run starts the hub event loop.
 func (h *Hub) Run() {
 	logger.Info("WebSocket Hub started")
 	for {
@@ -120,6 +151,7 @@ func (h *Hub) Run() {
 			}
 			h.sessions[client.SessionID][client.ID] = true
 			h.mu.Unlock()
+
 			h.stats.mu.Lock()
 			h.stats.ActiveConns++
 			h.stats.TotalConns++
@@ -139,6 +171,7 @@ func (h *Hub) Run() {
 				close(client.Send)
 			}
 			h.mu.Unlock()
+
 			h.stats.mu.Lock()
 			h.stats.ActiveConns--
 			h.stats.mu.Unlock()
@@ -146,14 +179,12 @@ func (h *Hub) Run() {
 
 		case msg := <-h.broadcast:
 			h.mu.RLock()
-			// 按 sessionID 广播
 			if sess, ok := h.sessions[msg.SessionID]; ok {
 				for clientID := range sess {
 					if client, ok := h.clients[clientID]; ok {
 						select {
 						case client.Send <- msg:
 						default:
-							// 发送阻塞，断开客户端
 							h.mu.RUnlock()
 							h.unregister <- client
 							h.mu.RLock()
@@ -162,6 +193,7 @@ func (h *Hub) Run() {
 				}
 			}
 			h.mu.RUnlock()
+
 			h.stats.mu.Lock()
 			h.stats.TotalMessages++
 			h.stats.mu.Unlock()
@@ -169,15 +201,15 @@ func (h *Hub) Run() {
 	}
 }
 
-// Stop 停止 Hub
+// Stop stops the hub loop.
 func (h *Hub) Stop() {
 	h.cancel()
 }
 
-// closeAll 关闭所有连接
 func (h *Hub) closeAll() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
 	for id, client := range h.clients {
 		close(client.Send)
 		client.Conn.Close()
@@ -186,7 +218,7 @@ func (h *Hub) closeAll() {
 	h.sessions = make(map[string]map[string]bool)
 }
 
-// ServeHTTP 处理 WebSocket 升级请求
+// ServeHTTP upgrades the request to websocket and registers the client.
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session")
 	if sessionID == "" {
@@ -209,19 +241,17 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.register <- client
-
-	// 读写 goroutine
 	go client.writePump()
 	go client.readPump()
 }
 
-// SendToSession 向指定 session 的所有客户端发送消息
+// SendToSession broadcasts a message to a session.
 func (h *Hub) SendToSession(sessionID string, msg *Message) {
 	msg.SessionID = sessionID
 	h.broadcast <- msg
 }
 
-// SendToClient 向指定客户端发送消息
+// SendToClient pushes a message to a single client.
 func (h *Hub) SendToClient(clientID string, msg *Message) {
 	h.mu.RLock()
 	client, ok := h.clients[clientID]
@@ -235,7 +265,7 @@ func (h *Hub) SendToClient(clientID string, msg *Message) {
 	}
 }
 
-// GetStats 获取 Hub 统计
+// GetStats returns the current hub stats snapshot.
 func (h *Hub) GetStats() HubStats {
 	h.stats.mu.RLock()
 	defer h.stats.mu.RUnlock()
@@ -247,21 +277,20 @@ func (h *Hub) GetStats() HubStats {
 	}
 }
 
-// SessionCount 获取 session 数量
+// SessionCount returns the number of active sessions.
 func (h *Hub) SessionCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.sessions)
 }
 
-// ClientCount 获取客户端数量
+// ClientCount returns the number of active clients.
 func (h *Hub) ClientCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.clients)
 }
 
-// readPump 从 WebSocket 连接读取消息
 func (c *Client) readPump() {
 	defer func() {
 		c.Hub.unregister <- c
@@ -301,14 +330,12 @@ func (c *Client) readPump() {
 
 		c.LastActive = time.Now()
 
-		// 处理 ping
 		if msg.Type == TypePing {
 			pong, _ := NewMessage(TypePong, c.SessionID, nil)
 			c.Send <- pong
 			continue
 		}
 
-		// 处理重连
 		if msg.Type == TypeReconnect {
 			var data ReconnectData
 			if err := msg.ParseData(&data); err == nil {
@@ -322,14 +349,12 @@ func (c *Client) readPump() {
 			continue
 		}
 
-		// 交给 handler 处理
 		if c.Hub.handler != nil {
 			c.Hub.handler.HandleMessage(c, msg)
 		}
 	}
 }
 
-// writePump 向 WebSocket 连接写入消息
 func (c *Client) writePump() {
 	ticker := time.NewTicker(54 * time.Second)
 	defer func() {

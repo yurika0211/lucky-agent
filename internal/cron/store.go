@@ -180,6 +180,9 @@ func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() 
 			metadata = make(map[string]string)
 		}
 		for k, v := range pj.Metadata {
+			if k == "session_id" && strings.TrimSpace(v) == "cron-"+strings.TrimSpace(pj.ID) {
+				continue
+			}
 			metadata[k] = v
 		}
 		if strings.TrimSpace(metadata["mode"]) == "" {

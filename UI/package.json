@@ -1,0 +1,28 @@
+{
+  "name": "luckyharness-ui",
+  "private": true,
+  "workspaces": [
+    "GUI",
+    "TUI"
+  ],
+  "scripts": {
+    "build": "npm run typecheck --workspace GUI && npm run typecheck --workspace TUI && npm run build --workspace GUI",
+    "dev:dashboard": "npm run dev --workspace GUI",
+    "dev:tui": "node --import tsx TUI/src/index.tsx",
+    "start:tui": "node --import tsx TUI/src/index.tsx",
+    "typecheck": "npm run typecheck --workspace GUI && npm run typecheck --workspace TUI"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "@types/react": "^19.1.1",
+    "@types/react-dom": "^19.1.1",
+    "@vitejs/plugin-react-swc": "^4.3.1",
+    "ink": "^7.0.5",
+    "ink-text-input": "^6.0.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.9.2",
+    "vite": "^6.2.0"
+  }
+}

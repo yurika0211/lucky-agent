@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -83,7 +82,10 @@ func handleShell(args map[string]any) (string, error) {
 	fullCommand := prefix + command
 
 	ctx := time.Duration(timeout) * time.Second
-	cmd := exec.Command("sh", "-c", fullCommand)
+	cmd, err := buildShellCommand(fullCommand)
+	if err != nil {
+		return "", err
+	}
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
@@ -763,6 +765,11 @@ func validatePath(path string) error {
 }
 
 func validateSandbox(cleanPath string) error {
+	normalizedRequested := strings.ReplaceAll(cleanPath, `\`, `/`)
+	if normalizedRequested == "/dev/null" || strings.HasPrefix(normalizedRequested, "/tmp/") {
+		return nil
+	}
+
 	absPath := cleanPath
 	if !filepath.IsAbs(absPath) {
 		if wd, err := os.Getwd(); err == nil {
@@ -770,35 +777,80 @@ func validateSandbox(cleanPath string) error {
 		}
 	}
 	absPath = filepath.Clean(absPath)
+	absPath = normalizeSandboxPath(absPath)
 
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "/root"
+	home := sandboxHomeDir()
+	tempDir := normalizeSandboxPath(os.TempDir())
+	allowedPrefixes := []string{
+		normalizeSandboxPath(filepath.Join(home, ".luckyharness")),
+		tempDir,
+		normalizeSandboxPath(os.DevNull),
 	}
-	allowedPrefixes := []string{filepath.Join(home, ".luckyharness"), "/tmp", "/dev/null"}
 	if filepath.Base(home) == ".lh-home" {
-		allowedPrefixes = append(allowedPrefixes, home)
+		allowedPrefixes = append(allowedPrefixes, normalizeSandboxPath(home))
 	}
 	deniedPrefixes := []string{
-		filepath.Join(home, ".nanobot"),
-		filepath.Join(home, ".ssh"),
-		filepath.Join(home, ".gnupg"),
-		filepath.Join(home, ".aws"),
-		filepath.Join(home, ".config/gcloud"),
-		"/etc/shadow",
-		"/etc/ssh",
+		normalizeSandboxPath(filepath.Join(home, ".nanobot")),
+		normalizeSandboxPath(filepath.Join(home, ".ssh")),
+		normalizeSandboxPath(filepath.Join(home, ".gnupg")),
+		normalizeSandboxPath(filepath.Join(home, ".aws")),
+		normalizeSandboxPath(filepath.Join(home, ".config", "gcloud")),
+		normalizeSandboxPath(filepath.Join(home, "AppData", "Roaming", "gcloud")),
+		normalizeSandboxPath("/etc/shadow"),
+		normalizeSandboxPath("/etc/ssh"),
 	}
 	for _, denied := range deniedPrefixes {
-		if strings.HasPrefix(absPath, denied) || absPath == denied {
+		if pathMatchesPrefix(absPath, denied) {
 			return fmt.Errorf("access denied: path is outside sandbox (%s)", cleanPath)
 		}
 	}
 	for _, allowed := range allowedPrefixes {
-		if strings.HasPrefix(absPath, allowed) || absPath == allowed {
+		if pathMatchesPrefix(absPath, allowed) {
 			return nil
 		}
 	}
 	return fmt.Errorf("access denied: path is outside sandbox (allowed: ~/.luckyharness/, /tmp/). Requested: %s", cleanPath)
+}
+
+func sandboxHomeDir() string {
+	if home := strings.TrimSpace(os.Getenv("HOME")); home != "" {
+		return home
+	}
+	if home := strings.TrimSpace(os.Getenv("USERPROFILE")); home != "" {
+		return home
+	}
+	if drive := strings.TrimSpace(os.Getenv("HOMEDRIVE")); drive != "" {
+		if path := strings.TrimSpace(os.Getenv("HOMEPATH")); path != "" {
+			return filepath.Clean(drive + path)
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "/root"
+	}
+	return home
+}
+
+func normalizeSandboxPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	clean = filepath.ToSlash(clean)
+	return strings.ToLower(clean)
+}
+
+func pathMatchesPrefix(path, prefix string) bool {
+	if prefix == "" {
+		return false
+	}
+	if path == prefix {
+		return true
+	}
+	if !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+	return strings.HasPrefix(path, prefix)
 }
 
 func validateShellSandbox(command string) error {

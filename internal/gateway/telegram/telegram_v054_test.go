@@ -16,8 +16,11 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/cron"
+	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -92,6 +95,8 @@ func defaultMockBotResponse(r *http.Request) map[string]any {
 		}
 	case containsMethod(r.URL.Path, "sendChatAction"), containsMethod(r.URL.Path, "setMessageReaction"):
 		return map[string]any{"ok": true}
+	case containsMethod(r.URL.Path, "setMyCommands"):
+		return map[string]any{"ok": true, "result": true}
 	case containsMethod(r.URL.Path, "getFile"):
 		return map[string]any{
 			"ok": true,
@@ -144,6 +149,50 @@ func newAdapterWithMockBot() (*Adapter, mockBotServer, error) {
 	adapter.running = true
 
 	return adapter, mockBotServer{}, nil
+}
+
+func TestV054RegisterBotCommandsWithMockBot(t *testing.T) {
+	var rawCommands string
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMyCommands") {
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			rawCommands = r.Form.Get("commands")
+			return map[string]any{"ok": true, "result": true}
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("newMockBot() error = %v", err)
+	}
+
+	adapter := NewAdapter(Config{Token: bot.Token})
+	adapter.bot = bot
+
+	if err := adapter.registerBotCommands(); err != nil {
+		t.Fatalf("registerBotCommands() error = %v", err)
+	}
+	if strings.TrimSpace(rawCommands) == "" {
+		t.Fatal("expected setMyCommands payload")
+	}
+
+	var commands []tgbotapi.BotCommand
+	if err := json.Unmarshal([]byte(rawCommands), &commands); err != nil {
+		t.Fatalf("decode commands payload: %v\npayload=%s", err, rawCommands)
+	}
+	if len(commands) != len(telegramCommandSpecs()) {
+		t.Fatalf("expected %d commands, got %d: %#v", len(telegramCommandSpecs()), len(commands), commands)
+	}
+	seen := make(map[string]string, len(commands))
+	for _, command := range commands {
+		seen[command.Command] = command.Description
+	}
+	for _, name := range telegramCommandNames() {
+		if seen[name] == "" {
+			t.Fatalf("expected command %q to be registered; got %#v", name, seen)
+		}
+	}
 }
 
 // ============================================================
@@ -411,6 +460,47 @@ func TestV054SendStreamWithReplyTo(t *testing.T) {
 		t.Fatal("expected non-nil stream")
 	}
 	stream.Finish()
+}
+
+func TestV054SendStreamFallsBackWhenReplyTargetIsInvalid(t *testing.T) {
+	var replyIDs []string
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "sendMessage") {
+			_ = r.ParseForm()
+			replyID := r.Form.Get("reply_to_message_id")
+			replyIDs = append(replyIDs, replyID)
+			if replyID != "" {
+				return map[string]any{
+					"ok":          false,
+					"description": "Bad Request: message to be replied not found",
+				}
+			}
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.running = true
+
+	stream, err := adapter.SendStream(context.Background(), "12345", "10")
+	if err != nil {
+		t.Fatalf("expected fallback SendStream to succeed, got: %v", err)
+	}
+	if stream == nil {
+		t.Fatal("expected non-nil stream")
+	}
+	if len(replyIDs) != 2 {
+		t.Fatalf("expected sendMessage retry without reply, got reply ids %#v", replyIDs)
+	}
+	if replyIDs[0] != "10" || replyIDs[1] != "" {
+		t.Fatalf("expected first send with reply and second without reply, got %#v", replyIDs)
+	}
 }
 
 // ============================================================
@@ -858,9 +948,12 @@ func TestV054SendChunkWithMockBot(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	err = adapter.sendChunk(ctx, 12345, 0, "test message")
+	messageID, err := adapter.sendChunk(ctx, 12345, 0, "test message")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+	if messageID == 0 {
+		t.Fatal("expected message ID")
 	}
 }
 
@@ -872,9 +965,12 @@ func TestV054SendChunkWithReply(t *testing.T) {
 	defer server.Close()
 
 	ctx := context.Background()
-	err = adapter.sendChunk(ctx, 12345, 42, "reply message")
+	messageID, err := adapter.sendChunk(ctx, 12345, 42, "reply message")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+	if messageID == 0 {
+		t.Fatal("expected message ID")
 	}
 }
 
@@ -2664,6 +2760,9 @@ type mockAgentProvider struct {
 	cronEngine    *cron.Engine
 	metricsVal    *metrics.Metrics
 	memoryVal     *memory.Store
+	catalogVal    *provider.ModelCatalog
+	ragVal        *rag.RAGManager
+	embedderReg   *embedder.Registry
 	chatFunc      func(ctx context.Context, userInput string) (string, error)
 	chatSessFn    func(ctx context.Context, sessionID, userInput string) (string, error)
 	chatInputFn   func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
@@ -2672,6 +2771,7 @@ type mockAgentProvider struct {
 	progressFn    func(ctx context.Context, userInput string, round int, observations []string) (string, error)
 	analyzeFn     func(ctx context.Context, attachments []gateway.Attachment) (string, error)
 	switchModelFn func(modelID string) error
+	replyAnchors  map[string]string
 }
 
 func (m *mockAgentProvider) Sessions() *session.Manager {
@@ -2774,6 +2874,94 @@ func (m *mockAgentProvider) Memory() *memory.Store {
 	return m.memoryVal
 }
 
+func (m *mockAgentProvider) Remember(content, category string) error {
+	if m.memoryVal == nil {
+		return nil
+	}
+	return m.memoryVal.Save(content, category)
+}
+
+func (m *mockAgentProvider) RememberLongTerm(content, category string) error {
+	if m.memoryVal == nil {
+		return nil
+	}
+	return m.memoryVal.SaveLongTerm(content, category)
+}
+
+func (m *mockAgentProvider) Recall(query string) []memory.Entry {
+	if m.memoryVal == nil {
+		return nil
+	}
+	return m.memoryVal.Search(query)
+}
+
+func (m *mockAgentProvider) MemoryStats() map[memory.Tier]int {
+	if m.memoryVal == nil {
+		return map[memory.Tier]int{}
+	}
+	return m.memoryVal.Stats()
+}
+
+func (m *mockAgentProvider) DecayMemory(threshold float64) int {
+	if m.memoryVal == nil {
+		return 0
+	}
+	return m.memoryVal.Decay(threshold)
+}
+
+func (m *mockAgentProvider) PromoteMemory(id string) error {
+	if m.memoryVal == nil {
+		return nil
+	}
+	return m.memoryVal.Promote(id)
+}
+
+func (m *mockAgentProvider) Catalog() *provider.ModelCatalog {
+	if m.catalogVal != nil {
+		return m.catalogVal
+	}
+	return provider.NewModelCatalog()
+}
+
+func (m *mockAgentProvider) RAG() *rag.RAGManager {
+	return m.ragVal
+}
+
+func (m *mockAgentProvider) ConnectMCPServer(name, url, apiKey string) {}
+
+func (m *mockAgentProvider) ContextWindowConfig() contextWindowSnapshot {
+	return contextWindowSnapshot{
+		MaxTokens:            4096,
+		ReservedTokens:       1024,
+		Strategy:             "low_priority_first",
+		SlidingWindowSize:    10,
+		MaxConversationTurns: 50,
+		MemoryBudget:         800,
+		SummarizeThreshold:   0.8,
+	}
+}
+
+func (m *mockAgentProvider) ContextCacheStats() map[string]any {
+	return map[string]any{"entries": 0, "hits": 0, "misses": 0}
+}
+
+func (m *mockAgentProvider) EmbedderRegistry() *embedder.Registry {
+	if m.embedderReg != nil {
+		return m.embedderReg
+	}
+	reg := embedder.NewRegistry()
+	reg.Register("mock-128", embedder.NewMockEmbedder(128))
+	return reg
+}
+
+func (m *mockAgentProvider) ResolveExternalReplyAnchor(platform, chatID, messageID string) (string, bool) {
+	if m.replyAnchors == nil {
+		return "", false
+	}
+	sessionID, ok := m.replyAnchors[platform+"|"+chatID+"|"+messageID]
+	return sessionID, ok
+}
+
 type mockConfigProvider struct {
 	snap agentConfigSnapshot
 }
@@ -2835,8 +3023,12 @@ func newHandlerWithMockAgent(t *testing.T) (*Handler, mockBotServer) {
 	mockAgent := &mockAgentProvider{
 		sessions: sessMgr,
 		configSnap: agentConfigSnapshot{
+			HomeDir:            t.TempDir(),
+			ConfigFile:         "config.json",
 			Model:              "test-model",
 			Provider:           "test-provider",
+			DashboardAddr:      ":8765",
+			MsgGatewayAPIAddr:  "127.0.0.1:9090",
 			ProgressAsMessages: true,
 		},
 		toolsVal:   tool.NewRegistry(),
@@ -2848,10 +3040,15 @@ func newHandlerWithMockAgent(t *testing.T) (*Handler, mockBotServer) {
 	handler := &Handler{
 		adapter:            adapter,
 		agent:              mockAgent,
+		state:              mockAgent,
+		chat:               mockAgent,
+		commands:           make(map[string]telegramCommandHandler),
+		watcher:            cron.NewWatcher(mockAgent.cronEngine),
 		sessions:           make(map[string]string),
 		chatStreamTimeout:  defaultChatStreamTimeout,
 		progressAsMessages: true,
 	}
+	handler.commands = handler.buildCommandRegistry()
 
 	return handler, server
 }
@@ -3135,6 +3332,178 @@ func TestV054HandleSessionWithSession(t *testing.T) {
 	_ = sid
 }
 
+func TestV054HandleSessionsListsRecentSessions(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	s1 := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("First project discussion")
+	s1.AddMessage("user", "hello")
+	s2 := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Second project discussion")
+	handler.setSessionID("12345", s2.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/sessions",
+		IsCommand: true,
+		Command:   "sessions",
+	}
+
+	if err := handler.handleSessions(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleResumeSwitchesSessionByFullID(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	oldSess := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Old session")
+	newSess := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("New session")
+	handler.setSessionID("12345", oldSess.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume " + newSess.ID,
+		IsCommand: true,
+		Command:   "resume",
+		Args:      newSess.ID,
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != newSess.ID {
+		t.Fatalf("expected switched session %q, got %q", newSess.ID, got)
+	}
+}
+
+func TestV054HandleResumeSwitchesSessionByTitle(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	oldSess := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Old session")
+	target := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Release checklist")
+	handler.setSessionID("12345", oldSess.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume Release checklist",
+		IsCommand: true,
+		Command:   "resume",
+		Args:      "Release checklist",
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != target.ID {
+		t.Fatalf("expected switched session %q, got %q", target.ID, got)
+	}
+}
+
+func TestV054HandleResumeSwitchesSessionByUniqueTitleFragment(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	oldSess := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Old session")
+	target := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Telegram resume title support")
+	handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Billing notes")
+	handler.setSessionID("12345", oldSess.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume title support",
+		IsCommand: true,
+		Command:   "resume",
+		Args:      "title support",
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != target.ID {
+		t.Fatalf("expected switched session %q, got %q", target.ID, got)
+	}
+}
+
+func TestV054HandleSessionSwitchesByPrefix(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	target := handler.agent.(*mockAgentProvider).sessions.Ensure("session-target-abc")
+	target.SetTitle("Target")
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/session session-target",
+		IsCommand: true,
+		Command:   "session",
+		Args:      "session-target",
+	}
+
+	if err := handler.handleSession(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != target.ID {
+		t.Fatalf("expected switched session %q, got %q", target.ID, got)
+	}
+}
+
+func TestV054HandleResumeAmbiguousTitleDoesNotSwitch(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	current := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Current session")
+	handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Project alpha")
+	handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Project beta")
+	handler.setSessionID("12345", current.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume Project",
+		IsCommand: true,
+		Command:   "resume",
+		Args:      "Project",
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != current.ID {
+		t.Fatalf("expected current session to remain %q, got %q", current.ID, got)
+	}
+}
+
+func TestV054HandleResumeMissingSessionDoesNotSwitch(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	current := handler.agent.(*mockAgentProvider).sessions.NewWithTitle("Current session")
+	handler.setSessionID("12345", current.ID)
+
+	msg := &gateway.Message{
+		ID:        "1",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/resume missing",
+		IsCommand: true,
+		Command:   "resume",
+		Args:      "missing",
+	}
+
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if got := handler.currentSessionID("12345"); got != current.ID {
+		t.Fatalf("expected current session to remain %q, got %q", current.ID, got)
+	}
+}
+
 func TestV054HandleSkills(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()
@@ -3250,6 +3619,39 @@ func TestV054HandleCronAdd(t *testing.T) {
 	err := handler.handleCron(ctx, msg)
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCronAddBindsCurrentSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	mockAgent := handler.agent.(*mockAgentProvider)
+	tool.NewCronToolService(mockAgent.cronEngine, nil, func(id, mode, command string, metadata map[string]string) func() error {
+		return func() error { return nil }
+	}).RegisterTools(mockAgent.toolsVal)
+
+	sess := mockAgent.sessions.NewWithTitle("telegram cron")
+	handler.setSessionID("12345", sess.ID)
+
+	msg := &gateway.Message{
+		ID:        "77",
+		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+		Text:      "/cron add tg-bound 每小时 follow up",
+		IsCommand: true,
+		Command:   "cron",
+		Args:      "add tg-bound 每小时 follow up",
+	}
+
+	if err := handler.handleCron(context.Background(), msg); err != nil {
+		t.Fatalf("handleCron error = %v", err)
+	}
+	job, ok := mockAgent.cronEngine.GetJob("tg-bound")
+	if !ok {
+		t.Fatal("expected cron job to be added")
+	}
+	if got := job.Metadata["session_id"]; got != sess.ID {
+		t.Fatalf("expected cron job session_id %q, got %q", sess.ID, got)
 	}
 }
 
@@ -3493,6 +3895,184 @@ func TestV054HandleMessageNonCommandWithAttachments(t *testing.T) {
 	}
 }
 
+func TestV054HandleMessageReplyToCronAnchorUsesAnchoredSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	sessions := handler.agent.(*mockAgentProvider).sessions
+	oldSess := sessions.NewWithTitle("old chat")
+	cronSess := sessions.NewWithTitle("cron result")
+	handler.setSessionID("12345", oldSess.ID)
+	handler.agent.(*mockAgentProvider).replyAnchors = map[string]string{
+		"telegram|12345|9001": cronSess.ID,
+	}
+
+	type capturedTurn struct {
+		sessionID      string
+		routingText    string
+		messageContent string
+	}
+	captured := make(chan capturedTurn, 1)
+	handler.agent.(*mockAgentProvider).chatStreamIn = func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+		captured <- capturedTurn{
+			sessionID:      sessionID,
+			routingText:    input.RoutingText,
+			messageContent: input.Message.Content,
+		}
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "anchored response"}
+		close(ch)
+		return ch, nil
+	}
+
+	err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID: "2",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{ID: "user-1"},
+		Text:   "看一眼摘要",
+		ReplyTo: &gateway.Message{
+			ID:   "9001",
+			Chat: gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+			Text: "当前状态一览：定时任务 job1 已完成，摘要：RAG 命中了课程 A 第一章，发现重点是检索召回和上下文拼接。",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error = %v", err)
+	}
+	var gotTurn capturedTurn
+	select {
+	case gotTurn = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for anchored chat turn")
+	}
+	if gotTurn.sessionID != cronSess.ID {
+		t.Fatalf("expected anchored session %q, got %q", cronSess.ID, gotTurn.sessionID)
+	}
+	if got := handler.currentSessionID("12345"); got != cronSess.ID {
+		t.Fatalf("expected chat session to switch to anchored session %q, got %q", cronSess.ID, got)
+	}
+	if !strings.Contains(gotTurn.routingText, "[Replied Telegram message]") {
+		t.Fatalf("expected routing text to include replied message context, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "定时任务 job1 已完成") {
+		t.Fatalf("expected routing text to include replied cron message, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "[User request]\n看一眼摘要") {
+		t.Fatalf("expected routing text to include user reply request, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "Do not consult unrelated runtime, cron, or session state") {
+		t.Fatalf("expected routing text to discourage unrelated runtime inspection, got: %s", gotTurn.routingText)
+	}
+	if gotTurn.messageContent != gotTurn.routingText {
+		t.Fatalf("expected message content to match reply-aware routing text\ncontent=%s\nrouting=%s", gotTurn.messageContent, gotTurn.routingText)
+	}
+}
+
+func TestV054HandleMessageReplyWithoutAnchorStillIncludesRepliedText(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	sessions := handler.agent.(*mockAgentProvider).sessions
+	currentSess := sessions.NewWithTitle("current chat")
+	handler.setSessionID("12345", currentSess.ID)
+
+	type capturedTurn struct {
+		sessionID      string
+		routingText    string
+		messageContent string
+	}
+	captured := make(chan capturedTurn, 1)
+	handler.agent.(*mockAgentProvider).chatStreamIn = func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+		captured <- capturedTurn{
+			sessionID:      sessionID,
+			routingText:    input.RoutingText,
+			messageContent: input.Message.Content,
+		}
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "reply-aware response"}
+		close(ch)
+		return ch, nil
+	}
+
+	err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID: "3",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{ID: "user-1"},
+		Text:   "可以",
+		ReplyTo: &gateway.Message{
+			ID:   "9002",
+			Chat: gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+			Text: "我刚跑完这个定时任务：发现 RAG 课程笔记里第一章缺少索引，需要补一次重建。",
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error = %v", err)
+	}
+	var gotTurn capturedTurn
+	select {
+	case gotTurn = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reply-aware chat turn")
+	}
+	if gotTurn.sessionID != currentSess.ID {
+		t.Fatalf("expected current session %q without anchor, got %q", currentSess.ID, gotTurn.sessionID)
+	}
+	if got := handler.currentSessionID("12345"); got != currentSess.ID {
+		t.Fatalf("expected chat session to remain %q without anchor, got %q", currentSess.ID, got)
+	}
+	if !strings.Contains(gotTurn.routingText, "[Replied Telegram message]") {
+		t.Fatalf("expected routing text to include replied message context, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "第一章缺少索引") {
+		t.Fatalf("expected routing text to include replied cron text, got: %s", gotTurn.routingText)
+	}
+	if !strings.Contains(gotTurn.routingText, "[User request]\n可以") {
+		t.Fatalf("expected routing text to include terse user reply, got: %s", gotTurn.routingText)
+	}
+	if gotTurn.messageContent != gotTurn.routingText {
+		t.Fatalf("expected message content to match reply-aware routing text\ncontent=%s\nrouting=%s", gotTurn.messageContent, gotTurn.routingText)
+	}
+}
+
+func TestV054HandleRenameCommandRenamesCurrentTelegramSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	sessions := handler.agent.(*mockAgentProvider).sessions
+	current := sessions.NewWithTitle("old title")
+	handler.setSessionID("12345", current.ID)
+
+	err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID: "3",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender:    gateway.User{ID: "user-1"},
+		Text:      "/rename project notes",
+		IsCommand: true,
+		Command:   "rename",
+		Args:      "project notes",
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error = %v", err)
+	}
+
+	renamed, ok := sessions.Get(current.ID)
+	if !ok {
+		t.Fatalf("current session not found after rename")
+	}
+	if renamed.Title != "project notes" {
+		t.Fatalf("expected session title to be renamed, got %q", renamed.Title)
+	}
+}
+
 func TestV054HandleMessageGroupNonCommand(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()
@@ -3529,16 +4109,44 @@ func TestV054HandleCommandAll(t *testing.T) {
 	}{
 		{"start", ""},
 		{"help", ""},
+		{"review", ""},
+		{"init", ""},
+		{"config", "list"},
+		{"version", ""},
 		{"model", ""},
+		{"models", ""},
 		{"soul", ""},
 		{"tools", ""},
+		{"mcp", "local http://127.0.0.1:3333"},
+		{"approve", "missing_tool"},
+		{"deny", "missing_tool"},
+		{"cron", "list"},
+		{"watch", "list"},
+		{"dashboard", "status"},
+		{"msg_gateway", "status"},
+		{"rag", "stats"},
+		{"context", ""},
+		{"fc", "tools"},
+		{"embedder", "list"},
+		{"metrics", ""},
+		{"health", ""},
+		{"remember", "hello memory"},
+		{"remember_long", "hello long memory"},
+		{"recall", "hello"},
+		{"memstats", ""},
+		{"memdecay", ""},
+		{"promote", "missing-memory"},
+		{"profile", "list"},
 		{"reset", ""},
 		{"history", ""},
 		{"session", ""},
+		{"sessions", ""},
+		{"resume", "missing-session"},
+		{"rename", "new title"},
 		{"skills", ""},
-		{"cron", "list"},
-		{"metrics", ""},
-		{"health", ""},
+		{"new", ""},
+		{"stop", ""},
+		{"status", ""},
 	}
 
 	for _, tc := range commands {
@@ -3558,6 +4166,66 @@ func TestV054HandleCommandAll(t *testing.T) {
 		if err != nil {
 			t.Errorf("handleCommand(%s): expected no error, got: %v", tc.cmd, err)
 		}
+	}
+}
+
+func TestV054HandleCommandNormalizesTUIStyleAliases(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	for _, tc := range []struct {
+		command    string
+		args       string
+		normalized string
+	}{
+		{command: "msg-gateway", args: "status", normalized: "msg_gateway"},
+		{command: "remember-long", args: "persist this", normalized: "remember_long"},
+	} {
+		msg := &gateway.Message{
+			ID: "1",
+			Chat: gateway.Chat{
+				ID:   "12345",
+				Type: gateway.ChatPrivate,
+			},
+			Text:      "/" + tc.command,
+			IsCommand: true,
+			Command:   tc.command,
+			Args:      tc.args,
+		}
+		if err := handler.handleCommand(ctx, msg); err != nil {
+			t.Fatalf("handleCommand(%s) error = %v", tc.command, err)
+		}
+		if msg.Command != tc.normalized {
+			t.Fatalf("expected command %q to normalize to %q, got %q", tc.command, tc.normalized, msg.Command)
+		}
+	}
+}
+
+func TestV054HandleWatchCommandAddsAndListsPattern(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/watch add logs *.log 1m",
+		IsCommand: true,
+		Command:   "watch",
+		Args:      "add logs *.log 1m",
+	}
+	if err := handler.handleCommand(context.Background(), msg); err != nil {
+		t.Fatalf("handleCommand(/watch add) error = %v", err)
+	}
+	patterns := handler.watcherService().ListPatterns()
+	if len(patterns) != 1 {
+		t.Fatalf("expected one watch pattern, got %d", len(patterns))
+	}
+	if patterns[0].ID != "logs" || patterns[0].Pattern != "*.log" {
+		t.Fatalf("unexpected watch pattern: %#v", patterns[0])
 	}
 }
 
@@ -3833,10 +4501,15 @@ func TestV054HandleChatStreamNaturalProgressFinalOnly(t *testing.T) {
 
 func TestV054HandleChatNarrativeStreamHidesInternalProgressMarkers(t *testing.T) {
 	var sentTexts []string
+	var editedTexts []string
 	bot, err := newMockBot(func(r *http.Request) map[string]any {
 		if containsMethod(r.URL.Path, "sendMessage") {
 			_ = r.ParseForm()
 			sentTexts = append(sentTexts, r.Form.Get("text"))
+		}
+		if containsMethod(r.URL.Path, "editMessageText") {
+			_ = r.ParseForm()
+			editedTexts = append(editedTexts, r.Form.Get("text"))
 		}
 		return defaultMockBotResponse(r)
 	})
@@ -3904,14 +4577,146 @@ func TestV054HandleChatNarrativeStreamHidesInternalProgressMarkers(t *testing.T)
 		t.Fatalf("expected no error, got: %v", err)
 	}
 
-	if len(sentTexts) != 2 {
-		t.Fatalf("expected one progress message and one final message, got %d: %#v", len(sentTexts), sentTexts)
+	if len(sentTexts) != 3 {
+		t.Fatalf("expected progress placeholder, tool trace, and final message, got %d: %#v", len(sentTexts), sentTexts)
 	}
-	if strings.Contains(sentTexts[0], "Thinking...") || strings.Contains(sentTexts[0], "content") {
-		t.Fatalf("expected progress message to hide internal markers, got %q", sentTexts[0])
+	if sentTexts[0] != "🧠 Thinking..." {
+		t.Fatalf("expected editable progress placeholder, got %q", sentTexts[0])
 	}
-	if sentTexts[1] != "最终答案" {
-		t.Fatalf("expected final answer only, got %q", sentTexts[1])
+	if !strings.Contains(sentTexts[1], "Tool Trace") {
+		t.Fatalf("expected separate tool trace message, got %q", sentTexts[1])
+	}
+	if sentTexts[2] != "最终答案" {
+		t.Fatalf("expected final answer only, got %q", sentTexts[2])
+	}
+	if len(editedTexts) < 1 {
+		t.Fatalf("expected progress card edits, got %d: %#v", len(editedTexts), editedTexts)
+	}
+	lastEdit := editedTexts[len(editedTexts)-1]
+	if strings.Contains(lastEdit, "Thinking...") || strings.Contains(lastEdit, "content") {
+		t.Fatalf("expected progress card to hide internal markers, got %q", lastEdit)
+	}
+	if !strings.Contains(lastEdit, "Reasoning Trace") {
+		t.Fatalf("expected progress card edit to contain reasoning trace, got %q", lastEdit)
+	}
+	if strings.Contains(lastEdit, "Tool Trace") {
+		t.Fatalf("expected tool trace to stay in its own message, got %q", lastEdit)
+	}
+}
+
+func TestV054HandleChatNarrativeStreamAggregatesReasoningTraceIntoOneBubble(t *testing.T) {
+	var sentTexts []string
+	var editedTexts []string
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		_ = r.ParseForm()
+		if containsMethod(r.URL.Path, "sendMessage") {
+			sentTexts = append(sentTexts, r.Form.Get("text"))
+		}
+		if containsMethod(r.URL.Path, "editMessageText") {
+			editedTexts = append(editedTexts, r.Form.Get("text"))
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.botUsername = "testbot"
+	adapter.running = true
+
+	sessMgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+
+	mockAgent := &mockAgentProvider{
+		sessions: sessMgr,
+		configSnap: agentConfigSnapshot{
+			ProgressAsMessages:        true,
+			ProgressAsNaturalLanguage: true,
+			ProgressSummaryWithLLM:    true,
+		},
+		chatStreamIn: func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			ch := make(chan agent.ChatEvent, 9)
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "skill_run", Args: `{"skill_name":"alpha"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "skill_run", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 2)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "skill_run", Args: `{"skill_name":"beta"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "skill_run", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 3)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "最终答案"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "最终答案"}
+			close(ch)
+			return ch, nil
+		},
+		progressFn: func(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+			return fmt.Sprintf("progress round %d", round), nil
+		},
+		toolsVal:   tool.NewRegistry(),
+		skillsVal:  []*tool.SkillInfo{},
+		cronEngine: cron.NewEngine(),
+		metricsVal: metrics.NewMetrics(),
+	}
+
+	handler := &Handler{
+		adapter:                   adapter,
+		agent:                     mockAgent,
+		chat:                      mockAgent,
+		sessions:                  make(map[string]string),
+		chatStreamTimeout:         defaultChatStreamTimeout,
+		progressAsMessages:        true,
+		progressAsNaturalLanguage: true,
+		progressSummaryWithLLM:    true,
+	}
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "帮我处理一下",
+	}
+
+	if err := handler.handleChat(context.Background(), msg, agent.TextUserTurnInput("帮我处理一下")); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	var reasoningSendCount int
+	for _, text := range sentTexts {
+		if strings.Contains(text, "Reasoning Trace") {
+			reasoningSendCount++
+		}
+	}
+	if reasoningSendCount != 0 {
+		t.Fatalf("expected no separate reasoning trace sendMessage calls, got %d in %#v", reasoningSendCount, sentTexts)
+	}
+	var toolTraceSendCount int
+	for _, text := range sentTexts {
+		if strings.Contains(text, "Tool Trace") {
+			toolTraceSendCount++
+		}
+	}
+	if toolTraceSendCount != 1 {
+		t.Fatalf("expected one separate tool trace message, got %d in %#v", toolTraceSendCount, sentTexts)
+	}
+	if len(editedTexts) < 2 {
+		t.Fatalf("expected repeated edits to the same progress card, got %#v", editedTexts)
+	}
+	lastEdit := editedTexts[len(editedTexts)-1]
+	if !strings.Contains(lastEdit, "progress round 1") || !strings.Contains(lastEdit, "progress round 2") {
+		t.Fatalf("expected final progress edit to contain both updates, got %q", lastEdit)
+	}
+	if strings.Contains(lastEdit, "Tool Trace") {
+		t.Fatalf("expected tool trace to stay out of reasoning card, got %q", lastEdit)
+	}
+	if strings.Count(lastEdit, "<blockquote expandable>") != 1 {
+		t.Fatalf("expected one expandable blockquote in aggregated card, got %q", lastEdit)
 	}
 }
 

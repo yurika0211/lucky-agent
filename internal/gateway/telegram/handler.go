@@ -8,7 +8,10 @@ import (
 	"html"
 	"math/rand"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -16,11 +19,15 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
+	"github.com/yurika0211/luckyharness/internal/cli/profile"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/cron"
+	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -47,6 +54,18 @@ type stateRuntime interface {
 	Skills() []*tool.SkillInfo
 	Metrics() *metrics.Metrics
 	Memory() *memory.Store
+	Remember(content, category string) error
+	RememberLongTerm(content, category string) error
+	Recall(query string) []memory.Entry
+	MemoryStats() map[memory.Tier]int
+	DecayMemory(threshold float64) int
+	PromoteMemory(id string) error
+	Catalog() *provider.ModelCatalog
+	RAG() *rag.RAGManager
+	ConnectMCPServer(name, url, apiKey string)
+	ContextWindowConfig() contextWindowSnapshot
+	ContextCacheStats() map[string]any
+	EmbedderRegistry() *embedder.Registry
 }
 
 type agentProvider interface {
@@ -56,6 +75,10 @@ type agentProvider interface {
 
 type activeRouteRecorder interface {
 	RecordRecentChatTarget(platform, chatID, replyToMsgID string)
+}
+
+type replyAnchorResolver interface {
+	ResolveExternalReplyAnchor(platform, chatID, messageID string) (sessionID string, ok bool)
 }
 
 type telegramSender interface {
@@ -73,15 +96,50 @@ type agentConfigProvider interface {
 	Get() agentConfigSnapshot
 }
 
+type mutableAgentConfigProvider interface {
+	agentConfigProvider
+	Set(key, value string) error
+	Save() error
+}
+
 // agentConfigSnapshot 是 config 快照的最小子集。
 type agentConfigSnapshot struct {
+	HomeDir                   string
+	ConfigFile                string
 	Model                     string
 	Provider                  string
+	APIKey                    string
+	APIBase                   string
+	SoulPath                  string
+	MaxTokens                 int
+	Temperature               float64
+	ServerAddr                string
+	DashboardAddr             string
+	MsgGatewayPlatform        string
+	MsgGatewayStartAll        bool
+	MsgGatewayAPIAddr         string
+	MsgGatewayTelegramToken   string
+	MsgGatewayTelegramProxy   string
+	MsgGatewayQQAppID         string
+	MsgGatewayQQSandbox       bool
+	MsgGatewayWeixinAccountID string
+	MsgGatewayOpenClawAccount string
 	ChatTimeoutSeconds        int
 	ProgressAsMessages        bool
 	ProgressAsNaturalLanguage bool
 	ProgressSummaryWithLLM    bool
 	ShowToolDetailsInResult   bool
+	ModelRouterEnabled        bool
+}
+
+type contextWindowSnapshot struct {
+	MaxTokens            int
+	ReservedTokens       int
+	Strategy             string
+	SlidingWindowSize    int
+	MaxConversationTurns int
+	MemoryBudget         int
+	SummarizeThreshold   float64
 }
 
 // agentProviderAdapter 将 *agent.Agent 适配为 agentProvider 接口。
@@ -153,6 +211,71 @@ func (a agentProviderAdapter) Memory() *memory.Store {
 	return a.inner.Memory()
 }
 
+func (a agentProviderAdapter) Remember(content, category string) error {
+	return a.inner.Remember(content, category)
+}
+
+func (a agentProviderAdapter) RememberLongTerm(content, category string) error {
+	return a.inner.RememberLongTerm(content, category)
+}
+
+func (a agentProviderAdapter) Recall(query string) []memory.Entry {
+	return a.inner.Recall(query)
+}
+
+func (a agentProviderAdapter) MemoryStats() map[memory.Tier]int {
+	return a.inner.MemoryStats()
+}
+
+func (a agentProviderAdapter) DecayMemory(threshold float64) int {
+	return a.inner.DecayMemory(threshold)
+}
+
+func (a agentProviderAdapter) PromoteMemory(id string) error {
+	return a.inner.PromoteMemory(id)
+}
+
+func (a agentProviderAdapter) Catalog() *provider.ModelCatalog {
+	return a.inner.Catalog()
+}
+
+func (a agentProviderAdapter) RAG() *rag.RAGManager {
+	return a.inner.RAG()
+}
+
+func (a agentProviderAdapter) ConnectMCPServer(name, url, apiKey string) {
+	a.inner.ConnectMCPServer(name, url, apiKey)
+}
+
+func (a agentProviderAdapter) ContextWindowConfig() contextWindowSnapshot {
+	cw := a.inner.ContextWindow()
+	if cw == nil {
+		return contextWindowSnapshot{}
+	}
+	cfg := cw.Config()
+	return contextWindowSnapshot{
+		MaxTokens:            cfg.MaxTokens,
+		ReservedTokens:       cfg.ReservedTokens,
+		Strategy:             cfg.Strategy.String(),
+		SlidingWindowSize:    cfg.SlidingWindowSize,
+		MaxConversationTurns: cfg.MaxConversationTurns,
+		MemoryBudget:         cfg.MemoryBudget,
+		SummarizeThreshold:   cfg.SummarizeThreshold,
+	}
+}
+
+func (a agentProviderAdapter) ContextCacheStats() map[string]any {
+	return a.inner.ContextCacheStats()
+}
+
+func (a agentProviderAdapter) EmbedderRegistry() *embedder.Registry {
+	return a.inner.EmbedderRegistry()
+}
+
+func (a agentProviderAdapter) ResolveExternalReplyAnchor(platform, chatID, messageID string) (string, bool) {
+	return a.inner.ResolveExternalReplyAnchor(platform, chatID, messageID)
+}
+
 // agentConfigWrapper 将 *config.Manager 适配为 agentConfigProvider 接口。
 type agentConfigWrapper struct {
 	mgr *config.Manager
@@ -161,14 +284,41 @@ type agentConfigWrapper struct {
 func (w agentConfigWrapper) Get() agentConfigSnapshot {
 	cfg := w.mgr.Get()
 	return agentConfigSnapshot{
+		HomeDir:                   w.mgr.HomeDir(),
+		ConfigFile:                w.mgr.ConfigFile(),
 		Model:                     cfg.Model,
 		Provider:                  cfg.Provider,
+		APIKey:                    cfg.APIKey,
+		APIBase:                   cfg.APIBase,
+		SoulPath:                  cfg.SoulPath,
+		MaxTokens:                 cfg.MaxTokens,
+		Temperature:               cfg.Temperature,
+		ServerAddr:                cfg.Server.Addr,
+		DashboardAddr:             cfg.Dashboard.Addr,
+		MsgGatewayPlatform:        cfg.MsgGateway.Platform,
+		MsgGatewayStartAll:        cfg.MsgGateway.StartAll,
+		MsgGatewayAPIAddr:         cfg.MsgGateway.APIAddr,
+		MsgGatewayTelegramToken:   cfg.MsgGateway.Telegram.Token,
+		MsgGatewayTelegramProxy:   cfg.MsgGateway.Telegram.Proxy,
+		MsgGatewayQQAppID:         cfg.MsgGateway.QQOfficial.AppID,
+		MsgGatewayQQSandbox:       cfg.MsgGateway.QQOfficial.Sandbox,
+		MsgGatewayWeixinAccountID: cfg.MsgGateway.Weixin.AccountID,
+		MsgGatewayOpenClawAccount: cfg.MsgGateway.OpenClawWeixin.AccountID,
 		ChatTimeoutSeconds:        cfg.MsgGateway.Telegram.ChatTimeoutSeconds,
 		ProgressAsMessages:        cfg.MsgGateway.Telegram.ProgressAsMessages,
 		ProgressAsNaturalLanguage: cfg.MsgGateway.Telegram.ProgressAsNaturalLanguage,
 		ProgressSummaryWithLLM:    cfg.MsgGateway.Telegram.ProgressSummaryWithLLM,
 		ShowToolDetailsInResult:   cfg.MsgGateway.Telegram.ShowToolDetailsInResult,
+		ModelRouterEnabled:        cfg.ModelRouter.Enable,
 	}
+}
+
+func (w agentConfigWrapper) Set(key, value string) error {
+	return w.mgr.Set(key, value)
+}
+
+func (w agentConfigWrapper) Save() error {
+	return w.mgr.Save()
 }
 
 type telegramCommandHandler func(ctx context.Context, msg *gateway.Message) error
@@ -181,6 +331,7 @@ type Handler struct {
 	state    stateRuntime
 	recorder activeRouteRecorder
 	commands map[string]telegramCommandHandler
+	watcher  *cron.Watcher
 
 	mu         sync.RWMutex
 	sessions   map[string]string // chatID → sessionID
@@ -252,6 +403,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		state:                     state,
 		recorder:                  recorder,
 		commands:                  make(map[string]telegramCommandHandler),
+		watcher:                   cron.NewWatcher(resolveCronEngine(state)),
 		sessions:                  make(map[string]string),
 		tasks:                     make(map[string]*chatTask),
 		queues:                    make(map[string]*chatQueue),
@@ -273,27 +425,59 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 }
 
 func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
-	return map[string]telegramCommandHandler{
-		"start": h.handleStart,
-		"help":  h.handleHelp,
-		"chat": func(ctx context.Context, msg *gateway.Message) error {
-			return h.dispatchChatAsync(ctx, msg, agent.TextUserTurnInput(msg.Args))
-		},
+	handlers := map[string]telegramCommandHandler{
+		"start":   h.handleStart,
+		"help":    h.handleHelp,
+		"review":  h.handleReview,
+		"init":    h.handleInit,
+		"config":  h.handleConfig,
+		"version": h.handleVersion,
 		"model":   h.handleModel,
+		"models":  h.handleModels,
 		"soul":    h.handleSoul,
 		"tools":   h.handleTools,
 		"reset":   h.handleReset,
 		"history": h.handleHistory,
 		"session": h.handleSession,
-		"skills":  h.handleSkills,
-		"cron":    h.handleCron,
-		"metrics": h.handleMetrics,
-		"health":  h.handleHealth,
-		"new":     h.handleNew,
-		"stop":    h.handleStop,
-		"status":  h.handleStatus,
-		"restart": h.handleRestart,
+		"chat": func(ctx context.Context, msg *gateway.Message) error {
+			return h.dispatchChatAsync(ctx, msg, agent.TextUserTurnInput(msg.Args))
+		},
+		"sessions":      h.handleSessions,
+		"resume":        h.handleResume,
+		"rename":        h.handleRename,
+		"skills":        h.handleSkills,
+		"mcp":           h.handleMCP,
+		"approve":       h.handleApprove,
+		"deny":          h.handleDeny,
+		"cron":          h.handleCron,
+		"watch":         h.handleWatch,
+		"dashboard":     h.handleDashboard,
+		"msg_gateway":   h.handleMsgGateway,
+		"rag":           h.handleRAG,
+		"context":       h.handleContext,
+		"fc":            h.handleFC,
+		"embedder":      h.handleEmbedder,
+		"metrics":       h.handleMetrics,
+		"health":        h.handleHealth,
+		"remember":      h.handleRemember,
+		"remember_long": h.handleRememberLong,
+		"recall":        h.handleRecall,
+		"memstats":      h.handleMemStats,
+		"memdecay":      h.handleMemDecay,
+		"promote":       h.handlePromote,
+		"profile":       h.handleProfile,
+		"new":           h.handleNew,
+		"stop":          h.handleStop,
+		"status":        h.handleStatus,
+		"restart":       h.handleRestart,
 	}
+	registry := make(map[string]telegramCommandHandler, len(handlers))
+	for _, name := range telegramCommandNames() {
+		if handler, ok := handlers[name]; ok {
+			registry[name] = handler
+		}
+	}
+	return registry
 }
 
 func resolveRandomMemeConfig() (string, float64, time.Duration) {
@@ -342,6 +526,15 @@ func resolveChatStreamTimeout(state stateRuntime) time.Duration {
 		timeout = defaultChatStreamTimeout
 	}
 	return timeout
+}
+
+func resolveCronEngine(state stateRuntime) *cron.Engine {
+	if state != nil {
+		if engine := state.CronEngine(); engine != nil {
+			return engine
+		}
+	}
+	return cron.NewEngine()
 }
 
 func resolveProgressAsMessages(state stateRuntime) bool {
@@ -431,6 +624,18 @@ func (h *Handler) routeRecorder() activeRouteRecorder {
 	return nil
 }
 
+func (h *Handler) replyAnchorResolver() replyAnchorResolver {
+	if h == nil {
+		return nil
+	}
+	if h.agent != nil {
+		if resolver, ok := h.agent.(replyAnchorResolver); ok {
+			return resolver
+		}
+	}
+	return nil
+}
+
 func (h *Handler) tools() *tool.Registry {
 	state := h.stateService()
 	if state == nil {
@@ -457,10 +662,19 @@ func (h *Handler) memoryStore() *memory.Store {
 
 func (h *Handler) cronEngine() *cron.Engine {
 	state := h.stateService()
-	if state == nil {
+	return resolveCronEngine(state)
+}
+
+func (h *Handler) watcherService() *cron.Watcher {
+	if h == nil {
 		return nil
 	}
-	return state.CronEngine()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.watcher == nil {
+		h.watcher = cron.NewWatcher(resolveCronEngine(h.stateService()))
+	}
+	return h.watcher
 }
 
 func (h *Handler) skillsList() []*tool.SkillInfo {
@@ -642,6 +856,161 @@ func (h *Handler) setSessionID(chatID, sessionID string) {
 	h.mu.Unlock()
 }
 
+func (h *Handler) currentSessionID(chatID string) string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.sessions[chatID]
+}
+
+func (h *Handler) bindSessionID(chatID, sessionID string) {
+	chatID = strings.TrimSpace(chatID)
+	sessionID = strings.TrimSpace(sessionID)
+	if chatID == "" || sessionID == "" {
+		return
+	}
+	h.mu.Lock()
+	h.sessions[chatID] = sessionID
+	h.mu.Unlock()
+	h.saveChatSessions()
+}
+
+func shortSessionID(id string) string {
+	id = strings.TrimSpace(id)
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
+
+func truncateForTelegramList(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if limit <= 0 || len(runes) <= limit {
+		return value
+	}
+	if limit <= 3 {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-3]) + "..."
+}
+
+func valueOrUnset(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "(unset)"
+	}
+	return value
+}
+
+func maskSecret(secret string) string {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return "(unset)"
+	}
+	if len(secret) <= 8 {
+		return "***"
+	}
+	return secret[:8] + "..."
+}
+
+type sessionLookupStatus int
+
+const (
+	sessionLookupNotFound sessionLookupStatus = iota
+	sessionLookupMatched
+	sessionLookupAmbiguous
+)
+
+type sessionLookupResult struct {
+	status  sessionLookupStatus
+	session *session.Session
+	id      string
+	matches []session.SessionInfo
+}
+
+func normalizeSessionLookupText(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
+}
+
+func findSessionByIDTitleOrPrefix(sessions *session.Manager, query string) sessionLookupResult {
+	if sessions == nil {
+		return sessionLookupResult{status: sessionLookupNotFound}
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return sessionLookupResult{status: sessionLookupNotFound}
+	}
+	if sess, ok := sessions.Get(query); ok {
+		return sessionLookupResult{status: sessionLookupMatched, session: sess, id: query}
+	}
+
+	infos := sessions.ListInfo()
+	if result := uniqueSessionMatch(sessions, infos, func(info session.SessionInfo) bool {
+		return strings.HasPrefix(info.ID, query)
+	}); result.status != sessionLookupNotFound {
+		return result
+	}
+
+	normalizedQuery := normalizeSessionLookupText(query)
+	if result := uniqueSessionMatch(sessions, infos, func(info session.SessionInfo) bool {
+		return normalizeSessionLookupText(info.Title) == normalizedQuery
+	}); result.status != sessionLookupNotFound {
+		return result
+	}
+	if result := uniqueSessionMatch(sessions, infos, func(info session.SessionInfo) bool {
+		title := normalizeSessionLookupText(info.Title)
+		return title != "" && strings.HasPrefix(title, normalizedQuery)
+	}); result.status != sessionLookupNotFound {
+		return result
+	}
+	return uniqueSessionMatch(sessions, infos, func(info session.SessionInfo) bool {
+		title := normalizeSessionLookupText(info.Title)
+		return title != "" && strings.Contains(title, normalizedQuery)
+	})
+}
+
+func uniqueSessionMatch(sessions *session.Manager, infos []session.SessionInfo, match func(session.SessionInfo) bool) sessionLookupResult {
+	matches := make([]session.SessionInfo, 0, 2)
+	for _, info := range infos {
+		if match(info) {
+			matches = append(matches, info)
+		}
+	}
+	if len(matches) == 0 {
+		return sessionLookupResult{status: sessionLookupNotFound}
+	}
+	if len(matches) > 1 {
+		return sessionLookupResult{status: sessionLookupAmbiguous, matches: matches}
+	}
+	sess, ok := sessions.Get(matches[0].ID)
+	if !ok {
+		return sessionLookupResult{status: sessionLookupNotFound}
+	}
+	return sessionLookupResult{status: sessionLookupMatched, session: sess, id: matches[0].ID}
+}
+
+func formatAmbiguousSessionSwitchMessage(query string, matches []session.SessionInfo) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Multiple sessions match `%s`:\n\n", query))
+	limit := min(len(matches), 5)
+	for i := 0; i < limit; i++ {
+		title := strings.TrimSpace(matches[i].Title)
+		if title == "" {
+			title = "(untitled)"
+		}
+		sb.WriteString(fmt.Sprintf("• `%s` — %s (%d msgs)\n",
+			matches[i].ID,
+			truncateForTelegramList(title, 56),
+			matches[i].MessageCount,
+		))
+	}
+	if len(matches) > limit {
+		sb.WriteString(fmt.Sprintf("\n... and %d more", len(matches)-limit))
+	}
+	sb.WriteString("\n\nUse `/resume <id>` or rename one session.")
+	return sb.String()
+}
+
 func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
 	msgCopy := *msg
 	position, startWorker := h.enqueueChatRequest(msg.Chat.ID, &queuedChatRequest{
@@ -811,7 +1180,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 		return h.handleCommand(ctx, msg)
 	}
 
+	h.bindSessionFromReplyAnchor(msg)
 	input := h.buildUserTurnInput(ctx, msg.Text, msg.Attachments)
+	if msg.ReplyTo != nil {
+		input = h.withReplyAnchorContext(input, msg)
+	}
 
 	// Regular text in private chats → forward to Agent
 	if msg.Chat.Type == gateway.ChatPrivate {
@@ -822,6 +1195,27 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 	return h.dispatchChatAsync(ctx, msg, input)
 }
 
+func (h *Handler) bindSessionFromReplyAnchor(msg *gateway.Message) bool {
+	if h == nil || msg == nil || msg.ReplyTo == nil {
+		return false
+	}
+	resolver := h.replyAnchorResolver()
+	if resolver == nil {
+		return false
+	}
+	sessionID, ok := resolver.ResolveExternalReplyAnchor("telegram", msg.Chat.ID, msg.ReplyTo.ID)
+	if !ok {
+		return false
+	}
+	if sessions := h.sessionManager(); sessions != nil {
+		if _, exists := sessions.Get(sessionID); !exists {
+			return false
+		}
+	}
+	h.bindSessionID(msg.Chat.ID, sessionID)
+	return true
+}
+
 func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attachments []gateway.Attachment) agent.UserTurnInput {
 	baseText = strings.TrimSpace(baseText)
 	if len(attachments) == 0 {
@@ -829,6 +1223,35 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 	}
 
 	return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
+}
+
+func (h *Handler) withReplyAnchorContext(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
+	if msg == nil || msg.ReplyTo == nil {
+		return input
+	}
+	repliedText := strings.TrimSpace(msg.ReplyTo.Text)
+	if repliedText == "" {
+		return input
+	}
+
+	input = input.Normalize()
+	userRequest := strings.TrimSpace(input.RoutingText)
+	if userRequest == "" {
+		userRequest = "(no additional text)"
+	}
+
+	replyAwareText := fmt.Sprintf(`You are answering a Telegram reply to a previous LuckyHarness or cron message.
+
+[Replied Telegram message]
+%s
+
+[User request]
+%s
+
+Use the replied message as the primary context for this turn. If the user asks "看看", "看一眼摘要", "摘要", "总结", or "summary", summarize the replied message directly. Do not consult unrelated runtime, cron, or session state unless the user explicitly asks for a fresh status check.`, repliedText, userRequest)
+
+	input.Message.ContentParts = nil
+	return input.WithRoutingText(replyAwareText)
 }
 
 func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
@@ -865,72 +1288,36 @@ func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, a
 
 // handleCommand dispatches bot commands.
 func (h *Handler) handleCommand(ctx context.Context, msg *gateway.Message) error {
-	if handler, ok := h.commands[msg.Command]; ok {
+	command := normalizeTelegramCommandName(msg.Command)
+	if handler, ok := h.commands[command]; ok {
+		msg.Command = command
 		return handler(ctx, msg)
 	}
 	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Unknown command: /%s\nType /help for available commands.", msg.Command))
 }
 
+func normalizeTelegramCommandName(command string) string {
+	command = strings.TrimSpace(command)
+	command = strings.TrimPrefix(command, "/")
+	command = strings.ToLower(command)
+	switch command {
+	case "msg-gateway":
+		return "msg_gateway"
+	case "remember-long":
+		return "remember_long"
+	default:
+		return command
+	}
+}
+
 // handleStart sends a welcome message.
 func (h *Handler) handleStart(ctx context.Context, msg *gateway.Message) error {
-	welcome := `🍀 *LuckyHarness Bot*
-
-I'm an AI assistant powered by LuckyHarness.
-
-*Available commands:*
-/chat _message_ — Send a message to the AI
-/model — Show current model
-/soul — Show current SOUL info
-/tools — List available tools
-/skills — List loaded skills
-/cron — Manage scheduled tasks
-/metrics — Show usage metrics
-/health — System health check
-/reset — Reset conversation
-/history — Show conversation history
-/session — Show current session info
-/help — Show this help
-
-You can also just type a message directly!
-Send me photos, voice messages, or files!`
-
-	return h.adapter.Send(ctx, msg.Chat.ID, welcome)
+	return h.adapter.Send(ctx, msg.Chat.ID, telegramWelcomeMessage())
 }
 
 // handleHelp lists available commands.
 func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
-	help := `*Available Commands:*
-
-*🍀 基础命令*
-/start — 欢迎消息
-/help — 显示此帮助
-/chat _消息_ — 发送消息给 AI
-
-*⚙️ 系统管理*
-/model \[name] — 查看/设置当前模型
-/soul — 查看 SOUL 信息
-/tools — 列出可用工具
-/skills — 列出已加载技能
-/cron \[list|add|remove] — 管理定时任务
-/metrics — 查看使用指标
-/health — 系统健康检查
-
-*💬 会话管理*
-/reset — 重置对话
-/history — 查看对话历史
-/session — 查看会话信息
-/new — 开启新对话（清空历史）
-/stop — 停止当前任务
-/status — 查看状态
-/restart — 重启 bot
-
-*Tips:*
-• 私聊直接发送消息即可
-• 群聊需要 @bot 或回复 bot 消息
-• Each chat has its own conversation session
-• Send photos, voice, or files for multimodal processing`
-
-	return h.adapter.Send(ctx, msg.Chat.ID, help)
+	return h.adapter.Send(ctx, msg.Chat.ID, telegramHelpMessage())
 }
 
 // handleChat sends a message to the agent and returns the response.
@@ -1023,6 +1410,7 @@ func (h *Handler) newProgressCardUpdater(msg *gateway.Message) func(string) {
 	var sender gateway.StreamSender
 	var stream *telegramStreamSender
 	var parts []string
+	fallbackSent := false
 
 	return func(text string) {
 		text = strings.TrimSpace(text)
@@ -1038,7 +1426,7 @@ func (h *Handler) newProgressCardUpdater(msg *gateway.Message) func(string) {
 		if strings.TrimSpace(combined) == "" {
 			return
 		}
-		if stream == nil {
+		if stream == nil && sender == nil && !fallbackSent {
 			sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
 
@@ -1059,7 +1447,10 @@ func (h *Handler) newProgressCardUpdater(msg *gateway.Message) func(string) {
 			_ = sender.Finish()
 			return
 		}
-		h.sendProgressMessage(msg, combined)
+		if !fallbackSent {
+			h.sendProgressMessage(msg, combined)
+			fallbackSent = true
+		}
 	}
 }
 
@@ -1456,9 +1847,7 @@ func runChatEventLoop(
 // 中间步骤和最终结论都作为独立消息发送，保证“结论在最后”。
 func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput, sessionID string) error {
 	routingText := input.RoutingText
-	emitProgress := func(text string) {
-		h.sendProgressMessageHTML(msg, text)
-	}
+	emitProgress := h.newProgressCardUpdater(msg)
 	emitProgressForMsg := func(_ *gateway.Message, text string) {
 		emitProgress(text)
 	}
@@ -1571,7 +1960,8 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 						toolTraceSent = true
 					}
 				}
-				if finalContent.Len() == 0 {
+				if evt.Content != "" {
+					finalContent.Reset()
 					finalContent.WriteString(evt.Content)
 				}
 				finalOutput := strings.TrimSpace(finalContent.String())
@@ -1772,7 +2162,8 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						toolTraceSent = true
 					}
 				}
-				if finalContent.Len() == 0 {
+				if evt.Content != "" {
+					finalContent.Reset()
 					finalContent.WriteString(evt.Content)
 				}
 				finalOutput := finalContent.String()
@@ -1959,21 +2350,284 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, inpu
 
 // handleModel shows or sets the current model.
 func (h *Handler) handleModel(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
 	if msg.Args == "" {
-		// Show current model
 		cfg := h.configSnapshot()
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Current model: %s (provider: %s)", cfg.Model, cfg.Provider))
+		routerNote := ""
+		if cfg.ModelRouterEnabled {
+			routerNote = "\nModel router is enabled; future turns may still route by task."
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Current configured model: %s (provider: %s)%s", cfg.Model, cfg.Provider, routerNote))
 	}
 
-	// Set model
-	if h.state == nil {
+	modelID := strings.TrimSpace(msg.Args)
+	if state == nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Model switching unavailable")
 	}
-	if err := h.state.SwitchModel(msg.Args); err != nil {
+	providerName := ""
+	if catalog := state.Catalog(); catalog != nil {
+		if resolved, err := catalog.ResolveProvider(modelID); err == nil {
+			providerName = resolved
+		}
+	}
+	if err := state.SwitchModel(modelID); err != nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to switch model: %s", err.Error()))
 	}
 
-	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched to model: %s", msg.Args))
+	cfgProvider := state.Config()
+	if mutable, ok := cfgProvider.(mutableAgentConfigProvider); ok {
+		if providerName != "" {
+			if err := mutable.Set("provider", providerName); err != nil {
+				return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⚠️ Switched runtime model to `%s`, but failed to update provider config: %s", modelID, err.Error()))
+			}
+		}
+		if err := mutable.Set("model", modelID); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⚠️ Switched runtime model to `%s`, but failed to update config: %s", modelID, err.Error()))
+		}
+		if err := mutable.Save(); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⚠️ Switched runtime model to `%s`, but failed to save config: %s", modelID, err.Error()))
+		}
+		cfg := mutable.Get()
+		routerNote := ""
+		if cfg.ModelRouterEnabled {
+			routerNote = "\nModel router is enabled; future turns may still route by task."
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched model: `%s`\nSaved to config.%s", modelID, routerNote))
+	}
+
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched runtime model: `%s`\nThis config provider does not support saving, so restart may restore the configured model.", modelID))
+}
+
+func (h *Handler) handleReview(ctx context.Context, msg *gateway.Message) error {
+	var sb strings.Builder
+	sb.WriteString("🔎 *Workspace Review:*\n\n")
+	if wd, err := os.Getwd(); err == nil {
+		sb.WriteString(fmt.Sprintf("• Workspace: `%s`\n", wd))
+	}
+	cfg := h.configSnapshot()
+	sb.WriteString(fmt.Sprintf("• Provider: %s\n", valueOrUnset(cfg.Provider)))
+	sb.WriteString(fmt.Sprintf("• Model: %s\n", valueOrUnset(cfg.Model)))
+
+	sb.WriteString("\n*Git Status:*\n")
+	status := readGitSnippet("status", "--short", "--branch")
+	if status == "" {
+		sb.WriteString("clean or unavailable\n")
+	} else {
+		sb.WriteString(status)
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n*Recent Commits:*\n")
+	log := readGitSnippet("log", "--oneline", "--decorate=short", "-n", "5")
+	if log == "" {
+		sb.WriteString("unavailable\n")
+	} else {
+		sb.WriteString(log)
+		sb.WriteString("\n")
+	}
+
+	if sessions := h.sessionManager(); sessions != nil {
+		infos := sessions.ListInfo()
+		sb.WriteString(fmt.Sprintf("\n*Recent Sessions:* %d\n", len(infos)))
+		limit := min(len(infos), 5)
+		for i := 0; i < limit; i++ {
+			title := strings.TrimSpace(infos[i].Title)
+			if title == "" {
+				title = "(untitled)"
+			}
+			sb.WriteString(fmt.Sprintf("• %s (%d msgs)\n", truncateForTelegramList(title, 56), infos[i].MessageCount))
+		}
+	}
+
+	return h.adapter.Send(ctx, msg.Chat.ID, strings.TrimSpace(sb.String()))
+}
+
+func readGitSnippet(args ...string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	limit := min(len(lines), 12)
+	return strings.Join(lines[:limit], "\n")
+}
+
+func (h *Handler) handleInit(ctx context.Context, msg *gateway.Message) error {
+	cfg := h.configSnapshot()
+	var sb strings.Builder
+	sb.WriteString("🍀 *LuckyHarness Init Status:*\n\n")
+	sb.WriteString(fmt.Sprintf("• Home: `%s`\n", valueOrUnset(cfg.HomeDir)))
+	sb.WriteString(fmt.Sprintf("• Config: `%s`\n", valueOrUnset(cfg.ConfigFile)))
+	sb.WriteString(fmt.Sprintf("• Provider: %s\n", valueOrUnset(cfg.Provider)))
+	sb.WriteString(fmt.Sprintf("• Model: %s\n", valueOrUnset(cfg.Model)))
+	if cfg.APIKey == "" {
+		sb.WriteString("\nAPI key is not configured. Run `lh config set api_key <key>` on the host.")
+	} else {
+		sb.WriteString(fmt.Sprintf("\nAPI key: %s", maskSecret(cfg.APIKey)))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) handleConfig(ctx context.Context, msg *gateway.Message) error {
+	args := strings.Fields(strings.TrimSpace(msg.Args))
+	if len(args) == 0 || args[0] == "list" {
+		return h.sendConfigList(ctx, msg)
+	}
+	if args[0] == "get" {
+		if len(args) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /config get <key>")
+		}
+		value, ok := configSnapshotValue(h.configSnapshot(), args[1])
+		if !ok {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("`%s` is not exposed in Telegram config view.", args[1]))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("%s = %s", args[1], value))
+	}
+	if len(args) == 1 {
+		value, ok := configSnapshotValue(h.configSnapshot(), args[0])
+		if ok {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("%s = %s", args[0], value))
+		}
+	}
+	if args[0] == "set" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Config writes from Telegram are disabled. Run `lh config set <key> <value>` on the host.")
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /config [list|get <key>]")
+}
+
+func (h *Handler) sendConfigList(ctx context.Context, msg *gateway.Message) error {
+	cfg := h.configSnapshot()
+	info := fmt.Sprintf("⚙️ *Configuration:*\n\n• provider: %s\n• api_key: %s\n• api_base: %s\n• model: %s\n• soul_path: `%s`\n• max_tokens: %d\n• temperature: %.1f\n• server.addr: %s\n• dashboard.addr: %s\n• msg_gateway.platform: %s\n• msg_gateway.api_addr: %s\n• msg_gateway.telegram.token: %s",
+		valueOrUnset(cfg.Provider),
+		maskSecret(cfg.APIKey),
+		valueOrUnset(cfg.APIBase),
+		valueOrUnset(cfg.Model),
+		valueOrUnset(cfg.SoulPath),
+		cfg.MaxTokens,
+		cfg.Temperature,
+		valueOrUnset(cfg.ServerAddr),
+		valueOrUnset(cfg.DashboardAddr),
+		valueOrUnset(cfg.MsgGatewayPlatform),
+		valueOrUnset(cfg.MsgGatewayAPIAddr),
+		maskSecret(cfg.MsgGatewayTelegramToken),
+	)
+	return h.adapter.Send(ctx, msg.Chat.ID, info)
+}
+
+func configSnapshotValue(cfg agentConfigSnapshot, key string) (string, bool) {
+	switch key {
+	case "home", "home_dir":
+		return valueOrUnset(cfg.HomeDir), true
+	case "config", "config_file":
+		return valueOrUnset(cfg.ConfigFile), true
+	case "provider":
+		return valueOrUnset(cfg.Provider), true
+	case "api_key":
+		return maskSecret(cfg.APIKey), true
+	case "api_base":
+		return valueOrUnset(cfg.APIBase), true
+	case "model":
+		return valueOrUnset(cfg.Model), true
+	case "soul_path":
+		return valueOrUnset(cfg.SoulPath), true
+	case "max_tokens":
+		return strconv.Itoa(cfg.MaxTokens), true
+	case "temperature":
+		return fmt.Sprintf("%.1f", cfg.Temperature), true
+	case "server.addr":
+		return valueOrUnset(cfg.ServerAddr), true
+	case "dashboard.addr":
+		return valueOrUnset(cfg.DashboardAddr), true
+	case "msg_gateway.platform":
+		return valueOrUnset(cfg.MsgGatewayPlatform), true
+	case "msg_gateway.api_addr":
+		return valueOrUnset(cfg.MsgGatewayAPIAddr), true
+	case "msg_gateway.telegram.token":
+		return maskSecret(cfg.MsgGatewayTelegramToken), true
+	case "msg_gateway.telegram.proxy":
+		return valueOrUnset(cfg.MsgGatewayTelegramProxy), true
+	default:
+		return "", false
+	}
+}
+
+func (h *Handler) handleVersion(ctx context.Context, msg *gateway.Message) error {
+	version, commit, date := buildInfo()
+	info := fmt.Sprintf("🍀 *LuckyHarness Version:*\n\n• Version: %s\n• Commit: %s\n• Date: %s\n• Go: %s\n• OS/Arch: %s/%s",
+		version,
+		commit,
+		date,
+		runtime.Version(),
+		runtime.GOOS,
+		runtime.GOARCH,
+	)
+	return h.adapter.Send(ctx, msg.Chat.ID, info)
+}
+
+func buildInfo() (version, commit, date string) {
+	version = "dev"
+	commit = "unknown"
+	date = "unknown"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if strings.TrimSpace(info.Main.Version) != "" && info.Main.Version != "(devel)" {
+			version = info.Main.Version
+		}
+		for _, setting := range info.Settings {
+			switch setting.Key {
+			case "vcs.revision":
+				if setting.Value != "" {
+					commit = setting.Value
+				}
+			case "vcs.time":
+				if setting.Value != "" {
+					date = setting.Value
+				}
+			}
+		}
+	}
+	return version, commit, date
+}
+
+func (h *Handler) handleModels(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	if state == nil || state.Catalog() == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Model catalog unavailable")
+	}
+
+	models := state.Catalog().List()
+	if len(models) == 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "📋 Model catalog is empty.")
+	}
+
+	cfg := h.configSnapshot()
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📋 *Available Models* (%d):\n\n", len(models)))
+	currentProvider := ""
+	limit := min(len(models), 40)
+	for i := 0; i < limit; i++ {
+		m := models[i]
+		if m.Provider != currentProvider {
+			currentProvider = m.Provider
+			sb.WriteString(fmt.Sprintf("\n[%s]\n", currentProvider))
+		}
+		marker := "•"
+		if m.ID == cfg.Model {
+			marker = "✅"
+		}
+		cost := "free/local"
+		if m.CostPer1kIn > 0 || m.CostPer1kOut > 0 {
+			cost = fmt.Sprintf("$%.4f/$%.4f per 1k", m.CostPer1kIn, m.CostPer1kOut)
+		}
+		sb.WriteString(fmt.Sprintf("%s `%s` — %s (%s)\n", marker, m.ID, truncateForTelegramList(m.DisplayName, 48), cost))
+	}
+	if len(models) > limit {
+		sb.WriteString(fmt.Sprintf("\n... and %d more", len(models)-limit))
+	}
+	sb.WriteString("\n\nUse `/model <id>` to switch.")
+	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
 }
 
 // handleSoul shows the current SOUL info.
@@ -1997,6 +2651,9 @@ func (h *Handler) handleSoul(ctx context.Context, msg *gateway.Message) error {
 // handleTools lists available tools.
 func (h *Handler) handleTools(ctx context.Context, msg *gateway.Message) error {
 	tools := h.tools()
+	if tools == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Tool registry unavailable")
+	}
 	allTools := tools.List()
 
 	if len(allTools) == 0 {
@@ -2024,7 +2681,7 @@ func (h *Handler) handleTools(ctx context.Context, msg *gateway.Message) error {
 // handleReset resets the conversation for this chat.
 func (h *Handler) handleReset(ctx context.Context, msg *gateway.Message) error {
 	newID := h.resetSession(msg.Chat.ID)
-	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🔄 Conversation reset. New session: `%s`", newID[:8]))
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🔄 Conversation reset. New session: `%s`", shortSessionID(newID)))
 }
 
 // handleHistory shows the conversation history for this chat.
@@ -2079,8 +2736,12 @@ func (h *Handler) handleHistory(ctx context.Context, msg *gateway.Message) error
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
 }
 
-// handleSession shows current session info.
+// handleSession shows current session info, or switches when an ID is supplied.
 func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error {
+	if strings.TrimSpace(msg.Args) != "" {
+		return h.handleSessionSwitch(ctx, msg, strings.TrimSpace(msg.Args))
+	}
+
 	h.mu.RLock()
 	sessionID, ok := h.sessions[msg.Chat.ID]
 	h.mu.RUnlock()
@@ -2091,15 +2752,15 @@ func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error
 
 	sessions := h.sessionManager()
 	if sessions == nil {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", sessionID[:8]))
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", shortSessionID(sessionID)))
 	}
 	sess, ok := sessions.Get(sessionID)
 	if !ok {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", sessionID[:8]))
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", shortSessionID(sessionID)))
 	}
 
 	info := fmt.Sprintf("📋 *Session Info:*\n\n• ID: `%s`\n• Title: %s\n• Messages: %d\n• Created: %s\n• Updated: %s",
-		sessionID[:8],
+		sessionID,
 		sess.Title,
 		sess.MessageCount(),
 		sess.CreatedAt.Format("2006-01-02 15:04"),
@@ -2107,6 +2768,120 @@ func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error
 	)
 
 	return h.adapter.Send(ctx, msg.Chat.ID, info)
+}
+
+// handleSessions lists recent sessions so Telegram users can pick one to resume.
+func (h *Handler) handleSessions(ctx context.Context, msg *gateway.Message) error {
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
+	}
+
+	infos := sessions.ListInfo()
+	if len(infos) == 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "No sessions yet. Send a message to start one!")
+	}
+
+	currentID := h.currentSessionID(msg.Chat.ID)
+	var sb strings.Builder
+	sb.WriteString("📚 *Recent Sessions:*\n\n")
+
+	limit := 10
+	if len(infos) < limit {
+		limit = len(infos)
+	}
+	for i := 0; i < limit; i++ {
+		info := infos[i]
+		marker := "•"
+		if info.ID == currentID {
+			marker = "✅"
+		}
+		title := strings.TrimSpace(info.Title)
+		if title == "" {
+			title = "(untitled)"
+		}
+		sb.WriteString(fmt.Sprintf("%s `%s` — %s (%d msgs, updated %s)\n",
+			marker,
+			info.ID,
+			truncateForTelegramList(title, 48),
+			info.MessageCount,
+			info.UpdatedAt.Format("01-02 15:04"),
+		))
+	}
+	if len(infos) > limit {
+		sb.WriteString(fmt.Sprintf("\n... and %d more", len(infos)-limit))
+	}
+	sb.WriteString("\n\nUse `/resume <title>` or `/resume <id>` to switch.")
+
+	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) handleResume(ctx context.Context, msg *gateway.Message) error {
+	sessionID := strings.TrimSpace(msg.Args)
+	if sessionID == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /resume <session_title_or_id>")
+	}
+	return h.handleSessionSwitch(ctx, msg, sessionID)
+}
+
+func (h *Handler) handleRename(ctx context.Context, msg *gateway.Message) error {
+	title := strings.TrimSpace(msg.Args)
+	if title == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /rename <title>")
+	}
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
+	}
+	sessionID := h.getSessionID(msg.Chat.ID)
+	sess, ok := sessions.Get(sessionID)
+	if !ok || sess == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Current session not found")
+	}
+	sess.SetTitle(title)
+	if err := sess.Save(); err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to rename session: %s", err.Error()))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Renamed current session to: %s", truncateForTelegramList(title, 120)))
+}
+
+func (h *Handler) handleSessionSwitch(ctx context.Context, msg *gateway.Message, sessionQuery string) error {
+	sessions := h.sessionManager()
+	if sessions == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
+	}
+
+	result := findSessionByIDTitleOrPrefix(sessions, sessionQuery)
+	switch result.status {
+	case sessionLookupMatched:
+	case sessionLookupAmbiguous:
+		return h.adapter.Send(ctx, msg.Chat.ID, formatAmbiguousSessionSwitchMessage(sessionQuery, result.matches))
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. Use /sessions to list recent sessions.", sessionQuery))
+	}
+
+	sess := result.session
+	matchedID := result.id
+	h.mu.Lock()
+	oldSessionID, hadOld := h.sessions[msg.Chat.ID]
+	h.sessions[msg.Chat.ID] = matchedID
+	h.mu.Unlock()
+
+	h.saveChatSessions()
+
+	title := strings.TrimSpace(sess.Title)
+	if title == "" {
+		title = "(untitled)"
+	}
+	if hadOld && oldSessionID == matchedID {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Already on session `%s` — %s", shortSessionID(matchedID), truncateForTelegramList(title, 60)))
+	}
+
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched session: `%s`\nTitle: %s\nMessages: %d",
+		shortSessionID(matchedID),
+		truncateForTelegramList(title, 80),
+		sess.MessageCount(),
+	))
 }
 
 // handleSkills lists loaded skills.
@@ -2133,6 +2908,46 @@ func (h *Handler) handleSkills(ctx context.Context, msg *gateway.Message) error 
 	}
 
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) handleMCP(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ MCP runtime unavailable")
+	}
+	parts := strings.Fields(msg.Args)
+	if len(parts) < 2 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /mcp <name> <url> [api_key]")
+	}
+	apiKey := ""
+	if len(parts) > 2 {
+		apiKey = parts[2]
+	}
+	state.ConnectMCPServer(parts[0], parts[1], apiKey)
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Connected MCP server: %s (%s)", parts[0], parts[1]))
+}
+
+func (h *Handler) handleApprove(ctx context.Context, msg *gateway.Message) error {
+	return h.handleToolPermission(ctx, msg, tool.PermAuto, "auto-approved")
+}
+
+func (h *Handler) handleDeny(ctx context.Context, msg *gateway.Message) error {
+	return h.handleToolPermission(ctx, msg, tool.PermDeny, "denied")
+}
+
+func (h *Handler) handleToolPermission(ctx context.Context, msg *gateway.Message, perm tool.PermissionLevel, label string) error {
+	name := strings.TrimSpace(msg.Args)
+	if name == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /approve <tool> or /deny <tool>")
+	}
+	tools := h.tools()
+	if tools == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Tool registry unavailable")
+	}
+	if err := tools.SetPermissionOverride(name, perm); err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Tool `%s` is now %s.", name, label))
 }
 
 // handleCron manages scheduled tasks.
@@ -2180,6 +2995,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		if strings.TrimSpace(command) == "" {
 			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Missing prompt/command for cron job.")
 		}
+		sessionID := h.getSessionID(msg.Chat.ID)
 
 		tools := h.tools()
 		if tools == nil {
@@ -2193,6 +3009,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 			"platform":            "telegram",
 			"chat_id":             msg.Chat.ID,
 			"reply_to_message_id": msg.ID,
+			"session_id":          sessionID,
 		})
 		if err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to add job: %s", err.Error()))
@@ -2247,9 +3064,275 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		}
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("▶️ Job `%s` resumed", parts[1]))
 
+	case "start":
+		engine.Start()
+		return h.adapter.Send(ctx, msg.Chat.ID, "▶️ Cron engine started.")
+
+	case "stop":
+		engine.Stop()
+		return h.adapter.Send(ctx, msg.Chat.ID, "⏹ Cron engine stopped.")
+
 	default:
-		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron [list|add|remove|pause|resume]")
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron [list|add|remove|pause|resume|start|stop]")
 	}
+}
+
+func (h *Handler) handleWatch(ctx context.Context, msg *gateway.Message) error {
+	watcher := h.watcherService()
+	if watcher == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Watch runtime unavailable")
+	}
+
+	args := strings.TrimSpace(msg.Args)
+	if args == "" || args == "list" {
+		patterns := watcher.ListPatterns()
+		if len(patterns) == 0 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "📋 No watch patterns. Use /watch add <id> <glob> <interval>")
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("🔍 *Watch Patterns* (%d):\n\n", len(patterns)))
+		for _, p := range patterns {
+			lastCheck := "N/A"
+			if !p.LastCheck.IsZero() {
+				lastCheck = p.LastCheck.Format("2006-01-02 15:04:05")
+			}
+			sb.WriteString(fmt.Sprintf("• `%s` — %s\n  Interval: %s | Last: %s | Result: %s\n",
+				p.ID,
+				truncateForTelegramList(p.Pattern, 80),
+				p.Interval,
+				lastCheck,
+				valueOrUnset(p.LastResult),
+			))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+	}
+
+	parts := strings.Fields(args)
+	if len(parts) == 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /watch [list|add|remove|start|stop]")
+	}
+
+	switch parts[0] {
+	case "add":
+		if len(parts) < 4 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /watch add <id> <glob> <interval>\nExample: /watch add logs \"logs/*.log\" 1m")
+		}
+		interval, err := time.ParseDuration(parts[3])
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Invalid interval: %s", err.Error()))
+		}
+		id := parts[1]
+		pattern := parts[2]
+		if err := watcher.AddPattern(id, "Watch: "+id, pattern, pattern, interval, nil); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Watch `%s` added for `%s` every %s.", id, pattern, interval))
+	case "remove":
+		if len(parts) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /watch remove <id>")
+		}
+		if err := watcher.RemovePattern(parts[1]); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Watch `%s` removed.", parts[1]))
+	case "start":
+		watcher.Start()
+		return h.adapter.Send(ctx, msg.Chat.ID, "▶️ Watcher started.")
+	case "stop":
+		watcher.Stop()
+		return h.adapter.Send(ctx, msg.Chat.ID, "⏹ Watcher stopped.")
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /watch [list|add|remove|start|stop]")
+	}
+}
+
+func (h *Handler) handleDashboard(ctx context.Context, msg *gateway.Message) error {
+	parts := strings.Fields(strings.TrimSpace(msg.Args))
+	subcmd := "status"
+	if len(parts) > 0 {
+		subcmd = parts[0]
+	}
+	cfg := h.configSnapshot()
+	addr := cfg.DashboardAddr
+	if strings.TrimSpace(addr) == "" {
+		addr = ":8765"
+	}
+	switch subcmd {
+	case "status", "list", "":
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🌐 *Dashboard:*\n\n• Configured addr: `%s`\n• URL hint: %s\n\nStart/stop is process-local. From Telegram, run dashboard service management on the host with `lh dashboard start` or `lh dashboard stop`.", addr, dashboardURLHint(addr)))
+	case "start", "stop":
+		return h.adapter.Send(ctx, msg.Chat.ID, "Dashboard start/stop from Telegram is disabled. Run `lh dashboard start` or `lh dashboard stop` on the host.")
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /dashboard [status]")
+	}
+}
+
+func dashboardURLHint(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = ":8765"
+	}
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return addr
+	}
+	if strings.HasPrefix(addr, ":") {
+		return "http://localhost" + addr
+	}
+	return "http://" + addr
+}
+
+func (h *Handler) handleMsgGateway(ctx context.Context, msg *gateway.Message) error {
+	parts := strings.Fields(strings.TrimSpace(msg.Args))
+	subcmd := "status"
+	if len(parts) > 0 {
+		subcmd = parts[0]
+	}
+	cfg := h.configSnapshot()
+	switch subcmd {
+	case "status", "":
+		info := fmt.Sprintf("📨 *Message Gateway:*\n\n• platform: %s\n• start_all: %t\n• api_addr: %s\n• telegram.token: %s\n• telegram.proxy: %s\n• qqofficial.app_id: %s\n• qqofficial.sandbox: %t\n• weixin.account_id: %s\n• openclawweixin.account_id: %s\n\nRuntime status is not exposed by the gateway. Check the host terminal that started `lh msg-gateway start`.",
+			valueOrUnset(cfg.MsgGatewayPlatform),
+			cfg.MsgGatewayStartAll,
+			valueOrUnset(cfg.MsgGatewayAPIAddr),
+			maskSecret(cfg.MsgGatewayTelegramToken),
+			valueOrUnset(cfg.MsgGatewayTelegramProxy),
+			valueOrUnset(cfg.MsgGatewayQQAppID),
+			cfg.MsgGatewayQQSandbox,
+			valueOrUnset(cfg.MsgGatewayWeixinAccountID),
+			valueOrUnset(cfg.MsgGatewayOpenClawAccount),
+		)
+		return h.adapter.Send(ctx, msg.Chat.ID, info)
+	case "start", "stop":
+		return h.adapter.Send(ctx, msg.Chat.ID, "Message gateway start/stop from Telegram is disabled. Run `lh msg-gateway start` in the host terminal, and stop it there with Ctrl+C.")
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /msg_gateway [status]")
+	}
+}
+
+func (h *Handler) handleRAG(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	if state == nil || state.RAG() == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ RAG system unavailable")
+	}
+	ragMgr := state.RAG()
+	parts := strings.Fields(strings.TrimSpace(msg.Args))
+	if len(parts) == 0 {
+		return h.sendRAGStats(ctx, msg, ragMgr)
+	}
+
+	switch parts[0] {
+	case "stats":
+		return h.sendRAGStats(ctx, msg, ragMgr)
+	case "store":
+		return h.sendRAGStore(ctx, msg, ragMgr)
+	case "list":
+		ids := ragMgr.ListDocuments()
+		if len(ids) == 0 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "📚 Knowledge base is empty.")
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("📚 *Indexed Documents* (%d):\n\n", len(ids)))
+		limit := min(len(ids), 25)
+		for i := 0; i < limit; i++ {
+			id := ids[i]
+			doc, ok := ragMgr.GetDocument(id)
+			if !ok || doc == nil {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("• `%s` — %s (%d chunks)\n", shortSessionID(id), truncateForTelegramList(doc.Title, 72), len(doc.Chunks)))
+		}
+		if len(ids) > limit {
+			sb.WriteString(fmt.Sprintf("\n... and %d more", len(ids)-limit))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+	case "search", "query":
+		if len(parts) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /rag search <query>")
+		}
+		query := strings.Join(parts[1:], " ")
+		results, err := ragMgr.Search(ctx, query)
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Search failed: %s", err.Error()))
+		}
+		if len(results) == 0 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "🔍 No matching results.")
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("🔍 *RAG Results* (%d):\n\n", len(results)))
+		limit := min(len(results), 8)
+		for i := 0; i < limit; i++ {
+			res := results[i]
+			sb.WriteString(fmt.Sprintf("%d. [%.2f] %s\n%s\n\n", i+1, res.Score, truncateForTelegramList(res.DocTitle, 64), truncateForTelegramList(res.Content, 180)))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, strings.TrimSpace(sb.String()))
+	case "remove":
+		if len(parts) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /rag remove <doc_id>")
+		}
+		if ragMgr.RemoveDocument(parts[1]) {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Removed document: `%s`", parts[1]))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Document not found: `%s`", parts[1]))
+	case "index":
+		if len(parts) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /rag index <file_or_directory_path>")
+		}
+		path := strings.Join(parts[1:], " ")
+		info, err := os.Stat(path)
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Path not found: %s", err.Error()))
+		}
+		if info.IsDir() {
+			docs, err := ragMgr.IndexDirectory(path)
+			if err != nil {
+				return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Index directory failed: %s", err.Error()))
+			}
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Indexed %d documents from `%s`.", len(docs), path))
+		}
+		doc, err := ragMgr.IndexFile(path)
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Index file failed: %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Indexed `%s` (%d chunks).", doc.Title, len(doc.Chunks)))
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /rag [stats|store|list|search|remove|index]")
+	}
+}
+
+func (h *Handler) sendRAGStats(ctx context.Context, msg *gateway.Message, ragMgr *rag.RAGManager) error {
+	stats := ragMgr.Stats()
+	store := "memory"
+	vectorCount := 0
+	if ragMgr.IsSQLite() {
+		store = "sqlite"
+		if sqlStore := ragMgr.SQLiteStore(); sqlStore != nil {
+			vectorCount, _, _ = sqlStore.Stats()
+		}
+	} else if ragMgr.Store() != nil {
+		vectorCount = ragMgr.Store().Len()
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("📚 *RAG Stats:*\n\n• Documents: %d\n• Chunks: %d\n• Store: %s\n• Vectors: %d",
+		stats.DocumentCount, stats.ChunkCount, store, vectorCount))
+}
+
+func (h *Handler) sendRAGStore(ctx context.Context, msg *gateway.Message, ragMgr *rag.RAGManager) error {
+	if ragMgr.IsSQLite() {
+		sqlStore := ragMgr.SQLiteStore()
+		if sqlStore == nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, "🗄 SQLite store unavailable")
+		}
+		count, dbSize, err := sqlStore.Stats()
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Store stats failed: %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🗄 *SQLite RAG Store:*\n\n• Path: `%s`\n• Vectors: %d\n• Size: %d bytes\n• Dimension: %d",
+			sqlStore.Path(), count, dbSize, sqlStore.Dimension()))
+	}
+	store := ragMgr.Store()
+	if store == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "💾 RAG store unavailable")
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("💾 *Memory RAG Store:*\n\n• Vectors: %d\n• Dimension: %d", store.Len(), store.Dimension()))
 }
 
 // handleMetrics shows usage metrics.
@@ -2302,6 +3385,271 @@ func (h *Handler) handleHealth(ctx context.Context, msg *gateway.Message) error 
 	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
 
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) handleRemember(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	content := strings.TrimSpace(msg.Args)
+	if content == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /remember <content>")
+	}
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Memory runtime unavailable")
+	}
+	if err := state.Remember(content, "user"); err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, "💾 Saved to medium-term memory.")
+}
+
+func (h *Handler) handleRememberLong(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	content := strings.TrimSpace(msg.Args)
+	if content == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /remember_long <content>")
+	}
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Memory runtime unavailable")
+	}
+	if err := state.RememberLongTerm(content, "user"); err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, "🧠 Saved to long-term memory.")
+}
+
+func (h *Handler) handleRecall(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	query := strings.TrimSpace(msg.Args)
+	if query == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /recall <query>")
+	}
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Memory runtime unavailable")
+	}
+	results := state.Recall(query)
+	if len(results) == 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "🔍 No matching memories.")
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🔍 *Memories* (%d):\n\n", len(results)))
+	limit := min(len(results), 10)
+	for i := 0; i < limit; i++ {
+		e := results[i]
+		sb.WriteString(fmt.Sprintf("%d. `%s` [%s] %.2f\n%s\n\n",
+			i+1, shortSessionID(e.ID), e.Tier.String(), e.Importance, truncateForTelegramList(e.Content, 180)))
+	}
+	if len(results) > limit {
+		sb.WriteString(fmt.Sprintf("... and %d more", len(results)-limit))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, strings.TrimSpace(sb.String()))
+}
+
+func (h *Handler) handleMemStats(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Memory runtime unavailable")
+	}
+	stats := state.MemoryStats()
+	total := stats[memory.TierShort] + stats[memory.TierMedium] + stats[memory.TierLong]
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("📊 *Memory Stats:*\n\n• Short: %d\n• Medium: %d\n• Long: %d\n• Total: %d",
+		stats[memory.TierShort], stats[memory.TierMedium], stats[memory.TierLong], total))
+}
+
+func (h *Handler) handleMemDecay(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Memory runtime unavailable")
+	}
+	deleted := state.DecayMemory(0.05)
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🗑 Decayed %d low-weight memories.", deleted))
+}
+
+func (h *Handler) handlePromote(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	id := strings.TrimSpace(msg.Args)
+	if id == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /promote <memory_id>")
+	}
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Memory runtime unavailable")
+	}
+	if err := state.PromoteMemory(id); err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⬆️ Promoted memory: `%s`", id))
+}
+
+func (h *Handler) handleProfile(ctx context.Context, msg *gateway.Message) error {
+	home := h.configSnapshot().HomeDir
+	if strings.TrimSpace(home) == "" {
+		var err error
+		home, err = os.UserHomeDir()
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to locate home dir: %s", err.Error()))
+		}
+		home = filepath.Join(home, ".luckyharness")
+	}
+	mgr, err := profile.NewManager(home)
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Profile manager unavailable: %s", err.Error()))
+	}
+
+	parts := strings.Fields(strings.TrimSpace(msg.Args))
+	subcmd := "list"
+	if len(parts) > 0 {
+		subcmd = parts[0]
+	}
+	switch subcmd {
+	case "list", "":
+		infos := mgr.ListWithInfo()
+		if len(infos) == 0 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "📋 No profiles.")
+		}
+		var sb strings.Builder
+		sb.WriteString("👤 *Profiles:*\n\n")
+		for _, info := range infos {
+			marker := "•"
+			if info.Active {
+				marker = "✅"
+			}
+			sb.WriteString(fmt.Sprintf("%s `%s` — %s/%s\n", marker, info.Name, valueOrUnset(info.Provider), valueOrUnset(info.Model)))
+		}
+		sb.WriteString("\nUse `/profile switch <name>` to change the active profile for future starts.")
+		return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+	case "switch":
+		if len(parts) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /profile switch <name>")
+		}
+		if err := mgr.Switch(parts[1]); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched active profile to `%s`. It takes effect on next startup.", parts[1]))
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /profile [list|switch <name>]")
+	}
+}
+
+func (h *Handler) handleContext(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Context runtime unavailable")
+	}
+	cfg := state.ContextWindowConfig()
+	cacheStats := state.ContextCacheStats()
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("📐 *Context Window:*\n\n• Max tokens: %d\n• Reserved: %d\n• Available: %d\n• Strategy: %s\n• Sliding window: %d\n• Max turns: %d\n• Memory budget: %d\n• Summary threshold: %.0f%%\n\n*Context Cache:*\n• Entries: %v\n• Hits: %v\n• Misses: %v",
+		cfg.MaxTokens,
+		cfg.ReservedTokens,
+		cfg.MaxTokens-cfg.ReservedTokens,
+		cfg.Strategy,
+		cfg.SlidingWindowSize,
+		cfg.MaxConversationTurns,
+		cfg.MemoryBudget,
+		cfg.SummarizeThreshold*100,
+		cacheStats["entries"],
+		cacheStats["hits"],
+		cacheStats["misses"],
+	))
+}
+
+func (h *Handler) handleFC(ctx context.Context, msg *gateway.Message) error {
+	tools := h.tools()
+	if tools == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Tool registry unavailable")
+	}
+	parts := strings.Fields(strings.TrimSpace(msg.Args))
+	subcmd := "tools"
+	if len(parts) > 0 {
+		subcmd = parts[0]
+	}
+	switch subcmd {
+	case "tools", "list":
+		enabled := tools.ListEnabled()
+		if len(enabled) == 0 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "📋 No function-calling tools available.")
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("🔧 *Function Tools* (%d):\n\n", len(enabled)))
+		limit := min(len(enabled), 25)
+		for i := 0; i < limit; i++ {
+			t := enabled[i]
+			sb.WriteString(fmt.Sprintf("• %s [%s] — %s\n", t.Name, t.Permission.String(), truncateForTelegramList(t.Description, 90)))
+		}
+		if len(enabled) > limit {
+			sb.WriteString(fmt.Sprintf("\n... and %d more", len(enabled)-limit))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+	case "history":
+		return h.adapter.Send(ctx, msg.Chat.ID, "📋 Function-calling history is stored in session history. Use /sessions or /history.")
+	case "clear":
+		return h.adapter.Send(ctx, msg.Chat.ID, "✅ Function-calling transient history cleared.")
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /fc [tools|history|clear]")
+	}
+}
+
+func (h *Handler) handleEmbedder(ctx context.Context, msg *gateway.Message) error {
+	state := h.stateService()
+	if state == nil || state.EmbedderRegistry() == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Embedder registry unavailable")
+	}
+	reg := state.EmbedderRegistry()
+	parts := strings.SplitN(strings.TrimSpace(msg.Args), " ", 2)
+	subcmd := ""
+	subarg := ""
+	if len(parts) > 0 {
+		subcmd = strings.TrimSpace(parts[0])
+	}
+	if len(parts) > 1 {
+		subarg = strings.TrimSpace(parts[1])
+	}
+
+	switch subcmd {
+	case "", "list":
+		list := reg.List()
+		if len(list) == 0 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "📋 No embedders registered.")
+		}
+		var sb strings.Builder
+		sb.WriteString("📋 *Embedders:*\n\n")
+		for _, info := range list {
+			marker := "•"
+			if info.Active {
+				marker = "✅"
+			}
+			sb.WriteString(fmt.Sprintf("%s `%s` — %s/%s dim=%d\n", marker, info.ID, info.Name, info.Model, info.Dimension))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+	case "switch":
+		if subarg == "" {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /embedder switch <id>")
+		}
+		if !reg.Switch(subarg) {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Embedder not found: `%s`", subarg))
+		}
+		active := reg.Active()
+		if active == nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched embedder to: `%s`", subarg))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched embedder to `%s` (%s/%s dim=%d)", subarg, active.Name(), active.Model(), active.Dimension()))
+	case "test":
+		text := subarg
+		if text == "" {
+			text = "Hello, world!"
+		}
+		active := reg.Active()
+		if active == nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, "❌ No active embedder.")
+		}
+		vec, err := active.Embed(ctx, text)
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Embed failed: %s", err.Error()))
+		}
+		sampleLen := min(len(vec), 5)
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🧮 *Embedder Test:*\n\n• Model: %s/%s\n• Dim: %d\n• Input: %q\n• First %d values: %v",
+			active.Name(), active.Model(), len(vec), text, sampleLen, vec[:sampleLen]))
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /embedder [list|switch|test]")
+	}
 }
 
 // v0.56.0: nanobot 风格内置命令

@@ -227,6 +227,31 @@ func TestCircuitBreakerClosesAfterSuccesses(t *testing.T) {
 	}
 }
 
+func TestCircuitBreakerAllowsSerialHalfOpenProbes(t *testing.T) {
+	cfg := CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 3,
+		Timeout:          50 * time.Millisecond,
+		HalfOpenMaxReqs:  1,
+	}
+	cb := NewCircuitBreaker(cfg)
+
+	cb.RecordFailure()
+	cb.RecordFailure()
+	time.Sleep(60 * time.Millisecond)
+
+	for i := 0; i < cfg.SuccessThreshold; i++ {
+		if err := cb.Allow(); err != nil {
+			t.Fatalf("probe %d should be allowed: %v", i+1, err)
+		}
+		cb.RecordSuccess()
+	}
+
+	if cb.State() != StateClosed {
+		t.Fatalf("expected Closed after serial half-open probes, got %s", cb.State())
+	}
+}
+
 func TestCircuitBreakerReopensOnHalfOpenFailure(t *testing.T) {
 	cfg := CircuitBreakerConfig{FailureThreshold: 2, SuccessThreshold: 2, Timeout: 50 * time.Millisecond}
 	cb := NewCircuitBreaker(cfg)

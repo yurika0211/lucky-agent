@@ -42,6 +42,12 @@ func newRootCmd() *cobra.Command {
 		Use:   "lh",
 		Short: "LuckyHarness bot-first CLI",
 		Long:  "LuckyHarness 精简版命令行入口，面向聊天与消息网关工作流。",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !isInteractiveTerminal() {
+				return cmd.Help()
+			}
+			return runTUI("", "http://127.0.0.1:9090", "dashboard-main", "")
+		},
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			initCommandLogger()
 
@@ -87,6 +93,7 @@ func newRootCmd() *cobra.Command {
 	chatCmd.Flags().StringVarP(&provider_, "provider", "p", "", "LLM 提供商")
 	chatCmd.Flags().StringVarP(&model_, "model", "m", "", "模型名称")
 	chatCmd.Flags().BoolVar(&yolo, "yolo", false, "自动批准所有工具调用")
+	chatCmd.Flags().SetInterspersed(false)
 
 	configCmd := &cobra.Command{
 		Use:   "config",
@@ -177,7 +184,18 @@ func newRootCmd() *cobra.Command {
 		Short: "查看消息网关状态",
 		RunE:  runMsgGatewayStatus,
 	}
-	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayStopCmd, msgGatewayStatusCmd)
+	msgGatewayWeixinLoginCmd := &cobra.Command{
+		Use:   "weixin-login",
+		Short: "获取微信登录二维码并写回 iLink 配置",
+		RunE:  runMsgGatewayWeixinLogin,
+	}
+	msgGatewayWeixinLoginCmd.Flags().String("driver", "ilink", "weixin login driver: ilink or openclaw")
+	msgGatewayWeixinLoginCmd.Flags().String("base-url", "", "iLink API base URL")
+	msgGatewayWeixinLoginCmd.Flags().Duration("poll-interval", 2*time.Second, "二维码状态轮询间隔")
+	msgGatewayWeixinLoginCmd.Flags().Duration("timeout", 3*time.Minute, "扫码登录超时时间")
+	msgGatewayWeixinLoginCmd.Flags().Bool("no-save", false, "只打印登录结果，不写入 config.json")
+	msgGatewayWeixinLoginCmd.Flags().Bool("print-status", true, "打印二维码状态变化")
+	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayStopCmd, msgGatewayStatusCmd, msgGatewayWeixinLoginCmd)
 
 	ragCmd := &cobra.Command{
 		Use:   "rag",
@@ -201,6 +219,8 @@ func newRootCmd() *cobra.Command {
 		RunE:  runRAGStats,
 	}
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
+	addDashboardCmd(rootCmd)
+	addTUICmd(rootCmd)
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd)
 
 	return rootCmd

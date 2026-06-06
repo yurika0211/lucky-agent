@@ -23,6 +23,15 @@ type recentChatTarget struct {
 	UpdatedAt    time.Time
 }
 
+type externalReplyAnchor struct {
+	Platform  string
+	ChatID    string
+	MessageID string
+	SessionID string
+	JobID     string
+	UpdatedAt time.Time
+}
+
 /*
 initHeartbeatService 初始化并启动 HEARTBEAT.md 驱动的心跳服务。
 */
@@ -88,6 +97,59 @@ func (a *Agent) pickRecentChatTarget() recentChatTarget {
 	a.heartbeatMu.Lock()
 	defer a.heartbeatMu.Unlock()
 	return a.recentTarget
+}
+
+func externalReplyAnchorKey(platform, chatID, messageID string) string {
+	platform = strings.ToLower(strings.TrimSpace(platform))
+	chatID = strings.TrimSpace(chatID)
+	messageID = strings.TrimSpace(messageID)
+	if platform == "" || chatID == "" || messageID == "" {
+		return ""
+	}
+	return platform + "\x00" + chatID + "\x00" + messageID
+}
+
+func (a *Agent) RecordExternalReplyAnchor(platform, chatID, messageID, sessionID, jobID string) {
+	if a == nil {
+		return
+	}
+	key := externalReplyAnchorKey(platform, chatID, messageID)
+	sessionID = strings.TrimSpace(sessionID)
+	if key == "" || sessionID == "" {
+		return
+	}
+
+	a.heartbeatMu.Lock()
+	if a.externalReplyAnchors == nil {
+		a.externalReplyAnchors = make(map[string]externalReplyAnchor)
+	}
+	a.externalReplyAnchors[key] = externalReplyAnchor{
+		Platform:  strings.ToLower(strings.TrimSpace(platform)),
+		ChatID:    strings.TrimSpace(chatID),
+		MessageID: strings.TrimSpace(messageID),
+		SessionID: sessionID,
+		JobID:     strings.TrimSpace(jobID),
+		UpdatedAt: time.Now(),
+	}
+	a.heartbeatMu.Unlock()
+}
+
+func (a *Agent) ResolveExternalReplyAnchor(platform, chatID, messageID string) (sessionID string, ok bool) {
+	if a == nil {
+		return "", false
+	}
+	key := externalReplyAnchorKey(platform, chatID, messageID)
+	if key == "" {
+		return "", false
+	}
+
+	a.heartbeatMu.Lock()
+	defer a.heartbeatMu.Unlock()
+	anchor, ok := a.externalReplyAnchors[key]
+	if !ok || strings.TrimSpace(anchor.SessionID) == "" {
+		return "", false
+	}
+	return anchor.SessionID, true
 }
 
 /*
