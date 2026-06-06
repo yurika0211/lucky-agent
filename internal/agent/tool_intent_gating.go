@@ -223,8 +223,10 @@ func hasLocalToolIntent(text string) bool {
 
 func hasEditToolIntent(text string) bool {
 	return intentTextContainsAny(text,
-		"修一下", "修复", "补一个", "补一下", "增加", "新增", "实现", "改一下", "修改",
-		"编辑", "patch", "apply patch", "写个", "写一个", "输出", "生成", "保存",
+		"修一下", "修复", "补一个", "补一下", "补全", "补齐", "完善", "优化",
+		"调优", "调整", "改进", "升级", "重构", "落地", "接入", "加上", "加入",
+		"增加", "新增", "实现", "改一下", "修改", "编辑", "patch", "apply patch",
+		"写个", "写一个", "输出", "生成", "保存", "开个新包",
 		"创建", "commit", "push",
 	)
 }
@@ -248,7 +250,11 @@ func hasCalculationIntent(text string) bool {
 }
 
 func hasMemoryIntent(text string) bool {
-	return intentTextContainsAny(text, "记忆", "memory", "recall", "rag", "之前说过", "历史上下文")
+	return intentTextContainsAny(text,
+		"查记忆", "查一下记忆", "从记忆", "记忆里", "回忆一下", "检索记忆",
+		"历史上下文", "之前说过", "之前聊过", "之前提到", "我说过",
+		"recall memory", "memory recall", "rag_search", "用 rag 搜索", "用rag搜索",
+	)
 }
 
 func hasRememberIntent(text string) bool {

@@ -89,6 +89,33 @@ func TestApplyIntentToolGatingDoesNotChangeUnknownIntent(t *testing.T) {
 	}
 }
 
+func TestApplyIntentToolGatingMetricExplanationDoesNotEnableMemory(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "讲解一下 Graph RecallLift 和图 RAG 是否需要向量召回。")
+	opts := a.buildLoopCallOptions("讲解一下 Graph RecallLift 和图 RAG 是否需要向量召回。", loopCfg)
+
+	if len(opts.Tools) != 0 {
+		t.Fatalf("expected metric explanation to expose no tools, got %v", toolNamesFromSchemas(opts.Tools))
+	}
+	assertDisabledTools(t, loopCfg.DisabledTools, "recall", "rag_search", "web_search", "terminal")
+}
+
+func TestApplyIntentToolGatingOptimizationIntentKeepsEditTools(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "优化工具系统，完善 benchmark，并接入真实 agent。")
+	opts := a.buildLoopCallOptions("优化工具系统，完善 benchmark，并接入真实 agent。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "terminal", "file_read", "file_list", "file_patch", "file_write")
+	assertDisabledTools(t, loopCfg.DisabledTools, "web_search", "web_fetch", "http_request", "file_delete")
+}
+
 func agentWithIntentGateTools(t *testing.T) *Agent {
 	t.Helper()
 	reg := tool.NewRegistry()
