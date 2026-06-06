@@ -137,6 +137,7 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 
 	messages := make([]provider.Message, 0, 8)
 
+	// 构建系统提示词
 	systemPrompt := ""
 	if p.agent != nil {
 		systemPrompt = p.agent.buildSystemPrompt(sess)
@@ -155,12 +156,14 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	if systemContent != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemContent})
 	}
+	// 拼接skill的内容
 	if p.agent != nil {
 		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHint(routingText)); skillHint != "" {
 			messages = append(messages, provider.Message{Role: "system", Content: skillHint})
 		}
 	}
 
+	// 拼接rag知识库的内容
 	messages = append(messages, p.buildMemoryMessages(routingText)...)
 	if p.options.IncludeRAG {
 		if ragMsg := p.buildRAGMessage(ctx, routingText); ragMsg.Content != "" {
@@ -175,9 +178,7 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 		return append(messages, p.buildAttachmentMessages(ctx, input)...)
 	}
 
-	// Reserve budget for the current turn using routing text, then append the
-	// structured payload after trimming older context. This preserves current-round
-	// image parts without rewriting the window manager yet.
+	// 拼接附件解析完成后的内容
 	attachmentMsgs := p.buildAttachmentMessages(ctx, input)
 	provisional := append(append([]provider.Message(nil), messages...), attachmentMsgs...)
 	provisional = append(provisional, provider.Message{
@@ -211,6 +212,9 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	return messages
 }
 
+/**
+ * 将附件解析完之后的结果放到上下文当中
+ */
 func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input UserTurnInput) []provider.Message {
 	if len(input.Attachments) == 0 {
 		return nil
@@ -235,6 +239,9 @@ func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input User
 	return messages
 }
 
+/**
+ * 支持图片内容的部分，查看模型是否支持图片内容
+ */
 func (p *contextPlanner) supportsImageContentParts() bool {
 	if p == nil || p.agent == nil || p.agent.catalog == nil {
 		return false
@@ -258,6 +265,9 @@ func (p *contextPlanner) supportsImageContentParts() bool {
 	return false
 }
 
+/**
+ * 清空消息的内容
+ */
 func stripContentParts(msg provider.Message) provider.Message {
 	msg.ContentParts = nil
 	return msg

@@ -27,9 +27,9 @@ type Message struct {
 	ReasoningContent string        `json:"reasoning_content,omitempty"`
 	ContentParts     []ContentPart `json:"content_parts,omitempty"`
 
-	ToolCallID string     `json:"tool_call_id,omitempty"` // v0.16.0: function calling tool result
-	Name       string     `json:"name,omitempty"`         // v0.16.0: function name for tool messages
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // v0.16.0: assistant tool calls
+	ToolCallID string     `json:"tool_call_id,omitempty"` // function calling tool result
+	Name       string     `json:"name,omitempty"`         // function name for tool messages
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // assistant tool calls
 }
 
 // Response 代表 Provider 的响应
