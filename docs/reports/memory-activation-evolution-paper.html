@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>From Heuristic Recall to Explicit Activation</title>
+<style>
+@page { size: A4; margin: 20mm 18mm 22mm 18mm; }
+* { box-sizing: border-box; }
+body {
+  font-family: "Noto Serif CJK SC", "Noto Serif SC", "Noto Serif", "Times New Roman", serif;
+  color: #171717;
+  font-size: 11pt;
+  line-height: 1.62;
+  max-width: 780px;
+  margin: 0 auto;
+  background: white;
+}
+h1 {
+  font-size: 22pt;
+  line-height: 1.18;
+  text-align: center;
+  margin: 0 0 18px 0;
+  font-weight: 700;
+}
+h2 {
+  font-size: 14pt;
+  margin: 22px 0 8px;
+  padding-top: 4px;
+  border-top: 1px solid #d8d8d8;
+}
+h3 { font-size: 12.5pt; margin: 16px 0 6px; }
+p { margin: 6px 0 8px; text-align: justify; }
+ul, ol { margin: 6px 0 10px 22px; padding: 0; }
+li { margin: 2px 0; }
+pre {
+  font-family: "Noto Sans Mono CJK SC", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+  font-size: 8.8pt;
+  line-height: 1.42;
+  background: #f7f7f7;
+  border: 1px solid #dddddd;
+  border-radius: 4px;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 10px 0 12px;
+}
+code {
+  font-family: "Noto Sans Mono CJK SC", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+  font-size: 0.92em;
+  background: #f2f2f2;
+  padding: 0.08em 0.25em;
+  border-radius: 3px;
+}
+pre code { background: transparent; padding: 0; border-radius: 0; }
+blockquote {
+  border-left: 3px solid #666;
+  margin: 10px 0;
+  padding: 4px 12px;
+  background: #fafafa;
+}
+strong { font-weight: 700; }
+</style>
+</head>
+<body>
+<h1>From Heuristic Recall to Explicit Activation: An Evolution Plan for LuckyHarness Memory</h1>
+<p><strong>Author:</strong> LuckyHarness Engineering Notes <strong>Date:</strong> 2026-06-06 <strong>Repository:</strong> <code>luckyharness</code></p>
+<h2>Abstract</h2>
+<p>LuckyHarness currently implements a durable memory system backed by an Obsidian-compatible Markdown vault. Its recall path already contains the core ingredients of an activation system: lexical matching, tier-aware memory weights, time decay, access reinforcement, and graph-based score propagation through wikilinks, aliases, backlinks, and tags. However, these mechanisms are distributed across several functions and are not represented as a first-class activation model.</p>
+<p>This paper proposes an incremental evolution of the existing memory recall system into an explicit, explainable, testable activation pipeline. The proposed design introduces a dedicated activation layer, decomposes scores into named components, upgrades graph propagation into path-aware activation spread, unifies <code>Search</code> and <code>SearchParallel</code>, and exposes debug traces for future tuning. The goal is to preserve existing behavior where possible while making memory retrieval more interpretable and more suitable as a foundation for Graph RAG and agentic context planning.</p>
+<h2>1. Background</h2>
+<p>LuckyHarness memory is organized around three tiers:</p>
+<ul>
+<li>short-term memory for recent and transient conversational traces,</li>
+<li>medium-term memory for daily or session-level knowledge,</li>
+<li>long-term memory for durable user facts, project constraints, and reusable rules.</li>
+</ul>
+<p>The persistent source of truth is a Markdown vault under the LuckyHarness home directory. Each memory entry stores content, category, tier, importance, timestamps, access count, tags, links, aliases, temporal state fields, block identifiers, and a vault-relative path.</p>
+<p>The current system behaves like a lightweight activation network even though it does not name the concept directly. A query activates matching memories, active memories spread partial score to graph-neighbor memories, selected memories are injected into the agent context, and recalled memories receive access reinforcement.</p>
+<h2>2. Existing Activation-Like Mechanism</h2>
+<p>The current recall score can be described as:</p>
+<pre><code>activation_score = match_score * memory_weight</code></pre>
+<p>where:</p>
+<pre><code>memory_weight = importance * time_factor * access_bonus</code></pre>
+<h3>2.1 Importance</h3>
+<p>Importance is a per-entry scalar between 0 and 1. Long-term memories usually receive higher importance, while automatically saved conversational snippets receive lower importance.</p>
+<h3>2.2 Time Decay</h3>
+<p>Each tier has a different half-life:</p>
+<pre><code>short-term: 1 hour
+medium-term: 7 days
+long-term: 365 days</code></pre>
+<p>The code comments describe the mechanism as exponential decay, but the current implementation is closer to reciprocal decay:</p>
+<pre><code>time_factor = 1 / (1 + decay)</code></pre>
+<p>This distinction matters because exponential half-life behavior is easier to reason about, tune, and document.</p>
+<h3>2.3 Access Reinforcement</h3>
+<p>Every successful recall increments <code>AccessCount</code>. Access count increases future weight by 5 percent per recall, capped at 2x:</p>
+<pre><code>access_bonus = min(1 + access_count * 0.05, 2.0)</code></pre>
+<p>This gives the system a simple Hebbian-like reinforcement behavior: memories that are used more often become easier to activate.</p>
+<h3>2.4 Lexical And Metadata Matching</h3>
+<p>The existing matcher considers:</p>
+<ul>
+<li>exact or partial content match,</li>
+<li>category match,</li>
+<li>query term matches,</li>
+<li>tags,</li>
+<li>aliases,</li>
+<li>wikilinks.</li>
+</ul>
+<p>For Chinese text, query terms are expanded with short n-grams, which improves recall for queries that do not contain whitespace.</p>
+<h3>2.5 Graph Score Propagation</h3>
+<p>After direct matches are scored, the memory graph propagates score through:</p>
+<ul>
+<li>forward wikilinks,</li>
+<li>backlinks,</li>
+<li>aliases,</li>
+<li>shared tags.</li>
+</ul>
+<p>Current propagation coefficients include:</p>
+<pre><code>wikilink target: 0.55
+backlink: 0.35
+alias backlink: 0.45
+shared tag: 0.18</code></pre>
+<p>The propagation formula is approximately:</p>
+<pre><code>boost = source_score * coefficient * target_weight</code></pre>
+<p>This is already a small graph activation system. The limitation is that it is not path-aware and does not expose why a memory was boosted.</p>
+<h2>3. Limitations</h2>
+<h3>3.1 Hidden Score Components</h3>
+<p>The current recall path returns a final score internally, but it does not expose a structured explanation. This makes tuning difficult. When a memory is over-activated or under-activated, there is no easy way to determine whether the cause was lexical matching, alias matching, graph propagation, recency, importance, or access reinforcement.</p>
+<h3>3.2 Inconsistent Search Paths</h3>
+<p><code>Search</code> performs graph propagation and updates access counts. <code>SearchParallel</code> searches tiers concurrently but does not perform the same graph propagation or access updates. This creates two subtly different recall semantics.</p>
+<h3>3.3 Time Decay Semantics</h3>
+<p>The implementation and comments disagree: comments describe exponential decay, but the code uses reciprocal-style decay. This makes the model harder to reason about and tune.</p>
+<h3>3.4 Graph Propagation Without Evidence Paths</h3>
+<p>The existing graph propagation boosts scores but does not record paths. A related memory can be activated by wikilink, backlink, alias, or tag, but the caller cannot inspect which relationship caused the activation.</p>
+<h3>3.5 Automatic Conversation Noise</h3>
+<p>LuckyHarness automatically stores user and assistant snippets as short-term memories. These entries are useful for continuity but can become noisy. Context ranking later penalizes <code>User:</code> and <code>Assistant:</code> snippets, but retrieval-stage activation can still include them.</p>
+<h2>4. Proposed Evolution</h2>
+<p>The central proposal is to promote activation into a first-class subsystem.</p>
+<p>Add:</p>
+<pre><code>internal/memory/activation.go</code></pre>
+<p>The new subsystem should compute activation scores, explain their components, and provide a single entry point for memory recall.</p>
+<h2>5. Activation Data Model</h2>
+<pre><code>type ActivationScore struct {
+    EntryID    string
+    Score      float64
+    Components ActivationComponents
+    Paths      []ActivationPath
+}
+
+type ActivationComponents struct {
+    Lexical    float64
+    Category   float64
+    Tags       float64
+    Aliases    float64
+    Links      float64
+    Importance float64
+    Tier       float64
+    Recency    float64
+    Access     float64
+    GraphBoost float64
+}
+
+type ActivationPath struct {
+    FromID string
+    ToID   string
+    Via    string
+    Kind   string
+    Weight float64
+}</code></pre>
+<p>This structure makes activation inspectable. A caller can understand not only which memory won, but why it won.</p>
+<h2>6. Activation Pipeline</h2>
+<p>The new pipeline should be:</p>
+<pre><code>query
+  -&gt; query normalization
+  -&gt; lexical activation
+  -&gt; metadata activation
+  -&gt; tier, importance, recency, access modifiers
+  -&gt; graph activation spread
+  -&gt; temporal resolution
+  -&gt; context ranking</code></pre>
+<p>The public entry point should be:</p>
+<pre><code>func (s *Store) Activate(query string, opts ActivationOptions) []ActivationScore</code></pre>
+<p>where:</p>
+<pre><code>type ActivationOptions struct {
+    Limit             int
+    IncludeGraph      bool
+    MaxGraphDepth     int
+    MaxGraphBoost     float64
+    UpdateAccessStats bool
+    Explain           bool
+}</code></pre>
+<h2>7. Matching Refactor</h2>
+<p>The current <code>memoryMatchScore</code> returns a single float. It should be refactored into a component-producing function:</p>
+<pre><code>func matchActivation(e *Entry, query string, terms []string) ActivationComponents</code></pre>
+<p>The existing scoring constants can be preserved initially:</p>
+<ul>
+<li>content exact match,</li>
+<li>content contains query,</li>
+<li>category contains query,</li>
+<li>query term hits,</li>
+<li>tag hits,</li>
+<li>alias hits,</li>
+<li>wikilink hits.</li>
+</ul>
+<p>Preserving constants during the first refactor reduces behavioral risk. Later iterations can tune weights using tests and retrieval logs.</p>
+<h2>8. Time Decay Upgrade</h2>
+<p>The time decay model should use true half-life semantics:</p>
+<pre><code>recency = pow(0.5, age_hours / half_life_hours)</code></pre>
+<p>Suggested half-lives remain:</p>
+<pre><code>short-term: 1 hour
+medium-term: 7 days
+long-term: 365 days</code></pre>
+<p>This gives clear semantics: after one half-life, the recency contribution is halved.</p>
+<h2>9. Access Reinforcement Upgrade</h2>
+<p>The current linear access boost can make repeatedly recalled entries too sticky. A logarithmic curve is safer:</p>
+<pre><code>access_boost = 1 + min(log1p(access_count) * 0.12, 0.75)</code></pre>
+<p>This preserves reinforcement while reducing runaway effects.</p>
+<h2>10. Path-Aware Graph Activation</h2>
+<p>Graph activation should move from simple one-hop score addition to path-aware propagation.</p>
+<p>Initial propagation can still be shallow:</p>
+<pre><code>max_depth: 2
+max_graph_boost: 0.45
+visited set: enabled</code></pre>
+<p>Relationships should preserve evidence paths:</p>
+<pre><code>A --wikilink--&gt; B
+A --backlink--&gt; C
+A --shared_tag:project--&gt; D
+A --alias_backlink--&gt; E</code></pre>
+<p>The score boost can still use the current idea:</p>
+<pre><code>boost = source_score * edge_coefficient * target_weight</code></pre>
+<p>but it should store:</p>
+<ul>
+<li>source memory ID,</li>
+<li>target memory ID,</li>
+<li>relationship type,</li>
+<li>relationship label,</li>
+<li>coefficient,</li>
+<li>path depth.</li>
+</ul>
+<h2>11. Unified Search Semantics</h2>
+<p><code>Search</code>, <code>SearchParallel</code>, and <code>Route</code> should eventually share the same activation core.</p>
+<p>Recommended structure:</p>
+<pre><code>func (s *Store) Activate(query string, opts ActivationOptions) []ActivationScore
+func (s *Store) Search(query string) []Entry
+func (s *Store) SearchParallel(query string, limit int) []Entry
+func (s *Store) Route(query string) RouteAnalysis</code></pre>
+<p><code>Search</code> becomes a thin wrapper around <code>Activate</code>. <code>SearchParallel</code> either becomes a concurrent implementation of activation or is deprecated if the unified activation path is fast enough.</p>
+<h2>12. Context Ranking Integration</h2>
+<p>Context planning currently applies an additional rank:</p>
+<pre><code>long memory: +300
+medium memory: +200
+short memory: +100
+health/rule/identity/preference/location/project/plan: +40
+conversation: -25
+User:/Assistant: -30
+importance * 20</code></pre>
+<p>This should be preserved but integrated with activation:</p>
+<pre><code>context_score =
+  activation_score * 0.65 +
+  policy_priority * 0.25 +
+  content_quality * 0.10</code></pre>
+<p>The policy layer should still strongly prefer stable rules, identities, preferences, health facts, project constraints, and location memories over raw automatic conversation snippets.</p>
+<h2>13. Debug And Evaluation Interface</h2>
+<p>The system should expose debug output for recall:</p>
+<pre><code>/recall --debug &quot;telegram gateway&quot;</code></pre>
+<p>Example output:</p>
+<pre><code>score 0.83 memory mem_123
+- lexical: 0.31
+- alias: 0.20
+- graph: 0.18 via [[Telegram Gateway]]
+- recency: 0.91
+- access: 1.12
+- tier: long</code></pre>
+<p>This should not be injected into normal user-facing answers unless requested. It is primarily for developers and retrieval tuning.</p>
+<h2>14. Implementation Plan</h2>
+<h3>Phase 1: Explainable Activation Without Behavior Drift</h3>
+<ul>
+<li>Add <code>activation.go</code>.</li>
+<li>Add <code>ActivationScore</code>, <code>ActivationComponents</code>, <code>ActivationPath</code>, and <code>ActivationOptions</code>.</li>
+<li>Refactor matching into component form.</li>
+<li>Keep existing scoring constants.</li>
+<li>Add tests proving that previous top results remain stable for representative queries.</li>
+</ul>
+<h3>Phase 2: Unified Recall Path</h3>
+<ul>
+<li>Make <code>Search</code> use <code>Activate</code>.</li>
+<li>Make <code>Route</code> use activated entries.</li>
+<li>Decide whether <code>SearchParallel</code> should call <code>Activate</code> or be deprecated.</li>
+<li>Ensure access count and accessed time are updated consistently.</li>
+</ul>
+<h3>Phase 3: Decay And Access Improvements</h3>
+<ul>
+<li>Replace reciprocal decay with true half-life decay.</li>
+<li>Replace linear access boost with logarithmic access boost.</li>
+<li>Add regression tests for young, old, frequently accessed, and long-term memories.</li>
+</ul>
+<h3>Phase 4: Path-Aware Graph Spread</h3>
+<ul>
+<li>Replace opaque graph propagation with path-aware propagation.</li>
+<li>Add max depth, graph boost cap, and cycle protection.</li>
+<li>Add tests for wikilink, backlink, alias, and tag propagation.</li>
+</ul>
+<h3>Phase 5: Debugging And Tuning Tools</h3>
+<ul>
+<li>Add debug formatter.</li>
+<li>Extend CLI recall or tool recall with optional explain mode.</li>
+<li>Add retrieval snapshots for common memory queries.</li>
+<li>Track top activated entries and component distributions in tests or diagnostics.</li>
+</ul>
+<h2>15. Evaluation Metrics</h2>
+<p>The upgraded system should be evaluated with:</p>
+<ul>
+<li>top-k stability against existing recall results,</li>
+<li>precision of long-term rule recall,</li>
+<li>suppression rate of automatic conversation noise,</li>
+<li>graph expansion usefulness,</li>
+<li>access reinforcement saturation behavior,</li>
+<li>temporal correctness for superseded, expired, and future-dated memories,</li>
+<li>explainability coverage: every returned score should have at least one meaningful component or path.</li>
+</ul>
+<h2>16. Expected Benefits</h2>
+<p>The proposed activation layer should provide:</p>
+<ul>
+<li>clearer memory retrieval behavior,</li>
+<li>easier tuning,</li>
+<li>more reliable context injection,</li>
+<li>reusable scoring infrastructure for Graph RAG,</li>
+<li>better debugging for unexpected recall,</li>
+<li>a cleaner separation between memory storage and memory activation.</li>
+</ul>
+<h2>17. Conclusion</h2>
+<p>LuckyHarness already contains the foundation of a memory activation system. Importance, time decay, access reinforcement, metadata matching, and graph propagation are all present. The next step is to make this implicit mechanism explicit.</p>
+<p>By introducing a first-class activation layer, LuckyHarness can evolve from heuristic recall to explainable activation. This preserves the pragmatic strengths of the current system while preparing the architecture for deeper graph-based retrieval and more reliable agent memory behavior.</p>
+</body>
+</html>

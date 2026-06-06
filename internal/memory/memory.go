@@ -2,6 +2,7 @@ package memory
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -71,22 +72,26 @@ type Entry struct {
 // Weight 计算记忆权重（用于排序和衰减）
 // 考虑：重要性 × 时间衰减 × 访问频率加成
 func (e *Entry) Weight(now time.Time) float64 {
-	// 时间衰减：指数衰减，半衰期取决于层级
+	return e.Importance * e.recencyFactor(now) * e.accessBoost()
+}
+
+func (e *Entry) recencyFactor(now time.Time) float64 {
 	halflife := e.halflife()
+	if halflife <= 0 {
+		return 1
+	}
 	age := now.Sub(e.CreatedAt).Hours()
-	decay := 0.5 * (age / halflife) // log2 衰减
-	if decay < 0 {
-		decay = 0
+	if age <= 0 {
+		return 1
 	}
-	timeFactor := 1.0 / (1.0 + decay)
+	return math.Pow(0.5, age/halflife)
+}
 
-	// 访问频率加成：每被检索一次，权重 +5%
-	accessBonus := 1.0 + float64(e.AccessCount)*0.05
-	if accessBonus > 2.0 {
-		accessBonus = 2.0 // 上限 2x
+func (e *Entry) accessBoost() float64 {
+	if e.AccessCount <= 0 {
+		return 1
 	}
-
-	return e.Importance * timeFactor * accessBonus
+	return 1 + min(math.Log1p(float64(e.AccessCount))*0.12, 0.75)
 }
 
 // halflife 返回该层级记忆的半衰期（小时）
@@ -409,142 +414,24 @@ func (s *Store) SearchParallel(query string, limit int) []Entry {
 	if limit > 3 {
 		limit = 3
 	}
-
-	now := time.Now()
-	queryLower := strings.ToLower(query)
-	queryTerms := extractQueryTerms(queryLower)
-
-	// 按层级分组记忆
-	shortEntries := make([]*Entry, 0)
-	mediumEntries := make([]*Entry, 0)
-	longEntries := make([]*Entry, 0)
-
-	s.mu.RLock()
-	for _, e := range s.entries {
-		switch e.Tier {
-		case TierShort:
-			shortEntries = append(shortEntries, e)
-		case TierMedium:
-			mediumEntries = append(mediumEntries, e)
-		case TierLong:
-			longEntries = append(longEntries, e)
-		}
-	}
-	s.mu.RUnlock()
-
-	// 使用 channel 收集各层级的检索结果
-	type tierResult struct {
-		tier    Tier
-		entries []entryScore
-	}
-	resultCh := make(chan tierResult, 3)
-
-	// 并发检索三层记忆
-	searchTier := func(tier Tier, entries []*Entry) {
-		var scored []entryScore
-		for _, e := range entries {
-			if !entryIsActive(e, time.Now()) {
-				continue
-			}
-			matchScore := memoryMatchScore(e, queryLower, queryTerms)
-
-			if matchScore > 0 {
-				// 综合分 = 匹配分 × 权重 × 层级系数
-				// 长期记忆权重更高
-				tierMultiplier := 1.0
-				switch tier {
-				case TierShort:
-					tierMultiplier = 0.8
-				case TierMedium:
-					tierMultiplier = 1.0
-				case TierLong:
-					tierMultiplier = 1.2
-				}
-				totalScore := matchScore * e.Weight(now) * tierMultiplier
-				scored = append(scored, entryScore{entry: *e, score: totalScore})
-			}
-		}
-		resultCh <- tierResult{tier: tier, entries: scored}
-	}
-
-	// 启动三个 goroutine 并发检索
-	go searchTier(TierShort, shortEntries)
-	go searchTier(TierMedium, mediumEntries)
-	go searchTier(TierLong, longEntries)
-
-	// 收集所有结果
-	var allScored []entryScore
-	for i := 0; i < 3; i++ {
-		result := <-resultCh
-		allScored = append(allScored, result.entries...)
-	}
-
-	// 按综合分降序排序
-	sort.Slice(allScored, func(i, j int) bool {
-		return allScored[i].score > allScored[j].score
+	scores := s.Activate(query, ActivationOptions{
+		Limit:             limit,
+		IncludeGraph:      true,
+		MaxGraphDepth:     1,
+		MaxGraphBoost:     0.45,
+		UpdateAccessStats: false,
 	})
-
-	// 取 top-N
-	if limit > len(allScored) {
-		limit = len(allScored)
-	}
-	results := make([]Entry, limit)
-	for i := 0; i < limit; i++ {
-		results[i] = allScored[i].entry
-	}
-
-	return results
+	return activationScoresToEntries(scores)
 }
 
 // Search 搜索记忆（关键词匹配 + 权重排序）
 func (s *Store) Search(query string) []Entry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	now := time.Now()
-	queryLower := strings.ToLower(query)
-	queryTerms := extractQueryTerms(queryLower)
-
-	scores := make(map[string]float64)
-	for id, e := range s.entries {
-		if !entryIsActive(e, now) {
-			continue
-		}
-		matchScore := memoryMatchScore(e, queryLower, queryTerms)
-
-		if matchScore > 0 {
-			// 综合分 = 匹配分 × 权重
-			totalScore := matchScore * e.Weight(now)
-			scores[id] = max(scores[id], totalScore)
-		}
-	}
-
-	if len(scores) == 0 {
-		return []Entry{}
-	}
-
-	s.propagateGraphScoresLocked(scores, now)
-	scored := s.scoreMapToEntriesLocked(scores, now)
-
-	// 按综合分降序排序
-	sort.Slice(scored, func(i, j int) bool {
-		return scored[i].score > scored[j].score
-	})
-
-	results := make([]Entry, len(scored))
-	for i, scoredEntry := range scored {
-		results[i] = scoredEntry.entry
-	}
-
-	// 持久化访问计数更新
-	_ = s.persist()
-
-	return results
+	return activationScoresToEntries(s.Activate(query, DefaultActivationOptions()))
 }
 
 // Route searches memory and derives deterministic tool/answer constraints.
 func (s *Store) Route(query string) RouteAnalysis {
-	entries := s.Search(query)
+	entries := activationScoresToEntries(s.Activate(query, RouteActivationOptions()))
 	route := RouteAnalysis{
 		Query:   strings.TrimSpace(query),
 		Entries: entries,
