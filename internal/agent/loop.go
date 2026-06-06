@@ -243,6 +243,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
+	a.applyIntentToolGating(&loopCfg, routingText)
 
 	if startErr := a.StartAutonomy(ctx); startErr != nil && a.autonomy != nil {
 		return nil, fmt.Errorf("start autonomy: %w", startErr)

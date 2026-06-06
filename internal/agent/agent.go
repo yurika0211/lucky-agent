@@ -1562,6 +1562,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 		defer close(events)
 
 		sanitizeLoopConfig(&loopCfg)
+		a.applyIntentToolGating(&loopCfg, routingText)
 
 		buildOpts := defaultContextBuildOptions()
 		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
