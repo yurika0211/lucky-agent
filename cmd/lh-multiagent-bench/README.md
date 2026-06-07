@@ -6,8 +6,9 @@ parallel subtasks, run as a dependency-aware pipeline, use debate/review, or be
 queued into the autonomy worker system.
 
 The benchmark is intentionally deterministic. It does not call a live model.
-Instead, it simulates strategy variants over a fixed task set so that routing
-and coordination changes can be compared before touching the runtime path.
+Instead, it simulates strategy variants over a fixed 60-case synthetic suite so
+that routing and coordination changes can be compared before touching the
+runtime path.
 
 ## Strategy Variants
 
@@ -18,6 +19,16 @@ and coordination changes can be compared before touching the runtime path.
 - `dependency-aware`: preserves dependency order and uses the gold mode in this
   synthetic suite.
 - `debate-review`: dependency-aware plus stronger critic/review aggregation.
+- `math-mdp-v1`: deterministic offline Contextual MDP planner that scores
+  candidate modes by expected utility.
+- `math-ssp-v1`: stochastic-shortest-path style planner that chooses the lowest
+  path weight using `-log(p)` plus cost and risk terms.
+- `math-lyapunov-v1`: MDP planner with a Lyapunov decrease guard to reject
+  non-convergent candidates.
+- `math-verifier-v1`: MDP planner that treats debugger/verifier availability as
+  an explicit constraint.
+- `math-full-v1`: combined MDP + stochastic shortest path diagnostics +
+  Lyapunov guard + verifier gate.
 
 ## Scenarios
 
@@ -26,6 +37,9 @@ and coordination changes can be compared before touching the runtime path.
 - `pipeline`: ordered subtasks where later work depends on earlier output.
 - `debate`: tasks that need competing proposals and a critic/vote.
 - `autonomy`: background worker and queue scenarios, plus an autonomy trap.
+- `heavy`: super-heavy end-to-end orchestration cases, including Hermes Agent
+  reproduction, Hermes parity audit, release recovery, architecture debate, and
+  async replay.
 
 ## Core Metrics
 
@@ -106,6 +120,33 @@ P(success) = sigmoid(
 `MultiAgentScore` is a bounded 0-1 score combining the same factors with a
 slightly more product-facing weighting.
 
+Math planner variants also emit a `diagnostics` object per record:
+
+- `trace_id`: stable deterministic identifier for the planner trace.
+- `context_features`: extracted task features such as dependency depth, risk,
+  test observability, and whether the task is super-heavy.
+- `candidate_scores`: expected utility, path weight, estimated success, risk,
+  Lyapunov endpoint, and rejection reasons for each candidate mode.
+- `trace`: deterministic orchestration trace edges with edge probabilities,
+  `-log(p)` weights, estimated cost/risk, and Lyapunov before/after values.
+- `expected_utility`, `path_weight`, `estimated_success`,
+  `edge_nll`, `calibration_ece`, `lyapunov_decrease`,
+  `lyapunov_decrease_rate`, `replan_recommended`, `verifier_expected_catch`,
+  `out_of_distribution`, and `path_regret` for summary comparison.
+
+The aggregate summary includes the corresponding report-level metrics:
+
+```text
+EdgeNLL
+CalibrationECE
+ExpectedUtility
+LyapunovDecreaseRate
+ReplanRate
+VerifierCatchRate
+OODRate
+PathRegret
+```
+
 ## Usage
 
 ```bash
@@ -116,12 +157,64 @@ go run ./cmd/lh-multiagent-bench \
   -out docs/reports/multiagent-bench-baseline.jsonl
 ```
 
+Run only the super-heavy orchestration cases:
+
+```bash
+go run ./cmd/lh-multiagent-bench \
+  -variant baseline \
+  -scenario heavy \
+  -rounds 1 \
+  -out docs/reports/multiagent-bench-heavy-baseline.jsonl
+```
+
+Run the full mathematical planner on heavy cases:
+
+```bash
+go run ./cmd/lh-multiagent-bench \
+  -variant math-full-v1 \
+  -scenario heavy \
+  -rounds 1 \
+  -out docs/reports/multiagent-bench-heavy-math-full.jsonl
+```
+
 Compare result files:
 
 ```bash
 go run ./cmd/lh-multiagent-bench \
   -compare docs/reports/multiagent-bench-baseline.jsonl,docs/reports/multiagent-bench-dependency-aware.jsonl
 ```
+
+Run historical session replay cases:
+
+```bash
+go run ./cmd/lh-multiagent-bench \
+  -replay ~/.luckyharness/sessions \
+  -replay-label-out docs/reports/multiagent-replay-labels.jsonl
+```
+
+Review and edit the generated labels, then run the replay:
+
+```bash
+go run ./cmd/lh-multiagent-bench \
+  -variant math-full-v1 \
+  -replay docs/reports/multiagent-replay-labels.jsonl \
+  -replay-only \
+  -scenario replay \
+  -rounds 1 \
+  -out docs/reports/multiagent-replay-math-full.jsonl
+```
+
+Replay inputs can be JSON, JSONL, LuckyHarness session Markdown files, or a
+directory containing those files. A JSON replay case may provide `prompt` or
+`messages`, plus optional labels such as `gold_mode`, `should_split`,
+`needs_verifier`, `needs_critic`, `allows_background`, `forbidden_modes`, and
+`required_capabilities`. When labels are missing, the loader performs a
+deterministic semi-automatic label pass from prompt cues.
+
+`-replay-label-out` writes one `replay_label` JSON object per historical case
+with inferred labels, confidence, and evidence. The label file is intentionally
+also valid replay input, so it can be hand-edited and passed back through
+`-replay`.
 
 ## Experiment Plan
 
@@ -130,6 +223,18 @@ go run ./cmd/lh-multiagent-bench \
 3. Run `parallel-routed` to test mode selection improvements.
 4. Run `dependency-aware` to measure dependency safety.
 5. Run `debate-review` to test critic/review gains on high-risk decisions.
+6. Run `heavy` scenarios separately to make sure the planner handles
+   super-heavy work such as reproducing a Hermes-like agent, where the correct
+   plan requires ordered research, implementation, debugger/verifier gates,
+   security review, GUI/CLI acceptance, and scoped reporting.
+7. Run `math-full-v1` against `heavy` and `all` to validate the first offline
+   version of the mathematical orchestration model before touching runtime.
+8. Check the math columns in `-compare` output, especially `ECE`, `LyapRate`,
+   `Replan`, and `Regret`, before treating a planner as calibrated.
+9. Run `-replay` with historical LuckyHarness sessions to measure replay
+   generalization. The first offline proxy metrics are `VerifierNeedAccuracy`
+   and `OODFalseNegativeRate`; replace the semi-automatic labels with human
+   labels before treating them as final research numbers.
 
 The expected improvement path is:
 

@@ -16,10 +16,14 @@ type strategyResult struct {
 	BackgroundQueued   bool
 	CriticUsed         bool
 	DependencyAware    bool
+	Diagnostics        *mathDiagnostics
 }
 
 func runStrategy(cfg benchConfig, task benchTask, agents map[string]agentSpec) strategyResult {
 	variant := normalizeVariant(cfg.Variant)
+	if isMathVariant(variant) {
+		return runMathStrategy(variant, task, agents)
+	}
 	mode := chooseMode(variant, task)
 	executed := chooseSubtasks(variant, mode, task)
 	assignments := assignSubtasks(variant, mode, executed, agents)
@@ -51,6 +55,16 @@ func normalizeVariant(raw string) string {
 		return "dependency-aware"
 	case "debate", "debate-review", "a4":
 		return "debate-review"
+	case "math-mdp", "math-mdp-v1":
+		return "math-mdp-v1"
+	case "math-ssp", "math-ssp-v1":
+		return "math-ssp-v1"
+	case "math-lyapunov", "math-lyapunov-v1":
+		return "math-lyapunov-v1"
+	case "math-verifier", "math-verifier-v1":
+		return "math-verifier-v1"
+	case "math-full", "math-full-v1":
+		return "math-full-v1"
 	default:
 		return v
 	}

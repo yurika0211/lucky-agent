@@ -72,7 +72,7 @@ func defaultAgents() map[string]agentSpec {
 }
 
 func defaultTasks() []benchTask {
-	return normalizeTasks([]benchTask{
+	base := []benchTask{
 		{
 			ID: "S1-001", Scenario: "single", TaskType: "concept", Prompt: "解释多 agent 为什么不一定比单 agent 更好。",
 			GoldMode: "single", IntentTerms: []string{"concept", "explain", "multiagent"}, ForbiddenModes: []string{"parallel", "pipeline", "debate", "autonomy_queue"},
@@ -232,7 +232,77 @@ func defaultTasks() []benchTask {
 			Subtasks:   []subtaskSpec{{ID: "status", Role: "ops", Title: "Inspect autonomy status", Capabilities: []string{"ops", "runtime"}, WorkMS: 800, Tokens: 320, Risk: 0.2}},
 			RiskBudget: 0.2, Difficulty: 0.35,
 		},
-	})
+		{
+			ID: "H6-001", Scenario: "heavy", TaskType: "hermes_reproduction", Prompt: "复现一个 Hermes agent：先逆向分析 Hermes Agent 的 planner、execute、debugger、verifier 行为，再在 LuckyHarness 中设计兼容入口，接着实现最小可运行链路，跑 GUI 与 CLI 验收，最后生成迁移报告。",
+			GoldMode: "pipeline", IntentTerms: []string{"hermes", "agent", "planner", "execute", "debugger", "verifier", "gui", "cli", "reproduction"},
+			Subtasks: []subtaskSpec{
+				{ID: "research-hermes", Role: "research", Title: "Reverse engineer Hermes agent behavior", Capabilities: []string{"research", "source", "synthesis"}, WorkMS: 3200, Tokens: 1260, Risk: 0.6},
+				{ID: "design-entry", Role: "integrator", Title: "Design LuckyHarness-compatible orchestration entry", Capabilities: []string{"integration", "planning", "orchestration"}, DependsOn: []string{"research-hermes"}, WorkMS: 2800, Tokens: 1180, Risk: 0.8},
+				{ID: "backend-runtime", Role: "backend", Title: "Implement planner-executor runtime bridge", Capabilities: []string{"backend", "go", "api", "service"}, DependsOn: []string{"design-entry"}, WorkMS: 4200, Tokens: 1680, Risk: 1.0},
+				{ID: "frontend-console", Role: "frontend", Title: "Expose Hermes-like console workflow", Capabilities: []string{"frontend", "ui", "typescript", "react"}, DependsOn: []string{"design-entry"}, WorkMS: 3600, Tokens: 1420, Risk: 0.8},
+				{ID: "debugger-chain", Role: "test", Title: "Wire debugger and verifier gates", Capabilities: []string{"test", "benchmark", "validation"}, DependsOn: []string{"backend-runtime", "frontend-console"}, WorkMS: 3400, Tokens: 1320, Risk: 0.9},
+				{ID: "ops-trace", Role: "ops", Title: "Capture runtime traces and failure recovery", Capabilities: []string{"ops", "runtime", "logs"}, DependsOn: []string{"debugger-chain"}, WorkMS: 2400, Tokens: 960, Risk: 0.7},
+				{ID: "security-review", Role: "security", Title: "Review delegation and tool safety", Capabilities: []string{"security", "risk", "policy", "review"}, DependsOn: []string{"ops-trace"}, WorkMS: 2200, Tokens: 880, Risk: 0.8},
+				{ID: "acceptance-report", Role: "docs", Title: "Write migration and acceptance report", Capabilities: []string{"docs", "report", "summary", "changelog"}, DependsOn: []string{"security-review"}, WorkMS: 1800, Tokens: 720, Risk: 0.3},
+			},
+			NeedsCritic: true, RiskBudget: 2.7, Difficulty: 0.98,
+		},
+		{
+			ID: "H6-002", Scenario: "heavy", TaskType: "hermes_parity_audit", Prompt: "多个子代理并行审计 LuckyHarness 的 backend、frontend、Telegram、dashboard、docs、tests 六条线，找出和 Hermes Agent 操作台的差距，并由集成者汇总优先级。",
+			GoldMode: "parallel", IntentTerms: []string{"hermes", "parity", "backend", "frontend", "telegram", "dashboard", "docs", "tests"},
+			Subtasks: []subtaskSpec{
+				{ID: "backend-audit", Role: "backend", Title: "Audit backend orchestration APIs", Capabilities: []string{"backend", "go", "api", "service"}, WorkMS: 2600, Tokens: 1040, Risk: 0.6},
+				{ID: "frontend-audit", Role: "frontend", Title: "Audit GUI and TUI parity", Capabilities: []string{"frontend", "ui", "typescript", "react"}, WorkMS: 2600, Tokens: 1040, Risk: 0.5},
+				{ID: "telegram-audit", Role: "ops", Title: "Audit Telegram runtime handoff", Capabilities: []string{"ops", "runtime", "logs"}, WorkMS: 2200, Tokens: 900, Risk: 0.6},
+				{ID: "dashboard-audit", Role: "repo", Title: "Audit dashboard and websocket workflow", Capabilities: []string{"repo", "code", "search"}, WorkMS: 2200, Tokens: 900, Risk: 0.5},
+				{ID: "docs-audit", Role: "docs", Title: "Audit docs and runbooks", Capabilities: []string{"docs", "report", "summary"}, WorkMS: 1600, Tokens: 620, Risk: 0.3},
+				{ID: "tests-audit", Role: "test", Title: "Audit tests and benchmark gaps", Capabilities: []string{"test", "benchmark", "coverage", "validation"}, WorkMS: 2200, Tokens: 860, Risk: 0.5},
+				{ID: "priority-matrix", Role: "integrator", Title: "Merge Hermes parity priority matrix", Capabilities: []string{"integration", "aggregation", "planning", "summary"}, WorkMS: 1500, Tokens: 680, Risk: 0.4},
+			},
+			NeedsCritic: true, RiskBudget: 2.0, Difficulty: 0.92,
+		},
+		{
+			ID: "H6-003", Scenario: "heavy", TaskType: "production_recovery", Prompt: "做一次超重发布恢复演练：先冻结变更并检查脏文件，再跑多 agent baseline，对失败 case 做修复，随后执行回滚验证、权限审计、真实 CLI 验收，最后提交 scoped changes。",
+			GoldMode: "pipeline", IntentTerms: []string{"release", "recovery", "baseline", "rollback", "audit", "cli", "commit"},
+			Subtasks: []subtaskSpec{
+				{ID: "freeze", Role: "repo", Title: "Freeze scope and inspect git status", Capabilities: []string{"repo", "git", "search"}, WorkMS: 1000, Tokens: 420, Risk: 0.4},
+				{ID: "run-baseline", Role: "test", Title: "Run expanded multi-agent baseline", Capabilities: []string{"test", "benchmark", "validation"}, DependsOn: []string{"freeze"}, WorkMS: 2600, Tokens: 980, Risk: 0.6},
+				{ID: "fix-failures", Role: "backend", Title: "Fix failing heavy benchmark cases", Capabilities: []string{"backend", "go", "code"}, DependsOn: []string{"run-baseline"}, WorkMS: 3600, Tokens: 1380, Risk: 1.0},
+				{ID: "rollback-check", Role: "security", Title: "Validate rollback and safety policy", Capabilities: []string{"security", "risk", "policy", "review"}, DependsOn: []string{"fix-failures"}, WorkMS: 2200, Tokens: 820, Risk: 0.9},
+				{ID: "cli-acceptance", Role: "test", Title: "Run real CLI acceptance", Capabilities: []string{"test", "validation", "ci"}, DependsOn: []string{"rollback-check"}, WorkMS: 2600, Tokens: 940, Risk: 0.7},
+				{ID: "write-report", Role: "docs", Title: "Write recovery drill report", Capabilities: []string{"docs", "report", "summary"}, DependsOn: []string{"cli-acceptance"}, WorkMS: 1500, Tokens: 620, Risk: 0.3},
+				{ID: "commit", Role: "repo", Title: "Commit scoped benchmark changes", Capabilities: []string{"repo", "git"}, DependsOn: []string{"write-report"}, WorkMS: 1200, Tokens: 460, Risk: 0.9},
+			},
+			NeedsCritic: true, RiskBudget: 2.6, Difficulty: 0.96,
+		},
+		{
+			ID: "H6-004", Scenario: "heavy", TaskType: "architecture_debate", Prompt: "让 backend、frontend、ops、security、critic 五个 agent 辩论：复现 Hermes agent 应该走 delegate、workflow graph、autonomy queue 还是 dashboard bridge 作为主入口，并输出可执行决策。",
+			GoldMode: "debate", IntentTerms: []string{"hermes", "architecture", "debate", "delegate", "workflow", "autonomy", "dashboard"},
+			Subtasks: []subtaskSpec{
+				{ID: "backend-position", Role: "backend", Title: "Argue for backend workflow graph", Capabilities: []string{"backend", "api", "service", "planning"}, WorkMS: 1800, Tokens: 820, Risk: 0.5},
+				{ID: "frontend-position", Role: "frontend", Title: "Argue for dashboard bridge", Capabilities: []string{"frontend", "ui", "react", "visual"}, WorkMS: 1800, Tokens: 820, Risk: 0.4},
+				{ID: "ops-position", Role: "ops", Title: "Argue for autonomy queue and traces", Capabilities: []string{"ops", "runtime", "logs", "deploy"}, WorkMS: 1800, Tokens: 820, Risk: 0.6},
+				{ID: "security-position", Role: "security", Title: "Argue safety and permission constraints", Capabilities: []string{"security", "risk", "policy", "review"}, WorkMS: 1800, Tokens: 820, Risk: 0.7},
+				{ID: "critic-decision", Role: "critic", Title: "Judge architecture decision", Capabilities: []string{"critic", "consensus", "review", "aggregation"}, WorkMS: 1400, Tokens: 660, Risk: 0.5},
+			},
+			NeedsCritic: true, RiskBudget: 1.8, Difficulty: 0.90,
+		},
+		{
+			ID: "H6-005", Scenario: "heavy", TaskType: "async_hermes_replay", Prompt: "把复现 Hermes agent 的兼容性实验放到后台异步队列，不阻塞当前会话；worker 要持续跑 baseline、保存 trace、失败后通知 verifier 汇总。",
+			GoldMode: "autonomy_queue", IntentTerms: []string{"hermes", "background", "async", "queue", "worker", "baseline", "trace", "verifier"},
+			AllowsBackground: true,
+			Subtasks: []subtaskSpec{
+				{ID: "enqueue", Role: "ops", Title: "Enqueue Hermes replay experiment", Capabilities: []string{"ops", "runtime"}, WorkMS: 900, Tokens: 380, Risk: 0.6},
+				{ID: "run-heavy-baseline", Role: "test", Title: "Run heavy baseline in worker", Capabilities: []string{"test", "benchmark", "validation"}, DependsOn: []string{"enqueue"}, WorkMS: 3200, Tokens: 1120, Risk: 0.7},
+				{ID: "save-trace", Role: "data", Title: "Persist orchestration traces", Capabilities: []string{"data", "metric", "experiment"}, DependsOn: []string{"run-heavy-baseline"}, WorkMS: 1800, Tokens: 680, Risk: 0.4},
+				{ID: "notify-verifier", Role: "critic", Title: "Notify verifier on failures", Capabilities: []string{"critic", "review", "risk"}, DependsOn: []string{"save-trace"}, WorkMS: 1200, Tokens: 520, Risk: 0.5},
+				{ID: "summary", Role: "docs", Title: "Summarize async replay output", Capabilities: []string{"docs", "report", "summary"}, DependsOn: []string{"notify-verifier"}, WorkMS: 1200, Tokens: 480, Risk: 0.3},
+			},
+			NeedsCritic: true, RiskBudget: 2.0, Difficulty: 0.88,
+		},
+	}
+	base = append(base, syntheticExpansionTasks()...)
+	return normalizeTasks(base)
 }
 
 func normalizeTasks(tasks []benchTask) []benchTask {
