@@ -54,13 +54,13 @@ func (a *Agent) applyIntentToolGating(loopCfg *LoopConfig, routingText string) {
 func toolIntentGatingEnabled() bool {
 	value := strings.TrimSpace(os.Getenv(toolIntentGatingEnv))
 	if value == "" {
-		return true
+		return false
 	}
 	switch strings.ToLower(value) {
-	case "0", "false", "no", "off", "disable", "disabled":
-		return false
-	default:
+	case "1", "true", "yes", "on", "enable", "enabled":
 		return true
+	default:
+		return false
 	}
 }
 

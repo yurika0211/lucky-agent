@@ -7,11 +7,11 @@ import (
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
-func TestToolIntentGatingEnabledDefaultsOn(t *testing.T) {
+func TestToolIntentGatingEnabledDefaultsOff(t *testing.T) {
 	t.Setenv(toolIntentGatingEnv, "")
 
-	if !toolIntentGatingEnabled() {
-		t.Fatal("expected tool intent gating to be enabled by default")
+	if toolIntentGatingEnabled() {
+		t.Fatal("expected tool intent gating to be disabled by default")
 	}
 }
 
@@ -43,12 +43,23 @@ func TestToolIntentGatingDisabledEnvValues(t *testing.T) {
 	}
 }
 
-func TestToolIntentGatingUnknownEnvValuesKeepEnabled(t *testing.T) {
-	for _, value := range []string{"1", "true", "on", "yes", "maybe"} {
+func TestToolIntentGatingEnabledEnvValues(t *testing.T) {
+	for _, value := range []string{"1", "true", "True", "yes", "on", "enable", "enabled"} {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv(toolIntentGatingEnv, value)
 			if !toolIntentGatingEnabled() {
-				t.Fatalf("expected %q to keep tool intent gating enabled", value)
+				t.Fatalf("expected %q to enable tool intent gating", value)
+			}
+		})
+	}
+}
+
+func TestToolIntentGatingUnknownEnvValuesStayDisabled(t *testing.T) {
+	for _, value := range []string{"maybe", "auto", "default"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(toolIntentGatingEnv, value)
+			if toolIntentGatingEnabled() {
+				t.Fatalf("expected %q to keep tool intent gating disabled", value)
 			}
 		})
 	}
@@ -273,6 +284,7 @@ func TestApplyIntentToolGatingDelegateListBlocksNewTask(t *testing.T) {
 
 func agentWithIntentGateTools(t *testing.T) *Agent {
 	t.Helper()
+	t.Setenv(toolIntentGatingEnv, "on")
 	reg := tool.NewRegistry()
 	for _, name := range []string{
 		"terminal", "file_read", "file_list", "file_write", "file_mkdir", "file_move",
