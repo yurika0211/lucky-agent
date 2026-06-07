@@ -116,6 +116,23 @@ func TestRiskAwareSuppressesCronMutationNegation(t *testing.T) {
 	}
 }
 
+func TestGuardedIntentSuppressesReadOnlyMutationTraps(t *testing.T) {
+	tools, ops, tasks := testFixture()
+	intentCfg := benchConfig{Variant: "intent-gated", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
+	cfg := benchConfig{Variant: "guarded-intent", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
+	for _, id := range []string{"T2-006", "T2-009", "T6-008", "T6-009"} {
+		task := findTask(t, tasks, id)
+		intentMetrics := evaluateTask(intentCfg, task, runStrategy(intentCfg, task, tools, ops), tools, ops)
+		metrics := evaluateTask(cfg, task, runStrategy(cfg, task, tools, ops), tools, ops)
+		if metrics.ForbiddenCallCount != 0 {
+			t.Fatalf("%s expected no forbidden calls, got %d", id, metrics.ForbiddenCallCount)
+		}
+		if metrics.RouteRisk >= intentMetrics.RouteRisk {
+			t.Fatalf("%s expected guarded route risk to drop, intent=%.2f guarded=%.2f", id, intentMetrics.RouteRisk, metrics.RouteRisk)
+		}
+	}
+}
+
 func TestRiskAwareSuppressesNegatedPush(t *testing.T) {
 	tools, ops, tasks := testFixture()
 	task := findTask(t, tasks, "T5-001")

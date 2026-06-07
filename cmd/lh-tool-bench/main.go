@@ -127,7 +127,7 @@ func parseFlags() benchConfig {
 	now := time.Now().Format("20060102-150405")
 	defaultOut := filepath.Join(os.TempDir(), "lh-tool-bench", "results-"+now+".jsonl")
 	var cfg benchConfig
-	flag.StringVar(&cfg.Variant, "variant", "baseline", "tool strategy variant: baseline, static-slim, intent-gated, risk-aware, packed-results")
+	flag.StringVar(&cfg.Variant, "variant", "baseline", "tool strategy variant: baseline, static-slim, intent-gated, guarded-intent, risk-aware, packed-results")
 	flag.StringVar(&cfg.Scenario, "scenario", "all", "scenario to run: no_tool, read_only, single_tool, multi_tool, risk, trap, or all")
 	flag.StringVar(&cfg.OutPath, "out", defaultOut, "JSONL output path")
 	flag.StringVar(&cfg.ComparePaths, "compare", "", "comma-separated JSONL result files to compare instead of running benchmark")

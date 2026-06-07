@@ -86,12 +86,13 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	recognized := strongToolIntent
 	negatedExecution := hasNegatedExecutionIntent(intentText)
 	negatedDelete := intentTextContainsAny(intentText, "不要直接删", "不要删", "别删", "不删除")
+	readOnlyMutationBlocked := hasReadOnlyMutationBlockIntent(intentText)
 	needsTerminal := needsTerminalIntent(intentText)
 	readOnlySourceIntent := hasReadOnlyExternalSourceIntent(intentText)
 
 	if localIntent || editIntent {
 		addIntentTools(allowed, "file_read", "file_list")
-		if (!negatedExecution || needsTerminal) && !readOnlySourceIntent {
+		if (!negatedExecution || needsTerminal) && !readOnlySourceIntent && !readOnlyMutationBlocked {
 			addIntentTools(allowed, "terminal")
 		}
 		if intentTextContainsAny(intentText, "日志", ".log", "logs", "log file", "stack trace", "trace") {
@@ -106,7 +107,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 		if intentTextContainsAny(intentText, ".csv", "csv") {
 			addIntentTools(allowed, "csv_query")
 		}
-		if editIntent && !readOnlySourceIntent {
+		if editIntent && !readOnlySourceIntent && !readOnlyMutationBlocked {
 			addIntentTools(allowed, "file_patch", "file_write", "file_mkdir", "file_move")
 		}
 		if intentTextContainsAny(intentText, "删除", "删", "delete", "remove", "rm ") && !negatedDelete && !negatedExecution {
@@ -138,10 +139,10 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	if memoryIntent {
 		addIntentTools(allowed, "recall", "rag_search")
 	}
-	if rememberIntent {
+	if rememberIntent && !intentTextContainsAny(intentText, "不要写入记忆", "不要记住", "不要保存到记忆") {
 		addIntentTools(allowed, "remember")
 	}
-	if ragIndexIntent {
+	if ragIndexIntent && !intentTextContainsAny(intentText, "不要索引", "不要建立索引", "不要写入 rag", "不要写入rag") {
 		addIntentTools(allowed, "rag_index")
 	}
 	if skillIntent {
@@ -331,6 +332,13 @@ func needsTerminalIntent(text string) bool {
 
 func hasReadOnlyExternalSourceIntent(text string) bool {
 	return intentTextContainsAny(text, "只读取 issue", "只读取 issue 内容", "只读取内容", "只总结网页", "只总结", "只读外部")
+}
+
+func hasReadOnlyMutationBlockIntent(text string) bool {
+	return intentTextContainsAny(text,
+		"只读", "只查看", "只列出", "只读取", "只总结", "只检查",
+		"不要修改文件", "不修改文件", "不要写文件", "不要写入文件",
+	)
 }
 
 func addIntentTools(dst map[string]struct{}, names ...string) {

@@ -36,6 +36,7 @@ Supported variants:
 baseline
 static-slim
 intent-gated
+guarded-intent
 risk-aware
 packed-results
 ```
@@ -112,12 +113,13 @@ Expanded calibrated run on 2026-06-07:
 | Variant | Success | NeedAcc | OpRecall | OpPrecision | Redundant | RouteRisk | Noise | Score | Forbidden | Clean |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
 | baseline | 0.6500 | 0.8833 | 0.9417 | 0.5478 | 0.2603 | 2.5083 | 0.2866 | 0.4331 | 19 | false |
+| guarded-intent | 1.0000 | 1.0000 | 0.9917 | 0.9625 | 0.0042 | 0.0583 | 0.2367 | 0.6938 | 0 | false |
 | risk-aware | 1.0000 | 1.0000 | 0.9917 | 0.9625 | 0.0042 | 0.0583 | 0.2367 | 0.6938 | 0 | false |
 | packed-results | 1.0000 | 1.0000 | 0.9917 | 0.9625 | 0.0042 | 0.0583 | 0.0517 | 0.7048 | 0 | false |
 
 The main signal is:
 
 ```text
-risk-aware removes forbidden calls and most redundant operations across the wider tool surface;
+guarded-intent/risk-aware remove forbidden calls and most redundant operations across the wider tool surface;
 packed-results keeps the same route quality and sharply reduces result noise.
 ```

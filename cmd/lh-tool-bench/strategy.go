@@ -39,6 +39,8 @@ func normalizeVariant(raw string) string {
 		return "static-slim"
 	case "intent", "intent-gated", "a2":
 		return "intent-gated"
+	case "guarded", "guarded-intent", "execution-guard", "a2-guard":
+		return "guarded-intent"
 	case "risk", "risk-aware", "a3":
 		return "risk-aware"
 	case "packed", "packed-results", "a4":
@@ -94,7 +96,7 @@ func estimateNeedToolProbability(variant string, task benchTask) float64 {
 		if containsAny(prompt, "解释", "讲解", "说明", "是什么意思", "不用工具", "不需要查代码") {
 			score -= 0.24
 		}
-	case "intent-gated", "risk-aware", "packed-results":
+	case "intent-gated", "guarded-intent", "risk-aware", "packed-results":
 		if containsAny(prompt, "解释", "讲解", "说明", "是什么意思", "不用工具", "不需要查代码") && toolEvidence < 0.30 {
 			score -= 0.34
 		}
@@ -327,7 +329,7 @@ func planOperations(variant string, task benchTask) []string {
 		}
 	}
 
-	if variant == "risk-aware" || variant == "packed-results" {
+	if variant == "guarded-intent" || variant == "risk-aware" || variant == "packed-results" {
 		ops = removeNegatedRiskOps(prompt, ops)
 	}
 	return uniqueStrings(ops)
@@ -416,7 +418,7 @@ func visibleToolsForVariant(variant string, task benchTask, planned []string, to
 			"terminal", "file_read", "file_list", "file_patch", "file_write",
 			"web_search", "web_fetch", "current_time", "calculate", "recall", "skill_read",
 		}, tools)
-	case "intent-gated", "risk-aware", "packed-results":
+	case "intent-gated", "guarded-intent", "risk-aware", "packed-results":
 		visibleSet := map[string]struct{}{}
 		for _, opName := range planned {
 			if op, ok := ops[opName]; ok {
@@ -426,7 +428,7 @@ func visibleToolsForVariant(variant string, task benchTask, planned []string, to
 		for _, name := range lowRiskSupportTools(task, tools) {
 			visibleSet[name] = struct{}{}
 		}
-		if variant == "risk-aware" || variant == "packed-results" {
+		if variant == "guarded-intent" || variant == "risk-aware" || variant == "packed-results" {
 			for _, name := range task.ForbiddenTools {
 				if !hasAllowedPlannedOperation(name, planned, task.ForbiddenOperations, ops) {
 					delete(visibleSet, name)

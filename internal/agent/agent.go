@@ -1408,6 +1408,7 @@ type streamConvergenceState struct {
 	toolCallLastResult       map[string]string
 	toolURLRepeatCount       map[string]int
 	toolURLLastResult        map[string]string
+	toolExecutionGuard       *toolExecutionGuard
 	consecutiveToolOnlyIters int
 	successfulSearchEvidence int
 	detailedSearchEvidence   int
@@ -1576,6 +1577,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
 			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
 			memoryGate:             a.buildMemoryToolGate(routingText, loopCfg.DisabledTools),
+			toolExecutionGuard:     newToolExecutionGuard(routingText),
 		}
 
 		// 🧠 思考阶段（第一轮）
@@ -1728,7 +1730,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			}
 
 			emitChatToolCallEvents(events, toolCalls)
-			executed := a.executeToolCallsOrdered(
+			executed := a.executeToolCallsOrderedGuarded(
 				toolCalls,
 				true,
 				sess,
@@ -1736,6 +1738,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				state.toolURLLastResult,
 				state.duplicateFetchLimit,
 				true,
+				state.toolExecutionGuard,
 			)
 
 			for _, execResult := range executed {
@@ -1906,7 +1909,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 
 		emitChatToolCallEvents(events, resp.ToolCalls)
-		executed := a.executeToolCallsOrdered(
+		executed := a.executeToolCallsOrderedGuarded(
 			resp.ToolCalls,
 			true,
 			sess,
@@ -1914,6 +1917,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			state.toolURLLastResult,
 			state.duplicateFetchLimit,
 			true,
+			state.toolExecutionGuard,
 		)
 
 		for _, execResult := range executed {

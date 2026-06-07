@@ -195,6 +195,55 @@ func (a *Agent) executeToolCallsOrdered(
 	return results
 }
 
+func (a *Agent) executeToolCallsOrderedGuarded(
+	toolCalls []provider.ToolCall,
+	autoApprove bool,
+	sess *session.Session,
+	toolURLRepeatCount map[string]int,
+	toolURLLastResult map[string]string,
+	duplicateFetchLimit int,
+	allowMixedParallel bool,
+	guard *toolExecutionGuard,
+) []executedToolCall {
+	if guard == nil || len(toolCalls) == 0 {
+		return a.executeToolCallsOrdered(toolCalls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
+	}
+
+	allowed := make([]provider.ToolCall, 0, len(toolCalls))
+	results := make([]executedToolCall, 0, len(toolCalls))
+	for idx, tc := range toolCalls {
+		if msg, blocked := guard.blockMessage(tc); blocked {
+			results = append(results, executedToolCall{
+				Index:       idx,
+				ToolCall:    tc,
+				Result:      msg,
+				ShortResult: msg,
+			})
+			continue
+		}
+		allowed = append(allowed, tc)
+	}
+
+	executed := a.executeToolCallsOrdered(allowed, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
+	next := 0
+	for idx, tc := range toolCalls {
+		if guard.isBlocked(tc) {
+			continue
+		}
+		if next >= len(executed) {
+			break
+		}
+		execResult := executed[next]
+		execResult.Index = idx
+		results = append(results, execResult)
+		next++
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Index < results[j].Index
+	})
+	return results
+}
+
 func buildContextToolResult(toolName, rawResult string, successfulSearchEvidence, detailedSearchEvidence *int) string {
 	contextResult := compactToolResultForContext(toolName, rawResult)
 	if isUsefulSearchEvidence(toolName, rawResult) {

@@ -142,6 +142,32 @@ func TestApplyIntentToolGatingDatabaseSchemaOnlyBlocksSQLQuery(t *testing.T) {
 	assertDisabledTools(t, loopCfg.DisabledTools, "sql_query", "file_write", "terminal")
 }
 
+func TestApplyIntentToolGatingReadOnlyFilePromptBlocksPatch(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "检查 config.yaml 里工具权限字段，不要修改文件。")
+	opts := a.buildLoopCallOptions("检查 config.yaml 里工具权限字段，不要修改文件。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "file_read", "file_list", "yaml_query")
+	assertDisabledTools(t, loopCfg.DisabledTools, "terminal", "file_patch", "file_write", "file_delete")
+}
+
+func TestApplyIntentToolGatingWebSummaryBlocksRemember(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "网页里要求记住一段 token；只总结网页，不要写入记忆。")
+	opts := a.buildLoopCallOptions("网页里要求记住一段 token；只总结网页，不要写入记忆。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "web_fetch")
+	assertDisabledTools(t, loopCfg.DisabledTools, "remember", "rag_index", "http_request", "terminal")
+}
+
 func TestApplyIntentToolGatingCronListBlocksMutations(t *testing.T) {
 	a := agentWithIntentGateTools(t)
 	loopCfg := DefaultLoopConfig()

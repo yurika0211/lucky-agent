@@ -335,6 +335,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		}
 	}
 	loopState := newLoopRuntimeState()
+	loopState.toolExecutionGuard = newToolExecutionGuard(routingText)
 	memoryGate := a.buildMemoryToolGate(routingText, loopCfg.DisabledTools)
 
 	// 构建初始消息
@@ -453,6 +454,7 @@ type loopRuntimeState struct {
 	toolCallLastResult       map[string]string
 	toolURLRepeatCount       map[string]int
 	toolURLLastResult        map[string]string
+	toolExecutionGuard       *toolExecutionGuard
 	consecutiveToolOnlyIters int
 	emptyResponseRetries     int
 	lengthRecoveryCount      int
@@ -631,7 +633,7 @@ func (a *Agent) processToolCallBatch(
 		})
 	}
 
-	executed := a.executeToolCallsOrdered(
+	executed := a.executeToolCallsOrderedGuarded(
 		resp.ToolCalls,
 		loopCfg.AutoApprove,
 		sess,
@@ -639,6 +641,7 @@ func (a *Agent) processToolCallBatch(
 		loopState.toolURLLastResult,
 		loopCfg.DuplicateFetchLimit,
 		false,
+		loopState.toolExecutionGuard,
 	)
 
 	for _, execResult := range executed {
