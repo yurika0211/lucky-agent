@@ -2711,8 +2711,8 @@ func (a *Agent) Close() error {
 	}
 
 	// SQLite 后端自动持久化，只需关闭连接
-	if s := a.ragManager.SQLiteStore(); s != nil {
-		if err := s.Close(); err != nil && firstErr == nil {
+	if a.ragManager != nil && a.ragManager.IsSQLite() {
+		if err := a.ragManager.CloseStore(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("close sqlite store: %w", err)
 		}
 	} else if a.ragPersist != nil && a.ragManager != nil {
