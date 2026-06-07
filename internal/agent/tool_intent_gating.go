@@ -1,8 +1,16 @@
 package agent
 
-import "strings"
+import (
+	"os"
+	"strings"
+)
+
+const toolIntentGatingEnv = "LH_TOOL_INTENT_GATING"
 
 func (a *Agent) applyIntentToolGating(loopCfg *LoopConfig, routingText string) {
+	if !toolIntentGatingEnabled() {
+		return
+	}
 	if loopCfg == nil || a == nil || a.tools == nil {
 		return
 	}
@@ -41,6 +49,19 @@ func (a *Agent) applyIntentToolGating(loopCfg *LoopConfig, routingText string) {
 		disabledSet[name] = struct{}{}
 	}
 	loopCfg.DisabledTools = normalizeToolNameList(disabled)
+}
+
+func toolIntentGatingEnabled() bool {
+	value := strings.TrimSpace(os.Getenv(toolIntentGatingEnv))
+	if value == "" {
+		return true
+	}
+	switch strings.ToLower(value) {
+	case "0", "false", "no", "off", "disable", "disabled":
+		return false
+	default:
+		return true
+	}
 }
 
 func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {

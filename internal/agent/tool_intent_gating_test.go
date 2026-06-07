@@ -1,10 +1,58 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
+
+func TestToolIntentGatingEnabledDefaultsOn(t *testing.T) {
+	t.Setenv(toolIntentGatingEnv, "")
+
+	if !toolIntentGatingEnabled() {
+		t.Fatal("expected tool intent gating to be enabled by default")
+	}
+}
+
+func TestApplyIntentToolGatingCanBeDisabledByEnv(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+	t.Setenv(toolIntentGatingEnv, "off")
+
+	a.applyIntentToolGating(&loopCfg, "解释 DCG 为什么用 log 折扣。")
+	opts := a.buildLoopCallOptions("解释 DCG 为什么用 log 折扣。", loopCfg)
+
+	if len(loopCfg.DisabledTools) != 0 {
+		t.Fatalf("expected env-disabled intent gating to leave disabled tools unchanged, got %v", loopCfg.DisabledTools)
+	}
+	if got := len(opts.Tools); got == 0 {
+		t.Fatal("expected full tool list to remain visible when intent gating is disabled")
+	}
+}
+
+func TestToolIntentGatingDisabledEnvValues(t *testing.T) {
+	for _, value := range []string{"0", "false", "False", "no", "off", "disable", "disabled"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(toolIntentGatingEnv, value)
+			if toolIntentGatingEnabled() {
+				t.Fatalf("expected %q to disable tool intent gating", value)
+			}
+		})
+	}
+}
+
+func TestToolIntentGatingUnknownEnvValuesKeepEnabled(t *testing.T) {
+	for _, value := range []string{"1", "true", "on", "yes", "maybe"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv(toolIntentGatingEnv, value)
+			if !toolIntentGatingEnabled() {
+				t.Fatalf("expected %q to keep tool intent gating enabled", value)
+			}
+		})
+	}
+}
 
 func TestApplyIntentToolGatingConceptHidesTools(t *testing.T) {
 	a := agentWithIntentGateTools(t)
@@ -276,6 +324,7 @@ func assertDisabledTools(t *testing.T, disabled []string, names ...string) {
 }
 
 func containsString(values []string, needle string) bool {
+	needle = strings.TrimSpace(needle)
 	for _, value := range values {
 		if value == needle {
 			return true
