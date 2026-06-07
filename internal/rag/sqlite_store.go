@@ -16,10 +16,11 @@ import (
 // It stores vectors and metadata in a SQLite database, enabling
 // incremental updates and efficient queries without loading everything into memory.
 type SQLiteStore struct {
-	mu   sync.RWMutex
-	db   *sql.DB
-	path string // path to the SQLite database file
-	dim  int
+	mu     sync.RWMutex
+	db     *sql.DB
+	path   string // path to the SQLite database file
+	dim    int
+	closed bool
 
 	// In-memory cache for fast search (lazy-loaded)
 	cache  map[string]*VectorEntry
@@ -348,7 +349,17 @@ func (s *SQLiteStore) Clear() {
 func (s *SQLiteStore) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.db.Close()
+	if s.closed || s.db == nil {
+		return nil
+	}
+
+	_, checkpointErr := s.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	closeErr := s.db.Close()
+	s.closed = true
+	if closeErr != nil {
+		return closeErr
+	}
+	return checkpointErr
 }
 
 // Path returns the database file path.

@@ -719,6 +719,7 @@ func TestAgent_SwitchModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// 尝试切换到一个不存在的模型
 	err = a.SwitchModel("nonexistent-model")
@@ -1078,6 +1079,7 @@ func TestAgent_Tools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	tools := a.Tools()
 	if tools == nil {
@@ -1096,6 +1098,7 @@ func TestAgent_Catalog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	catalog := a.Catalog()
 	if catalog == nil {
@@ -1114,6 +1117,7 @@ func TestAgent_Registry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	registry := a.Registry()
 	if registry == nil {
@@ -1132,6 +1136,7 @@ func TestAgent_MCPClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	client := a.MCPClient()
 	if client == nil {
@@ -1150,6 +1155,7 @@ func TestAgent_MemoryStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	stats := a.MemoryStats()
 	if stats == nil {
@@ -1168,6 +1174,7 @@ func TestAgent_DecayMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// DecayMemory should not panic
 	a.DecayMemory(0.5)
@@ -1184,6 +1191,7 @@ func TestAgent_PromoteMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// PromoteMemory with invalid ID should return error
 	err = a.PromoteMemory("nonexistent-id")
@@ -1203,6 +1211,7 @@ func TestAgent_Remember(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// Remember should not panic
 	err = a.Remember("test content", "default")
@@ -1222,6 +1231,7 @@ func TestAgent_RememberLongTerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// RememberLongTerm should not panic
 	err = a.RememberLongTerm("test long-term content", "default")
@@ -1241,6 +1251,7 @@ func TestAgent_Recall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// Recall should not panic
 	results := a.Recall("test query")
@@ -1260,6 +1271,7 @@ func TestAgent_RecallMidTerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// RecallMidTerm should not panic
 	results := a.RecallMidTerm("test query", 5)
@@ -1279,6 +1291,7 @@ func TestAgent_TemplateManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	tm := a.TemplateManager()
 	if tm == nil {
@@ -1298,6 +1311,7 @@ func TestAgent_Soul(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	soul := a.Soul()
 	if soul == nil {
@@ -1326,6 +1340,7 @@ func TestAgent_getStreamMode(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
+		defer a.Close()
 
 		got := a.getStreamMode()
 		if got != tt.expected {
@@ -1393,6 +1408,7 @@ func TestAgentNewWithMinimalConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 	if a == nil {
 		t.Fatal("New() returned nil")
 	}
@@ -1417,6 +1433,7 @@ func TestAgentNewWithSoulPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 	if a.Soul() == nil {
 		t.Error("Soul() returned nil")
 	}
@@ -1433,6 +1450,7 @@ func TestAgentGetters(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// Test all getters
 	if a.Config() == nil {
@@ -1478,6 +1496,7 @@ func TestAgentSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	sessions := a.Sessions()
 	if sessions == nil {
@@ -1496,6 +1515,7 @@ func TestAgentTemplateManager(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	tm := a.TemplateManager()
 	if tm == nil {
@@ -1514,6 +1534,7 @@ func TestAgentSwitchModel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// Switch to a different model
 	err = a.SwitchModel("gpt-5.4-mini")
@@ -1537,6 +1558,7 @@ func TestAgentMemoryStats(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	stats := a.MemoryStats()
 	if stats == nil {
@@ -1555,6 +1577,7 @@ func TestAgentBuildMemoryContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// Build memory context with empty messages
 	messages := []provider.Message{}
@@ -1575,6 +1598,7 @@ func TestAgentAutoSummarize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// AutoSummarize should not panic
 	a.autoSummarize()
@@ -1782,6 +1806,7 @@ func TestAgentLoadSkills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// LoadSkills with empty directory should not panic
 	a.LoadSkills(filepath.Join(tmpDir, "skills"))
@@ -1842,6 +1867,7 @@ func TestAgentHandleSkillRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	handler := tool.NewSkillToolService(a.skills).HandleRead
 
@@ -1900,6 +1926,7 @@ func TestAgentConnectMCPServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
 	// ConnectMCPServer should not panic
 	a.ConnectMCPServer("test", "http://localhost:8080", "test-key")

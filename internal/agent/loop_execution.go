@@ -17,6 +17,7 @@ func (a *Agent) buildLoopCallOptions(userInput string, loopCfg LoopConfig) provi
 	fcMgr := function.NewManager(a.tools)
 	opts := a.buildFunctionCallOptionsForInput(userInput, fcMgr.BuildTools())
 	opts.Tools = filterFunctionTools(opts.Tools, loopCfg.DisabledTools)
+	opts.ToolChoice = normalizeToolChoiceForTools(opts.ToolChoice, opts.Tools)
 	if len(opts.Tools) == 0 {
 		opts.ToolChoice = "none"
 	}
@@ -50,6 +51,35 @@ func filterFunctionTools(tools []map[string]any, disabled []string) []map[string
 
 func functionToolNameFromSchema(tool map[string]any) string {
 	fn, ok := tool["function"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	name, _ := fn["name"].(string)
+	return strings.TrimSpace(name)
+}
+
+func normalizeToolChoiceForTools(choice any, tools []map[string]any) any {
+	name := forcedToolChoiceName(choice)
+	if name == "" {
+		return choice
+	}
+	for _, t := range tools {
+		if functionToolNameFromSchema(t) == name {
+			return choice
+		}
+	}
+	if len(tools) == 0 {
+		return "none"
+	}
+	return "auto"
+}
+
+func forcedToolChoiceName(choice any) string {
+	m, ok := choice.(map[string]any)
+	if !ok {
+		return ""
+	}
+	fn, ok := m["function"].(map[string]any)
 	if !ok {
 		return ""
 	}
@@ -158,6 +188,55 @@ func (a *Agent) executeToolCallsOrdered(
 	results := make([]executedToolCall, 0, len(toolCalls))
 	for i := 0; i < len(toolCalls); i++ {
 		results = append(results, <-resultCh)
+	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Index < results[j].Index
+	})
+	return results
+}
+
+func (a *Agent) executeToolCallsOrderedGuarded(
+	toolCalls []provider.ToolCall,
+	autoApprove bool,
+	sess *session.Session,
+	toolURLRepeatCount map[string]int,
+	toolURLLastResult map[string]string,
+	duplicateFetchLimit int,
+	allowMixedParallel bool,
+	guard *toolExecutionGuard,
+) []executedToolCall {
+	if guard == nil || len(toolCalls) == 0 {
+		return a.executeToolCallsOrdered(toolCalls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
+	}
+
+	allowed := make([]provider.ToolCall, 0, len(toolCalls))
+	results := make([]executedToolCall, 0, len(toolCalls))
+	for idx, tc := range toolCalls {
+		if msg, blocked := guard.blockMessage(tc); blocked {
+			results = append(results, executedToolCall{
+				Index:       idx,
+				ToolCall:    tc,
+				Result:      msg,
+				ShortResult: msg,
+			})
+			continue
+		}
+		allowed = append(allowed, tc)
+	}
+
+	executed := a.executeToolCallsOrdered(allowed, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
+	next := 0
+	for idx, tc := range toolCalls {
+		if guard.isBlocked(tc) {
+			continue
+		}
+		if next >= len(executed) {
+			break
+		}
+		execResult := executed[next]
+		execResult.Index = idx
+		results = append(results, execResult)
+		next++
 	}
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Index < results[j].Index

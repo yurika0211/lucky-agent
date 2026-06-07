@@ -63,6 +63,25 @@ func TestFilterFunctionTools(t *testing.T) {
 	}
 }
 
+func TestNormalizeToolChoiceForToolsDropsUnavailableForcedTool(t *testing.T) {
+	choice := map[string]any{
+		"type": "function",
+		"function": map[string]any{
+			"name": "skill_read",
+		},
+	}
+	tools := []map[string]any{
+		{"type": "function", "function": map[string]any{"name": "web_search"}},
+	}
+
+	if got := normalizeToolChoiceForTools(choice, tools); got != "auto" {
+		t.Fatalf("expected auto after forced tool is unavailable, got %#v", got)
+	}
+	if got := normalizeToolChoiceForTools(choice, nil); got != "none" {
+		t.Fatalf("expected none without tools, got %#v", got)
+	}
+}
+
 func TestApplySimpleTaskLoopTuningDefaults(t *testing.T) {
 	loopCfg := LoopConfig{
 		MaxIterations:          10,
@@ -133,6 +152,20 @@ func TestExtractRequiredToolNames(t *testing.T) {
 	}
 	if got[0] != "file_read" || got[1] != "current_time" || got[2] != "shell" {
 		t.Fatalf("unexpected order: %v", got)
+	}
+}
+
+func TestExtractRequiredToolNamesIgnoresDomainMentions(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "cron", Enabled: true})
+	reg.Register(&tool.Tool{Name: "rag_search", Enabled: true})
+
+	a := &Agent{tools: reg}
+	if got := a.extractRequiredToolNames("列出 cron 任务，但不要暂停或删除任何任务。"); len(got) != 0 {
+		t.Fatalf("expected cron domain mention not to force a tool, got %v", got)
+	}
+	if got := a.extractRequiredToolNames("必须调用 rag_search 搜索记忆"); len(got) != 1 || got[0] != "rag_search" {
+		t.Fatalf("expected explicit rag_search mention, got %v", got)
 	}
 }
 

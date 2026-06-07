@@ -78,7 +78,7 @@ func renderTelegramToolTraceCard(steps []telegramToolTraceStep) string {
 	shown := 0
 	for _, step := range steps {
 		visibility := telegramToolTraceVisibility(step.Name)
-		if visibility == "hidden" {
+		if visibility == "hidden" || visibility == "agent" {
 			continue
 		}
 		line := formatTelegramToolTraceLine(shown+1, step, visibility)
@@ -97,6 +97,31 @@ func renderTelegramToolTraceCard(steps []telegramToolTraceStep) string {
 	body := strings.Join(segments, "  →  ")
 	body += "\nDone · " + fmt.Sprintf("%d tools", shown)
 	return "<b>🛠 Tool Trace</b>\n<pre><code>" + html.EscapeString(body) + "</code></pre>"
+}
+
+func renderTelegramAgentTraceCard(steps []telegramToolTraceStep) string {
+	segments := make([]string, 0, len(steps))
+	shown := 0
+	for _, step := range steps {
+		if telegramToolTraceVisibility(step.Name) != "agent" {
+			continue
+		}
+		line := formatTelegramAgentTraceLine(shown+1, step)
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		segments = append(segments, line)
+		shown++
+		if shown >= 6 {
+			break
+		}
+	}
+	if shown == 0 {
+		return ""
+	}
+	body := strings.Join(segments, "\n")
+	body += "\nDone · " + fmt.Sprintf("%d agent steps", shown)
+	return "<b>🧭 Agent Trace</b>\n<pre><code>" + html.EscapeString(body) + "</code></pre>"
 }
 
 func humanizeToolCallProgress(step int, name, args string) string {
@@ -321,10 +346,11 @@ func telegramToolTraceVisibility(name string) string {
 		return "compact"
 	case strings.HasPrefix(lower, "skill_") && strings.HasSuffix(lower, "_run"):
 		return "compact"
-	case strings.HasPrefix(lower, "skill_"),
-		strings.HasPrefix(lower, "delegate_"),
+	case strings.HasPrefix(lower, "delegate_"),
 		strings.HasPrefix(lower, "autonomy_"),
 		strings.HasPrefix(lower, "heartbeat_"):
+		return "agent"
+	case strings.HasPrefix(lower, "skill_"):
 		return "hidden"
 	default:
 		return "visible"
@@ -347,12 +373,49 @@ func formatTelegramToolTraceLine(index int, step telegramToolTraceStep, visibili
 	return fmt.Sprintf("[%d] %s %s", index, displayName, status)
 }
 
+func formatTelegramAgentTraceLine(index int, step telegramToolTraceStep) string {
+	name := strings.TrimSpace(step.Name)
+	if name == "" {
+		name = "unknown_agent_step"
+	}
+	status := "✅"
+	if !step.Success {
+		status = "⚠️"
+	}
+	return fmt.Sprintf("[%d] %s %s %s", index, compactAgentTraceName(name), compactAgentTraceDetail(step.Args), status)
+}
+
 func compactToolTraceName(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return "unknown_tool"
 	}
 	return name
+}
+
+func compactAgentTraceName(name string) string {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch {
+	case strings.HasPrefix(lower, "delegate_"):
+		return "delegate"
+	case strings.HasPrefix(lower, "autonomy_"):
+		return "autonomy"
+	case strings.HasPrefix(lower, "heartbeat_"):
+		return "heartbeat"
+	default:
+		return name
+	}
+}
+
+func compactAgentTraceDetail(args string) string {
+	parsed := parseToolCallArgs(args)
+	if mode := pickArg(parsed, "mode", "agent", "agent_id", "role"); mode != "" {
+		return clipOneLine(mode, 48)
+	}
+	if task := pickArg(parsed, "task", "title", "name", "command", "query", "prompt"); task != "" {
+		return clipOneLine(task, 48)
+	}
+	return ""
 }
 
 func compactToolTraceDetail(args string) string {

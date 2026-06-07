@@ -1408,6 +1408,7 @@ type streamConvergenceState struct {
 	toolCallLastResult       map[string]string
 	toolURLRepeatCount       map[string]int
 	toolURLLastResult        map[string]string
+	toolExecutionGuard       *toolExecutionGuard
 	consecutiveToolOnlyIters int
 	successfulSearchEvidence int
 	detailedSearchEvidence   int
@@ -1562,8 +1563,11 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 		defer close(events)
 
 		sanitizeLoopConfig(&loopCfg)
+		a.applyIntentToolGating(&loopCfg, routingText)
 
-		messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
+		buildOpts := defaultContextBuildOptions()
+		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
+		messages := a.buildContextMessagesForInput(ctx, sess, input, buildOpts)
 		sess.AddProviderMessage(input.Message)
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
 
@@ -1573,6 +1577,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
 			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
 			memoryGate:             a.buildMemoryToolGate(routingText, loopCfg.DisabledTools),
+			toolExecutionGuard:     newToolExecutionGuard(routingText),
 		}
 
 		// 🧠 思考阶段（第一轮）
@@ -1725,7 +1730,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			}
 
 			emitChatToolCallEvents(events, toolCalls)
-			executed := a.executeToolCallsOrdered(
+			executed := a.executeToolCallsOrderedGuarded(
 				toolCalls,
 				true,
 				sess,
@@ -1733,6 +1738,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				state.toolURLLastResult,
 				state.duplicateFetchLimit,
 				true,
+				state.toolExecutionGuard,
 			)
 
 			for _, execResult := range executed {
@@ -1903,7 +1909,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 
 		emitChatToolCallEvents(events, resp.ToolCalls)
-		executed := a.executeToolCallsOrdered(
+		executed := a.executeToolCallsOrderedGuarded(
 			resp.ToolCalls,
 			true,
 			sess,
@@ -1911,6 +1917,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			state.toolURLLastResult,
 			state.duplicateFetchLimit,
 			true,
+			state.toolExecutionGuard,
 		)
 
 		for _, execResult := range executed {
@@ -2708,8 +2715,8 @@ func (a *Agent) Close() error {
 	}
 
 	// SQLite 后端自动持久化，只需关闭连接
-	if s := a.ragManager.SQLiteStore(); s != nil {
-		if err := s.Close(); err != nil && firstErr == nil {
+	if a.ragManager != nil && a.ragManager.IsSQLite() {
+		if err := a.ragManager.CloseStore(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("close sqlite store: %w", err)
 		}
 	} else if a.ragPersist != nil && a.ragManager != nil {

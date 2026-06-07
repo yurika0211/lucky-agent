@@ -1878,6 +1878,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	var toolNarratives []string
 	var toolTraceSteps []telegramToolTraceStep
 	toolTraceSent := false
+	agentTraceSent := false
 	currentRound := 1
 	var roundObservations []string
 	var progressHistory []string
@@ -1960,6 +1961,12 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 						toolTraceSent = true
 					}
 				}
+				if !agentTraceSent {
+					if card := renderTelegramAgentTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+						h.sendProgressMessageHTML(msg, card)
+						agentTraceSent = true
+					}
+				}
 				if evt.Content != "" {
 					finalContent.Reset()
 					finalContent.WriteString(evt.Content)
@@ -2001,6 +2008,12 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
 					h.sendProgressMessageHTML(msg, card)
 					toolTraceSent = true
+				}
+			}
+			if !agentTraceSent {
+				if card := renderTelegramAgentTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+					h.sendProgressMessageHTML(msg, card)
+					agentTraceSent = true
 				}
 			}
 			if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), true) {
@@ -2054,6 +2067,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	var toolNarratives []string
 	var toolTraceSteps []telegramToolTraceStep
 	toolTraceSent := false
+	agentTraceSent := false
 	narrativeMode := h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage()
 	summaryMode := narrativeMode && h.effectiveProgressSummaryWithLLM()
 	currentRound := 1
@@ -2162,6 +2176,12 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						toolTraceSent = true
 					}
 				}
+				if narrativeMode && !agentTraceSent {
+					if card := renderTelegramAgentTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+						h.sendProgressMessageHTML(msg, card)
+						agentTraceSent = true
+					}
+				}
 				if evt.Content != "" {
 					finalContent.Reset()
 					finalContent.WriteString(evt.Content)
@@ -2229,6 +2249,12 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
 				h.sendProgressMessageHTML(msg, card)
 				toolTraceSent = true
+			}
+		}
+		if narrativeMode && !agentTraceSent && finalOutput != "" {
+			if card := renderTelegramAgentTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+				h.sendProgressMessageHTML(msg, card)
+				agentTraceSent = true
 			}
 		}
 		if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), narrativeMode) && finalOutput != "" {

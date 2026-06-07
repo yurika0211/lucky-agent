@@ -395,6 +395,45 @@ func TestRouteReportsConflictMemories(t *testing.T) {
 	}
 }
 
+func TestRouteDoesNotPersistAccessStats(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.SaveWithOptions("[[Daughter]] has [[Pollen Allergy]].", "health", TierLong, 0.95, SaveOptions{
+		Links:      []string{"Daughter", "Pollen Allergy", "Outdoor Plan"},
+		StateKey:   "family.daughter.pollen_allergy",
+		StateValue: "active",
+	}); err != nil {
+		t.Fatalf("save active state: %v", err)
+	}
+
+	route := s.Route("女儿花粉过敏出门")
+	if len(route.Entries) == 0 {
+		t.Fatalf("expected route entries")
+	}
+	for _, entry := range route.Entries {
+		if entry.AccessCount != 0 {
+			t.Fatalf("expected route entry snapshot not to increment access count, got %#v", entry)
+		}
+	}
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	for _, score := range reloaded.Activate("Pollen Allergy", ActivationOptions{
+		IncludeGraph:      true,
+		UpdateAccessStats: false,
+	}) {
+		entry := score.Entry
+		if entry.AccessCount != 0 {
+			t.Fatalf("expected persisted access count to remain zero before search result update, got %#v", entry)
+		}
+		break
+	}
+}
+
 func stringSliceContains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

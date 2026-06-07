@@ -127,4 +127,34 @@ func TestTelegramProgressCards(t *testing.T) {
 		assert.Contains(t, got, "[2]")
 		assert.Contains(t, got, "Done · 2 tools")
 	})
+
+	t.Run("tool trace omits agent orchestration tools", func(t *testing.T) {
+		got := renderTelegramToolTraceCard([]telegramToolTraceStep{
+			{Name: "delegate_task", Args: `{"task":"inspect repo"}`, Result: "ok", Success: true},
+			{Name: "autonomy_worker_spawn", Args: `{"task":"nightly replay"}`, Result: "ok", Success: true},
+			{Name: "web_search", Args: `{"query":"agent"}`, Result: "ok", Success: true},
+		})
+		assert.Contains(t, got, "Tool Trace")
+		assert.Contains(t, got, "web_search")
+		assert.NotContains(t, got, "delegate")
+		assert.NotContains(t, got, "autonomy")
+	})
+
+	t.Run("agent trace shows orchestration tools", func(t *testing.T) {
+		got := renderTelegramAgentTraceCard([]telegramToolTraceStep{
+			{Name: "delegate_task", Args: `{"task":"inspect repo"}`, Result: "ok", Success: true},
+			{Name: "autonomy_worker_spawn", Args: `{"task":"nightly replay"}`, Result: "ok", Success: true},
+			{Name: "heartbeat_trigger", Args: `{"task":"tick"}`, Result: "error: timeout", Success: false},
+			{Name: "web_search", Args: `{"query":"agent"}`, Result: "ok", Success: true},
+		})
+		assert.Contains(t, got, "<b>🧭 Agent Trace</b>")
+		assert.Contains(t, got, "delegate")
+		assert.Contains(t, got, "inspect repo")
+		assert.Contains(t, got, "autonomy")
+		assert.Contains(t, got, "nightly replay")
+		assert.Contains(t, got, "heartbeat")
+		assert.Contains(t, got, "⚠️")
+		assert.Contains(t, got, "Done · 3 agent steps")
+		assert.NotContains(t, got, "web_search")
+	})
 }

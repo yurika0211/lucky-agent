@@ -37,6 +37,33 @@ func TestBuildSkillRouteSystemHint_ExplicitSkillMention(t *testing.T) {
 	}
 }
 
+func TestBuildSkillRouteSystemHint_HonorsDisabledSkillTools(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
+	reg.Register(&tool.Tool{Name: "skill_obsidian_run", Enabled: true})
+
+	a := &Agent{
+		tools: reg,
+		skills: []*tool.SkillInfo{
+			{
+				Name:        "obsidian",
+				Description: "Use when working with Obsidian vault notes and structures.",
+				Summary:     "Use when the task involves Obsidian notes, vault editing, links, tags, or note workflows.",
+			},
+		},
+	}
+
+	hint := a.buildSkillRouteSystemHintWithOptions("帮我处理这个 obsidian 笔记里的标签和链接", skillRouteOptions{
+		DisabledTools: []string{"skill_read", "skill_obsidian_run"},
+	})
+	if !strings.Contains(hint, `matches the "obsidian" skill`) {
+		t.Fatalf("expected obsidian skill hint, got %q", hint)
+	}
+	if strings.Contains(hint, "skill_read") || strings.Contains(hint, "skill_obsidian_run") {
+		t.Fatalf("did not expect disabled skill tools in hint, got %q", hint)
+	}
+}
+
 func TestBuildSkillRouteSystemHint_LuckyHarnessMemoryDoesNotRouteToExternalObsidianVault(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})

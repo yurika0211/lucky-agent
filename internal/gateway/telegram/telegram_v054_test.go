@@ -4720,6 +4720,102 @@ func TestV054HandleChatNarrativeStreamAggregatesReasoningTraceIntoOneBubble(t *t
 	}
 }
 
+func TestV054HandleChatNarrativeStreamSendsAgentTrace(t *testing.T) {
+	var sentTexts []string
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		_ = r.ParseForm()
+		if containsMethod(r.URL.Path, "sendMessage") {
+			sentTexts = append(sentTexts, r.Form.Get("text"))
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	cfg := DefaultConfig()
+	cfg.Token = bot.Token
+	adapter := NewAdapter(cfg)
+	adapter.bot = bot
+	adapter.botUsername = "testbot"
+	adapter.running = true
+
+	sessMgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+
+	mockAgent := &mockAgentProvider{
+		sessions: sessMgr,
+		configSnap: agentConfigSnapshot{
+			ProgressAsMessages:        true,
+			ProgressAsNaturalLanguage: true,
+		},
+		chatStreamIn: func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			ch := make(chan agent.ChatEvent, 7)
+			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "delegate_task", Args: `{"task":"inspect repo","agent_id":"repo-agent"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "delegate_task", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"agent trace"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "web_search", Result: "ok"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "最终答案"}
+			ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "最终答案"}
+			close(ch)
+			return ch, nil
+		},
+		toolsVal:   tool.NewRegistry(),
+		skillsVal:  []*tool.SkillInfo{},
+		cronEngine: cron.NewEngine(),
+		metricsVal: metrics.NewMetrics(),
+	}
+
+	handler := &Handler{
+		adapter:                   adapter,
+		agent:                     mockAgent,
+		chat:                      mockAgent,
+		sessions:                  make(map[string]string),
+		chatStreamTimeout:         defaultChatStreamTimeout,
+		progressAsMessages:        true,
+		progressAsNaturalLanguage: true,
+		progressSummaryWithLLM:    true,
+	}
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "帮我处理一下",
+	}
+
+	if err := handler.handleChat(context.Background(), msg, agent.TextUserTurnInput("帮我处理一下")); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	var toolTraceCount, agentTraceCount int
+	for _, text := range sentTexts {
+		if strings.Contains(text, "Tool Trace") {
+			toolTraceCount++
+			if strings.Contains(text, "delegate") {
+				t.Fatalf("expected delegate tool to stay out of tool trace, got %q", text)
+			}
+		}
+		if strings.Contains(text, "Agent Trace") {
+			agentTraceCount++
+			if !strings.Contains(text, "delegate") || !strings.Contains(text, "repo-agent") {
+				t.Fatalf("expected agent trace to show delegate assignment, got %q", text)
+			}
+		}
+	}
+	if toolTraceCount != 1 {
+		t.Fatalf("expected one tool trace message, got %d in %#v", toolTraceCount, sentTexts)
+	}
+	if agentTraceCount != 1 {
+		t.Fatalf("expected one agent trace message, got %d in %#v", agentTraceCount, sentTexts)
+	}
+}
+
 func TestShouldPrependToolNarratives(t *testing.T) {
 	if !shouldPrependToolNarratives(true, false) {
 		t.Fatal("expected tool narratives in non-narrative mode when enabled")

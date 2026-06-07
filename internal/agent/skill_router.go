@@ -59,7 +59,15 @@ type skillRouteMatch struct {
 	preferredRun string
 }
 
+type skillRouteOptions struct {
+	DisabledTools []string
+}
+
 func (a *Agent) buildSkillRouteSystemHint(userInput string) string {
+	return a.buildSkillRouteSystemHintWithOptions(userInput, skillRouteOptions{})
+}
+
+func (a *Agent) buildSkillRouteSystemHintWithOptions(userInput string, opts skillRouteOptions) string {
 	match := a.matchSkillRoute(userInput)
 	if match == nil || match.skill == nil {
 		return ""
@@ -78,11 +86,11 @@ func (a *Agent) buildSkillRouteSystemHint(userInput string) string {
 		lines = append(lines, "- Reason: "+match.reason)
 	}
 	lines = append(lines, "- Prefer this skill workflow before ad-hoc reasoning if it fits the task after inspection.")
-	if a.hasModelVisibleTool("skill_read") {
+	if a.hasModelVisibleToolExcept("skill_read", opts.DisabledTools) {
 		lines = append(lines, fmt.Sprintf("- First inspect the skill guidance with skill_read(name=%q).", match.skill.Name))
 	}
-	if match.preferredRun != "" {
-		lines = append(lines, fmt.Sprintf("- Preferred execution entry: %s", match.preferredRun))
+	if preferredRun := a.visibleSkillRunTool(match.skill.Name, opts.DisabledTools); preferredRun != "" {
+		lines = append(lines, fmt.Sprintf("- Preferred execution entry: %s", preferredRun))
 	}
 	if summary := routeFriendlySkillSummary(match.skill); summary != "" {
 		lines = append(lines, "- Skill summary: "+summary)
@@ -352,11 +360,26 @@ func expandSkillRouteTokens(tokens []string) []string {
 }
 
 func (a *Agent) hasModelVisibleTool(name string) bool {
+	return a.hasModelVisibleToolExcept(name, nil)
+}
+
+func (a *Agent) hasModelVisibleToolExcept(name string, disabled []string) bool {
 	if a == nil || a.tools == nil || strings.TrimSpace(name) == "" {
+		return false
+	}
+	if toolNameInSet(makeToolNameSet(disabled), name) {
 		return false
 	}
 	t, ok := a.tools.Get(name)
 	return ok && t != nil && t.Enabled && !t.HiddenFromModel
+}
+
+func (a *Agent) visibleSkillRunTool(skillName string, disabled []string) string {
+	runToolName := fmt.Sprintf("skill_%s_run", strings.TrimSpace(skillName))
+	if a.hasModelVisibleToolExcept(runToolName, disabled) {
+		return runToolName
+	}
+	return ""
 }
 
 func (a *Agent) buildFunctionCallOptionsForInput(userInput string, tools []map[string]any) provider.CallOptions {
