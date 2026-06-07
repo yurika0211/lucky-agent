@@ -60,7 +60,8 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 		"公式", "推导", "归一化", "dcg", "route risk", "recalllift",
 		"precision", "recall",
 	)
-	localIntent := hasLocalToolIntent(intentText)
+	toolSystemIntent := hasToolSystemIntent(intentText)
+	localIntent := hasLocalToolIntent(intentText) || toolSystemIntent
 	editIntent := hasEditToolIntent(intentText)
 	webIntent := hasWebToolIntent(intentText)
 	timeIntent := hasTimeToolIntent(intentText)
@@ -69,7 +70,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	rememberIntent := hasRememberIntent(intentText)
 	ragIndexIntent := hasRAGIndexIntent(intentText)
 	skillIntent := hasSkillIntent(intentText)
-	mediaIntent := hasMediaIntent(intentText)
+	mediaIntent := hasMediaIntent(intentText) && !toolSystemIntent
 	dbIntent := hasDatabaseIntent(intentText)
 	delegateIntent := hasDelegateIntent(intentText)
 
@@ -106,6 +107,9 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 		}
 		if intentTextContainsAny(intentText, ".csv", "csv") {
 			addIntentTools(allowed, "csv_query")
+		}
+		if toolSystemIntent {
+			addIntentTools(allowed, "json_query", "yaml_query")
 		}
 		if editIntent && !readOnlySourceIntent && !readOnlyMutationBlocked {
 			addIntentTools(allowed, "file_patch", "file_write", "file_mkdir", "file_move")
@@ -230,6 +234,20 @@ func stripToolIntentNegations(text string) string {
 	return out
 }
 
+func hasToolSystemIntent(text string) bool {
+	if intentTextContainsAny(text,
+		"工具系统", "工具路由", "工具门控", "工具菜单", "工具列表", "工具清单",
+		"工具可见", "可见工具", "隐藏工具", "禁用工具",
+		"tool system", "tool routing", "tool gate", "tool gating", "tool menu",
+		"visible tool", "visible tools", "disabled tool", "disabled tools",
+	) {
+		return true
+	}
+	return intentTextContainsAny(text, "只有", "只剩", "only") &&
+		intentTextContainsAny(text, "图片分析工具", "图片工具", "image_analyze", "image analysis tool", "image tool") &&
+		intentTextContainsAny(text, "lh", "luckyharness", "agent", "模型", "说", "显示", "报")
+}
+
 func hasLocalToolIntent(text string) bool {
 	if intentTextContainsAny(text,
 		"internal/", "cmd/", "docs/", "ui/", ".go", ".md", ".json", ".yaml", ".yml", ".toml",
@@ -296,6 +314,9 @@ func hasSkillIntent(text string) bool {
 }
 
 func hasMediaIntent(text string) bool {
+	if intentTextContainsAny(text, "图片分析工具", "图片生成工具", "图像分析工具", "图像生成工具") {
+		return false
+	}
 	return intentTextContainsAny(text,
 		"图片", "图像", "截图", "看图", "生成图片", "画图", "配图",
 		"语音", "朗读", "音频", "image", "vision", "tts", "text_to_speech",

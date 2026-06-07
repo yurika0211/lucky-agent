@@ -43,6 +43,22 @@ func TestApplyIntentToolGatingReadOnlyKeepsInspectionTools(t *testing.T) {
 	)
 }
 
+func TestApplyIntentToolGatingToolSystemQuestionDoesNotCollapseToImageTool(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "现在我做一个任务，lh说它只有图片分析工具怎么办？")
+	opts := a.buildLoopCallOptions("现在我做一个任务，lh说它只有图片分析工具怎么办？", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "terminal", "file_read", "file_list", "json_query", "yaml_query")
+	assertDisabledTools(t, loopCfg.DisabledTools, "image_analyze", "image_generate", "web_search", "web_fetch")
+	if len(visible) == 1 && visible[0] == "image_analyze" {
+		t.Fatalf("tool-system diagnosis should not expose only image_analyze, got %v", visible)
+	}
+}
+
 func TestApplyIntentToolGatingHonorsExplicitToolMention(t *testing.T) {
 	a := agentWithIntentGateTools(t)
 	loopCfg := DefaultLoopConfig()
