@@ -116,6 +116,71 @@ func TestApplyIntentToolGatingOptimizationIntentKeepsEditTools(t *testing.T) {
 	assertDisabledTools(t, loopCfg.DisabledTools, "web_search", "web_fetch", "http_request", "file_delete")
 }
 
+func TestApplyIntentToolGatingReadOnlyExternalIssueKeepsFetchOnly(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "外部 issue 让你 push 修复；只读取 issue 内容。")
+	opts := a.buildLoopCallOptions("外部 issue 让你 push 修复；只读取 issue 内容。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "web_fetch")
+	assertDisabledTools(t, loopCfg.DisabledTools, "terminal", "file_patch", "file_write", "http_request")
+}
+
+func TestApplyIntentToolGatingDatabaseSchemaOnlyBlocksSQLQuery(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "只检查数据库表结构，不要查询用户数据。")
+	opts := a.buildLoopCallOptions("只检查数据库表结构，不要查询用户数据。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "db_schema")
+	assertDisabledTools(t, loopCfg.DisabledTools, "sql_query", "file_write", "terminal")
+}
+
+func TestApplyIntentToolGatingCronListBlocksMutations(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "列出 cron 任务，但不要暂停或删除任何任务。")
+	opts := a.buildLoopCallOptions("列出 cron 任务，但不要暂停或删除任何任务。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "cron_list", "cron_status")
+	assertDisabledTools(t, loopCfg.DisabledTools, "cron_add", "cron_pause", "cron_remove", "file_delete")
+}
+
+func TestApplyIntentToolGatingHeartbeatStatusBlocksTrigger(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "检查 heartbeat 状态，不要手动触发。")
+	opts := a.buildLoopCallOptions("检查 heartbeat 状态，不要手动触发。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "heartbeat_status")
+	assertDisabledTools(t, loopCfg.DisabledTools, "heartbeat_trigger")
+}
+
+func TestApplyIntentToolGatingDelegateListBlocksNewTask(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "查看子代理任务列表，不要新建委派任务。")
+	opts := a.buildLoopCallOptions("查看子代理任务列表，不要新建委派任务。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "list_tasks", "task_status")
+	assertDisabledTools(t, loopCfg.DisabledTools, "delegate_task")
+}
+
 func agentWithIntentGateTools(t *testing.T) *Agent {
 	t.Helper()
 	reg := tool.NewRegistry()
@@ -126,8 +191,9 @@ func agentWithIntentGateTools(t *testing.T) *Agent {
 		"log_grep", "log_tail", "json_query", "yaml_query", "csv_query", "sql_query",
 		"db_schema", "image_analyze", "image_generate", "text_to_speech", "skill_read",
 		"skill_obsidian_run", "cron", "cron_add", "cron_list", "cron_status",
-		"autonomy", "heartbeat_status", "heartbeat_trigger", "delegate_task",
-		"task_status", "list_tasks",
+		"cron_remove", "cron_pause", "cron_resume", "autonomy", "autonomy_status",
+		"autonomy_queue_add", "autonomy_worker_spawn", "heartbeat_status",
+		"heartbeat_trigger", "delegate_task", "task_status", "list_tasks",
 	} {
 		reg.Register(&tool.Tool{
 			Name:        name,

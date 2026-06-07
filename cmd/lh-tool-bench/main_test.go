@@ -30,6 +30,41 @@ func TestExpandScenarios(t *testing.T) {
 	}
 }
 
+func TestExpandedDatasetCoversRealToolDomains(t *testing.T) {
+	_, ops, tasks := testFixture()
+	if len(tasks) < 60 {
+		t.Fatalf("expected expanded dataset to have at least 60 tasks, got %d", len(tasks))
+	}
+	required := map[string]bool{
+		"rag_search":       false,
+		"rag_index":        false,
+		"image_analyze":    false,
+		"image_generate":   false,
+		"text_to_speech":   false,
+		"sql_query":        false,
+		"db_schema":        false,
+		"cron_add":         false,
+		"cron_list":        false,
+		"autonomy_status":  false,
+		"delegate_task":    false,
+		"heartbeat_status": false,
+	}
+	for _, task := range tasks {
+		for _, opName := range task.RequiredOperations {
+			if op, ok := ops[opName]; ok {
+				if _, tracked := required[op.Tool]; tracked {
+					required[op.Tool] = true
+				}
+			}
+		}
+	}
+	for name, seen := range required {
+		if !seen {
+			t.Fatalf("expanded dataset does not cover required tool %q", name)
+		}
+	}
+}
+
 func TestBaselineShowsNoToolMisfire(t *testing.T) {
 	tools, ops, tasks := testFixture()
 	cfg := benchConfig{Variant: "baseline", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
@@ -50,15 +85,40 @@ func TestBaselineShowsNoToolMisfire(t *testing.T) {
 	}
 }
 
-func TestRiskAwareSuppressesNegatedPush(t *testing.T) {
+func TestRiskAwareRunsExpandedSpecializedTools(t *testing.T) {
 	tools, ops, tasks := testFixture()
-	var task benchTask
-	for _, candidate := range tasks {
-		if candidate.ID == "T5-001" {
-			task = candidate
-			break
+	cfg := benchConfig{Variant: "risk-aware", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
+	for _, id := range []string{"T3-006", "T3-007", "T3-008", "T3-009", "T4-011", "T5-006", "T5-007", "T5-009"} {
+		task := findTask(t, tasks, id)
+		metrics := evaluateTask(cfg, task, runStrategy(cfg, task, tools, ops), tools, ops)
+		if !metrics.NeedPredictionCorrect {
+			t.Fatalf("%s need prediction miss", id)
+		}
+		if metrics.OperationRecall < 1 {
+			t.Fatalf("%s operation recall = %.2f, want 1", id, metrics.OperationRecall)
+		}
+		if metrics.ForbiddenCallCount != 0 {
+			t.Fatalf("%s unexpected forbidden calls: %d", id, metrics.ForbiddenCallCount)
 		}
 	}
+}
+
+func TestRiskAwareSuppressesCronMutationNegation(t *testing.T) {
+	tools, ops, tasks := testFixture()
+	task := findTask(t, tasks, "T5-005")
+	cfg := benchConfig{Variant: "risk-aware", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
+	metrics := evaluateTask(cfg, task, runStrategy(cfg, task, tools, ops), tools, ops)
+	if metrics.ForbiddenCallCount != 0 {
+		t.Fatalf("expected cron mutation negation to block forbidden calls, got %d", metrics.ForbiddenCallCount)
+	}
+	if metrics.RouteRisk != 0 {
+		t.Fatalf("expected no realized route risk, got %.2f", metrics.RouteRisk)
+	}
+}
+
+func TestRiskAwareSuppressesNegatedPush(t *testing.T) {
+	tools, ops, tasks := testFixture()
+	task := findTask(t, tasks, "T5-001")
 	baseCfg := benchConfig{Variant: "baseline", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
 	riskCfg := benchConfig{Variant: "risk-aware", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
 
@@ -77,13 +137,7 @@ func TestRiskAwareSuppressesNegatedPush(t *testing.T) {
 
 func TestPackedResultsReduceNoise(t *testing.T) {
 	tools, ops, tasks := testFixture()
-	var task benchTask
-	for _, candidate := range tasks {
-		if candidate.ID == "T4-001" {
-			task = candidate
-			break
-		}
-	}
+	task := findTask(t, tasks, "T4-001")
 	riskCfg := benchConfig{Variant: "risk-aware", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
 	packedCfg := benchConfig{Variant: "packed-results", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
 	riskAware := evaluateTask(riskCfg, task, runStrategy(riskCfg, task, tools, ops), tools, ops)
@@ -127,4 +181,15 @@ func TestLoadCompareSummaries(t *testing.T) {
 	if len(got) != 1 || got[0].Variant != "baseline" || got[0].SuccessRate != 0.5 {
 		t.Fatalf("unexpected summaries: %#v", got)
 	}
+}
+
+func findTask(t *testing.T, tasks []benchTask, id string) benchTask {
+	t.Helper()
+	for _, task := range tasks {
+		if task.ID == id {
+			return task
+		}
+	}
+	t.Fatalf("task %s not found", id)
+	return benchTask{}
 }

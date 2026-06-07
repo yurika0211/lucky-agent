@@ -155,6 +155,20 @@ func TestExtractRequiredToolNames(t *testing.T) {
 	}
 }
 
+func TestExtractRequiredToolNamesIgnoresDomainMentions(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "cron", Enabled: true})
+	reg.Register(&tool.Tool{Name: "rag_search", Enabled: true})
+
+	a := &Agent{tools: reg}
+	if got := a.extractRequiredToolNames("列出 cron 任务，但不要暂停或删除任何任务。"); len(got) != 0 {
+		t.Fatalf("expected cron domain mention not to force a tool, got %v", got)
+	}
+	if got := a.extractRequiredToolNames("必须调用 rag_search 搜索记忆"); len(got) != 1 || got[0] != "rag_search" {
+		t.Fatalf("expected explicit rag_search mention, got %v", got)
+	}
+}
+
 func TestShouldForceSearchSynthesis(t *testing.T) {
 	if shouldForceSearchSynthesis(1, 2) {
 		t.Fatal("should not force synthesis with insufficient evidence")

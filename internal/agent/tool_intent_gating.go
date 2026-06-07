@@ -87,10 +87,11 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	negatedExecution := hasNegatedExecutionIntent(intentText)
 	negatedDelete := intentTextContainsAny(intentText, "不要直接删", "不要删", "别删", "不删除")
 	needsTerminal := needsTerminalIntent(intentText)
+	readOnlySourceIntent := hasReadOnlyExternalSourceIntent(intentText)
 
 	if localIntent || editIntent {
 		addIntentTools(allowed, "file_read", "file_list")
-		if !negatedExecution || needsTerminal {
+		if (!negatedExecution || needsTerminal) && !readOnlySourceIntent {
 			addIntentTools(allowed, "terminal")
 		}
 		if intentTextContainsAny(intentText, "日志", ".log", "logs", "log file", "stack trace", "trace") {
@@ -105,7 +106,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 		if intentTextContainsAny(intentText, ".csv", "csv") {
 			addIntentTools(allowed, "csv_query")
 		}
-		if editIntent {
+		if editIntent && !readOnlySourceIntent {
 			addIntentTools(allowed, "file_patch", "file_write", "file_mkdir", "file_move")
 		}
 		if intentTextContainsAny(intentText, "删除", "删", "delete", "remove", "rm ") && !negatedDelete && !negatedExecution {
@@ -161,20 +162,41 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 		}
 	}
 	if dbIntent {
-		addIntentTools(allowed, "sql_query", "db_schema")
+		addIntentTools(allowed, "db_schema")
+		if !intentTextContainsAny(intentText, "只看 schema", "只看schema", "只检查数据库表结构", "不要查询用户数据") {
+			addIntentTools(allowed, "sql_query")
+		}
 	}
 	if delegateIntent {
 		if intentTextContainsAny(intentText, "定时", "cron", "计划任务", "周期") {
-			addIntentTools(allowed, "cron", "cron_add", "cron_list", "cron_status", "cron_remove", "cron_pause", "cron_resume")
+			addIntentTools(allowed, "cron_list", "cron_status")
+			if !intentTextContainsAny(intentText, "只查看", "只列出", "列出", "查看", "状态", "不要新增") {
+				addIntentTools(allowed, "cron", "cron_add")
+			}
+			if !intentTextContainsAny(intentText, "不要暂停", "不要暂停或删除") {
+				addIntentTools(allowed, "cron_pause")
+			}
+			if !intentTextContainsAny(intentText, "不要删除", "不要移除", "不要暂停或删除") {
+				addIntentTools(allowed, "cron_remove")
+			}
 		}
 		if intentTextContainsAny(intentText, "后台", "自主", "autonomy", "worker", "队列") {
-			addIntentTools(allowed, "autonomy")
+			addIntentTools(allowed, "autonomy", "autonomy_status")
+			if !intentTextContainsAny(intentText, "只查看", "只列出") {
+				addIntentTools(allowed, "autonomy_queue_add", "autonomy_worker_spawn")
+			}
 		}
 		if intentTextContainsAny(intentText, "心跳", "heartbeat") {
-			addIntentTools(allowed, "heartbeat_status", "heartbeat_trigger")
+			addIntentTools(allowed, "heartbeat_status")
+			if !intentTextContainsAny(intentText, "不要手动触发", "不要触发", "只检查") {
+				addIntentTools(allowed, "heartbeat_trigger")
+			}
 		}
 		if intentTextContainsAny(intentText, "子代理", "委派", "delegate") {
-			addIntentTools(allowed, "delegate_task", "task_status", "list_tasks")
+			addIntentTools(allowed, "task_status", "list_tasks")
+			if !intentTextContainsAny(intentText, "不要新建", "不要委派", "只查看", "只列出") {
+				addIntentTools(allowed, "delegate_task")
+			}
 		}
 	}
 
@@ -234,7 +256,7 @@ func hasEditToolIntent(text string) bool {
 func hasWebToolIntent(text string) bool {
 	return intentTextContainsAny(text,
 		"http://", "https://", "url", "网页", "页面", "联网", "搜索", "web_search",
-		"web_fetch", "最新", "新闻", "外部资料", "官方文档",
+		"web_fetch", "最新", "新闻", "外部资料", "官方文档", "外部 issue", "issue 内容",
 	)
 }
 
@@ -280,7 +302,7 @@ func hasMediaIntent(text string) bool {
 }
 
 func hasDatabaseIntent(text string) bool {
-	return intentTextContainsAny(text, "sql", "数据库", "db_schema", "schema", "表结构")
+	return intentTextContainsAny(text, "sql", "数据库", "db_schema", "schema", "表结构", "订单表")
 }
 
 func hasDelegateIntent(text string) bool {
@@ -298,10 +320,17 @@ func hasNegatedExecutionIntent(text string) bool {
 }
 
 func needsTerminalIntent(text string) bool {
+	if hasReadOnlyExternalSourceIntent(text) {
+		return false
+	}
 	return intentTextContainsAny(text,
 		"git status", "git diff", "commit", "push", "跑测试", "测试", "启动", "重启",
 		"运行测试", "go test", "npm", "make ",
 	)
+}
+
+func hasReadOnlyExternalSourceIntent(text string) bool {
+	return intentTextContainsAny(text, "只读取 issue", "只读取 issue 内容", "只读取内容", "只总结网页", "只总结", "只读外部")
 }
 
 func addIntentTools(dst map[string]struct{}, names ...string) {

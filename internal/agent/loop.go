@@ -790,8 +790,17 @@ func (a *Agent) extractRequiredToolNames(input string) []string {
 
 	var hits []hit
 	for _, t := range a.tools.ListEnabled() {
-		if idx := strings.Index(input, t.Name); idx >= 0 {
-			hits = append(hits, hit{name: t.Name, pos: idx})
+		searchFrom := 0
+		for {
+			idx := strings.Index(input[searchFrom:], t.Name)
+			if idx < 0 {
+				break
+			}
+			pos := searchFrom + idx
+			if isExplicitRequiredToolMention(input, pos, t.Name) {
+				hits = append(hits, hit{name: t.Name, pos: pos})
+			}
+			searchFrom = pos + len(t.Name)
 		}
 	}
 	if len(hits) == 0 {
@@ -812,6 +821,34 @@ func (a *Agent) extractRequiredToolNames(input string) []string {
 		result = append(result, h.name)
 	}
 	return result
+}
+
+func isExplicitRequiredToolMention(input string, pos int, name string) bool {
+	if pos < 0 || strings.TrimSpace(name) == "" {
+		return false
+	}
+	if pos > len(input) {
+		pos = len(input)
+	}
+	start := pos - 64
+	if start < 0 {
+		start = 0
+	}
+	end := pos + len(name) + 32
+	if end > len(input) {
+		end = len(input)
+	}
+	window := strings.ToLower(input[start:end])
+	return strings.Contains(window, "必须调用") ||
+		strings.Contains(window, "强制调用") ||
+		strings.Contains(window, "调用 "+name) ||
+		strings.Contains(window, "调用"+name) ||
+		strings.Contains(window, "用 "+name) ||
+		strings.Contains(window, "用"+name) ||
+		strings.Contains(window, "use "+strings.ToLower(name)) ||
+		strings.Contains(window, "call "+strings.ToLower(name)) ||
+		strings.Contains(window, "tool "+strings.ToLower(name)) ||
+		strings.Contains(window, "to="+strings.ToLower(name))
 }
 
 // fitContextWindow 裁剪消息列表到上下文窗口内

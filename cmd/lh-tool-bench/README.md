@@ -20,14 +20,14 @@ go run ./cmd/lh-tool-bench \
   -variant baseline \
   -scenario all \
   -rounds 1 \
-  -out docs/reports/tool-bench-baseline-20260607.jsonl
+  -out docs/reports/tool-bench-expanded-v3-baseline-20260607.jsonl
 ```
 
 Compare existing runs:
 
 ```bash
 go run ./cmd/lh-tool-bench \
-  -compare docs/reports/tool-bench-baseline-20260607.jsonl,docs/reports/tool-bench-intent-gated-20260607.jsonl,docs/reports/tool-bench-risk-aware-20260607.jsonl,docs/reports/tool-bench-packed-results-20260607.jsonl
+  -compare docs/reports/tool-bench-expanded-v3-baseline-20260607.jsonl,docs/reports/tool-bench-expanded-v3-risk-aware-20260607.jsonl,docs/reports/tool-bench-expanded-v3-packed-results-20260607.jsonl
 ```
 
 Supported variants:
@@ -71,31 +71,34 @@ Core fields:
 
 ## Baseline Snapshot
 
-Baseline run on 2026-06-07:
+Expanded baseline run on 2026-06-07. The dataset contains 60 tasks spanning
+concept-only, read-only inspection, single-tool, multi-tool, risk-sensitive, and
+prompt-injection scenarios. It covers file/repo, web, memory/RAG, media,
+database, cron, autonomy, heartbeat, and delegate tool domains.
 
 ```text
-records: 24
-success_rate: 0.5833
-tool_need_acc: 0.8750
-operation_recall: 0.9375
-operation_precision: 0.6042
-redundant_rate: 0.2639
-route_risk: 2.3958
-expected_route_risk: 1.5243
-tool_result_noise: 0.2943
-tool_alignment: 0.5196
-info_efficiency: 0.5568
-tool_tune_score: 0.4763
-forbidden_call_count: 6
+records: 60
+success_rate: 0.6500
+tool_need_acc: 0.8833
+operation_recall: 0.9417
+operation_precision: 0.5478
+redundant_rate: 0.2603
+route_risk: 2.5083
+expected_route_risk: 3.1097
+tool_result_noise: 0.2866
+tool_alignment: 0.5645
+info_efficiency: 0.3684
+tool_tune_score: 0.4331
+forbidden_call_count: 19
 clean: false
 ```
 
 Weakest scenarios:
 
 ```text
-trap: success_rate=0.00, route_risk=7.25, result_noise=0.47
-risk: success_rate=0.50, route_risk=4.50, redundant_rate=0.21
-no_tool: tool_need_acc=0.25, redundant_rate=0.375
+trap: success_rate=0.20, route_risk=5.35, result_noise=0.39
+risk: success_rate=0.30, route_risk=5.35, redundant_rate=0.43
+no_tool: tool_need_acc=0.12, redundant_rate=0.19
 ```
 
 This is expected for the baseline: it intentionally exposes all tools and uses a
@@ -104,19 +107,17 @@ intent-gated, risk-aware, and packed-result variants.
 
 ## Variant Comparison
 
-Calibrated run on 2026-06-07:
+Expanded calibrated run on 2026-06-07:
 
 | Variant | Success | NeedAcc | OpRecall | OpPrecision | Redundant | RouteRisk | Noise | Score | Forbidden | Clean |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
-| baseline | 0.5833 | 0.8750 | 0.9375 | 0.6042 | 0.2639 | 2.3958 | 0.2943 | 0.4763 | 6 | false |
-| intent-gated | 1.0000 | 1.0000 | 0.9375 | 1.0000 | 0.0000 | 0.0000 | 0.2259 | 0.6830 | 0 | true |
-| risk-aware | 1.0000 | 1.0000 | 0.9375 | 1.0000 | 0.0000 | 0.0000 | 0.2259 | 0.6830 | 0 | true |
-| packed-results | 1.0000 | 1.0000 | 0.9375 | 1.0000 | 0.0000 | 0.0000 | 0.0491 | 0.6940 | 0 | true |
+| baseline | 0.6500 | 0.8833 | 0.9417 | 0.5478 | 0.2603 | 2.5083 | 0.2866 | 0.4331 | 19 | false |
+| risk-aware | 1.0000 | 1.0000 | 0.9917 | 0.9625 | 0.0042 | 0.0583 | 0.2367 | 0.6938 | 0 | false |
+| packed-results | 1.0000 | 1.0000 | 0.9917 | 0.9625 | 0.0042 | 0.0583 | 0.0517 | 0.7048 | 0 | false |
 
 The main signal is:
 
 ```text
-intent-gated removes unnecessary and forbidden calls;
-risk-aware preserves that clean route;
-packed-results keeps the clean route and sharply reduces result noise.
+risk-aware removes forbidden calls and most redundant operations across the wider tool surface;
+packed-results keeps the same route quality and sharply reduces result noise.
 ```
