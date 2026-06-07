@@ -116,6 +116,21 @@ func TestRiskAwareSuppressesCronMutationNegation(t *testing.T) {
 	}
 }
 
+func TestOptimizedVariantsStayCleanAcrossExpandedDataset(t *testing.T) {
+	tools, ops, tasks := testFixture()
+	for _, variant := range []string{"guarded-intent", "risk-aware", "packed-results"} {
+		cfg := benchConfig{Variant: variant, NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}
+		for _, task := range tasks {
+			metrics := evaluateTask(cfg, task, runStrategy(cfg, task, tools, ops), tools, ops)
+			if !metrics.Clean {
+				t.Fatalf("%s/%s expected clean route, forbidden=%d redundant=%.2f risk=%.2f calls=%v",
+					variant, task.ID, metrics.ForbiddenCallCount, metrics.RedundantRate, metrics.RouteRisk,
+					runStrategy(cfg, task, tools, ops).Calls)
+			}
+		}
+	}
+}
+
 func TestGuardedIntentSuppressesReadOnlyMutationTraps(t *testing.T) {
 	tools, ops, tasks := testFixture()
 	intentCfg := benchConfig{Variant: "intent-gated", NeedThreshold: 0.60, SuccessThreshold: 0.70, MaxRedundantRate: 0.25}

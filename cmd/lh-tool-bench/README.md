@@ -20,14 +20,14 @@ go run ./cmd/lh-tool-bench \
   -variant baseline \
   -scenario all \
   -rounds 1 \
-  -out docs/reports/tool-bench-expanded-v3-baseline-20260607.jsonl
+  -out docs/reports/tool-bench-refined-baseline-20260607.jsonl
 ```
 
 Compare existing runs:
 
 ```bash
 go run ./cmd/lh-tool-bench \
-  -compare docs/reports/tool-bench-expanded-v3-baseline-20260607.jsonl,docs/reports/tool-bench-expanded-v3-risk-aware-20260607.jsonl,docs/reports/tool-bench-expanded-v3-packed-results-20260607.jsonl
+  -compare docs/reports/tool-bench-refined-baseline-20260607.jsonl,docs/reports/tool-bench-refined-risk-aware-20260607.jsonl,docs/reports/tool-bench-refined-packed-results-20260607.jsonl
 ```
 
 Supported variants:
@@ -82,14 +82,14 @@ records: 60
 success_rate: 0.6500
 tool_need_acc: 0.8833
 operation_recall: 0.9417
-operation_precision: 0.5478
-redundant_rate: 0.2603
-route_risk: 2.5083
+operation_precision: 0.5622
+redundant_rate: 0.2594
+route_risk: 2.4667
 expected_route_risk: 3.1097
-tool_result_noise: 0.2866
-tool_alignment: 0.5645
-info_efficiency: 0.3684
-tool_tune_score: 0.4331
+tool_result_noise: 0.2854
+tool_alignment: 0.5696
+info_efficiency: 0.3788
+tool_tune_score: 0.4369
 forbidden_call_count: 19
 clean: false
 ```
@@ -112,14 +112,14 @@ Expanded calibrated run on 2026-06-07:
 
 | Variant | Success | NeedAcc | OpRecall | OpPrecision | Redundant | RouteRisk | Noise | Score | Forbidden | Clean |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | :---: |
-| baseline | 0.6500 | 0.8833 | 0.9417 | 0.5478 | 0.2603 | 2.5083 | 0.2866 | 0.4331 | 19 | false |
-| guarded-intent | 1.0000 | 1.0000 | 0.9917 | 0.9625 | 0.0042 | 0.0583 | 0.2367 | 0.6938 | 0 | false |
-| risk-aware | 1.0000 | 1.0000 | 0.9917 | 0.9625 | 0.0042 | 0.0583 | 0.2367 | 0.6938 | 0 | false |
-| packed-results | 1.0000 | 1.0000 | 0.9917 | 0.9625 | 0.0042 | 0.0583 | 0.0517 | 0.7048 | 0 | false |
+| baseline | 0.6500 | 0.8833 | 0.9417 | 0.5622 | 0.2594 | 2.4667 | 0.2854 | 0.4369 | 19 | false |
+| guarded-intent | 1.0000 | 1.0000 | 0.9917 | 1.0000 | 0.0000 | 0.0000 | 0.2339 | 0.7031 | 0 | true |
+| risk-aware | 1.0000 | 1.0000 | 0.9917 | 1.0000 | 0.0000 | 0.0000 | 0.2339 | 0.7031 | 0 | true |
+| packed-results | 1.0000 | 1.0000 | 0.9917 | 1.0000 | 0.0000 | 0.0000 | 0.0508 | 0.7136 | 0 | true |
 
 The main signal is:
 
 ```text
-guarded-intent/risk-aware remove forbidden calls and most redundant operations across the wider tool surface;
+guarded-intent/risk-aware remove forbidden calls, redundant operations, and realized route risk across the wider tool surface;
 packed-results keeps the same route quality and sharply reduces result noise.
 ```

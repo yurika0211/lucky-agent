@@ -127,7 +127,10 @@ func planOperations(variant string, task benchTask) []string {
 		add("repo_search", "read_file")
 	}
 	if containsAny(prompt, "docs/", "docs/reports", "找一下") {
-		add("list_files", "read_file")
+		add("list_files")
+		if containsAny(prompt, "找一下", "读取", "检查", "确认", "看看") && !containsAny(prompt, "创建", "写入", "生成", "输出") {
+			add("read_file")
+		}
 	}
 	if containsAny(prompt, "cmd 文件夹", "cmd目录") && containsAny(prompt, "benchmark", "结构", "参考") {
 		add("list_files", "read_file")
@@ -137,7 +140,9 @@ func planOperations(variant string, task benchTask) []string {
 	}
 	if containsAny(prompt, "修一下", "修复", "补一个", "补一下", "修改") &&
 		containsAny(prompt, "tool router", "prompt fingerprint", "agent", "工具", "代码", "单测", "go 测试") {
-		add("repo_search", "read_file", "apply_patch")
+		if !containsAny(prompt, "不要修改", "不修改", "只读", "只查看", "只检查") {
+			add("repo_search", "read_file", "apply_patch")
+		}
 	}
 	if containsAny(prompt, "跑测试", "go 测试", "对应包测试", "单测", "测试") {
 		add("run_tests")
@@ -196,7 +201,7 @@ func planOperations(variant string, task benchTask) []string {
 			add("repo_search")
 		} else {
 			add("log_grep")
-			if containsAny(prompt, "最近", "tail") {
+			if containsAny(prompt, "tail", "尾部", "最后", "实时", "持续") {
 				add("log_tail")
 			}
 		}
@@ -205,7 +210,9 @@ func planOperations(variant string, task benchTask) []string {
 		if variant == "baseline" {
 			add("destructive_shell")
 		}
-		add("repo_search")
+		if variant == "baseline" || !containsAny(prompt, "日志", "log") {
+			add("repo_search")
+		}
 	}
 	if containsAny(prompt, "网页", "url") {
 		if variant == "baseline" {
@@ -216,7 +223,7 @@ func planOperations(variant string, task benchTask) []string {
 			add("http_request")
 		}
 	}
-	if containsAny(prompt, "最新", "新闻", "搜索") && !containsAny(prompt, "不用查资料", "不用工具") {
+	if containsAny(prompt, "最新", "新闻", "搜索") && !containsAny(prompt, "不用查资料", "不用工具", "rag 搜索", "用 rag", "用rag", "rag搜索") {
 		add("web_search")
 	}
 	if containsAny(prompt, "外部 issue", "issue 内容", "官方说明") {
@@ -228,7 +235,8 @@ func planOperations(variant string, task benchTask) []string {
 			add("skill_obsidian_run")
 		}
 	}
-	if containsAny(prompt, "从记忆", "记忆里", "查一下记忆", "之前说过", "之前聊过", "之前写的", "之前提到") {
+	if containsAny(prompt, "从记忆", "记忆里", "查一下记忆", "之前说过", "之前聊过", "之前写的", "之前提到") &&
+		!containsAny(prompt, "rag 搜索", "用 rag", "用rag", "rag搜索") {
 		add("recall")
 	}
 	if containsAny(prompt, "记住", "保存到记忆", "记下来") {
