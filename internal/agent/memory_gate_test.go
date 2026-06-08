@@ -88,7 +88,7 @@ func TestMemoryGateAutoExecutesRequiredToolsBeforeDirectAnswer(t *testing.T) {
 	if !strings.Contains(result.Response, naturalCitationHeader) {
 		t.Fatalf("expected final answer to include natural citations, got %q", result.Response)
 	}
-	if !strings.Contains(result.Response, "我用当前时间工具核对了") || !strings.Contains(result.Response, "我参考了关于") {
+	if !strings.Contains(result.Response, "[1] Current time tool") || !strings.Contains(result.Response, "[2] Web search.") {
 		t.Fatalf("expected citations for current_time and web_search, got %q", result.Response)
 	}
 	if prov.callCount != 2 {

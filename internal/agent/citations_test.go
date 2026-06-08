@@ -15,7 +15,8 @@ func TestAppendNaturalCitationsAddsWebSearchFooter(t *testing.T) {
 	for _, want := range []string{
 		"最终答案",
 		naturalCitationHeader,
-		"我参考了关于“Twilio pricing”的网页搜索结果",
+		"[1] Web search. Query: \"Twilio pricing\".",
+		"Sources:",
 		"Twilio SMS Pricing",
 		"https://www.twilio.com/sms/pricing",
 	} {
