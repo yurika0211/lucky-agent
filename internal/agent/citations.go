@@ -30,6 +30,7 @@ func appendNaturalCitations(response string, toolCalls []toolCallLog) string {
 	if strings.Contains(response, naturalCitationHeader) || strings.Contains(response, legacyNaturalCitationHeader) {
 		return response
 	}
+	response = closeDanglingMarkdownFence(response)
 
 	var b strings.Builder
 	b.WriteString(response)
@@ -42,6 +43,58 @@ func appendNaturalCitations(response string, toolCalls []toolCallLog) string {
 		b.WriteString(citation.Summary)
 	}
 	return b.String()
+}
+
+func closeDanglingMarkdownFence(response string) string {
+	if response == "" || (!strings.Contains(response, "```") && !strings.Contains(response, "~~~")) {
+		return response
+	}
+	inFence := false
+	closeMarker := ""
+	for _, line := range strings.SplitAfter(response, "\n") {
+		marker := markdownFenceMarker(line)
+		if marker == "" {
+			continue
+		}
+		if !inFence {
+			inFence = true
+			closeMarker = marker
+			continue
+		}
+		if strings.HasPrefix(marker, string(closeMarker[0])) {
+			inFence = false
+			closeMarker = ""
+		}
+	}
+	if !inFence || closeMarker == "" {
+		return response
+	}
+	if !strings.HasSuffix(response, "\n") {
+		response += "\n"
+	}
+	return response + closeMarker
+}
+
+func markdownFenceMarker(line string) string {
+	trimmed := strings.TrimSpace(strings.TrimRight(line, "\n"))
+	if strings.HasPrefix(trimmed, "```") {
+		return strings.Repeat("`", countLeadingRunes(trimmed, '`'))
+	}
+	if strings.HasPrefix(trimmed, "~~~") {
+		return strings.Repeat("~", countLeadingRunes(trimmed, '~'))
+	}
+	return ""
+}
+
+func countLeadingRunes(s string, target rune) int {
+	count := 0
+	for _, r := range s {
+		if r != target {
+			break
+		}
+		count++
+	}
+	return count
 }
 
 func naturalCitationsFromExecuted(executed []executedToolCall) []naturalCitation {

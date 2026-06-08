@@ -208,6 +208,31 @@ func TestSplitMessagePreservesFencedCodeBlocks(t *testing.T) {
 	}
 }
 
+func TestSplitMessageRepairsDanglingFenceBeforeReferences(t *testing.T) {
+	cfg := Config{Token: "test", MaxMessageLen: 80}
+	adapter := NewAdapter(cfg)
+
+	msg := "讲解：\n```asm\n" +
+		strings.Repeat("mov %rax, %rbx\n", 6) +
+		"\nReferences:\n[1] Local file. README.md"
+
+	chunks := adapter.splitMessage(msg)
+	assert.GreaterOrEqual(t, len(chunks), 2)
+
+	rendered := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		assert.LessOrEqual(t, len(chunk), 80)
+		html := formatTelegramRichText(chunk)
+		assert.Equal(t, strings.Count(html, "<pre>"), strings.Count(html, "</pre>"))
+		assert.Equal(t, strings.Count(html, "<code"), strings.Count(html, "</code>"))
+		rendered = append(rendered, html)
+	}
+	combined := strings.Join(rendered, "\n")
+	assert.Contains(t, combined, "References:")
+	assert.NotContains(t, combined, "<code>References:")
+	assert.NotContains(t, combined, "README.md</code></pre>")
+}
+
 func TestSplitHTMLMessageClosesPreCodeChunks(t *testing.T) {
 	cfg := Config{Token: "test", MaxMessageLen: 64}
 	adapter := NewAdapter(cfg)

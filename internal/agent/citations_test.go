@@ -36,6 +36,18 @@ func TestAppendNaturalCitationsSkipsErrorsAndMutatingTools(t *testing.T) {
 	}
 }
 
+func TestAppendNaturalCitationsClosesOpenFenceBeforeFooter(t *testing.T) {
+	got := appendNaturalCitations("解释如下：\n```asm\nmov %rax, %rbx", []toolCallLog{{
+		Name:      "file_read",
+		Arguments: `{"path":"/tmp/README.md"}`,
+		Result:    "# README\ncontent",
+	}})
+
+	if !strings.Contains(got, "mov %rax, %rbx\n```\n\nReferences:") {
+		t.Fatalf("expected dangling code fence to close before references, got:\n%s", got)
+	}
+}
+
 func TestStringArgMissingKeyIsEmpty(t *testing.T) {
 	if got := stringArg(map[string]any{"query": "x"}, "url"); got != "" {
 		t.Fatalf("expected missing arg to be empty, got %q", got)

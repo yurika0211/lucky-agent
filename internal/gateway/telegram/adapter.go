@@ -1212,6 +1212,7 @@ func (a *Adapter) splitMessage(message string) []string {
 	if maxLen <= 0 || maxLen > 4096 {
 		maxLen = 4096
 	}
+	message = repairTelegramMarkdownFences(message)
 
 	if len(message) <= maxLen {
 		return []string{message}
