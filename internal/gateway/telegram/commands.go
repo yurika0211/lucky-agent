@@ -13,6 +13,7 @@ const (
 	commandGroupBasic   commandGroup = "Basic"
 	commandGroupSystem  commandGroup = "System"
 	commandGroupSession commandGroup = "Session"
+	commandGroupLearn   commandGroup = "Learning"
 )
 
 type telegramCommandSpec struct {
@@ -49,6 +50,12 @@ func telegramCommandSpecs() []telegramCommandSpec {
 		{Command: "embedder", Usage: "/embedder [list|switch|test]", Description: "Manage embedding models", Group: commandGroupSystem},
 		{Command: "metrics", Usage: "/metrics", Description: "Show usage metrics", Group: commandGroupSystem},
 		{Command: "health", Usage: "/health", Description: "System health check", Group: commandGroupSystem},
+		{Command: "learn", Usage: "/learn", Description: "Show learning mode commands", Group: commandGroupLearn},
+		{Command: "learn_start", Usage: "/learn_start <course>", Description: "Start or resume a course", Group: commandGroupLearn},
+		{Command: "learn_current", Usage: "/learn_current", Description: "Show current learning module", Group: commandGroupLearn},
+		{Command: "learn_lab", Usage: "/learn_lab", Description: "Show current lab", Group: commandGroupLearn},
+		{Command: "learn_submit", Usage: "/learn_submit <evidence>", Description: "Submit lab evidence", Group: commandGroupLearn},
+		{Command: "learn_progress", Usage: "/learn_progress", Description: "Show learning progress", Group: commandGroupLearn},
 		{Command: "remember", Usage: "/remember <content>", Description: "Save medium-term memory", Group: commandGroupSession},
 		{Command: "remember_long", Usage: "/remember_long <content>", Description: "Save long-term memory", Group: commandGroupSession},
 		{Command: "recall", Usage: "/recall <query>", Description: "Search memory", Group: commandGroupSession},
@@ -116,6 +123,7 @@ func telegramHelpMessage() string {
 	}{
 		{commandGroupBasic, "*Basic*"},
 		{commandGroupSystem, "*System*"},
+		{commandGroupLearn, "*Learning*"},
 		{commandGroupSession, "*Session*"},
 	}
 	specs := telegramCommandSpecs()

@@ -208,6 +208,25 @@ func TestSplitMessagePreservesFencedCodeBlocks(t *testing.T) {
 	}
 }
 
+func TestSplitHTMLMessageClosesPreCodeChunks(t *testing.T) {
+	cfg := Config{Token: "test", MaxMessageLen: 64}
+	adapter := NewAdapter(cfg)
+
+	msg := "<b>Trace</b>\n<pre><code>" + strings.Repeat("line with output\n", 8) + "</code></pre>\nafter"
+
+	chunks := adapter.splitHTMLMessage(msg)
+	assert.GreaterOrEqual(t, len(chunks), 2)
+
+	combined := strings.Join(chunks, "")
+	combined = strings.ReplaceAll(combined, "</code></pre><pre><code>", "")
+	assert.Equal(t, msg, combined)
+	for _, chunk := range chunks {
+		assert.LessOrEqual(t, len(chunk), 64)
+		assert.Equal(t, strings.Count(chunk, "<pre>"), strings.Count(chunk, "</pre>"))
+		assert.Equal(t, strings.Count(chunk, "<code>"), strings.Count(chunk, "</code>"))
+	}
+}
+
 func joinChunks(chunks []string) string {
 	result := ""
 	for _, c := range chunks {

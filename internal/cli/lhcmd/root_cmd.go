@@ -221,6 +221,7 @@ func newRootCmd() *cobra.Command {
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)
+	addLearnCmd(rootCmd)
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd)
 
 	return rootCmd
