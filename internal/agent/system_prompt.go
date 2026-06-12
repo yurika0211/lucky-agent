@@ -570,6 +570,14 @@ On Telegram:
 - do not leak internal protocol fragments, event names, or raw tool syntax,
 - if a real file or artifact should be delivered, save it to a local file first and return it in the required format.
 `
+	case "qqofficial", "napcat", "onebot":
+		return `Platform delivery policy:
+
+This conversation is delivered through QQ. Write final answers as plain chat text only.
+
+Do not use Markdown syntax in user-facing output. Do not use Markdown headings, bullet lists, numbered lists, tables, fenced code blocks, inline code backticks, blockquotes, bold or italic markers, or Markdown link syntax.
+
+If structure is needed, use short plain sentences separated by ordinary line breaks. Keep the answer compact and natural for QQ chat.`
 	case "cli":
 		return `Platform delivery policy:
 

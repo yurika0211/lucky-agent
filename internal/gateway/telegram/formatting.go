@@ -55,6 +55,11 @@ func repairTelegramMarkdownFences(input string) string {
 			inFence = false
 			closeMarker = ""
 		}
+		if inFence && hasFence && !isTelegramMarkdownFenceCloser(line, closeMarker) {
+			writeTelegramFenceClose(&b, closeMarker)
+			inFence = false
+			closeMarker = ""
+		}
 
 		b.WriteString(line)
 		if !hasFence {
@@ -65,7 +70,7 @@ func repairTelegramMarkdownFences(input string) string {
 			closeMarker = strings.Repeat(lineMarker[:1], len(lineMarker))
 			continue
 		}
-		if strings.HasPrefix(lineMarker, closeMarker[:1]) && len(lineMarker) >= len(closeMarker) {
+		if isTelegramMarkdownFenceCloser(line, closeMarker) {
 			inFence = false
 			closeMarker = ""
 		}
@@ -105,7 +110,25 @@ func isTelegramFenceRecoveryBoundary(line string) bool {
 		strings.HasPrefix(trimmed, "#### ") {
 		return true
 	}
+	if looksLikeCJKProseLeadIn(trimmed) {
+		return true
+	}
 	return looksLikeNumberedProseHeading(trimmed)
+}
+
+func looksLikeCJKProseLeadIn(trimmed string) bool {
+	if !containsCJK(trimmed) {
+		return false
+	}
+	if !strings.HasSuffix(trimmed, ":") && !strings.HasSuffix(trimmed, "：") {
+		return false
+	}
+	for _, prefix := range []string{"//", "#", ";", "/*", "*", "--", "<!--"} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return false
+		}
+	}
+	return true
 }
 
 func looksLikeNumberedProseHeading(trimmed string) bool {
@@ -160,6 +183,22 @@ func countLeadingTelegramFenceRunes(s string, target rune) int {
 		count++
 	}
 	return count
+}
+
+func isTelegramMarkdownFenceCloser(line string, opener string) bool {
+	if opener == "" {
+		return false
+	}
+	trimmed := strings.TrimSpace(strings.TrimRight(line, "\n"))
+	if len(trimmed) < len(opener) {
+		return false
+	}
+	for _, r := range trimmed {
+		if r != rune(opener[0]) {
+			return false
+		}
+	}
+	return true
 }
 
 type telegramHTMLRenderer struct {

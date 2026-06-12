@@ -101,8 +101,9 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 		}
 	}
 
-	if r.Count() != len(expected) {
-		t.Errorf("expected %d builtin tools, got %d", len(expected), r.Count())
+	expectedCount := len(expected) + 2 // hidden compatibility tools: file_find, defuddle
+	if r.Count() != expectedCount {
+		t.Errorf("expected %d builtin tools, got %d", expectedCount, r.Count())
 	}
 
 	visible := r.ListModelVisible()
@@ -121,6 +122,16 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 	}
 	if foundShell {
 		t.Error("expected shell compatibility tool to be hidden from model")
+	}
+	if compat, ok := r.Get("file_find"); !ok || compat == nil {
+		t.Error("expected file_find compatibility tool to be registered")
+	} else if !compat.HiddenFromModel {
+		t.Error("expected file_find compatibility tool to be hidden from model")
+	}
+	if compat, ok := r.Get("defuddle"); !ok || compat == nil {
+		t.Error("expected defuddle compatibility tool to be registered")
+	} else if !compat.HiddenFromModel {
+		t.Error("expected defuddle compatibility tool to be hidden from model")
 	}
 }
 
@@ -949,6 +960,33 @@ func TestFileListTool(t *testing.T) {
 	}
 	if result == "" {
 		t.Error("expected list result")
+	}
+}
+
+func TestFileFindTool(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "alpha.txt"), []byte("a"), 0o644); err != nil {
+		t.Fatalf("write alpha file: %v", err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nested", "beta.go"), []byte("package nested"), 0o644); err != nil {
+		t.Fatalf("write beta file: %v", err)
+	}
+
+	result, err := r.Call("file_find", map[string]any{
+		"path":    dir,
+		"pattern": "beta",
+	})
+	if err != nil {
+		t.Fatalf("file_find: %v", err)
+	}
+	if !strings.Contains(result, "nested/beta.go") {
+		t.Fatalf("expected nested/beta.go in result, got %q", result)
 	}
 }
 

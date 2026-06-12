@@ -3932,6 +3932,132 @@ func TestV054HandleMessageNonCommandWithAttachments(t *testing.T) {
 	}
 }
 
+func TestV054LuckyCollectsTelegramMessagesIntoOneTurn(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	captured := make(chan agent.UserTurnInput, 1)
+	handler.agent.(*mockAgentProvider).chatStreamIn = func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+		captured <- input
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "batched response"}
+		close(ch)
+		return ch, nil
+	}
+
+	chat := gateway.Chat{ID: "12345", Type: gateway.ChatPrivate}
+	sender := gateway.User{ID: "user-1", Username: "alice"}
+	if err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID:        "cmd-on",
+		Chat:      chat,
+		Sender:    sender,
+		Text:      "/lucky on",
+		IsCommand: true,
+		Command:   "lucky",
+		Args:      "on",
+	}); err != nil {
+		t.Fatalf("HandleMessage(/lucky on) error = %v", err)
+	}
+	if err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID:     "m1",
+		Chat:   chat,
+		Sender: sender,
+		Text:   "first part",
+	}); err != nil {
+		t.Fatalf("HandleMessage(first part) error = %v", err)
+	}
+	if err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID:     "m2",
+		Chat:   chat,
+		Sender: sender,
+		Text:   "second part",
+		Attachments: []gateway.Attachment{{
+			Type:     gateway.AttachmentImage,
+			FileName: "photo.jpg",
+			MimeType: "image/jpeg",
+			FilePath: "/tmp/photo.jpg",
+		}},
+	}); err != nil {
+		t.Fatalf("HandleMessage(second part) error = %v", err)
+	}
+
+	select {
+	case got := <-captured:
+		t.Fatalf("expected no agent dispatch before /lucky off, got %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	if err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID:        "cmd-off",
+		Chat:      chat,
+		Sender:    sender,
+		Text:      "/lucky off",
+		IsCommand: true,
+		Command:   "lucky",
+		Args:      "off",
+	}); err != nil {
+		t.Fatalf("HandleMessage(/lucky off) error = %v", err)
+	}
+
+	var got agent.UserTurnInput
+	select {
+	case got = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for lucky batched turn")
+	}
+	for _, want := range []string{
+		"[Collected gateway message batch]",
+		"Segment 1",
+		"first part",
+		"Segment 2",
+		"second part",
+		"@alice",
+		"image 1",
+	} {
+		if !strings.Contains(got.RoutingText, want) {
+			t.Fatalf("batched routing text missing %q:\n%s", want, got.RoutingText)
+		}
+	}
+	if len(got.Attachments) != 1 {
+		t.Fatalf("expected one attachment to be preserved, got %d", len(got.Attachments))
+	}
+	if got.Attachments[0].FileName != "photo.jpg" {
+		t.Fatalf("unexpected attachment: %+v", got.Attachments[0])
+	}
+}
+
+func TestV054LuckyCancelClearsWithoutDispatch(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	captured := make(chan agent.UserTurnInput, 1)
+	handler.agent.(*mockAgentProvider).chatStreamIn = func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+		captured <- input
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "unexpected response"}
+		close(ch)
+		return ch, nil
+	}
+
+	chat := gateway.Chat{ID: "12345", Type: gateway.ChatPrivate}
+	sender := gateway.User{ID: "user-1", Username: "alice"}
+	for _, msg := range []*gateway.Message{
+		{ID: "cmd-on", Chat: chat, Sender: sender, Text: "/lucky on", IsCommand: true, Command: "lucky", Args: "on"},
+		{ID: "m1", Chat: chat, Sender: sender, Text: "draft only"},
+		{ID: "cmd-cancel", Chat: chat, Sender: sender, Text: "/lucky cancel", IsCommand: true, Command: "lucky", Args: "cancel"},
+		{ID: "cmd-off", Chat: chat, Sender: sender, Text: "/lucky off", IsCommand: true, Command: "lucky", Args: "off"},
+	} {
+		if err := handler.HandleMessage(context.Background(), msg); err != nil {
+			t.Fatalf("HandleMessage(%s) error = %v", msg.ID, err)
+		}
+	}
+	select {
+	case got := <-captured:
+		t.Fatalf("expected no agent dispatch after cancel, got %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestV054HandleMessageReplyToCronAnchorUsesAnchoredSession(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()

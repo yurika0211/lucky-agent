@@ -28,6 +28,7 @@ func telegramCommandSpecs() []telegramCommandSpec {
 		{Command: "start", Usage: "/start", Description: "Welcome message", Group: commandGroupBasic},
 		{Command: "help", Usage: "/help", Description: "Show help", Group: commandGroupBasic},
 		{Command: "chat", Usage: "/chat <message>", Description: "Send a message to the AI", Group: commandGroupBasic},
+		{Command: "lucky", Usage: "/lucky [on|off|status|cancel]", Description: "Collect multiple messages into one AI request", Group: commandGroupBasic},
 		{Command: "review", Usage: "/review", Description: "Show workspace status", Group: commandGroupSystem},
 		{Command: "init", Usage: "/init", Description: "Show init status", Group: commandGroupSystem},
 		{Command: "config", Usage: "/config [list|get]", Description: "Show configuration", Group: commandGroupSystem},

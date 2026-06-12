@@ -2,6 +2,7 @@ package lhcmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,8 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	luckycollector "github.com/yurika0211/luckyharness/internal/gateway/collector"
+	"github.com/yurika0211/luckyharness/internal/gateway/napcat"
 	"github.com/yurika0211/luckyharness/internal/gateway/openclawweixin"
 	"github.com/yurika0211/luckyharness/internal/gateway/qqofficial"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
@@ -180,6 +183,14 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MsgGateway.QQOfficial.APIBaseURL)
 	case "msg_gateway.qqofficial.gateway_url":
 		fmt.Println(cfg.MsgGateway.QQOfficial.GatewayURL)
+	case "msg_gateway.napcat.listen_addr":
+		fmt.Println(cfg.MsgGateway.NapCat.ListenAddr)
+	case "msg_gateway.napcat.path":
+		fmt.Println(cfg.MsgGateway.NapCat.Path)
+	case "msg_gateway.napcat.access_token":
+		fmt.Println(maskKey(cfg.MsgGateway.NapCat.AccessToken))
+	case "msg_gateway.napcat.group_trigger_mode":
+		fmt.Println(cfg.MsgGateway.NapCat.GroupTriggerMode)
 	default:
 		if v, ok := cfg.Extra[args[0]]; ok {
 			fmt.Println(v)
@@ -346,6 +357,9 @@ type msgGatewayStartOptions struct {
 	QQAppID            string
 	QQAppSecret        string
 	QQSandbox          bool
+	NapCatListenAddr   string
+	NapCatPath         string
+	NapCatAccessToken  string
 	WeixinToken        string
 	WeixinAcct         string
 	OpenClawWeixinAcct string
@@ -400,6 +414,19 @@ func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGa
 		opts.QQSandbox = cfg.MsgGateway.QQOfficial.Sandbox
 	}
 
+	opts.NapCatListenAddr, _ = cmd.Flags().GetString("napcat-listen")
+	if !cmd.Flags().Changed("napcat-listen") && cfg != nil {
+		opts.NapCatListenAddr = cfg.MsgGateway.NapCat.ListenAddr
+	}
+	opts.NapCatPath, _ = cmd.Flags().GetString("napcat-path")
+	if !cmd.Flags().Changed("napcat-path") && cfg != nil {
+		opts.NapCatPath = cfg.MsgGateway.NapCat.Path
+	}
+	opts.NapCatAccessToken, _ = cmd.Flags().GetString("napcat-access-token")
+	if !cmd.Flags().Changed("napcat-access-token") && cfg != nil {
+		opts.NapCatAccessToken = cfg.MsgGateway.NapCat.AccessToken
+	}
+
 	if cfg != nil {
 		opts.WeixinToken = strings.TrimSpace(cfg.MsgGateway.Weixin.Token)
 		opts.WeixinAcct = strings.TrimSpace(cfg.MsgGateway.Weixin.AccountID)
@@ -436,11 +463,13 @@ func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
 		if strings.TrimSpace(opts.QQAppID) == "" || strings.TrimSpace(opts.QQAppSecret) == "" {
 			return fmt.Errorf("qqofficial 需要 --qq-appid 和 --qq-appsecret（或在 config.json 里设置 msg_gateway.qqofficial.app_id / app_secret）")
 		}
+	case "napcat":
+		return nil
 	default:
 		if opts.Platform == "" {
 			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
 		}
-		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial)", opts.Platform)
+		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial, napcat, weixin, openclawweixin)", opts.Platform)
 	}
 
 	return nil
@@ -697,6 +726,11 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	if err := validateMsgGatewayStartOptions(opts); err != nil {
 		return err
 	}
+	if strings.TrimSpace(opts.Platform) != "" {
+		if err := mgr.Set("msg_gateway.platform", strings.TrimSpace(opts.Platform)); err != nil {
+			return err
+		}
+	}
 
 	a, err := agent.New(mgr)
 	if err != nil {
@@ -794,6 +828,43 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		fmt.Println("QQ 官方机器人网关已启动")
+	case "napcat":
+		napcatAdapter := napcat.NewAdapter(napcat.Config{
+			ListenAddr:       opts.NapCatListenAddr,
+			Path:             opts.NapCatPath,
+			AccessToken:      opts.NapCatAccessToken,
+			AllowedChats:     append([]string(nil), cfg.MsgGateway.NapCat.AllowedChats...),
+			AllowedUsers:     append([]string(nil), cfg.MsgGateway.NapCat.AllowedUsers...),
+			RemoveAt:         cfg.MsgGateway.NapCat.RemoveAt,
+			GroupTriggerMode: cfg.MsgGateway.NapCat.GroupTriggerMode,
+		})
+		handler := qqofficial.NewHandlerWithOptions(napcatAdapter, a, qqofficial.HandlerOptions{
+			PlatformName:    "napcat",
+			DisplayName:     "NapCat QQ 网关",
+			LogPrefix:       "napcat",
+			FinalAnswerOnly: true,
+		})
+		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "napcat"))
+		napcatAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			return handler.HandleMessage(ctx, msg)
+		})
+		if err := gm.Register(napcatAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "napcat"); err != nil {
+			return err
+		}
+		napcatPath := strings.TrimSpace(opts.NapCatPath)
+		if napcatPath == "" {
+			napcatPath = cfg.MsgGateway.NapCat.Path
+		}
+		if strings.TrimSpace(napcatPath) == "" {
+			napcatPath = "/onebot/v11/ws"
+		}
+		if !strings.HasPrefix(napcatPath, "/") {
+			napcatPath = "/" + napcatPath
+		}
+		fmt.Printf("NapCat QQ 网关已启动，等待 NapCat 连接 ws://%s%s\n", napcatAdapter.ListenAddr(), napcatPath)
 	case "weixin":
 		wxAdapter := weixin.NewAdapter(weixin.Config{
 			Token:                   cfg.MsgGateway.Weixin.Token,
@@ -807,19 +878,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			PollTimeoutMilliseconds: cfg.MsgGateway.Weixin.PollTimeoutMilliseconds,
 			SendChunkDelayMS:        cfg.MsgGateway.Weixin.SendChunkDelayMS,
 		})
+		wxLucky := luckycollector.NewLucky()
 		wxAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
-			if msg == nil {
-				return nil
-			}
-			text := strings.TrimSpace(msg.Text)
-			if text == "" {
-				return nil
-			}
-			reply, err := a.ChatWithSession(ctx, "weixin:"+msg.Chat.ID, text)
-			if err != nil {
-				return wxAdapter.Send(ctx, msg.Chat.ID, "处理消息失败: "+err.Error())
-			}
-			return wxAdapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, reply)
+			return handlePlainGatewayMessageWithLucky(ctx, "weixin", a, wxAdapter, wxLucky, msg, "处理消息失败")
 		})
 		if err := gm.Register(wxAdapter); err != nil {
 			return err
@@ -840,19 +901,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			PollTimeoutMilliseconds: cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds,
 			SendChunkDelayMS:        cfg.MsgGateway.OpenClawWeixin.SendChunkDelayMS,
 		})
+		wxLucky := luckycollector.NewLucky()
 		wxAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
-			if msg == nil {
-				return nil
-			}
-			text := strings.TrimSpace(msg.Text)
-			if text == "" {
-				return nil
-			}
-			reply, err := a.ChatWithSession(ctx, "openclawweixin:"+msg.Chat.ID, text)
-			if err != nil {
-				return wxAdapter.Send(ctx, msg.Chat.ID, "openclawweixin gateway error: "+err.Error())
-			}
-			return wxAdapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, reply)
+			return handlePlainGatewayMessageWithLucky(ctx, "openclawweixin", a, wxAdapter, wxLucky, msg, "openclawweixin gateway error")
 		})
 		if err := gm.Register(wxAdapter); err != nil {
 			return err
@@ -871,6 +922,98 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	_ = gm.StopAll()
 	syncTelegramState(false, false)
 	return nil
+}
+
+func handlePlainGatewayMessageWithLucky(ctx context.Context, platform string, runtime *agent.Agent, gw gateway.Gateway, lucky *luckycollector.Lucky, msg *gateway.Message, errorPrefix string) error {
+	if msg == nil || runtime == nil || gw == nil {
+		return nil
+	}
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		platform = gw.Name()
+	}
+	if lucky == nil {
+		lucky = luckycollector.NewLucky()
+	}
+	if msg.IsCommand && strings.EqualFold(strings.TrimPrefix(strings.TrimSpace(msg.Command), "/"), "lucky") {
+		return handlePlainGatewayLuckyCommand(ctx, platform, runtime, gw, lucky, msg, errorPrefix)
+	}
+
+	key := luckycollector.KeyForMessage(platform, msg)
+	status := lucky.Status(key)
+	if status.Active {
+		status, err := lucky.Append(key, msg)
+		if err != nil {
+			return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "Lucky collection failed: "+err.Error())
+		}
+		return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, fmt.Sprintf("已收集第 %d 段（附件 %d 个）。发送 /lucky off 提交，/lucky cancel 放弃。", status.SegmentCount, status.AttachmentCount))
+	}
+
+	text := strings.TrimSpace(msg.Text)
+	if text == "" && len(msg.Attachments) == 0 {
+		return nil
+	}
+	input := agent.MultimodalUserTurnInput(text, msg.Attachments)
+	return sendPlainGatewayAgentInput(ctx, platform, runtime, gw, msg, input, errorPrefix)
+}
+
+func handlePlainGatewayLuckyCommand(ctx context.Context, platform string, runtime *agent.Agent, gw gateway.Gateway, lucky *luckycollector.Lucky, msg *gateway.Message, errorPrefix string) error {
+	action := luckycollector.ParseLuckyAction(msg.Args)
+	key := luckycollector.KeyForMessage(platform, msg)
+
+	switch action {
+	case luckycollector.LuckyActionOn:
+		status, err := lucky.Start(key)
+		if errors.Is(err, luckycollector.ErrAlreadyActive) {
+			return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, fmt.Sprintf("Lucky 已经在收集中：当前 %d 段，附件 %d 个。发送 /lucky off 提交，/lucky cancel 放弃。", status.SegmentCount, status.AttachmentCount))
+		}
+		if err != nil {
+			return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "Lucky 开启失败："+err.Error())
+		}
+		return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "Lucky 已开启。接下来发送的多段消息会先被收集；发送 /lucky off 后再统一交给 agent。")
+	case luckycollector.LuckyActionOff:
+		batch, err := lucky.Finish(key)
+		if errors.Is(err, luckycollector.ErrInactive) {
+			return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "当前没有正在进行的 Lucky 收集。发送 /lucky on 开始。")
+		}
+		if errors.Is(err, luckycollector.ErrEmptyBatch) {
+			return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "没有收集到消息，已退出 Lucky 收集模式。")
+		}
+		if err != nil {
+			return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "Lucky 提交失败："+err.Error())
+		}
+		return sendPlainGatewayAgentInput(ctx, platform, runtime, gw, msg, batch.UserTurnInput(), errorPrefix)
+	case luckycollector.LuckyActionStatus:
+		status := lucky.Status(key)
+		if !status.Active {
+			return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "Lucky 未开启。发送 /lucky on 开始收集多段消息。")
+		}
+		return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, fmt.Sprintf("Lucky 正在收集：%d 段，附件 %d 个。发送 /lucky off 提交，/lucky cancel 放弃。", status.SegmentCount, status.AttachmentCount))
+	case luckycollector.LuckyActionCancel:
+		status, ok := lucky.Cancel(key)
+		if !ok {
+			return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "当前没有正在进行的 Lucky 收集。")
+		}
+		return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, fmt.Sprintf("已取消 Lucky 收集，丢弃 %d 段消息和 %d 个附件。", status.SegmentCount, status.AttachmentCount))
+	default:
+		return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, "用法：/lucky on | /lucky off | /lucky status | /lucky cancel")
+	}
+}
+
+func sendPlainGatewayAgentInput(ctx context.Context, platform string, runtime *agent.Agent, gw gateway.Gateway, msg *gateway.Message, input agent.UserTurnInput, errorPrefix string) error {
+	sessionID := platform + ":" + msg.Chat.ID
+	if sessions := runtime.Sessions(); sessions != nil {
+		sessions.Ensure(sessionID)
+	}
+	reply, err := runtime.ChatWithSessionInput(ctx, sessionID, input)
+	if err != nil {
+		prefix := strings.TrimSpace(errorPrefix)
+		if prefix == "" {
+			prefix = "处理消息失败"
+		}
+		return gw.Send(ctx, msg.Chat.ID, prefix+": "+err.Error())
+	}
+	return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, reply)
 }
 
 func runMsgGatewayStop(cmd *cobra.Command, args []string) error {

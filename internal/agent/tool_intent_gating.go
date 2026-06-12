@@ -220,7 +220,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 		}
 		if intentTextContainsAny(intentText, "子代理", "委派", "delegate") {
 			addIntentTools(allowed, "task_status", "list_tasks")
-			if !intentTextContainsAny(intentText, "不要新建", "不要委派", "只查看", "只列出") {
+			if !intentTextContainsAny(intentText, "不要新建", "不要委派", "只查看", "只列出", "工具", "实现", "代码", "源码", "在哪里", "在哪", "位置", "定义") {
 				addIntentTools(allowed, "delegate_task")
 			}
 		}

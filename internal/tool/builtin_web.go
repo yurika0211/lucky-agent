@@ -416,6 +416,26 @@ func WebFetchTool(cfg *WebSearchConfig) *Tool {
 	}
 }
 
+func DefuddleCompatTool(cfg *WebSearchConfig) *Tool {
+	if cfg == nil {
+		cfg = defaultWebSearchConfig()
+	}
+	return &Tool{
+		Name:            "defuddle",
+		Description:     "Compatibility fetch tool. Extract readable content from a URL using the standard web fetch pipeline.",
+		Category:        CatBuiltin,
+		Source:          "builtin",
+		Permission:      PermApprove,
+		HiddenFromModel: true,
+		Parameters: map[string]Param{
+			"url":       {Type: "string", Description: "Exact URL to fetch and convert into readable text.", Required: true},
+			"max_chars": {Type: "number", Description: "Maximum readable text to return. Lower this when you only need a focused excerpt.", Required: false, Default: 50000},
+		},
+		Handler:      func(args map[string]any) (string, error) { return handleWebFetch(cfg, args) },
+		ParallelSafe: true,
+	}
+}
+
 func handleWebFetch(cfg *WebSearchConfig, args map[string]any) (string, error) {
 	fetchURL, ok := args["url"].(string)
 	if !ok {

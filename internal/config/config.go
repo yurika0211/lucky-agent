@@ -235,13 +235,14 @@ type AutonomyConfig struct {
 
 // MsgGatewayConfig 消息网关配置
 type MsgGatewayConfig struct {
-	Platform   string               `json:"platform,omitempty"`
-	StartAll   bool                 `json:"start_all,omitempty"`
-	APIAddr    string               `json:"api_addr,omitempty"`
-	Token      string               `json:"token,omitempty"` // 兼容: telegram token
-	Telegram   MsgGatewayTelegram   `json:"telegram,omitempty"`
-	QQOfficial MsgGatewayQQOfficial `json:"qqofficial,omitempty"`
-	Weixin     MsgGatewayWeixin     `json:"weixin,omitempty"`
+	Platform       string                   `json:"platform,omitempty"`
+	StartAll       bool                     `json:"start_all,omitempty"`
+	APIAddr        string                   `json:"api_addr,omitempty"`
+	Token          string                   `json:"token,omitempty"` // 兼容: telegram token
+	Telegram       MsgGatewayTelegram       `json:"telegram,omitempty"`
+	QQOfficial     MsgGatewayQQOfficial     `json:"qqofficial,omitempty"`
+	NapCat         MsgGatewayNapCat         `json:"napcat,omitempty"`
+	Weixin         MsgGatewayWeixin         `json:"weixin,omitempty"`
 	OpenClawWeixin MsgGatewayOpenClawWeixin `json:"openclawweixin,omitempty"`
 }
 
@@ -269,6 +270,17 @@ type MsgGatewayQQOfficial struct {
 	HeartbeatSec  int      `json:"heartbeat_sec,omitempty"`
 	ReconnectWait int      `json:"reconnect_wait_seconds,omitempty"`
 	Intents       []string `json:"intents,omitempty"`
+}
+
+// MsgGatewayNapCat NapCat / OneBot v11 反向 WebSocket 配置
+type MsgGatewayNapCat struct {
+	ListenAddr       string   `json:"listen_addr,omitempty"`
+	Path             string   `json:"path,omitempty"`
+	AccessToken      string   `json:"access_token,omitempty"`
+	AllowedChats     []string `json:"allowed_chats,omitempty"`
+	AllowedUsers     []string `json:"allowed_users,omitempty"`
+	RemoveAt         bool     `json:"remove_at,omitempty"`
+	GroupTriggerMode string   `json:"group_trigger_mode,omitempty"`
 }
 
 // MemoryConfig 记忆系统配置
@@ -578,6 +590,12 @@ func DefaultConfig() *Config {
 					"public_guild_messages",
 					"group_and_c2c_messages",
 				},
+			},
+			NapCat: MsgGatewayNapCat{
+				ListenAddr:       "127.0.0.1:6701",
+				Path:             "/onebot/v11/ws",
+				RemoveAt:         true,
+				GroupTriggerMode: "mention",
 			},
 			Weixin: MsgGatewayWeixin{
 				BaseURL:                 "https://ilinkai.weixin.qq.com",
@@ -908,6 +926,15 @@ func normalizeConfig(cfg *Config) {
 	if len(cfg.MsgGateway.QQOfficial.Intents) == 0 {
 		cfg.MsgGateway.QQOfficial.Intents = append([]string(nil), def.MsgGateway.QQOfficial.Intents...)
 	}
+	if strings.TrimSpace(cfg.MsgGateway.NapCat.ListenAddr) == "" {
+		cfg.MsgGateway.NapCat.ListenAddr = def.MsgGateway.NapCat.ListenAddr
+	}
+	if strings.TrimSpace(cfg.MsgGateway.NapCat.Path) == "" {
+		cfg.MsgGateway.NapCat.Path = def.MsgGateway.NapCat.Path
+	}
+	if strings.TrimSpace(cfg.MsgGateway.NapCat.GroupTriggerMode) == "" {
+		cfg.MsgGateway.NapCat.GroupTriggerMode = def.MsgGateway.NapCat.GroupTriggerMode
+	}
 	if cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds <= 0 {
 		cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds = def.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds
 	}
@@ -942,6 +969,15 @@ func cloneConfig(in *Config) *Config {
 	cp.Fallbacks = append([]FallbackEntry(nil), in.Fallbacks...)
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
+	cp.MsgGateway.QQOfficial.AllowedChats = append([]string(nil), in.MsgGateway.QQOfficial.AllowedChats...)
+	cp.MsgGateway.QQOfficial.AllowedUsers = append([]string(nil), in.MsgGateway.QQOfficial.AllowedUsers...)
+	cp.MsgGateway.QQOfficial.Intents = append([]string(nil), in.MsgGateway.QQOfficial.Intents...)
+	cp.MsgGateway.NapCat.AllowedChats = append([]string(nil), in.MsgGateway.NapCat.AllowedChats...)
+	cp.MsgGateway.NapCat.AllowedUsers = append([]string(nil), in.MsgGateway.NapCat.AllowedUsers...)
+	cp.MsgGateway.Weixin.AllowedUsers = append([]string(nil), in.MsgGateway.Weixin.AllowedUsers...)
+	cp.MsgGateway.Weixin.GroupAllowedUsers = append([]string(nil), in.MsgGateway.Weixin.GroupAllowedUsers...)
+	cp.MsgGateway.OpenClawWeixin.AllowedUsers = append([]string(nil), in.MsgGateway.OpenClawWeixin.AllowedUsers...)
+	cp.MsgGateway.OpenClawWeixin.GroupAllowedUsers = append([]string(nil), in.MsgGateway.OpenClawWeixin.GroupAllowedUsers...)
 	if in.Autonomy.Worker.AutoApprove != nil {
 		v := *in.Autonomy.Worker.AutoApprove
 		cp.Autonomy.Worker.AutoApprove = &v
@@ -1296,6 +1332,20 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.MsgGateway.QQOfficial.ReconnectWait = n
+	case "msg_gateway.napcat.listen_addr":
+		m.config.MsgGateway.NapCat.ListenAddr = value
+	case "msg_gateway.napcat.path":
+		m.config.MsgGateway.NapCat.Path = value
+	case "msg_gateway.napcat.access_token":
+		m.config.MsgGateway.NapCat.AccessToken = value
+	case "msg_gateway.napcat.allowed_chats":
+		m.config.MsgGateway.NapCat.AllowedChats = splitCSV(value)
+	case "msg_gateway.napcat.allowed_users":
+		m.config.MsgGateway.NapCat.AllowedUsers = splitCSV(value)
+	case "msg_gateway.napcat.remove_at":
+		m.config.MsgGateway.NapCat.RemoveAt = parseBool(value)
+	case "msg_gateway.napcat.group_trigger_mode":
+		m.config.MsgGateway.NapCat.GroupTriggerMode = value
 	case "msg_gateway.weixin.token":
 		m.config.MsgGateway.Weixin.Token = value
 	case "msg_gateway.weixin.account_id":

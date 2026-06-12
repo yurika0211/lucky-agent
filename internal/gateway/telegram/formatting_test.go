@@ -98,3 +98,51 @@ func TestFormatTelegramRichTextRecoversScreenshotStyleNestedCodeBlocks(t *testin
 		t.Fatalf("expected references to be outside code block, got:\n%s", got)
 	}
 }
+
+func TestFormatTelegramRichTextKeepsScreenshotProseAfterCodeFenceOutsidePre(t *testing.T) {
+	input := "看一个典型的 C 函数怎么编译的：\n" +
+		"```c\n" +
+		"void func() {\n" +
+		"    int x;    // 局部变量\n" +
+		"}\n\n" +
+		"编译后大概长这样：\n\n" +
+		"```asm\n" +
+		"func:\n" +
+		"    push    rbp\n" +
+		"    mov     rbp, rsp\n" +
+		"    sub     rsp, 16\n\n" +
+		"## 💡 为什么是 `-4` 而不是 `-1`？\n\n" +
+		"因为 **int 占 4 个字节**！偏移 4 字节正是为了给 `int` 变量腾出完整空间：\n\n" +
+		"| 类型 | 大小 | 典型偏移 |\n" +
+		"|------|------|----------|\n" +
+		"| `char` | 1B | `rbp-1` |\n" +
+		"| **`int`** | **4B** | **`rbp-4`** |\n\n" +
+		"## 🎯 一句话总结\n\n" +
+		"**`[rbp-4]` = 当前函数栈帧中，从栈底往下第 1 个局部变量的位置**"
+
+	got := formatTelegramRichText(input)
+	if strings.Contains(got, "<code>void func()") && strings.Contains(got, "## 💡") && strings.Contains(got, "一句话总结</code></pre>") {
+		t.Fatalf("expected prose after code fences to render outside code block, got:\n%s", got)
+	}
+	for _, outside := range []string{
+		"编译后大概长这样：",
+		"<b>💡 为什么是 <code>-4</code> 而不是 <code>-1</code>？</b>",
+		"| 类型 | 大小 | 典型偏移 |",
+		"<b>🎯 一句话总结</b>",
+	} {
+		if !strings.Contains(got, outside) {
+			t.Fatalf("expected %q outside code block, got:\n%s", outside, got)
+		}
+	}
+	if strings.Contains(got, "<code>编译后大概长这样：") ||
+		strings.Contains(got, "<code>| 类型 |") ||
+		strings.Contains(got, "一句话总结</code></pre>") {
+		t.Fatalf("expected prose/table/summary outside code block, got:\n%s", got)
+	}
+	if strings.Count(got, "<pre>") != strings.Count(got, "</pre>") {
+		t.Fatalf("unbalanced pre tags in:\n%s", got)
+	}
+	if strings.Count(got, "<code>") != strings.Count(got, "</code>") {
+		t.Fatalf("unbalanced code tags in:\n%s", got)
+	}
+}

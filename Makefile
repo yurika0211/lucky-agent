@@ -1,4 +1,4 @@
-.PHONY: build install test clean init run serve chat tg qq weixin dashboard tui ui-install ui-build ui-dev ui-typecheck
+.PHONY: build install test clean init run serve chat tg qq napcat weixin dashboard tui ui-install ui-build ui-dev ui-typecheck
 
 HOME_DIR := $(CURDIR)/.lh-home
 
@@ -44,6 +44,9 @@ tg:
 
 qq:
 	$(RUN_WITH_HOME) $(LH_CMD) msg-gateway start --platform qqofficial
+
+napcat:
+	$(RUN_WITH_HOME) $(LH_CMD) msg-gateway start --platform napcat
 
 weixin:
 	$(RUN_WITH_HOME) $(LH_CMD) msg-gateway start --platform weixin
