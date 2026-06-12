@@ -24,6 +24,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	luckycollector "github.com/yurika0211/luckyharness/internal/gateway/collector"
 	"github.com/yurika0211/luckyharness/internal/learning"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
@@ -338,6 +339,7 @@ type Handler struct {
 	sessions   map[string]string // chatID → sessionID
 	tasks      map[string]*chatTask
 	queues     map[string]*chatQueue
+	lucky      *luckycollector.Lucky
 	restarting bool
 
 	// v0.44.0: chatID→sessionID 映射持久化
@@ -408,6 +410,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		sessions:                  make(map[string]string),
 		tasks:                     make(map[string]*chatTask),
 		queues:                    make(map[string]*chatQueue),
+		lucky:                     luckycollector.NewLucky(),
 		dataDir:                   "", // 默认不持久化，需 SetDataDir 启用
 		chatStreamTimeout:         resolveChatStreamTimeout(state),
 		progressAsMessages:        resolveProgressAsMessages(state),
@@ -443,6 +446,7 @@ func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 		"chat": func(ctx context.Context, msg *gateway.Message) error {
 			return h.dispatchChatAsync(ctx, msg, agent.TextUserTurnInput(msg.Args))
 		},
+		"lucky":          h.handleLucky,
 		"sessions":       h.handleSessions,
 		"resume":         h.handleResume,
 		"rename":         h.handleRename,
@@ -1159,6 +1163,47 @@ func (h *Handler) queueStatus(chatID string) (running bool, queued int) {
 	return running, queued
 }
 
+func (h *Handler) luckyCollector() *luckycollector.Lucky {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.lucky == nil {
+		h.lucky = luckycollector.NewLucky()
+	}
+	return h.lucky
+}
+
+func (h *Handler) collectLuckyMessageIfActive(ctx context.Context, msg *gateway.Message) (bool, error) {
+	if msg == nil {
+		return false, nil
+	}
+	collector := h.luckyCollector()
+	key := luckycollector.KeyForMessage("telegram", msg)
+	status := collector.Status(key)
+	if !status.Active {
+		return false, nil
+	}
+	h.bindSessionFromReplyAnchor(msg)
+	status, err := collector.Append(key, msg)
+	if err != nil {
+		return true, h.sendLuckyNotice(ctx, msg, fmt.Sprintf("Lucky collection failed: %s", err.Error()))
+	}
+	return true, h.sendLuckyNotice(ctx, msg, fmt.Sprintf("已收集第 %d 段（附件 %d 个）。发送 /lucky off 提交，/lucky cancel 放弃。", status.SegmentCount, status.AttachmentCount))
+}
+
+func (h *Handler) sendLuckyNotice(ctx context.Context, msg *gateway.Message, text string) error {
+	if h == nil || h.adapter == nil || msg == nil {
+		return nil
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
+		return h.adapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, text)
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, text)
+}
+
 func isTaskCanceledError(err error) bool {
 	if err == nil {
 		return false
@@ -1185,6 +1230,10 @@ func isTaskTimeoutError(err error) bool {
 func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error {
 	if msg.IsCommand {
 		return h.handleCommand(ctx, msg)
+	}
+
+	if collected, err := h.collectLuckyMessageIfActive(ctx, msg); collected || err != nil {
+		return err
 	}
 
 	h.bindSessionFromReplyAnchor(msg)
@@ -1324,6 +1373,63 @@ func normalizeTelegramCommandName(command string) string {
 		return "learn_progress"
 	default:
 		return command
+	}
+}
+
+func (h *Handler) handleLucky(ctx context.Context, msg *gateway.Message) error {
+	action := luckycollector.ParseLuckyAction(msg.Args)
+	collector := h.luckyCollector()
+	key := luckycollector.KeyForMessage("telegram", msg)
+
+	switch action {
+	case luckycollector.LuckyActionOn:
+		h.bindSessionFromReplyAnchor(msg)
+		status, err := collector.Start(key)
+		if errors.Is(err, luckycollector.ErrAlreadyActive) {
+			return h.sendLuckyNotice(ctx, msg, fmt.Sprintf("Lucky 已经在收集中：当前 %d 段，附件 %d 个。发送 /lucky off 提交，/lucky cancel 放弃。", status.SegmentCount, status.AttachmentCount))
+		}
+		if err != nil {
+			return h.sendLuckyNotice(ctx, msg, fmt.Sprintf("Lucky 开启失败：%s", err.Error()))
+		}
+		return h.sendLuckyNotice(ctx, msg, "Lucky 已开启。接下来发送的多段消息会先被收集；发送 /lucky off 后再统一交给 agent。")
+
+	case luckycollector.LuckyActionOff:
+		batch, err := collector.Finish(key)
+		if errors.Is(err, luckycollector.ErrInactive) {
+			return h.sendLuckyNotice(ctx, msg, "当前没有正在进行的 Lucky 收集。发送 /lucky on 开始。")
+		}
+		if errors.Is(err, luckycollector.ErrEmptyBatch) {
+			return h.sendLuckyNotice(ctx, msg, "没有收集到消息，已退出 Lucky 收集模式。")
+		}
+		if err != nil {
+			return h.sendLuckyNotice(ctx, msg, fmt.Sprintf("Lucky 提交失败：%s", err.Error()))
+		}
+		input := batch.UserTurnInput()
+		finalMsg := *msg
+		finalMsg.IsCommand = false
+		finalMsg.Command = ""
+		finalMsg.Args = ""
+		finalMsg.Text = input.RoutingText
+		finalMsg.Attachments = batch.Attachments()
+		finalMsg.IsGroupTrigger = false
+		return h.dispatchChatAsync(ctx, &finalMsg, input)
+
+	case luckycollector.LuckyActionStatus:
+		status := collector.Status(key)
+		if !status.Active {
+			return h.sendLuckyNotice(ctx, msg, "Lucky 未开启。发送 /lucky on 开始收集多段消息。")
+		}
+		return h.sendLuckyNotice(ctx, msg, fmt.Sprintf("Lucky 正在收集：%d 段，附件 %d 个。发送 /lucky off 提交，/lucky cancel 放弃。", status.SegmentCount, status.AttachmentCount))
+
+	case luckycollector.LuckyActionCancel:
+		status, ok := collector.Cancel(key)
+		if !ok {
+			return h.sendLuckyNotice(ctx, msg, "当前没有正在进行的 Lucky 收集。")
+		}
+		return h.sendLuckyNotice(ctx, msg, fmt.Sprintf("已取消 Lucky 收集，丢弃 %d 段消息和 %d 个附件。", status.SegmentCount, status.AttachmentCount))
+
+	default:
+		return h.sendLuckyNotice(ctx, msg, "用法：/lucky on | /lucky off | /lucky status | /lucky cancel")
 	}
 }
 

@@ -20,6 +20,9 @@ func newMsgGatewayStartTestCmd() *cobra.Command {
 	cmd.Flags().String("qq-appid", "", "")
 	cmd.Flags().String("qq-appsecret", "", "")
 	cmd.Flags().Bool("qq-sandbox", false, "")
+	cmd.Flags().String("napcat-listen", "", "")
+	cmd.Flags().String("napcat-path", "", "")
+	cmd.Flags().String("napcat-access-token", "", "")
 	cmd.Flags().Bool("all", false, "")
 	return cmd
 }
@@ -32,6 +35,9 @@ func TestResolveMsgGatewayStartOptionsUsesConfigDefaults(t *testing.T) {
 	cfg.MsgGateway.QQOfficial.AppID = "qq-app"
 	cfg.MsgGateway.QQOfficial.AppSecret = "qq-secret"
 	cfg.MsgGateway.QQOfficial.Sandbox = true
+	cfg.MsgGateway.NapCat.ListenAddr = "127.0.0.1:6701"
+	cfg.MsgGateway.NapCat.Path = "/onebot/v11/ws"
+	cfg.MsgGateway.NapCat.AccessToken = "nap-token"
 
 	opts := resolveMsgGatewayStartOptions(cmd, cfg)
 	if opts.Platform != "telegram" {
@@ -46,6 +52,9 @@ func TestResolveMsgGatewayStartOptionsUsesConfigDefaults(t *testing.T) {
 	if !opts.QQSandbox {
 		t.Fatal("expected qq sandbox from config")
 	}
+	if opts.NapCatListenAddr != "127.0.0.1:6701" || opts.NapCatPath != "/onebot/v11/ws" || opts.NapCatAccessToken != "nap-token" {
+		t.Fatalf("expected napcat config defaults, got listen=%q path=%q token=%q", opts.NapCatListenAddr, opts.NapCatPath, opts.NapCatAccessToken)
+	}
 }
 
 func TestResolveMsgGatewayStartOptionsFlagsOverrideConfig(t *testing.T) {
@@ -59,10 +68,14 @@ func TestResolveMsgGatewayStartOptionsFlagsOverrideConfig(t *testing.T) {
 	if err := cmd.Flags().Set("qq-appsecret", "flag-secret"); err != nil {
 		t.Fatal(err)
 	}
+	if err := cmd.Flags().Set("napcat-listen", "0.0.0.0:6701"); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{}
 	cfg.MsgGateway.Platform = "telegram"
 	cfg.MsgGateway.QQOfficial.AppID = "config-app"
 	cfg.MsgGateway.QQOfficial.AppSecret = "config-secret"
+	cfg.MsgGateway.NapCat.ListenAddr = "127.0.0.1:6701"
 
 	opts := resolveMsgGatewayStartOptions(cmd, cfg)
 	if opts.Platform != "qqofficial" {
@@ -70,6 +83,9 @@ func TestResolveMsgGatewayStartOptionsFlagsOverrideConfig(t *testing.T) {
 	}
 	if opts.QQAppID != "flag-app" || opts.QQAppSecret != "flag-secret" {
 		t.Fatalf("expected qq credentials from flags, got app=%q secret=%q", opts.QQAppID, opts.QQAppSecret)
+	}
+	if opts.NapCatListenAddr != "0.0.0.0:6701" {
+		t.Fatalf("expected napcat listen from flag, got %q", opts.NapCatListenAddr)
 	}
 }
 
@@ -100,6 +116,12 @@ func TestValidateMsgGatewayStartOptionsRejectsMissingOpenClawWeixinAccount(t *te
 	}
 	if !strings.Contains(err.Error(), "msg_gateway.openclawweixin.account_id") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateMsgGatewayStartOptionsAcceptsNapCatWithoutCredentials(t *testing.T) {
+	if err := validateMsgGatewayStartOptions(msgGatewayStartOptions{Platform: "napcat"}); err != nil {
+		t.Fatalf("expected napcat to validate without credentials, got %v", err)
 	}
 }
 

@@ -76,6 +76,43 @@ func TestBuildSystemPromptIncludesSoulSkillsAndPlatformHints(t *testing.T) {
 	}
 }
 
+func TestBuildSystemPromptIncludesNapCatPlainTextPlatformHint(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	if err := mgr.Set("msg_gateway.platform", "napcat"); err != nil {
+		t.Fatalf("set platform: %v", err)
+	}
+
+	a := &Agent{
+		cfg:  mgr,
+		soul: soul.Default(),
+		tools: func() *tool.Registry {
+			r := tool.NewRegistry()
+			r.Register(&tool.Tool{Name: "remember", Enabled: true})
+			return r
+		}(),
+	}
+
+	prompt := a.buildSystemPrompt(nil)
+	for _, want := range []string{
+		"delivered through QQ",
+		"plain chat text only",
+		"Do not use Markdown syntax",
+		"inline code backticks",
+		"Markdown link syntax",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected NapCat platform hint to contain %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "On Telegram:") {
+		t.Fatalf("did not expect Telegram platform hint for NapCat:\n%s", prompt)
+	}
+}
+
 func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
 	tmpDir := t.TempDir()
 	manualPath := filepath.Join(tmpDir, "LUCKYHARNESS_AGENT_MANUAL.md")

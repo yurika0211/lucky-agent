@@ -11,8 +11,44 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
+
+type qqHandlerTestSender struct {
+	mu       sync.Mutex
+	messages []string
+}
+
+func (s *qqHandlerTestSender) Name() string                { return "test" }
+func (s *qqHandlerTestSender) Start(context.Context) error { return nil }
+func (s *qqHandlerTestSender) Stop() error                 { return nil }
+func (s *qqHandlerTestSender) IsRunning() bool             { return true }
+
+func (s *qqHandlerTestSender) Send(_ context.Context, _ string, message string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messages = append(s.messages, message)
+	return nil
+}
+
+func (s *qqHandlerTestSender) SendWithReply(_ context.Context, _ string, _ string, message string) error {
+	return s.Send(context.Background(), "", message)
+}
+
+func (s *qqHandlerTestSender) SendPhoto(_ context.Context, _ string, _ string, source string, caption string) error {
+	return s.Send(context.Background(), "", strings.TrimSpace(source+" "+caption))
+}
+
+func (s *qqHandlerTestSender) SendDocument(_ context.Context, _ string, _ string, source string, caption string) error {
+	return s.Send(context.Background(), "", strings.TrimSpace(source+" "+caption))
+}
+
+func (s *qqHandlerTestSender) Messages() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.messages...)
+}
 
 func TestBuildIntentBits(t *testing.T) {
 	bits := buildIntentBits([]string{"group_messages", "c2c_messages"})
@@ -160,7 +196,7 @@ func TestSendWithReplyUsesIncrementingMsgSeq(t *testing.T) {
 	}
 }
 
-func TestBuildUserTurnInputRoutesAttachmentsThroughTextPath(t *testing.T) {
+func TestBuildUserTurnInputPreservesAttachments(t *testing.T) {
 	h := NewHandler(NewAdapter(DefaultConfig()), nil)
 	input := h.buildUserTurnInput(context.Background(), "看一下附件", []gateway.Attachment{
 		{
@@ -174,14 +210,21 @@ func TestBuildUserTurnInputRoutesAttachmentsThroughTextPath(t *testing.T) {
 	if input.Message.Role != "user" {
 		t.Fatalf("expected user role, got %q", input.Message.Role)
 	}
-	if len(input.Message.ContentParts) != 0 {
-		t.Fatalf("expected no content parts, got %#v", input.Message.ContentParts)
+	if len(input.Attachments) != 1 {
+		t.Fatalf("expected attachment to be preserved, got %#v", input.Attachments)
 	}
 	if input.RoutingText == "" {
 		t.Fatal("expected non-empty routing text")
 	}
 	if got := input.RoutingText; got == "看一下附件" {
 		t.Fatalf("expected attachment description to be appended, got %q", got)
+	}
+	normalized := input.Normalize()
+	if len(normalized.Message.ContentParts) != 2 {
+		t.Fatalf("expected text plus image content parts, got %#v", normalized.Message.ContentParts)
+	}
+	if normalized.Message.ContentParts[1].Image == nil || normalized.Message.ContentParts[1].Image.FilePath != "/tmp/example.jpg" {
+		t.Fatalf("expected image content part to keep file path, got %#v", normalized.Message.ContentParts[1])
 	}
 }
 
@@ -215,6 +258,80 @@ func TestQQProgressTraceBuildsPublicSummary(t *testing.T) {
 	}
 	if !strings.Contains(got, "不包含模型隐藏推理") {
 		t.Fatalf("expected hidden reasoning disclaimer, got %q", got)
+	}
+}
+
+func TestHandlerFinalAnswerOnlySuppressesProgressMessages(t *testing.T) {
+	sender := &qqHandlerTestSender{}
+	handler := NewHandlerWithOptions(sender, nil, HandlerOptions{
+		PlatformName:    "napcat",
+		FinalAnswerOnly: true,
+	})
+	events := make(chan agent.ChatEvent, 5)
+	events <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
+	events <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"test"}`}
+	events <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "web_search", Result: "ok"}
+	events <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "中间内容"}
+	events <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "最终答案"}
+	close(events)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	msg := &gateway.Message{
+		ID:   "msg-1",
+		Chat: gateway.Chat{ID: "group:123", Type: gateway.ChatGroup},
+	}
+	if err := handler.handleChatEventStream(ctx, msg, events); err != nil {
+		t.Fatalf("handleChatEventStream() error = %v", err)
+	}
+
+	messages := sender.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("expected exactly one outbound message, got %d: %#v", len(messages), messages)
+	}
+	if messages[0] != "最终答案" {
+		t.Fatalf("expected final answer only, got %q", messages[0])
+	}
+}
+
+func TestQQCommandNamesMatchTelegramCommandSet(t *testing.T) {
+	expected := []string{
+		"start", "help", "chat", "lucky",
+		"review", "init", "config", "version", "model", "models", "soul", "tools", "skills", "mcp", "approve", "deny", "cron", "watch", "dashboard", "msg_gateway", "rag", "context", "fc", "embedder", "metrics", "health",
+		"learn", "learn_start", "learn_current", "learn_lab", "learn_submit", "learn_progress",
+		"remember", "remember_long", "recall", "memstats", "memdecay", "promote", "profile", "reset", "history", "session", "sessions", "resume", "rename", "new", "stop", "status", "restart",
+	}
+	got := qqCommandNames()
+	if len(got) != len(expected) {
+		t.Fatalf("expected %d commands, got %d: %#v", len(expected), len(got), got)
+	}
+	for i, want := range expected {
+		if got[i] != want {
+			t.Fatalf("command %d = %q, want %q", i, got[i], want)
+		}
+	}
+}
+
+func TestQQCommandRegistryCoversAllCommands(t *testing.T) {
+	h := NewHandlerWithOptions(&qqHandlerTestSender{}, nil, HandlerOptions{PlatformName: "napcat"})
+	for _, name := range qqCommandNames() {
+		if h.commands[name] == nil {
+			t.Fatalf("command %q is missing a handler", name)
+		}
+	}
+}
+
+func TestQQHelpIncludesAdvancedCommands(t *testing.T) {
+	help := qqHelpMessage()
+	for _, want := range []string{"/rag", "/sessions", "/remember", "/embedder", "/learn_start", "/msg_gateway"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help is missing %s:\n%s", want, help)
+		}
+	}
+	for _, forbidden := range []string{"`", "**", "```"} {
+		if strings.Contains(help, forbidden) {
+			t.Fatalf("help should be plain text, found %q in:\n%s", forbidden, help)
+		}
 	}
 }
 

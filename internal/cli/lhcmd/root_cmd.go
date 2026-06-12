@@ -167,11 +167,14 @@ func newRootCmd() *cobra.Command {
 		Short: "启动消息网关",
 		RunE:  runMsgGatewayStart,
 	}
-	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial)")
+	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial, napcat, weixin, openclawweixin)")
 	msgGatewayStartCmd.Flags().String("token", "", "Bot token (Telegram)")
 	msgGatewayStartCmd.Flags().String("qq-appid", "", "QQ 官方机器人 AppID")
 	msgGatewayStartCmd.Flags().String("qq-appsecret", "", "QQ 官方机器人 AppSecret")
 	msgGatewayStartCmd.Flags().Bool("qq-sandbox", false, "QQ 官方机器人沙箱环境")
+	msgGatewayStartCmd.Flags().String("napcat-listen", "", "NapCat OneBot 反向 WebSocket 监听地址")
+	msgGatewayStartCmd.Flags().String("napcat-path", "", "NapCat OneBot 反向 WebSocket 路径")
+	msgGatewayStartCmd.Flags().String("napcat-access-token", "", "NapCat OneBot 访问令牌")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
 	msgGatewayStopCmd := &cobra.Command{
 		Use:   "stop [platform]",

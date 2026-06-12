@@ -180,6 +180,15 @@
         "group_and_c2c_messages"
       ]
     },
+    "napcat": {
+      "listen_addr": "127.0.0.1:6701",
+      "path": "/onebot/v11/ws",
+      "access_token": "",
+      "allowed_chats": [],
+      "allowed_users": [],
+      "remove_at": true,
+      "group_trigger_mode": "mention"
+    },
     "weixin": {
       "token": "",
       "account_id": "",

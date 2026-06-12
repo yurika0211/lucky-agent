@@ -147,6 +147,7 @@ func contentPartFromAttachment(att gateway.Attachment) (provider.ContentPart, bo
 	return provider.ContentPart{
 		Type: "image",
 		Image: &provider.ImagePart{
+			URL:      strings.TrimSpace(att.FileURL),
 			FilePath: strings.TrimSpace(att.FilePath),
 			MimeType: strings.TrimSpace(att.MimeType),
 		},
