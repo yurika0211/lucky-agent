@@ -39,5 +39,23 @@ services:
       luckyharness:
         condition: service_healthy
 
+  luckyharness-napcat:
+    image: luckyharness:dev
+    container_name: luckyharness-napcat
+    entrypoint: ["luckyharness"]
+    restart: unless-stopped
+    environment:
+      HOME: /var/lib/luckyharness
+      TZ: ${TZ:-Asia/Shanghai}
+    command: ["msg-gateway", "start", "--platform", "napcat", "--napcat-listen", "0.0.0.0:6701"]
+    ports:
+      - "${LH_NAPCAT_PORT:-6701}:6701"
+    volumes:
+      - lh-home:/var/lib/luckyharness
+      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json
+    depends_on:
+      luckyharness:
+        condition: service_healthy
+
 volumes:
   lh-home:
