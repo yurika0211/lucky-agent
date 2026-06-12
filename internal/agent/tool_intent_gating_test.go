@@ -282,6 +282,19 @@ func TestApplyIntentToolGatingDelegateListBlocksNewTask(t *testing.T) {
 	assertDisabledTools(t, loopCfg.DisabledTools, "delegate_task")
 }
 
+func TestApplyIntentToolGatingDelegateToolInspectionKeepsReadOnly(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "看一下现有 delegate_task 工具在哪里，不要拆子代理。")
+	opts := a.buildLoopCallOptions("看一下现有 delegate_task 工具在哪里，不要拆子代理。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "file_read", "file_list", "terminal")
+	assertDisabledTools(t, loopCfg.DisabledTools, "delegate_task")
+}
+
 func agentWithIntentGateTools(t *testing.T) *Agent {
 	t.Helper()
 	t.Setenv(toolIntentGatingEnv, "on")
