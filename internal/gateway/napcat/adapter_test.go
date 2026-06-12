@@ -253,6 +253,142 @@ func TestAdapterSendWithReplyWritesOneBotAction(t *testing.T) {
 	}
 }
 
+func TestAdapterSetTypingWritesInputStatusAction(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := adapter.SetTyping(context.Background(), "private:3256247459", ""); err != nil {
+		t.Fatalf("set typing: %v", err)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode action: %v", err)
+	}
+	if req.Action != "set_input_status" {
+		t.Fatalf("unexpected action: %s", req.Action)
+	}
+	if req.Params["user_id"] != "3256247459" {
+		t.Fatalf("unexpected user id: %#v", req.Params["user_id"])
+	}
+	if req.Params["event_type"].(float64) != 1 {
+		t.Fatalf("unexpected event type: %#v", req.Params["event_type"])
+	}
+}
+
+func TestAdapterAcknowledgeMessageWritesEmojiLikeAction(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := adapter.AcknowledgeMessage(context.Background(), "group:345", "42"); err != nil {
+		t.Fatalf("acknowledge message: %v", err)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode action: %v", err)
+	}
+	if req.Action != "set_msg_emoji_like" {
+		t.Fatalf("unexpected action: %s", req.Action)
+	}
+	if req.Params["message_id"] != "42" {
+		t.Fatalf("unexpected message id: %#v", req.Params["message_id"])
+	}
+	if req.Params["emoji_id"] != defaultNapCatAckEmojiID {
+		t.Fatalf("unexpected emoji id: %#v", req.Params["emoji_id"])
+	}
+	if req.Params["set"] != true {
+		t.Fatalf("unexpected set value: %#v", req.Params["set"])
+	}
+}
+
+func TestAdapterSendForwardedTextWritesForwardAction(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	adapter.selfID = "10001"
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := adapter.SendForwardedText(context.Background(), "group:345", "LuckyHarness", []string{"hello [qq]", "world"}); err != nil {
+		t.Fatalf("send forwarded text: %v", err)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode action: %v", err)
+	}
+	if req.Action != "send_group_forward_msg" {
+		t.Fatalf("unexpected action: %s", req.Action)
+	}
+	if req.Params["group_id"].(float64) != 345 {
+		t.Fatalf("unexpected group id: %#v", req.Params["group_id"])
+	}
+	messages, ok := req.Params["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("unexpected messages payload: %#v", req.Params["messages"])
+	}
+	node, ok := messages[0].(map[string]any)
+	if !ok || node["type"] != "node" {
+		t.Fatalf("unexpected node payload: %#v", messages[0])
+	}
+	nodeData, ok := node["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected node data: %#v", node["data"])
+	}
+	if nodeData["name"] != "LuckyHarness" || nodeData["uin"] != "10001" {
+		t.Fatalf("unexpected node identity: %#v", nodeData)
+	}
+	content, ok := nodeData["content"].([]any)
+	if !ok || len(content) != 1 {
+		t.Fatalf("unexpected node content: %#v", nodeData["content"])
+	}
+	textSegment, ok := content[0].(map[string]any)
+	if !ok || textSegment["type"] != "text" {
+		t.Fatalf("unexpected text segment: %#v", content[0])
+	}
+	textData, ok := textSegment["data"].(map[string]any)
+	if !ok || textData["text"] != "hello [qq]" {
+		t.Fatalf("unexpected text data: %#v", textSegment["data"])
+	}
+}
+
 func TestAdapterSendPhotoLocalFileUsesBase64CQSource(t *testing.T) {
 	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
 	if err := adapter.Start(context.Background()); err != nil {

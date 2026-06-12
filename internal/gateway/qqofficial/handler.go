@@ -55,6 +55,18 @@ type sender interface {
 	SendDocument(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error
 }
 
+type typingSender interface {
+	SetTyping(ctx context.Context, chatID string, userID string) error
+}
+
+type messageFeedbackSender interface {
+	AcknowledgeMessage(ctx context.Context, chatID string, messageID string) error
+}
+
+type forwardedTextSender interface {
+	SendForwardedText(ctx context.Context, chatID string, title string, chunks []string) error
+}
+
 type HandlerOptions struct {
 	PlatformName    string
 	DisplayName     string
@@ -1875,6 +1887,8 @@ func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, i
 	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
 		return nil
 	}
+	input = qqInputWithMediaDeliveryGuidance(input)
+	h.acknowledgeIncomingMessage(msg)
 
 	req := &queuedChatRequest{
 		ctx:   ctx,
@@ -1889,6 +1903,31 @@ func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, i
 		go h.runChatQueue(msg.Chat.ID)
 	}
 	return nil
+}
+
+func (h *Handler) acknowledgeIncomingMessage(msg *gateway.Message) {
+	feedback, ok := h.adapter.(messageFeedbackSender)
+	if !ok || msg == nil || msg.Chat.Type != gateway.ChatGroup || strings.TrimSpace(msg.ID) == "" {
+		return
+	}
+	go func(chatID, messageID string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := feedback.AcknowledgeMessage(ctx, chatID, messageID); err != nil {
+			fmt.Printf("[%s] warning: failed to acknowledge message: %v\n", h.logPrefixValue(), err)
+		}
+	}(msg.Chat.ID, msg.ID)
+}
+
+func qqInputWithMediaDeliveryGuidance(input agent.UserTurnInput) agent.UserTurnInput {
+	input = input.Normalize()
+	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
+		return input
+	}
+	input.RoutingText = qqMediaDeliveryGuidance(input.RoutingText)
+	input.Message.Content = input.RoutingText
+	input.Message.ContentParts = nil
+	return input.Normalize()
 }
 
 func (h *Handler) enqueueChatRequest(chatID string, req *queuedChatRequest) (position int, startWorker bool) {
@@ -1996,7 +2035,7 @@ func (h *Handler) queueStatus(chatID string) (running bool, queued int) {
 }
 
 func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
-	input = input.Normalize()
+	input = qqInputWithMediaDeliveryGuidance(input)
 	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
 		return nil
 	}
@@ -2018,7 +2057,7 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, inpu
 	if response == "" {
 		response = "我这边暂时还没有整理出可发送的结果。"
 	}
-	return h.reply(ctx, msg, response)
+	return h.sendAssistantResponse(ctx, msg, response)
 }
 
 func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attachments []gateway.Attachment) agent.UserTurnInput {
@@ -2091,7 +2130,7 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 		return err
 	}
 	if strings.TrimSpace(text) != "" {
-		if err := h.reply(ctx, msg, text); err != nil {
+		if err := h.sendAssistantText(ctx, msg, text); err != nil {
 			return err
 		}
 	}
@@ -2111,6 +2150,37 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 		return h.reply(ctx, msg, "我这边暂时还没有整理出可发送的结果。")
 	}
 	return nil
+}
+
+func (h *Handler) sendAssistantText(ctx context.Context, msg *gateway.Message, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if qqRuneLen(text) <= qqLongMessageForwardThreshold {
+		return h.reply(ctx, msg, text)
+	}
+	forwarder, ok := h.adapter.(forwardedTextSender)
+	if !ok {
+		return h.reply(ctx, msg, text)
+	}
+	chunks := splitQQMessageChunks(text, qqForwardNodeChunkLimit)
+	if len(chunks) == 0 {
+		return h.reply(ctx, msg, text)
+	}
+	if err := forwarder.SendForwardedText(ctx, msg.Chat.ID, h.forwardedTextTitle(), chunks); err != nil {
+		fmt.Printf("[%s] warning: failed to send forwarded long message: %v\n", h.logPrefixValue(), err)
+		return h.reply(ctx, msg, text)
+	}
+	return nil
+}
+
+func (h *Handler) forwardedTextTitle() string {
+	name := strings.TrimSpace(h.displayName)
+	if name == "" {
+		name = "LuckyHarness"
+	}
+	return name
 }
 
 func (h *Handler) sendAssistantResponseWithTrace(ctx context.Context, msg *gateway.Message, response string, trace *qqProgressTrace) error {
@@ -2153,6 +2223,8 @@ func (h *Handler) handleChatStream(ctx context.Context, msg *gateway.Message, in
 
 	chatCtx, chatCancel := context.WithTimeout(ctx, h.chatStreamTimeout)
 	defer chatCancel()
+	stopTyping := h.startTypingIndicator(chatCtx, msg)
+	defer stopTyping()
 
 	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, input, sessionID)
 	if err != nil {
@@ -2168,6 +2240,33 @@ func (h *Handler) handleChatStream(ctx context.Context, msg *gateway.Message, in
 	}
 
 	return h.handleChatEventStream(chatCtx, msg, events)
+}
+
+func (h *Handler) startTypingIndicator(ctx context.Context, msg *gateway.Message) context.CancelFunc {
+	typing, ok := h.adapter.(typingSender)
+	if !ok || msg == nil {
+		return func() {}
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	go func() {
+		sendTyping := func() {
+			sendCtx, sendCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer sendCancel()
+			_ = typing.SetTyping(sendCtx, msg.Chat.ID, msg.Sender.ID)
+		}
+		sendTyping()
+		ticker := time.NewTicker(6 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				sendTyping()
+			}
+		}
+	}()
+	return cancel
 }
 
 func (h *Handler) handleChatEventStream(chatCtx context.Context, msg *gateway.Message, events <-chan agent.ChatEvent) error {
@@ -2308,8 +2407,10 @@ func qqToolResultMessage(name, result string) string {
 }
 
 const (
-	qqProgressTraceMaxEntries = 18
-	qqProgressTraceChunkLimit = 1800
+	qqProgressTraceMaxEntries     = 18
+	qqProgressTraceChunkLimit     = 1800
+	qqLongMessageForwardThreshold = 1200
+	qqForwardNodeChunkLimit       = 1200
 )
 
 type qqProgressTrace struct {

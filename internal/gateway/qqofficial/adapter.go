@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -624,14 +623,9 @@ func (a *Adapter) uploadMedia(ctx context.Context, scope, targetID, source strin
 		FileType:   fileType,
 		SrvSendMsg: false,
 	}
-	source = strings.TrimSpace(source)
+	source = normalizeLocalMediaPath(source)
 	if source == "" {
 		return "", fmt.Errorf("qqofficial: empty media source")
-	}
-	if strings.HasPrefix(strings.ToLower(source), "file://") {
-		if u, err := url.Parse(source); err == nil {
-			source = u.Path
-		}
 	}
 	if strings.HasPrefix(strings.ToLower(source), "http://") || strings.HasPrefix(strings.ToLower(source), "https://") {
 		payload.URL = source

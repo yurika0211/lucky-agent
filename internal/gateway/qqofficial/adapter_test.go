@@ -2,6 +2,7 @@ package qqofficial
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,14 @@ import (
 type qqHandlerTestSender struct {
 	mu       sync.Mutex
 	messages []string
+	acks     []string
+	forwards []qqHandlerForwardedText
+}
+
+type qqHandlerForwardedText struct {
+	ChatID string
+	Title  string
+	Chunks []string
 }
 
 func (s *qqHandlerTestSender) Name() string                { return "test" }
@@ -44,10 +53,40 @@ func (s *qqHandlerTestSender) SendDocument(_ context.Context, _ string, _ string
 	return s.Send(context.Background(), "", strings.TrimSpace(source+" "+caption))
 }
 
+func (s *qqHandlerTestSender) AcknowledgeMessage(_ context.Context, chatID string, messageID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.acks = append(s.acks, chatID+"|"+messageID)
+	return nil
+}
+
+func (s *qqHandlerTestSender) SendForwardedText(_ context.Context, chatID string, title string, chunks []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.forwards = append(s.forwards, qqHandlerForwardedText{
+		ChatID: chatID,
+		Title:  title,
+		Chunks: append([]string(nil), chunks...),
+	})
+	return nil
+}
+
 func (s *qqHandlerTestSender) Messages() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.messages...)
+}
+
+func (s *qqHandlerTestSender) Acks() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.acks...)
+}
+
+func (s *qqHandlerTestSender) Forwards() []qqHandlerForwardedText {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]qqHandlerForwardedText(nil), s.forwards...)
 }
 
 func TestBuildIntentBits(t *testing.T) {
@@ -196,6 +235,72 @@ func TestSendWithReplyUsesIncrementingMsgSeq(t *testing.T) {
 	}
 }
 
+func TestSendDocumentUploadsSandboxPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	doc := tmpDir + "/report.pdf"
+	content := []byte("fake pdf")
+	if err := os.WriteFile(doc, content, 0o600); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+
+	var uploadSeen bool
+	var sendSeen bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v2/users/user-1/files":
+			var payload uploadFilePayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, "decode upload payload: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if payload.FileType != 4 {
+				http.Error(w, "unexpected file_type", http.StatusInternalServerError)
+				return
+			}
+			if payload.FileName != "report.pdf" {
+				http.Error(w, "unexpected file_name "+payload.FileName, http.StatusInternalServerError)
+				return
+			}
+			if payload.FileData != base64.StdEncoding.EncodeToString(content) {
+				http.Error(w, "unexpected file_data", http.StatusInternalServerError)
+				return
+			}
+			uploadSeen = true
+			_, _ = w.Write([]byte(`{"file_info":"file-info-1"}`))
+		case "/v2/users/user-1/messages":
+			var payload outgoingMessagePayload
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				http.Error(w, "decode send payload: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			if payload.MsgType != 7 || payload.Media == nil || payload.Media.FileInfo != "file-info-1" {
+				http.Error(w, "unexpected rich media payload", http.StatusInternalServerError)
+				return
+			}
+			sendSeen = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	a := NewAdapter(Config{
+		AppID:      "app-id",
+		AppSecret:  "app-secret",
+		APIBaseURL: server.URL,
+	})
+	a.accessToken = "token"
+	a.tokenExpiry = time.Now().Add(time.Hour)
+
+	if err := a.SendDocument(context.Background(), "c2c:user-1", "msg-1", "sandbox:"+doc, ""); err != nil {
+		t.Fatalf("SendDocument error = %v", err)
+	}
+	if !uploadSeen || !sendSeen {
+		t.Fatalf("expected upload and send requests, upload=%t send=%t", uploadSeen, sendSeen)
+	}
+}
+
 func TestBuildUserTurnInputPreservesAttachments(t *testing.T) {
 	h := NewHandler(NewAdapter(DefaultConfig()), nil)
 	input := h.buildUserTurnInput(context.Background(), "看一下附件", []gateway.Attachment{
@@ -291,6 +396,73 @@ func TestHandlerFinalAnswerOnlySuppressesProgressMessages(t *testing.T) {
 	}
 	if messages[0] != "最终答案" {
 		t.Fatalf("expected final answer only, got %q", messages[0])
+	}
+}
+
+func TestHandlerForwardsLongAssistantText(t *testing.T) {
+	sender := &qqHandlerTestSender{}
+	handler := NewHandlerWithOptions(sender, nil, HandlerOptions{
+		PlatformName: "napcat",
+		DisplayName:  "QQ Bot",
+	})
+	msg := &gateway.Message{
+		ID:   "msg-1",
+		Chat: gateway.Chat{ID: "group:123", Type: gateway.ChatGroup},
+	}
+	long := strings.Repeat("你", qqLongMessageForwardThreshold+1)
+
+	if err := handler.sendAssistantResponse(context.Background(), msg, long); err != nil {
+		t.Fatalf("sendAssistantResponse() error = %v", err)
+	}
+	if got := sender.Messages(); len(got) != 0 {
+		t.Fatalf("expected long response to skip normal messages, got %#v", got)
+	}
+	forwards := sender.Forwards()
+	if len(forwards) != 1 {
+		t.Fatalf("expected one forwarded response, got %#v", forwards)
+	}
+	if forwards[0].ChatID != "group:123" || forwards[0].Title != "QQ Bot" {
+		t.Fatalf("unexpected forward metadata: %#v", forwards[0])
+	}
+	if len(forwards[0].Chunks) != 2 {
+		t.Fatalf("expected long text to be split into 2 nodes, got %#v", forwards[0].Chunks)
+	}
+	for _, chunk := range forwards[0].Chunks {
+		if qqRuneLen(chunk) > qqForwardNodeChunkLimit {
+			t.Fatalf("forward chunk exceeds limit: %d", qqRuneLen(chunk))
+		}
+	}
+}
+
+func TestHandlerAcknowledgesGroupMessagesOnly(t *testing.T) {
+	sender := &qqHandlerTestSender{}
+	handler := NewHandlerWithOptions(sender, nil, HandlerOptions{PlatformName: "napcat"})
+
+	handler.acknowledgeIncomingMessage(&gateway.Message{
+		ID:   "42",
+		Chat: gateway.Chat{ID: "group:123", Type: gateway.ChatGroup},
+	})
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if got := sender.Acks(); len(got) == 1 {
+			if got[0] != "group:123|42" {
+				t.Fatalf("unexpected ack: %#v", got)
+			}
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := sender.Acks(); len(got) != 1 {
+		t.Fatalf("expected one group ack, got %#v", got)
+	}
+
+	handler.acknowledgeIncomingMessage(&gateway.Message{
+		ID:   "43",
+		Chat: gateway.Chat{ID: "private:3256247459", Type: gateway.ChatPrivate},
+	})
+	time.Sleep(50 * time.Millisecond)
+	if got := sender.Acks(); len(got) != 1 {
+		t.Fatalf("expected private message to skip ack, got %#v", got)
 	}
 }
 
@@ -394,5 +566,73 @@ func TestResolveOutboundMediaResponse(t *testing.T) {
 	}
 	if len(media) != 2 {
 		t.Fatalf("expected 2 media items, got %d", len(media))
+	}
+}
+
+func TestResolveOutboundMediaResponseSandboxPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	doc := tmpDir + "/report.pdf"
+	if err := os.WriteFile(doc, []byte("doc"), 0o600); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+
+	text, media, err := resolveOutboundMediaResponse("文件已生成\nMEDIA:sandbox:" + doc)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse error = %v", err)
+	}
+	if text != "文件已生成" {
+		t.Fatalf("unexpected text %q", text)
+	}
+	if len(media) != 1 || media[0].Source != "sandbox:"+doc || media[0].Kind != outboundMediaDocument {
+		t.Fatalf("unexpected media %#v", media)
+	}
+}
+
+func TestResolveOutboundMediaResponseMarkdownSandboxLink(t *testing.T) {
+	tmpDir := t.TempDir()
+	img := tmpDir + "/chart.png"
+	if err := os.WriteFile(img, []byte("img"), 0o600); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+
+	text, media, err := resolveOutboundMediaResponse("PNG 在这里：[chart](sandbox:" + img + ")")
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse error = %v", err)
+	}
+	if text != "PNG 在这里：" {
+		t.Fatalf("unexpected text %q", text)
+	}
+	if len(media) != 1 || media[0].Source != "sandbox:"+img || media[0].Kind != outboundMediaPhoto {
+		t.Fatalf("unexpected media %#v", media)
+	}
+}
+
+func TestResolveOutboundMediaResponseBareLocalFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	doc := tmpDir + "/result.pdf"
+	if err := os.WriteFile(doc, []byte("doc"), 0o600); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+
+	text, media, err := resolveOutboundMediaResponse("文件在这里 " + doc)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse error = %v", err)
+	}
+	if text != "文件在这里" {
+		t.Fatalf("unexpected text %q", text)
+	}
+	if len(media) != 1 || media[0].Source != doc || media[0].Kind != outboundMediaDocument {
+		t.Fatalf("unexpected media %#v", media)
+	}
+}
+
+func TestQQMediaDeliveryGuidance(t *testing.T) {
+	got := qqMediaDeliveryGuidance("生成报告")
+	if !strings.Contains(got, "MEDIA:/absolute/path/to/file.ext") {
+		t.Fatalf("guidance should mention MEDIA path, got %q", got)
+	}
+	again := qqMediaDeliveryGuidance(got)
+	if strings.Count(again, "[QQ delivery rule]") != 1 {
+		t.Fatalf("guidance should not be duplicated, got %q", again)
 	}
 }
