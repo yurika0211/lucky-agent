@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -103,6 +104,29 @@ func TestRenderContent_Truncation(t *testing.T) {
 	sm.content = longContent
 	content := sm.renderContent()
 	assert.LessOrEqual(t, len(content), 4096)
+}
+
+func TestRenderContent_TruncationClosesOpenCodeFence(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test"})
+	sm := &telegramStreamSender{adapter: adapter}
+
+	sm.content = "before\n```go\n" + strings.Repeat("fmt.Println(\"hello\")\n", 260) + "```\nafter fence"
+
+	content := sm.renderContent()
+	rendered := formatTelegramRichText(content)
+	assert.Equal(t, strings.Count(rendered, "<pre>"), strings.Count(rendered, "</pre>"))
+	assert.Equal(t, strings.Count(rendered, "<code>"), strings.Count(rendered, "</code>"))
+	assert.Contains(t, rendered, "</code></pre>\n...")
+}
+
+func TestRenderContent_KeepsTextAfterClosedCodeFenceOutsidePre(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test"})
+	sm := &telegramStreamSender{adapter: adapter}
+
+	sm.content = "before\n```go\nfmt.Println(\"hello\")\n```\nafter fence"
+
+	rendered := formatTelegramRichText(sm.renderContent())
+	assert.Contains(t, rendered, "</code></pre>\nafter fence")
 }
 
 // ── telegramStreamSender Append ──────────────────────────────────────────────

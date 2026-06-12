@@ -24,6 +24,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/learning"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/provider"
@@ -442,34 +443,40 @@ func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 		"chat": func(ctx context.Context, msg *gateway.Message) error {
 			return h.dispatchChatAsync(ctx, msg, agent.TextUserTurnInput(msg.Args))
 		},
-		"sessions":      h.handleSessions,
-		"resume":        h.handleResume,
-		"rename":        h.handleRename,
-		"skills":        h.handleSkills,
-		"mcp":           h.handleMCP,
-		"approve":       h.handleApprove,
-		"deny":          h.handleDeny,
-		"cron":          h.handleCron,
-		"watch":         h.handleWatch,
-		"dashboard":     h.handleDashboard,
-		"msg_gateway":   h.handleMsgGateway,
-		"rag":           h.handleRAG,
-		"context":       h.handleContext,
-		"fc":            h.handleFC,
-		"embedder":      h.handleEmbedder,
-		"metrics":       h.handleMetrics,
-		"health":        h.handleHealth,
-		"remember":      h.handleRemember,
-		"remember_long": h.handleRememberLong,
-		"recall":        h.handleRecall,
-		"memstats":      h.handleMemStats,
-		"memdecay":      h.handleMemDecay,
-		"promote":       h.handlePromote,
-		"profile":       h.handleProfile,
-		"new":           h.handleNew,
-		"stop":          h.handleStop,
-		"status":        h.handleStatus,
-		"restart":       h.handleRestart,
+		"sessions":       h.handleSessions,
+		"resume":         h.handleResume,
+		"rename":         h.handleRename,
+		"skills":         h.handleSkills,
+		"mcp":            h.handleMCP,
+		"approve":        h.handleApprove,
+		"deny":           h.handleDeny,
+		"cron":           h.handleCron,
+		"watch":          h.handleWatch,
+		"dashboard":      h.handleDashboard,
+		"msg_gateway":    h.handleMsgGateway,
+		"rag":            h.handleRAG,
+		"context":        h.handleContext,
+		"fc":             h.handleFC,
+		"embedder":       h.handleEmbedder,
+		"metrics":        h.handleMetrics,
+		"health":         h.handleHealth,
+		"learn":          h.handleLearn,
+		"learn_start":    h.handleLearnStart,
+		"learn_current":  h.handleLearnCurrent,
+		"learn_lab":      h.handleLearnLab,
+		"learn_submit":   h.handleLearnSubmit,
+		"learn_progress": h.handleLearnProgress,
+		"remember":       h.handleRemember,
+		"remember_long":  h.handleRememberLong,
+		"recall":         h.handleRecall,
+		"memstats":       h.handleMemStats,
+		"memdecay":       h.handleMemDecay,
+		"promote":        h.handlePromote,
+		"profile":        h.handleProfile,
+		"new":            h.handleNew,
+		"stop":           h.handleStop,
+		"status":         h.handleStatus,
+		"restart":        h.handleRestart,
 	}
 	registry := make(map[string]telegramCommandHandler, len(handlers))
 	for _, name := range telegramCommandNames() {
@@ -1305,6 +1312,16 @@ func normalizeTelegramCommandName(command string) string {
 		return "msg_gateway"
 	case "remember-long":
 		return "remember_long"
+	case "learn-start":
+		return "learn_start"
+	case "learn-current":
+		return "learn_current"
+	case "learn-lab":
+		return "learn_lab"
+	case "learn-submit":
+		return "learn_submit"
+	case "learn-progress":
+		return "learn_progress"
 	default:
 		return command
 	}
@@ -3411,6 +3428,194 @@ func (h *Handler) handleHealth(ctx context.Context, msg *gateway.Message) error 
 	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
 
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) handleLearn(ctx context.Context, msg *gateway.Message) error {
+	var sb strings.Builder
+	sb.WriteString("🎓 *LuckyHarness Learning Mode*\n\n")
+	sb.WriteString("*Commands:*\n")
+	sb.WriteString("• `/learn_start lh-agent-systems` — start or resume the built-in project course\n")
+	sb.WriteString("• `/learn_current` — show the current module\n")
+	sb.WriteString("• `/learn_lab` — show the current lab\n")
+	sb.WriteString("• `/learn_submit <evidence>` — submit lab evidence and advance\n")
+	sb.WriteString("• `/learn_progress` — show course progress\n\n")
+	sb.WriteString("*Courses:*\n")
+	for _, course := range learning.BuiltinCourses() {
+		sb.WriteString(fmt.Sprintf("• `%s` — %s (%d modules)\n", course.ID, course.Title, len(course.Modules)))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, strings.TrimSpace(sb.String()))
+}
+
+func (h *Handler) handleLearnStart(ctx context.Context, msg *gateway.Message) error {
+	courseID := strings.TrimSpace(msg.Args)
+	if courseID == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /learn_start <course>\nExample: `/learn_start lh-agent-systems`")
+	}
+	course, ok := learning.FindCourse(courseID)
+	if !ok {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Unknown course: `%s`\nUse `/learn` to list courses.", courseID))
+	}
+	store, err := h.learningStore()
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Learning store unavailable: %s", err.Error()))
+	}
+	cp, err := store.StartCourse(course)
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to start course: %s", err.Error()))
+	}
+	module, _ := course.ModuleByID(cp.CurrentModule)
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🎓 *Learning Started*\n\n• Course: %s\n• Current: `%s` — %s\n• Progress: `%s`\n\nUse `/learn_lab` to open the first lab.",
+		course.Title, module.ID, module.Title, store.Path()))
+}
+
+func (h *Handler) handleLearnCurrent(ctx context.Context, msg *gateway.Message) error {
+	course, cp, store, err := h.activeLearningState()
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+	}
+	module, ok := course.ModuleByID(cp.CurrentModule)
+	if !ok {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Current module not found: `%s`", cp.CurrentModule))
+	}
+	done, total := learning.CourseCompletion(course, cp)
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🎓 *Current Learning Module*\n\n• Course: %s\n• Module: `%s` — %s\n• Objective: %s\n• Completion: %d/%d\n• Progress: `%s`",
+		course.Title, module.ID, module.Title, module.Objective, done, total, store.Path()))
+}
+
+func (h *Handler) handleLearnLab(ctx context.Context, msg *gateway.Message) error {
+	course, cp, _, err := h.activeLearningState()
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+	}
+	module, ok := course.ModuleByID(cp.CurrentModule)
+	if !ok {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Current module not found: `%s`", cp.CurrentModule))
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, formatTelegramLearningLab(module))
+}
+
+func (h *Handler) handleLearnSubmit(ctx context.Context, msg *gateway.Message) error {
+	evidence := strings.TrimSpace(msg.Args)
+	if evidence == "" {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /learn_submit <evidence>")
+	}
+	course, _, store, err := h.activeLearningState()
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+	}
+	cp, mp, err := store.SubmitEvidence(course, evidence, true)
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to submit evidence: %s", err.Error()))
+	}
+	var sb strings.Builder
+	sb.WriteString("✅ *Learning Evidence Accepted*\n\n")
+	sb.WriteString(fmt.Sprintf("• Module: `%s`\n", mp.ModuleID))
+	sb.WriteString(fmt.Sprintf("• Attempts: %d\n", mp.Attempts))
+	if cp.CompletedAt != nil {
+		sb.WriteString(fmt.Sprintf("\n🎉 Course completed: %s", course.Title))
+		return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+	}
+	next, _ := course.ModuleByID(cp.CurrentModule)
+	sb.WriteString(fmt.Sprintf("\nNext: `%s` — %s\nUse `/learn_lab` to continue.", next.ID, next.Title))
+	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) handleLearnProgress(ctx context.Context, msg *gateway.Message) error {
+	course, cp, store, err := h.activeLearningState()
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+	}
+	done, total := learning.CourseCompletion(course, cp)
+	var sb strings.Builder
+	sb.WriteString("📚 *Learning Progress*\n\n")
+	sb.WriteString(fmt.Sprintf("• Course: %s\n", course.Title))
+	sb.WriteString(fmt.Sprintf("• Completion: %d/%d\n\n", done, total))
+	for _, module := range course.Modules {
+		mp := cp.Modules[module.ID]
+		status := mp.Status
+		if status == "" {
+			status = "pending"
+		}
+		icon := "○"
+		switch status {
+		case "completed":
+			icon = "✅"
+		case "active":
+			icon = "▶"
+		}
+		sb.WriteString(fmt.Sprintf("%s `%s` — %s (attempts=%d)\n", icon, module.ID, status, mp.Attempts))
+	}
+	sb.WriteString(fmt.Sprintf("\nProgress: `%s`", store.Path()))
+	return h.adapter.Send(ctx, msg.Chat.ID, strings.TrimSpace(sb.String()))
+}
+
+func (h *Handler) learningStore() (*learning.ProgressStore, error) {
+	home := strings.TrimSpace(h.configSnapshot().HomeDir)
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return nil, fmt.Errorf("locate home dir: %w", err)
+		}
+		home = filepath.Join(userHome, ".luckyharness")
+	}
+	return learning.NewProgressStore(home), nil
+}
+
+func (h *Handler) activeLearningState() (learning.Course, learning.CourseProgress, *learning.ProgressStore, error) {
+	store, err := h.learningStore()
+	if err != nil {
+		return learning.Course{}, learning.CourseProgress{}, nil, err
+	}
+	progress, err := store.Load()
+	if err != nil {
+		return learning.Course{}, learning.CourseProgress{}, nil, err
+	}
+	if progress.ActiveCourseID == "" {
+		return learning.Course{}, learning.CourseProgress{}, nil, fmt.Errorf("no active course; use `/learn_start lh-agent-systems`")
+	}
+	course, ok := learning.FindCourse(progress.ActiveCourseID)
+	if !ok {
+		return learning.Course{}, learning.CourseProgress{}, nil, fmt.Errorf("active course `%s` is not installed", progress.ActiveCourseID)
+	}
+	cp, ok := progress.Courses[progress.ActiveCourseID]
+	if !ok {
+		return learning.Course{}, learning.CourseProgress{}, nil, fmt.Errorf("active course `%s` has no progress", progress.ActiveCourseID)
+	}
+	return course, cp, store, nil
+}
+
+func formatTelegramLearningLab(module learning.Module) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🧪 *Lab: %s*\n\n", module.Lab.ID))
+	sb.WriteString(fmt.Sprintf("• Module: `%s` — %s\n", module.ID, module.Title))
+	sb.WriteString(fmt.Sprintf("• Prompt: %s\n", module.Lab.Prompt))
+	if len(module.Concepts) > 0 {
+		sb.WriteString(fmt.Sprintf("• Concepts: %s\n", strings.Join(module.Concepts, ", ")))
+	}
+	if len(module.Lab.AgentRoles) > 0 {
+		sb.WriteString(fmt.Sprintf("• Agent roles: %s\n", strings.Join(module.Lab.AgentRoles, ", ")))
+	}
+	if len(module.Lab.Commands) > 0 {
+		sb.WriteString("\n*Commands:*\n")
+		for _, c := range module.Lab.Commands {
+			sb.WriteString(fmt.Sprintf("• `%s`\n", c))
+		}
+	}
+	if len(module.Lab.Evidence) > 0 {
+		sb.WriteString("\n*Evidence:*\n")
+		for _, e := range module.Lab.Evidence {
+			sb.WriteString(fmt.Sprintf("• %s\n", e))
+		}
+	}
+	if len(module.Rubric) > 0 {
+		sb.WriteString("\n*Rubric:*\n")
+		for _, r := range module.Rubric {
+			sb.WriteString(fmt.Sprintf("• %s\n", r))
+		}
+	}
+	sb.WriteString(fmt.Sprintf("\n*Deliverable:* %s\n", module.Lab.Deliverable))
+	sb.WriteString("\nSubmit with `/learn_submit <evidence>`.")
+	return strings.TrimSpace(sb.String())
 }
 
 func (h *Handler) handleRemember(ctx context.Context, msg *gateway.Message) error {

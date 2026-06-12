@@ -15,7 +15,8 @@ func TestAppendNaturalCitationsAddsWebSearchFooter(t *testing.T) {
 	for _, want := range []string{
 		"最终答案",
 		naturalCitationHeader,
-		"我参考了关于“Twilio pricing”的网页搜索结果",
+		"[1] Web search. Query: \"Twilio pricing\".",
+		"Sources:",
 		"Twilio SMS Pricing",
 		"https://www.twilio.com/sms/pricing",
 	} {
@@ -32,6 +33,18 @@ func TestAppendNaturalCitationsSkipsErrorsAndMutatingTools(t *testing.T) {
 	})
 	if got != "完成" {
 		t.Fatalf("expected no citations for skipped tools, got %q", got)
+	}
+}
+
+func TestAppendNaturalCitationsClosesOpenFenceBeforeFooter(t *testing.T) {
+	got := appendNaturalCitations("解释如下：\n```asm\nmov %rax, %rbx", []toolCallLog{{
+		Name:      "file_read",
+		Arguments: `{"path":"/tmp/README.md"}`,
+		Result:    "# README\ncontent",
+	}})
+
+	if !strings.Contains(got, "mov %rax, %rbx\n```\n\nReferences:") {
+		t.Fatalf("expected dangling code fence to close before references, got:\n%s", got)
 	}
 }
 

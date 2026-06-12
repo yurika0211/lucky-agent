@@ -9,7 +9,10 @@ import (
 	"strings"
 )
 
-const naturalCitationHeader = "参考说明："
+const (
+	naturalCitationHeader       = "References:"
+	legacyNaturalCitationHeader = "参考说明："
+)
 
 var citationURLRe = regexp.MustCompile(`https?://[^\s<>"')\]]+`)
 
@@ -24,9 +27,10 @@ func appendNaturalCitations(response string, toolCalls []toolCallLog) string {
 	if len(citations) == 0 {
 		return response
 	}
-	if strings.Contains(response, naturalCitationHeader) {
+	if strings.Contains(response, naturalCitationHeader) || strings.Contains(response, legacyNaturalCitationHeader) {
 		return response
 	}
+	response = closeDanglingMarkdownFence(response)
 
 	var b strings.Builder
 	b.WriteString(response)
@@ -34,11 +38,63 @@ func appendNaturalCitations(response string, toolCalls []toolCallLog) string {
 		b.WriteString("\n\n")
 	}
 	b.WriteString(naturalCitationHeader)
-	for _, citation := range citations {
-		b.WriteString("\n- ")
+	for i, citation := range citations {
+		b.WriteString(fmt.Sprintf("\n[%d] ", i+1))
 		b.WriteString(citation.Summary)
 	}
 	return b.String()
+}
+
+func closeDanglingMarkdownFence(response string) string {
+	if response == "" || (!strings.Contains(response, "```") && !strings.Contains(response, "~~~")) {
+		return response
+	}
+	inFence := false
+	closeMarker := ""
+	for _, line := range strings.SplitAfter(response, "\n") {
+		marker := markdownFenceMarker(line)
+		if marker == "" {
+			continue
+		}
+		if !inFence {
+			inFence = true
+			closeMarker = marker
+			continue
+		}
+		if strings.HasPrefix(marker, string(closeMarker[0])) {
+			inFence = false
+			closeMarker = ""
+		}
+	}
+	if !inFence || closeMarker == "" {
+		return response
+	}
+	if !strings.HasSuffix(response, "\n") {
+		response += "\n"
+	}
+	return response + closeMarker
+}
+
+func markdownFenceMarker(line string) string {
+	trimmed := strings.TrimSpace(strings.TrimRight(line, "\n"))
+	if strings.HasPrefix(trimmed, "```") {
+		return strings.Repeat("`", countLeadingRunes(trimmed, '`'))
+	}
+	if strings.HasPrefix(trimmed, "~~~") {
+		return strings.Repeat("~", countLeadingRunes(trimmed, '~'))
+	}
+	return ""
+}
+
+func countLeadingRunes(s string, target rune) int {
+	count := 0
+	for _, r := range s {
+		if r != target {
+			break
+		}
+		count++
+	}
+	return count
 }
 
 func naturalCitationsFromExecuted(executed []executedToolCall) []naturalCitation {
@@ -118,9 +174,9 @@ func naturalCitationFromToolLog(call toolCallLog) (naturalCitation, bool) {
 		entries := extractSearchCitationEntries(result, 2)
 		if len(entries) == 0 {
 			if query == "" {
-				return naturalCitation{Tool: name, Summary: "我参考了网页搜索返回的结果。"}, true
+				return naturalCitation{Tool: name, Summary: "Web search results."}, true
 			}
-			return naturalCitation{Tool: name, Summary: fmt.Sprintf("我参考了关于“%s”的网页搜索结果。", query)}, true
+			return naturalCitation{Tool: name, Summary: fmt.Sprintf("Web search results. Query: \"%s\".", query)}, true
 		}
 		return naturalCitation{Tool: name, Summary: formatWebSearchCitation(query, entries)}, true
 	case "web_fetch":
@@ -134,27 +190,27 @@ func naturalCitationFromToolLog(call toolCallLog) (naturalCitation, bool) {
 		}
 		switch {
 		case target != "" && title != "":
-			return naturalCitation{Tool: name, Summary: fmt.Sprintf("我读取了网页“%s”（%s）的正文内容。", title, target)}, true
+			return naturalCitation{Tool: name, Summary: fmt.Sprintf("Web page content. %s. Available: %s.", title, target)}, true
 		case target != "":
-			return naturalCitation{Tool: name, Summary: fmt.Sprintf("我读取了网页 %s 的正文内容。", target)}, true
+			return naturalCitation{Tool: name, Summary: fmt.Sprintf("Web page content. Available: %s.", target)}, true
 		default:
-			return naturalCitation{Tool: name, Summary: "我读取了目标网页的正文内容。"}, true
+			return naturalCitation{Tool: name, Summary: "Web page content."}, true
 		}
 	case "file_read":
 		path := stringArg(args, "path")
 		if path == "" {
-			return naturalCitation{Tool: name, Summary: "我参考了本地文件读取工具返回的内容。"}, true
+			return naturalCitation{Tool: name, Summary: "Local file read result."}, true
 		}
-		return naturalCitation{Tool: name, Summary: fmt.Sprintf("我读取了本地文件 %s 的内容。", cleanCitationPath(path))}, true
+		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Local file. %s.", cleanCitationPath(path))}, true
 	case "file_list":
 		path := stringArg(args, "path")
 		if path == "" {
 			path = stringArg(args, "dir")
 		}
 		if path == "" {
-			return naturalCitation{Tool: name, Summary: "我查看了本地目录列表。"}, true
+			return naturalCitation{Tool: name, Summary: "Local directory listing."}, true
 		}
-		return naturalCitation{Tool: name, Summary: fmt.Sprintf("我查看了本地目录 %s 的列表。", cleanCitationPath(path))}, true
+		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Local directory listing. %s.", cleanCitationPath(path))}, true
 	case "current_time":
 		location := stringArg(args, "location")
 		if location == "" {
@@ -164,32 +220,32 @@ func naturalCitationFromToolLog(call toolCallLog) (naturalCitation, bool) {
 			location = extractCurrentTimeLocation(result)
 		}
 		if location == "" {
-			return naturalCitation{Tool: name, Summary: "我用当前时间工具核对了时间。"}, true
+			return naturalCitation{Tool: name, Summary: "Current time tool result."}, true
 		}
-		return naturalCitation{Tool: name, Summary: fmt.Sprintf("我用当前时间工具核对了 %s 的时间。", location)}, true
+		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Current time tool. Location: %s.", location)}, true
 	case "calculate":
 		expr := stringArg(args, "expression")
 		if expr == "" {
 			expr = stringArg(args, "expr")
 		}
 		if expr == "" {
-			return naturalCitation{Tool: name, Summary: "我用计算工具核对了数值。"}, true
+			return naturalCitation{Tool: name, Summary: "Calculator result."}, true
 		}
-		return naturalCitation{Tool: name, Summary: fmt.Sprintf("我用计算工具核对了“%s”。", clipCitationText(expr, 80))}, true
+		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Calculator. Expression: \"%s\".", clipCitationText(expr, 80))}, true
 	case "rag_search":
 		query := stringArg(args, "query")
 		if query == "" {
-			return naturalCitation{Tool: name, Summary: "我参考了本地 RAG 检索返回的资料。"}, true
+			return naturalCitation{Tool: name, Summary: "Local RAG search result."}, true
 		}
-		return naturalCitation{Tool: name, Summary: fmt.Sprintf("我参考了本地 RAG 检索中关于“%s”的资料。", clipCitationText(query, 80))}, true
+		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Local RAG search. Query: \"%s\".", clipCitationText(query, 80))}, true
 	case "recall":
 		query := stringArg(args, "query")
 		if query == "" {
-			return naturalCitation{Tool: name, Summary: "我参考了记忆检索返回的信息。"}, true
+			return naturalCitation{Tool: name, Summary: "Memory recall result."}, true
 		}
-		return naturalCitation{Tool: name, Summary: fmt.Sprintf("我参考了记忆检索中关于“%s”的信息。", clipCitationText(query, 80))}, true
+		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Memory recall. Query: \"%s\".", clipCitationText(query, 80))}, true
 	default:
-		return naturalCitation{Tool: name, Summary: fmt.Sprintf("我参考了 %s 工具返回的结果。", name)}, true
+		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Tool result. Tool: %s.", name)}, true
 	}
 }
 
@@ -271,15 +327,15 @@ func formatWebSearchCitation(query string, entries []searchCitationEntry) string
 		}
 	}
 	if query != "" && len(parts) > 0 {
-		return fmt.Sprintf("我参考了关于“%s”的网页搜索结果，包括 %s。", clipCitationText(query, 80), joinNaturalList(parts))
+		return fmt.Sprintf("Web search. Query: \"%s\". Sources: %s.", clipCitationText(query, 80), strings.Join(parts, "; "))
 	}
 	if len(parts) > 0 {
-		return fmt.Sprintf("我参考了网页搜索结果，包括 %s。", joinNaturalList(parts))
+		return fmt.Sprintf("Web search. Sources: %s.", strings.Join(parts, "; "))
 	}
 	if query != "" {
-		return fmt.Sprintf("我参考了关于“%s”的网页搜索结果。", clipCitationText(query, 80))
+		return fmt.Sprintf("Web search. Query: \"%s\".", clipCitationText(query, 80))
 	}
-	return "我参考了网页搜索返回的结果。"
+	return "Web search results."
 }
 
 func parseCitationArgs(raw string) map[string]any {

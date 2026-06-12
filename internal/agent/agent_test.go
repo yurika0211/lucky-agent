@@ -942,7 +942,7 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 			if !strings.Contains(doneContent, naturalCitationHeader) {
 				t.Fatalf("expected done content to include natural citations, got %q", doneContent)
 			}
-			if !strings.Contains(doneContent, "我参考了本地 RAG 检索中关于“course chapter”的资料。") {
+			if !strings.Contains(doneContent, `[1] Local RAG search. Query: "course chapter".`) {
 				t.Fatalf("expected done content to cite rag_search, got %q", doneContent)
 			}
 

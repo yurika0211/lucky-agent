@@ -1,6 +1,9 @@
 package telegram
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFormatTelegramRichTextPreservesSupportedHTML(t *testing.T) {
 	input := "<b>我在。</b>\n<i>样式正常</i>\n<code>ok</code>"
@@ -70,5 +73,28 @@ func TestFormatTelegramRichTextStripsPreLanguageHTML(t *testing.T) {
 	want := `<pre><code>int main() {}</code></pre>`
 	if got != want {
 		t.Fatalf("formatTelegramRichText() = %q, want %q", got, want)
+	}
+}
+
+func TestFormatTelegramRichTextClosesDanglingFenceBeforeReferences(t *testing.T) {
+	input := "讲解：\n```asm\nmov %rax, %rbx\n\nReferences:\n[1] Local file. README.md"
+	got := formatTelegramRichText(input)
+	if !strings.Contains(got, "</code></pre>\nReferences:\n[1] Local file. README.md") {
+		t.Fatalf("expected references to render outside code block, got:\n%s", got)
+	}
+}
+
+func TestFormatTelegramRichTextRecoversScreenshotStyleNestedCodeBlocks(t *testing.T) {
+	input := "🧱 1. 寄存器模型 — CPU 的临时变量\n```asm\nmov %rsi, %rax\n\n⚡ 2. 常用的指令 — 数据搬运 mov\n```asm\nmov $5, %rax\n```\n\nReferences:\n[1] Local directory listing."
+	got := formatTelegramRichText(input)
+
+	if strings.Contains(got, "<code>mov %rsi, %rax\n\n⚡ 2. 常用的指令") {
+		t.Fatalf("expected second prose heading to be outside first code block, got:\n%s", got)
+	}
+	if !strings.Contains(got, "</code></pre>\n⚡ 2. 常用的指令") {
+		t.Fatalf("expected first code block to close before second heading, got:\n%s", got)
+	}
+	if !strings.Contains(got, "</code></pre>\nReferences:") {
+		t.Fatalf("expected references to be outside code block, got:\n%s", got)
 	}
 }

@@ -28,7 +28,7 @@ type telegramHTMLBlock struct {
 // Telegram HTML that is both supported and predictable across clients.
 func formatTelegramRichText(input string) string {
 	input = strings.ReplaceAll(input, "\r\n", "\n")
-	input = strings.TrimSpace(input)
+	input = strings.TrimSpace(repairTelegramMarkdownFences(input))
 	if input == "" {
 		return ""
 	}
@@ -37,6 +37,129 @@ func formatTelegramRichText(input string) string {
 	root := mdParser.Parser().Parse(text.NewReader(source))
 	r := &telegramHTMLRenderer{source: source}
 	return strings.TrimSpace(r.render(root))
+}
+
+func repairTelegramMarkdownFences(input string) string {
+	if input == "" || (!strings.Contains(input, "```") && !strings.Contains(input, "~~~")) {
+		return input
+	}
+
+	var b strings.Builder
+	inFence := false
+	closeMarker := ""
+
+	for _, line := range strings.SplitAfter(input, "\n") {
+		lineMarker, hasFence := telegramMarkdownFenceMarker(line)
+		if inFence && !hasFence && isTelegramFenceRecoveryBoundary(line) {
+			writeTelegramFenceClose(&b, closeMarker)
+			inFence = false
+			closeMarker = ""
+		}
+
+		b.WriteString(line)
+		if !hasFence {
+			continue
+		}
+		if !inFence {
+			inFence = true
+			closeMarker = strings.Repeat(lineMarker[:1], len(lineMarker))
+			continue
+		}
+		if strings.HasPrefix(lineMarker, closeMarker[:1]) && len(lineMarker) >= len(closeMarker) {
+			inFence = false
+			closeMarker = ""
+		}
+	}
+	if inFence && closeMarker != "" {
+		writeTelegramFenceClose(&b, closeMarker)
+	}
+	return b.String()
+}
+
+func writeTelegramFenceClose(b *strings.Builder, marker string) {
+	if marker == "" {
+		return
+	}
+	if b.Len() > 0 {
+		current := b.String()
+		if !strings.HasSuffix(current, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString(marker)
+	b.WriteString("\n")
+}
+
+func isTelegramFenceRecoveryBoundary(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	if lower == "references:" || trimmed == "参考说明：" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "# ") ||
+		strings.HasPrefix(trimmed, "## ") ||
+		strings.HasPrefix(trimmed, "### ") ||
+		strings.HasPrefix(trimmed, "#### ") {
+		return true
+	}
+	return looksLikeNumberedProseHeading(trimmed)
+}
+
+func looksLikeNumberedProseHeading(trimmed string) bool {
+	dot := strings.Index(trimmed, ". ")
+	if dot <= 0 || dot > 16 {
+		return false
+	}
+	hasDigit := false
+	for _, r := range trimmed[:dot] {
+		if r >= '0' && r <= '9' {
+			hasDigit = true
+			break
+		}
+	}
+	if !hasDigit {
+		return false
+	}
+	return strings.Contains(trimmed, "—") || strings.Contains(trimmed, "：") || containsCJK(trimmed)
+}
+
+func containsCJK(s string) bool {
+	for _, r := range s {
+		if (r >= '\u4e00' && r <= '\u9fff') ||
+			(r >= '\u3040' && r <= '\u30ff') ||
+			(r >= '\u3400' && r <= '\u4dbf') {
+			return true
+		}
+	}
+	return false
+}
+
+func telegramMarkdownFenceMarker(line string) (string, bool) {
+	trimmed := strings.TrimSpace(strings.TrimRight(line, "\n"))
+	if len(trimmed) < 3 {
+		return "", false
+	}
+	if strings.HasPrefix(trimmed, "```") {
+		return strings.Repeat("`", countLeadingTelegramFenceRunes(trimmed, '`')), true
+	}
+	if strings.HasPrefix(trimmed, "~~~") {
+		return strings.Repeat("~", countLeadingTelegramFenceRunes(trimmed, '~')), true
+	}
+	return "", false
+}
+
+func countLeadingTelegramFenceRunes(s string, target rune) int {
+	count := 0
+	for _, r := range s {
+		if r != target {
+			break
+		}
+		count++
+	}
+	return count
 }
 
 type telegramHTMLRenderer struct {

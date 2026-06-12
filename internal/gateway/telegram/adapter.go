@@ -726,9 +726,7 @@ func (s *telegramStreamSender) renderContent() string {
 		if s.thinking != "" {
 			maxLen -= len(s.thinking) + 2
 		}
-		if len(content) > maxLen {
-			content = content[:maxLen-3] + "..."
-		}
+		content = truncateTelegramMarkdownForRender(content, maxLen)
 		sb.WriteString(content)
 	}
 
@@ -1214,6 +1212,7 @@ func (a *Adapter) splitMessage(message string) []string {
 	if maxLen <= 0 || maxLen > 4096 {
 		maxLen = 4096
 	}
+	message = repairTelegramMarkdownFences(message)
 
 	if len(message) <= maxLen {
 		return []string{message}
@@ -1231,26 +1230,157 @@ func (a *Adapter) splitHTMLMessage(message string) []string {
 		return []string{message}
 	}
 
-	lines := strings.SplitAfter(message, "\n")
+	const (
+		preCodeOpenTag  = "<pre><code>"
+		preCodeCloseTag = "</code></pre>"
+	)
+	if minCodeChunkLen := len(preCodeOpenTag) + len(preCodeCloseTag) + 1; maxLen < minCodeChunkLen {
+		maxLen = minCodeChunkLen
+	}
+
 	var chunks []string
 	var current strings.Builder
-	for _, line := range lines {
-		if current.Len()+len(line) > maxLen && current.Len() > 0 {
-			chunks = append(chunks, current.String())
-			current.Reset()
+	preCodeOpen := false
+
+	flush := func(reopen bool) {
+		if current.Len() == 0 {
+			return
 		}
-		if len(line) > maxLen {
-			for len(line) > maxLen {
-				chunks = append(chunks, line[:maxLen])
-				line = line[maxLen:]
+		chunk := current.String()
+		if preCodeOpen {
+			chunk += preCodeCloseTag
+		}
+		chunks = append(chunks, chunk)
+		current.Reset()
+		if reopen && preCodeOpen {
+			current.WriteString(preCodeOpenTag)
+		}
+	}
+
+	appendText := func(text string) {
+		for len(text) > 0 {
+			reserved := 0
+			if preCodeOpen {
+				reserved = len(preCodeCloseTag)
 			}
+			available := maxLen - current.Len() - reserved
+			if available <= 0 {
+				flush(true)
+				continue
+			}
+			if len(text) <= available {
+				current.WriteString(text)
+				return
+			}
+			part := truncateTelegramRunes(text, available)
+			if part == "" {
+				part = text[:available]
+			}
+			current.WriteString(part)
+			text = text[len(part):]
+			flush(true)
 		}
-		current.WriteString(line)
 	}
-	if current.Len() > 0 {
-		chunks = append(chunks, current.String())
+
+	appendTag := func(tag string, opens bool) {
+		needed := len(tag)
+		if opens {
+			needed += len(preCodeCloseTag)
+		}
+		if current.Len()+needed > maxLen && current.Len() > 0 {
+			flush(true)
+		}
+		current.WriteString(tag)
+		preCodeOpen = opens
 	}
+
+	for i := 0; i < len(message); {
+		rest := strings.ToLower(message[i:])
+		nextOpen := strings.Index(rest, preCodeOpenTag)
+		nextClose := strings.Index(rest, preCodeCloseTag)
+
+		if nextOpen < 0 && nextClose < 0 {
+			appendText(message[i:])
+			break
+		}
+
+		nextTag := nextOpen
+		tag := preCodeOpenTag
+		opens := true
+		if nextClose >= 0 && (nextOpen < 0 || nextClose < nextOpen) {
+			nextTag = nextClose
+			tag = preCodeCloseTag
+			opens = false
+		}
+
+		if nextTag > 0 {
+			appendText(message[i : i+nextTag])
+			i += nextTag
+			continue
+		}
+
+		appendTag(message[i:i+len(tag)], opens)
+		i += len(tag)
+	}
+
+	flush(false)
 	return chunks
+}
+
+func truncateTelegramMarkdownForRender(text string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if len(text) <= maxLen {
+		return text
+	}
+
+	const (
+		marker     = "\n...\n"
+		fenceClose = "\n```"
+	)
+	if maxLen <= len(marker)+len(fenceClose) {
+		return truncateTelegramRunes(text, maxLen)
+	}
+
+	limit := maxLen - len(marker)
+	truncated := truncateTelegramRunes(text, limit)
+	truncated = strings.TrimRight(truncated, " \t\r\n")
+	if telegramMarkdownFenceOpen(truncated) {
+		truncated = truncateTelegramRunes(truncated, limit-len(fenceClose))
+		truncated = strings.TrimRight(truncated, " \t\r\n")
+		if telegramMarkdownFenceOpen(truncated) {
+			truncated += fenceClose
+		}
+	}
+	return truncated + marker
+}
+
+func truncateTelegramRunes(text string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	if len(text) <= maxLen {
+		return text
+	}
+	var b strings.Builder
+	for _, r := range text {
+		if b.Len()+len(string(r)) > maxLen {
+			break
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func telegramMarkdownFenceOpen(text string) bool {
+	inFence := false
+	for _, line := range strings.SplitAfter(text, "\n") {
+		if isMarkdownFenceLine(line) {
+			inFence = !inFence
+		}
+	}
+	return inFence
 }
 
 func splitTelegramMessageChunks(message string, maxLen int) []string {
