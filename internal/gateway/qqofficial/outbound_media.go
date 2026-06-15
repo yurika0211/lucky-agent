@@ -35,10 +35,7 @@ var (
 
 func resolveOutboundMediaResponse(response string) (string, []outboundMedia, error) {
 	text, media := parseOutboundMediaResponse(response)
-	if len(media) > 0 {
-		return text, media, nil
-	}
-	return extractLocalFiles(response)
+	return text, media, nil
 }
 
 func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
@@ -97,6 +94,9 @@ func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outb
 			}
 			source := strings.TrimSpace(m[2])
 			if kind, ok := inferMediaKind(source); ok {
+				if kind != outboundMediaPhoto {
+					return match
+				}
 				existing = append(existing, outboundMedia{
 					Kind:    kind,
 					Source:  source,
@@ -106,35 +106,6 @@ func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outb
 			}
 			return match
 		})
-	}
-
-	if strings.Contains(text, "](") {
-		text = markdownLinkPattern.ReplaceAllStringFunc(text, func(match string) string {
-			m := markdownLinkPattern.FindStringSubmatch(match)
-			if m == nil {
-				return match
-			}
-			source := strings.TrimSpace(m[2])
-			kind, ok := inferMediaKind(source)
-			if !ok {
-				return match
-			}
-			existing = append(existing, outboundMedia{
-				Kind:    kind,
-				Source:  source,
-				Caption: strings.TrimSpace(m[1]),
-			})
-			return ""
-		})
-	}
-
-	if len(existing) == 0 {
-		if kind, ok := detectImplicitMedia(text); ok {
-			return "", []outboundMedia{{
-				Kind:   kind,
-				Source: strings.TrimSpace(text),
-			}}
-		}
 	}
 
 	return strings.TrimSpace(text), existing
@@ -193,6 +164,9 @@ func detectImplicitMedia(text string) (outboundMediaKind, bool) {
 }
 
 func inferMediaKind(source string) (outboundMediaKind, bool) {
+	if isSensitiveOutboundMediaPath(source) {
+		return "", false
+	}
 	ext := strings.ToLower(mediaSourceExt(source))
 	switch ext {
 	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
@@ -201,6 +175,20 @@ func inferMediaKind(source string) (outboundMediaKind, bool) {
 		return outboundMediaDocument, true
 	default:
 		return "", false
+	}
+}
+
+func isSensitiveOutboundMediaPath(source string) bool {
+	source = strings.TrimSpace(normalizeLocalMediaPath(source))
+	if source == "" {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(source))
+	switch base {
+	case "config.json", ".env", ".env.local", ".env.production", ".env.development", "credentials.json", "token.json", "tokens.json", "secrets.json":
+		return true
+	default:
+		return strings.HasPrefix(base, ".env.")
 	}
 }
 

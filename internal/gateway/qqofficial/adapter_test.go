@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -711,11 +712,11 @@ func TestResolveOutboundMediaResponseMarkdownSandboxLink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveOutboundMediaResponse error = %v", err)
 	}
-	if text != "PNG 在这里：" {
+	if text != "PNG 在这里：[chart](sandbox:"+img+")" {
 		t.Fatalf("unexpected text %q", text)
 	}
-	if len(media) != 1 || media[0].Source != "sandbox:"+img || media[0].Kind != outboundMediaPhoto {
-		t.Fatalf("unexpected media %#v", media)
+	if len(media) != 0 {
+		t.Fatalf("markdown sandbox link should not auto-send media, got %#v", media)
 	}
 }
 
@@ -730,11 +731,41 @@ func TestResolveOutboundMediaResponseBareLocalFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveOutboundMediaResponse error = %v", err)
 	}
-	if text != "文件在这里" {
+	if text != "文件在这里 "+doc {
 		t.Fatalf("unexpected text %q", text)
 	}
-	if len(media) != 1 || media[0].Source != doc || media[0].Kind != outboundMediaDocument {
-		t.Fatalf("unexpected media %#v", media)
+	if len(media) != 0 {
+		t.Fatalf("bare local file should not auto-send media, got %#v", media)
+	}
+}
+
+func TestResolveOutboundMediaResponseDoesNotSendConfigJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"api_key":"secret"}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	text, media, err := resolveOutboundMediaResponse("配置在这里 " + configPath)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse error = %v", err)
+	}
+	if text != "配置在这里 "+configPath {
+		t.Fatalf("unexpected text %q", text)
+	}
+	if len(media) != 0 {
+		t.Fatalf("config.json should not be sent as media, got %#v", media)
+	}
+
+	text, media, err = resolveOutboundMediaResponse("MEDIA:" + configPath)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse MEDIA config error = %v", err)
+	}
+	if text != "MEDIA:"+configPath {
+		t.Fatalf("expected sensitive MEDIA tag to remain text, got %q", text)
+	}
+	if len(media) != 0 {
+		t.Fatalf("explicit config.json MEDIA tag should be blocked, got %#v", media)
 	}
 }
 

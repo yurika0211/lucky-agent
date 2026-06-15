@@ -37,10 +37,7 @@ var (
 
 func resolveOutboundMediaResponse(response string) (string, []outboundMedia, error) {
 	text, media := parseOutboundMediaResponse(response)
-	if len(media) > 0 {
-		return text, media, nil
-	}
-	return extractLocalFiles(response)
+	return text, media, nil
 }
 
 func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
@@ -55,9 +52,14 @@ func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if m := tgMediaDirectivePattern.FindStringSubmatch(trimmed); m != nil {
+			source := strings.TrimSpace(m[2])
+			if isSensitiveOutboundMediaPath(source) {
+				kept = append(kept, line)
+				continue
+			}
 			media = append(media, outboundMedia{
 				Kind:    outboundMediaKind(strings.ToLower(m[1])),
-				Source:  strings.TrimSpace(m[2]),
+				Source:  source,
 				Caption: strings.TrimSpace(m[3]),
 			})
 			continue
@@ -106,24 +108,9 @@ func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outb
 			if m == nil {
 				return match
 			}
-			existing = append(existing, outboundMedia{
-				Kind:    outboundMediaPhoto,
-				Source:  strings.TrimSpace(m[2]),
-				Caption: strings.TrimSpace(m[1]),
-			})
-			return ""
-		})
-	}
-
-	if strings.Contains(text, "](") {
-		text = markdownLinkPattern.ReplaceAllStringFunc(text, func(match string) string {
-			m := markdownLinkPattern.FindStringSubmatch(match)
-			if m == nil {
-				return match
-			}
 			source := strings.TrimSpace(m[2])
 			kind, ok := inferMediaKind(source)
-			if !ok {
+			if !ok || kind != outboundMediaPhoto {
 				return match
 			}
 			existing = append(existing, outboundMedia{
@@ -133,15 +120,6 @@ func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outb
 			})
 			return ""
 		})
-	}
-
-	if len(existing) == 0 {
-		if kind, ok := detectImplicitMedia(text); ok {
-			return "", []outboundMedia{{
-				Kind:   kind,
-				Source: strings.TrimSpace(text),
-			}}
-		}
 	}
 
 	return strings.TrimSpace(text), existing
@@ -202,6 +180,9 @@ func detectImplicitMedia(text string) (outboundMediaKind, bool) {
 }
 
 func inferMediaKind(source string) (outboundMediaKind, bool) {
+	if isSensitiveOutboundMediaPath(source) {
+		return "", false
+	}
 	ext := strings.ToLower(mediaSourceExt(source))
 	switch ext {
 	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
@@ -210,6 +191,20 @@ func inferMediaKind(source string) (outboundMediaKind, bool) {
 		return outboundMediaDocument, true
 	default:
 		return "", false
+	}
+}
+
+func isSensitiveOutboundMediaPath(source string) bool {
+	source = strings.TrimSpace(normalizeLocalMediaPath(source))
+	if source == "" {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(source))
+	switch base {
+	case "config.json", ".env", ".env.local", ".env.production", ".env.development", "credentials.json", "token.json", "tokens.json", "secrets.json":
+		return true
+	default:
+		return strings.HasPrefix(base, ".env.")
 	}
 }
 
