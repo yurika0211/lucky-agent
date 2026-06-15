@@ -82,6 +82,28 @@ type Config struct {
 
 	// Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
+
+	// Hooks 配置工具执行前后的可插拔 hook（PreToolUse / PostToolUse）
+	Hooks HooksConfig `json:"hooks,omitempty"`
+}
+
+// HooksConfig 配置工具执行边界上的 hook。Enabled 为 false 时所有 hook 不生效，
+// 保持未配置 hook 的运行时行为不变。
+type HooksConfig struct {
+	Enabled        bool       `json:"enabled,omitempty"`
+	TimeoutSeconds int        `json:"timeout_seconds,omitempty"` // 单个 hook 的执行超时，默认 30s
+	FailClosed     bool       `json:"fail_closed,omitempty"`     // hook 出错/超时时是否拦截（默认放行）
+	PreToolUse     []HookSpec `json:"pre_tool_use,omitempty"`
+	PostToolUse    []HookSpec `json:"post_tool_use,omitempty"`
+}
+
+// HookSpec 声明单个外部命令 hook。Match/Sources 为空表示匹配全部工具/来源。
+// Command 经平台 shell 执行；或用 Script 指定脚本路径（按扩展名选择解释器）。
+type HookSpec struct {
+	Match   []string `json:"match,omitempty"`   // 工具名，空=全部
+	Sources []string `json:"sources,omitempty"` // 来源 cli/telegram/qq/...，空=全部
+	Command string   `json:"command,omitempty"` // 外部命令
+	Script  string   `json:"script,omitempty"`  // 或脚本路径
 }
 
 type LlmProviderConfig struct {

@@ -205,29 +205,43 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 	allowMixedParallel bool,
 	guard *toolExecutionGuard,
 ) []executedToolCall {
-	if guard == nil || len(toolCalls) == 0 {
+	hooksActive := a.hooks.Enabled()
+	if (guard == nil && !hooksActive) || len(toolCalls) == 0 {
 		return a.executeToolCallsOrdered(toolCalls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
 	}
 
+	source := "" // TODO: 接入网关来源（cli/telegram/qq/...），供 hook 按来源差异化匹配
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.ID
+	}
+
+	// blockedResults 按原始下标记录被拦截的调用；allowed 保存放行（PreToolUse
+	// 可能改写过参数）的调用，交给底层并行/串行执行。
+	blockedResults := make(map[int]executedToolCall, len(toolCalls))
 	allowed := make([]provider.ToolCall, 0, len(toolCalls))
-	results := make([]executedToolCall, 0, len(toolCalls))
 	for idx, tc := range toolCalls {
 		if msg, blocked := guard.blockMessage(tc); blocked {
-			results = append(results, executedToolCall{
-				Index:       idx,
-				ToolCall:    tc,
-				Result:      msg,
-				ShortResult: msg,
-			})
+			blockedResults[idx] = executedToolCall{Index: idx, ToolCall: tc, Result: msg, ShortResult: msg}
 			continue
+		}
+		if hooksActive {
+			finalArgs, blocked, blockMsg := a.hooks.RunPre(tc.Name, tc.Arguments, source, sessionID)
+			if blocked {
+				blockedResults[idx] = executedToolCall{Index: idx, ToolCall: tc, Result: blockMsg, ShortResult: blockMsg}
+				continue
+			}
+			tc.Arguments = finalArgs
 		}
 		allowed = append(allowed, tc)
 	}
 
 	executed := a.executeToolCallsOrdered(allowed, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
+	results := make([]executedToolCall, 0, len(toolCalls))
 	next := 0
-	for idx, tc := range toolCalls {
-		if guard.isBlocked(tc) {
+	for idx := range toolCalls {
+		if blocked, ok := blockedResults[idx]; ok {
+			results = append(results, blocked)
 			continue
 		}
 		if next >= len(executed) {

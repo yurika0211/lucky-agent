@@ -19,6 +19,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/hook"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
@@ -114,6 +115,7 @@ type Agent struct {
 	sessions              *session.Manager
 	tools                 *tool.Registry
 	gateway               *tool.Gateway           // 统一工具网关
+	hooks                 *hook.Runner            // 工具执行前后的 hook 运行器
 	msgGateway            *gateway.GatewayManager // 消息平台网关
 	mcpClient             *tool.MCPClient         // MCP 客户端
 	delegate              *tool.DelegateManager   // 子代理委派管理器
@@ -659,6 +661,46 @@ func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
 	return cfg
 }
 
+/**
+ * buildHookRuntimeConfig 将主配置中的 Hooks 段转换为 hook 运行时配置，
+ * 写法对齐 buildAutonomyRuntimeConfig：读取配置段并补默认值。
+ */
+func buildHookRuntimeConfig(c *config.Config) hook.Config {
+	cfg := hook.Config{
+		Timeout:   30 * time.Second,
+		MaxOutput: 1 << 20, // 1MB
+	}
+	if c == nil {
+		return cfg
+	}
+	h := c.Hooks
+	cfg.Enabled = h.Enabled
+	cfg.FailClosed = h.FailClosed
+	if h.TimeoutSeconds > 0 {
+		cfg.Timeout = time.Duration(h.TimeoutSeconds) * time.Second
+	}
+	cfg.PreToolUse = toHookSpecs(h.PreToolUse)
+	cfg.PostToolUse = toHookSpecs(h.PostToolUse)
+	return cfg
+}
+
+// toHookSpecs 将配置层的 HookSpec 列表转换为 hook 包的 Spec 列表。
+func toHookSpecs(specs []config.HookSpec) []hook.Spec {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]hook.Spec, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, hook.Spec{
+			Match:   s.Match,
+			Sources: s.Sources,
+			Command: s.Command,
+			Script:  s.Script,
+		})
+	}
+	return out
+}
+
 type multimodalRuntimeConfig struct {
 	APIKey             string
 	APIBase            string
@@ -891,6 +933,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		sessions:       memoryRT.sessions,
 		tools:          supportRT.tools,
 		gateway:        supportRT.toolGateway,
+		hooks:          hook.NewRunner(buildHookRuntimeConfig(c)),
 		msgGateway:     gateway.NewGatewayManager(),
 		mcpClient:      supportRT.mcpClient,
 		delegate:       supportRT.delegateMgr,

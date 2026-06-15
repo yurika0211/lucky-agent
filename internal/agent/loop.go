@@ -1125,6 +1125,11 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 	}
 
 	output = result.Output
+	if a.hooks.Enabled() {
+		// PostToolUse: 允许 hook 在工具结果回上下文前改写/脱敏/截断。
+		// source 暂传空（匹配全部来源），TODO 接入网关来源。
+		output = a.hooks.RunPost(name, arguments, "", sessionID, output, nil)
+	}
 	return output, nil
 }
 

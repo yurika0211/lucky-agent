@@ -209,5 +209,23 @@
       "poll_timeout_ms": 35000,
       "send_chunk_delay_ms": 350
     }
+  },
+  "hooks": {
+    "enabled": false,
+    "timeout_seconds": 30,
+    "fail_closed": false,
+    "pre_tool_use": [
+      {
+        "match": ["file_delete", "shell"],
+        "sources": [],
+        "command": "/path/to/pre_guard.sh"
+      }
+    ],
+    "post_tool_use": [
+      {
+        "match": [],
+        "command": "/path/to/redact_secrets.sh"
+      }
+    ]
   }
 }
