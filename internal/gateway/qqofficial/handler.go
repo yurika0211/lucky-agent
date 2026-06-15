@@ -63,10 +63,6 @@ type messageFeedbackSender interface {
 	AcknowledgeMessage(ctx context.Context, chatID string, messageID string) error
 }
 
-type forwardedTextSender interface {
-	SendForwardedText(ctx context.Context, chatID string, title string, chunks []string) error
-}
-
 type HandlerOptions struct {
 	PlatformName    string
 	DisplayName     string
@@ -2134,7 +2130,46 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 			return err
 		}
 	}
-	for _, item := range media {
+	if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
+		return err
+	}
+	if strings.TrimSpace(text) == "" && len(media) == 0 {
+		return h.reply(ctx, msg, "我这边暂时还没有整理出可发送的结果。")
+	}
+	return nil
+}
+
+func (h *Handler) sendAssistantMedia(ctx context.Context, msg *gateway.Message, media []outboundMedia) error {
+	if h == nil || h.adapter == nil || msg == nil || len(media) == 0 {
+		return nil
+	}
+
+	forwardedPhotoIndexes := map[int]struct{}{}
+	if h.shouldForwardPhotos(media) {
+		if forwarder, ok := h.adapter.(gateway.ForwardedMediaSender); ok {
+			items := make([]gateway.ForwardedMediaItem, 0, len(media))
+			for i, item := range media {
+				if item.Kind != outboundMediaPhoto {
+					continue
+				}
+				items = append(items, gateway.ForwardedMediaItem{
+					Type:    gateway.AttachmentImage,
+					Source:  item.Source,
+					Caption: item.Caption,
+				})
+				forwardedPhotoIndexes[i] = struct{}{}
+			}
+			if err := forwarder.SendForwardedMedia(ctx, msg.Chat.ID, h.forwardedTextTitle(), items); err != nil {
+				fmt.Printf("[%s] warning: failed to send forwarded media: %v\n", h.logPrefixValue(), err)
+				forwardedPhotoIndexes = map[int]struct{}{}
+			}
+		}
+	}
+
+	for i, item := range media {
+		if _, forwarded := forwardedPhotoIndexes[i]; forwarded {
+			continue
+		}
 		switch item.Kind {
 		case outboundMediaPhoto:
 			if err := h.adapter.SendPhoto(ctx, msg.Chat.ID, msg.ID, item.Source, item.Caption); err != nil {
@@ -2146,10 +2181,20 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 			}
 		}
 	}
-	if strings.TrimSpace(text) == "" && len(media) == 0 {
-		return h.reply(ctx, msg, "我这边暂时还没有整理出可发送的结果。")
-	}
 	return nil
+}
+
+func (h *Handler) shouldForwardPhotos(media []outboundMedia) bool {
+	photos := 0
+	for _, item := range media {
+		if item.Kind == outboundMediaPhoto {
+			photos++
+			if photos > 1 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (h *Handler) sendAssistantText(ctx context.Context, msg *gateway.Message, text string) error {
@@ -2160,7 +2205,7 @@ func (h *Handler) sendAssistantText(ctx context.Context, msg *gateway.Message, t
 	if qqRuneLen(text) <= qqLongMessageForwardThreshold {
 		return h.reply(ctx, msg, text)
 	}
-	forwarder, ok := h.adapter.(forwardedTextSender)
+	forwarder, ok := h.adapter.(gateway.ForwardedTextSender)
 	if !ok {
 		return h.reply(ctx, msg, text)
 	}

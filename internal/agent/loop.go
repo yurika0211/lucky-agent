@@ -304,7 +304,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	result = &LoopResult{
 		State: StateReason,
 	}
-	finalize := func(response string) {
+	finalize := func(response string, reasoningContent string) {
 		response = utils.SanitizeToolProtocolOutput(response)
 		response = appendNaturalCitations(response, result.ToolCalls)
 		result.Response = response
@@ -312,7 +312,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 
 		// 会话中保留 provider 级消息顺序：user -> assistant(tool call) -> tool -> assistant(final)
 		if sess != nil {
-			sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
+			sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent})
 		}
 
 		// Final answers are not indexed into RAG by default: indexed source
@@ -379,7 +379,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 					messages = updatedMessages
 					continue
 				}
-				finalize(finalResponse)
+				finalize(finalResponse, "")
 				return result, nil
 			}
 			if updatedMessages, enforced := a.executeMemoryGateForLoop(memoryGate, loopCfg, result, sess, messages, loopState); enforced {
@@ -399,12 +399,12 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		if !finalized {
 			continue
 		}
-		finalize(finalResponse)
+		finalize(finalResponse, directReasoningContent(resp, loopState))
 		return result, nil
 	}
 
 	if strings.TrimSpace(loopState.continuedResponse.String()) != "" {
-		finalize(strings.TrimSpace(loopState.continuedResponse.String()) + lengthTruncatedNotice)
+		finalize(strings.TrimSpace(loopState.continuedResponse.String())+lengthTruncatedNotice, strings.TrimSpace(loopState.continuedReasoning.String()))
 		return result, nil
 	}
 
@@ -462,6 +462,7 @@ type loopRuntimeState struct {
 	detailedSearchEvidence   int
 	forceSearchSynthesis     bool
 	continuedResponse        strings.Builder
+	continuedReasoning       strings.Builder
 }
 
 /*
@@ -501,7 +502,7 @@ func (a *Agent) processDirectResponse(
 	if clean == "" {
 		if loopState.emptyResponseRetries < maxEmptyResponseRetries {
 			loopState.emptyResponseRetries++
-			messages = append(messages, provider.Message{Role: "assistant", Content: raw})
+			messages = append(messages, provider.Message{Role: "assistant", Content: raw, ReasoningContent: resp.ReasoningContent})
 			messages = append(messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
 			return messages, false, ""
 		}
@@ -514,9 +515,10 @@ func (a *Agent) processDirectResponse(
 
 	if strings.EqualFold(resp.FinishReason, "length") {
 		appendContinuation(&loopState.continuedResponse, raw)
+		appendContinuation(&loopState.continuedReasoning, resp.ReasoningContent)
 		if loopState.lengthRecoveryCount < maxLengthContinuationRetries {
 			loopState.lengthRecoveryCount++
-			messages = append(messages, provider.Message{Role: "assistant", Content: raw})
+			messages = append(messages, provider.Message{Role: "assistant", Content: raw, ReasoningContent: resp.ReasoningContent})
 			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
 			return messages, false, ""
 		}
@@ -530,10 +532,21 @@ func (a *Agent) processDirectResponse(
 
 	if strings.TrimSpace(loopState.continuedResponse.String()) != "" {
 		appendContinuation(&loopState.continuedResponse, raw)
+		appendContinuation(&loopState.continuedReasoning, resp.ReasoningContent)
 		return messages, true, strings.TrimSpace(loopState.continuedResponse.String())
 	}
 
 	return messages, true, raw
+}
+
+func directReasoningContent(resp *provider.Response, loopState *loopRuntimeState) string {
+	if loopState == nil || strings.TrimSpace(loopState.continuedReasoning.String()) == "" {
+		if resp == nil {
+			return ""
+		}
+		return resp.ReasoningContent
+	}
+	return strings.TrimSpace(loopState.continuedReasoning.String())
 }
 
 /*
@@ -689,7 +702,7 @@ func (a *Agent) processToolCallBatch(
 isUsefulSearchEvidence 判断某个工具结果是否可作为有效搜索证据。
 */
 func isUsefulSearchEvidence(toolName, result string) bool {
-	if toolName != "web_search" && toolName != "web_fetch" {
+	if toolName != "web_search" && toolName != "web_fetch" && toolName != "opencli" {
 		return false
 	}
 	out := strings.TrimSpace(result)
@@ -713,7 +726,7 @@ func isUsefulSearchEvidence(toolName, result string) bool {
 normalizedToolTarget 提取并归一化工具调用的主要目标对象。
 */
 func normalizedToolTarget(toolName, arguments string) string {
-	if toolName != "web_fetch" {
+	if toolName != "web_fetch" && toolName != "opencli" {
 		return ""
 	}
 
@@ -725,6 +738,9 @@ func normalizedToolTarget(toolName, arguments string) string {
 		return ""
 	}
 	rawURL, _ := args["url"].(string)
+	if rawURL == "" && toolName == "opencli" {
+		rawURL = openCLIToolURLFromArgs(args)
+	}
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return ""
@@ -736,6 +752,32 @@ func normalizedToolTarget(toolName, arguments string) string {
 	u.Fragment = ""
 	u.Host = strings.ToLower(u.Host)
 	return u.String()
+}
+
+func openCLIToolURLFromArgs(args map[string]any) string {
+	rawArgs, ok := args["args"]
+	if !ok {
+		return ""
+	}
+	items, ok := rawArgs.([]any)
+	if !ok {
+		return ""
+	}
+	for i, item := range items {
+		value, ok := item.(string)
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if strings.HasPrefix(value, "--url=") {
+			return strings.TrimSpace(strings.TrimPrefix(value, "--url="))
+		}
+		if value == "--url" && i+1 < len(items) {
+			next, _ := items[i+1].(string)
+			return strings.TrimSpace(next)
+		}
+	}
+	return ""
 }
 
 /*
@@ -769,7 +811,7 @@ func compactToolResultForContext(toolName, result string) string {
 	switch toolName {
 	case "web_search":
 		limit = 900
-	case "web_fetch":
+	case "web_fetch", "opencli":
 		limit = 1800
 	case "file_list":
 		limit = 600

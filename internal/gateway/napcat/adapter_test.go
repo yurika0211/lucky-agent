@@ -389,6 +389,92 @@ func TestAdapterSendForwardedTextWritesForwardAction(t *testing.T) {
 	}
 }
 
+func TestAdapterSendForwardedMediaWritesForwardAction(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	adapter.selfID = "10001"
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	tmpDir := t.TempDir()
+	img1 := filepath.Join(tmpDir, "one.png")
+	img2 := filepath.Join(tmpDir, "two.jpg")
+	if err := os.WriteFile(img1, []byte("fake image one"), 0o600); err != nil {
+		t.Fatalf("write first image: %v", err)
+	}
+	if err := os.WriteFile(img2, []byte("fake image two"), 0o600); err != nil {
+		t.Fatalf("write second image: %v", err)
+	}
+
+	if err := adapter.SendForwardedMedia(context.Background(), "group:345", "LuckyHarness", []gateway.ForwardedMediaItem{
+		{Type: gateway.AttachmentImage, Source: img1, Caption: "one"},
+		{Type: gateway.AttachmentImage, Source: img2, Caption: "two"},
+	}); err != nil {
+		t.Fatalf("send forwarded media: %v", err)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode action: %v", err)
+	}
+	if req.Action != "send_group_forward_msg" {
+		t.Fatalf("unexpected action: %s", req.Action)
+	}
+	if req.Params["group_id"].(float64) != 345 {
+		t.Fatalf("unexpected group id: %#v", req.Params["group_id"])
+	}
+	messages, ok := req.Params["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("unexpected messages payload: %#v", req.Params["messages"])
+	}
+	node, ok := messages[0].(map[string]any)
+	if !ok || node["type"] != "node" {
+		t.Fatalf("unexpected node payload: %#v", messages[0])
+	}
+	nodeData, ok := node["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected node data: %#v", node["data"])
+	}
+	if nodeData["name"] != "LuckyHarness" || nodeData["uin"] != "10001" {
+		t.Fatalf("unexpected node identity: %#v", nodeData)
+	}
+	content, ok := nodeData["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("unexpected node content: %#v", nodeData["content"])
+	}
+	textSegment, ok := content[0].(map[string]any)
+	if !ok || textSegment["type"] != "text" {
+		t.Fatalf("unexpected text segment: %#v", content[0])
+	}
+	textData, ok := textSegment["data"].(map[string]any)
+	if !ok || textData["text"] != "one" {
+		t.Fatalf("unexpected text data: %#v", textSegment["data"])
+	}
+	imageSegment, ok := content[1].(map[string]any)
+	if !ok || imageSegment["type"] != "image" {
+		t.Fatalf("unexpected image segment: %#v", content[1])
+	}
+	imageData, ok := imageSegment["data"].(map[string]any)
+	wantImage := "base64://" + base64.StdEncoding.EncodeToString([]byte("fake image one"))
+	if !ok || imageData["file"] != wantImage {
+		t.Fatalf("unexpected image data: %#v", imageSegment["data"])
+	}
+	if strings.Contains(string(data), img1) || strings.Contains(string(data), img2) {
+		t.Fatalf("forwarded media payload should not expose local host paths: %s", string(data))
+	}
+}
+
 func TestAdapterSendPhotoLocalFileUsesBase64CQSource(t *testing.T) {
 	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
 	if err := adapter.Start(context.Background()); err != nil {

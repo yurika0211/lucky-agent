@@ -125,6 +125,7 @@ func FileReadTool() *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto,
+		ShellAware:  true,
 		Parameters: map[string]Param{
 			"path":   {Type: "string", Description: "Path to the local file that should be inspected.", Required: true},
 			"offset": {Type: "number", Description: "Line number to start reading from (1-indexed)", Required: false, Default: 1},
@@ -141,6 +142,7 @@ func FileFindTool() *Tool {
 		Category:        CatBuiltin,
 		Source:          "builtin",
 		Permission:      PermAuto,
+		ShellAware:      true,
 		HiddenFromModel: true,
 		Parameters: map[string]Param{
 			"path":        {Type: "string", Description: "Directory path to search from.", Required: true},
@@ -155,11 +157,8 @@ func FileFindTool() *Tool {
 }
 
 func handleFileFind(args map[string]any) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok || strings.TrimSpace(path) == "" {
-		return "", fmt.Errorf("path is required")
-	}
-	if err := validatePath(path); err != nil {
+	path, err := resolvePathArg(args, "path")
+	if err != nil {
 		return "", err
 	}
 
@@ -294,11 +293,8 @@ func firstNonEmptyStringArg(args map[string]any, keys ...string) string {
 }
 
 func handleFileRead(args map[string]any) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path is required")
-	}
-	if err := validatePath(path); err != nil {
+	path, err := resolvePathArg(args, "path")
+	if err != nil {
 		return "", err
 	}
 	data, err := os.ReadFile(path)
@@ -352,6 +348,7 @@ func FileWriteTool() *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
+		ShellAware:  true,
 		Parameters: map[string]Param{
 			"path":    {Type: "string", Description: "Target path of the file to create or overwrite.", Required: true},
 			"content": {Type: "string", Description: "Full file content to write. Use complete intended content, not a diff.", Required: true},
@@ -361,16 +358,13 @@ func FileWriteTool() *Tool {
 }
 
 func handleFileWrite(args map[string]any) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path is required")
-	}
+	path, pathErr := resolvePathArg(args, "path")
 	content, ok := args["content"].(string)
 	if !ok {
 		return "", fmt.Errorf("content is required")
 	}
-	if err := validatePath(path); err != nil {
-		return "", err
+	if pathErr != nil {
+		return "", pathErr
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create directory: %w", err)
@@ -388,6 +382,7 @@ func FileMkdirTool() *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
+		ShellAware:  true,
 		Parameters: map[string]Param{
 			"path":      {Type: "string", Description: "Directory path to create.", Required: true},
 			"recursive": {Type: "boolean", Description: "Create parent directories when needed. Default true.", Required: false, Default: true},
@@ -397,11 +392,8 @@ func FileMkdirTool() *Tool {
 }
 
 func handleFileMkdir(args map[string]any) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path is required")
-	}
-	if err := validatePath(path); err != nil {
+	path, err := resolvePathArg(args, "path")
+	if err != nil {
 		return "", err
 	}
 	recursive := true
@@ -434,6 +426,7 @@ func FileMoveTool() *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
+		ShellAware:  true,
 		Parameters: map[string]Param{
 			"src":       {Type: "string", Description: "Existing source path to move.", Required: true},
 			"dst":       {Type: "string", Description: "Destination path after the move.", Required: true},
@@ -444,18 +437,12 @@ func FileMoveTool() *Tool {
 }
 
 func handleFileMove(args map[string]any) (string, error) {
-	src, ok := args["src"].(string)
-	if !ok {
-		return "", fmt.Errorf("src is required")
-	}
-	dst, ok := args["dst"].(string)
-	if !ok {
-		return "", fmt.Errorf("dst is required")
-	}
-	if err := validatePath(src); err != nil {
+	src, err := resolvePathArg(args, "src")
+	if err != nil {
 		return "", err
 	}
-	if err := validatePath(dst); err != nil {
+	dst, err := resolvePathArg(args, "dst")
+	if err != nil {
 		return "", err
 	}
 	overwrite := false
@@ -502,6 +489,7 @@ func FileDeleteTool() *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
+		ShellAware:  true,
 		Parameters: map[string]Param{
 			"path":       {Type: "string", Description: "File or directory path to delete.", Required: true},
 			"recursive":  {Type: "boolean", Description: "Remove a directory tree instead of only a single file or empty directory. Default false.", Required: false, Default: false},
@@ -512,11 +500,8 @@ func FileDeleteTool() *Tool {
 }
 
 func handleFileDelete(args map[string]any) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path is required")
-	}
-	if err := validatePath(path); err != nil {
+	path, err := resolvePathArg(args, "path")
+	if err != nil {
 		return "", err
 	}
 	recursive := false
@@ -571,6 +556,7 @@ func FilePatchTool() *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
+		ShellAware:  true,
 		Parameters: map[string]Param{
 			"path":        {Type: "string", Description: "Path to the file that should be patched.", Required: true},
 			"match":       {Type: "string", Description: "Exact text to find in the file before applying the patch.", Required: false},
@@ -584,10 +570,7 @@ func FilePatchTool() *Tool {
 }
 
 func handleFilePatch(args map[string]any) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path is required")
-	}
+	path, pathErr := resolvePathArg(args, "path")
 	match, _ := args["match"].(string)
 	replace, replaceProvided := args["replace"].(string)
 	diffText, _ := args["diff"].(string)
@@ -609,8 +592,8 @@ func handleFilePatch(args map[string]any) (string, error) {
 	if occurrence <= 0 {
 		occurrence = 1
 	}
-	if err := validatePath(path); err != nil {
-		return "", err
+	if pathErr != nil {
+		return "", pathErr
 	}
 
 	data, err := os.ReadFile(path)
@@ -832,6 +815,7 @@ func FileListTool() *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto,
+		ShellAware:  true,
 		Parameters: map[string]Param{
 			"path":      {Type: "string", Description: "Directory path to inspect.", Required: true},
 			"recursive": {Type: "boolean", Description: "Whether to include nested files and subdirectories.", Required: false, Default: false},
@@ -841,10 +825,7 @@ func FileListTool() *Tool {
 }
 
 func handleFileList(args map[string]any) (string, error) {
-	path, ok := args["path"].(string)
-	if !ok {
-		return "", fmt.Errorf("path is required")
-	}
+	path, pathErr := resolvePathArg(args, "path")
 	recursive := false
 	if r, ok := args["recursive"]; ok {
 		recursive, _ = r.(bool)
@@ -861,8 +842,8 @@ func handleFileList(args map[string]any) (string, error) {
 	if maxEntries <= 0 {
 		maxEntries = 200
 	}
-	if err := validatePath(path); err != nil {
-		return "", err
+	if pathErr != nil {
+		return "", pathErr
 	}
 
 	var b strings.Builder
@@ -916,11 +897,54 @@ func handleFileList(args map[string]any) (string, error) {
 }
 
 func validatePath(path string) error {
+	_, err := resolvePath(path, "")
+	return err
+}
+
+func resolvePathArg(args map[string]any, key string) (string, error) {
+	path, ok := args[key].(string)
+	if !ok || strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("%s is required", key)
+	}
+	cwd, _ := args["_cwd"].(string)
+	return resolvePath(path, cwd)
+}
+
+func resolvePath(path, baseCwd string) (string, error) {
+	path = expandSandboxPath(strings.TrimSpace(path))
 	clean := filepath.Clean(path)
 	if strings.Contains(clean, "..") {
-		return fmt.Errorf("path traversal detected: %s", path)
+		return "", fmt.Errorf("path traversal detected: %s", path)
 	}
-	return validateSandbox(clean)
+	if !filepath.IsAbs(clean) {
+		baseCwd = expandSandboxPath(strings.TrimSpace(baseCwd))
+		if baseCwd != "" {
+			baseCwd = filepath.Clean(baseCwd)
+			if err := validateSandbox(baseCwd); err == nil {
+				clean = filepath.Join(baseCwd, clean)
+			}
+		}
+	}
+	if !filepath.IsAbs(clean) {
+		if wd, err := os.Getwd(); err == nil {
+			clean = filepath.Join(wd, clean)
+		}
+	}
+	clean = filepath.Clean(clean)
+	if err := validateSandbox(clean); err != nil {
+		return "", err
+	}
+	return clean, nil
+}
+
+func expandSandboxPath(path string) string {
+	if path == "~" {
+		return sandboxHomeDir()
+	}
+	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
+		return filepath.Join(sandboxHomeDir(), path[2:])
+	}
+	return path
 }
 
 func validateSandbox(cleanPath string) error {

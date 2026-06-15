@@ -107,20 +107,42 @@ func TestToOpenAIMessagesWithReasoningContentForDeepseek(t *testing.T) {
 	}
 }
 
-func TestToOpenAIMessagesOmitsReasoningContentForNonDeepseek(t *testing.T) {
+func TestToOpenAIMessagesBackfillsReasoningContentForDeepseekAssistantHistory(t *testing.T) {
+	messages := []Message{
+		{Role: "assistant", Content: "old answer"},
+		{Role: "assistant", Content: "", ToolCalls: []ToolCall{
+			{ID: "call_1", Name: "add", Arguments: `{"a":1,"b":2}`},
+		}},
+	}
+
+	result, err := toOpenAIMessages(messages, "deepseek-v4-flash")
+	if err != nil {
+		t.Fatalf("toOpenAIMessages() error = %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(result))
+	}
+	for i, msg := range result {
+		if msg.ReasoningContent != missingReasoningContentPlaceholder {
+			t.Fatalf("expected reasoning placeholder on message %d, got %q", i, msg.ReasoningContent)
+		}
+	}
+}
+
+func TestToOpenAIMessagesPreservesReasoningContent(t *testing.T) {
 	messages := []Message{
 		{Role: "assistant", Content: "", ReasoningContent: "internal reasoning"},
 	}
 
-	result, err := toOpenAIMessages(messages, "gpt-5.4-mini")
+	result, err := toOpenAIMessages(messages, "gpt-5.4")
 	if err != nil {
 		t.Fatalf("toOpenAIMessages() error = %v", err)
 	}
 	if len(result) != 1 {
 		t.Fatalf("expected 1 message, got %d", len(result))
 	}
-	if result[0].ReasoningContent != "" {
-		t.Fatalf("expected reasoning content to be omitted, got %q", result[0].ReasoningContent)
+	if result[0].ReasoningContent != "internal reasoning" {
+		t.Fatalf("expected reasoning content to be preserved, got %q", result[0].ReasoningContent)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 type Services struct {
 	Builtin   *BuiltinToolService
 	SearchCfg *WebSearchConfig
+	OpenCLI   *OpenCLIConfig
 	Memory    *MemoryToolService
 	RAG       *RAGToolService
 	Delegate  *DelegateManager
@@ -20,10 +21,11 @@ type Services struct {
 }
 
 // NewServices creates a tool service container.
-func NewServices(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager) *Services {
+func NewServices(searchCfg *WebSearchConfig, opencliCfg *OpenCLIConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager) *Services {
 	return &Services{
-		Builtin:   NewBuiltinToolService(searchCfg, defaultImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults),
+		Builtin:   NewBuiltinToolService(searchCfg, opencliCfg, defaultImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults),
 		SearchCfg: searchCfg,
+		OpenCLI:   opencliCfg,
 		Memory:    NewMemoryToolService(mem),
 		RAG:       NewRAGToolService(ragMgr),
 		Delegate:  delegate,

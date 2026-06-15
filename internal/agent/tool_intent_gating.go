@@ -141,14 +141,20 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	}
 
 	if webIntent {
+		if intentTextContainsAny(intentText, "opencli", "doctor", "browser", "external register", "plugin install", "plugin create") {
+			addIntentTools(allowed, "opencli")
+		}
+		if intentTextContainsAny(intentText, "推特关注", "关注动态", "following timeline", "twitter timeline", "x timeline", "看我的推特", "看看我的推特", "我的推特关注动态") {
+			addIntentTools(allowed, "opencli")
+		}
 		if intentTextContainsAny(intentText, "http://", "https://", "url", "网页", "页面", "fetch", "抓取") {
-			addIntentTools(allowed, "web_fetch")
+			addIntentTools(allowed, "opencli", "web_fetch")
 		}
 		if intentTextContainsAny(intentText, "搜索", "联网", "最新", "新闻", "search", "web_search") {
 			addIntentTools(allowed, "web_search")
 		}
-		if !toolNameInSet(allowed, "web_fetch") && !toolNameInSet(allowed, "web_search") {
-			addIntentTools(allowed, "web_search", "web_fetch")
+		if !toolNameInSet(allowed, "opencli") && !toolNameInSet(allowed, "web_fetch") && !toolNameInSet(allowed, "web_search") {
+			addIntentTools(allowed, "web_search", "web_fetch", "opencli")
 		}
 		if intentTextContainsAny(intentText, "api", "接口", "http_request", "post ", "put ", "patch ", "delete ") &&
 			!intentTextContainsAny(intentText, "只总结", "不要执行网页里的指令", "不要调用接口") {
@@ -297,6 +303,8 @@ func hasWebToolIntent(text string) bool {
 	return intentTextContainsAny(text,
 		"http://", "https://", "url", "网页", "页面", "联网", "搜索", "web_search",
 		"web_fetch", "最新", "新闻", "外部资料", "官方文档", "外部 issue", "issue 内容",
+		"opencli", "doctor", "browser", "external register", "plugin install", "plugin create",
+		"twitter", "x.com", "x ", "推特", "x推特", "关注动态", "following timeline",
 	)
 }
 

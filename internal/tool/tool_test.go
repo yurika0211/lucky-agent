@@ -190,8 +190,8 @@ func TestEnableDisable(t *testing.T) {
 func TestPermissionOverride(t *testing.T) {
 	r := NewRegistry()
 	r.Register(&Tool{
-		Name:        "test",
-		Permission:  PermAuto,
+		Name:       "test",
+		Permission: PermAuto,
 		Handler: func(args map[string]any) (string, error) {
 			return "ok", nil
 		},
@@ -351,4 +351,14 @@ func containsSubstr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func TestOpenCLIToolCoerceStringSlice(t *testing.T) {
+	got, err := coerceStringSlice([]any{"doctor", "list"})
+	if err != nil {
+		t.Fatalf("coerceStringSlice: %v", err)
+	}
+	if len(got) != 2 || got[0] != "doctor" || got[1] != "list" {
+		t.Fatalf("unexpected args: %#v", got)
+	}
 }

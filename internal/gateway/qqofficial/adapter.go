@@ -264,6 +264,24 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 	}
 }
 
+func (a *Adapter) SendForwardedText(ctx context.Context, chatID string, title string, chunks []string) error {
+	sent := 0
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
+		}
+		if err := a.Send(ctx, chatID, chunk); err != nil {
+			return err
+		}
+		sent++
+	}
+	if sent == 0 {
+		return a.Send(ctx, chatID, "")
+	}
+	return nil
+}
+
 func (a *Adapter) SendPhoto(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
 	if strings.TrimSpace(caption) != "" {
 		if err := a.SendWithReply(ctx, chatID, replyToMsgID, caption); err != nil {

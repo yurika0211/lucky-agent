@@ -364,6 +364,73 @@ func TestFromContextMessages(t *testing.T) {
 	}
 }
 
+func TestContextMessageRoundTripPreservesStructuredProviderFields(t *testing.T) {
+	a := &Agent{}
+	original := []provider.Message{
+		{
+			Role:             "assistant",
+			Content:          "calling tool",
+			ReasoningContent: "hidden thinking",
+			ToolCalls: []provider.ToolCall{{
+				ID:        "call_1",
+				Name:      "web_search",
+				Arguments: `{"query":"lh"}`,
+			}},
+		},
+		{
+			Role:       "tool",
+			Content:    "result",
+			ToolCallID: "call_1",
+			Name:       "web_search",
+		},
+	}
+
+	roundTrip := a.fromContextMessages(a.toContextMessages(original))
+	if len(roundTrip) != len(original) {
+		t.Fatalf("expected %d messages, got %d", len(original), len(roundTrip))
+	}
+	if roundTrip[0].ReasoningContent != "hidden thinking" {
+		t.Fatalf("expected reasoning content to survive round trip, got %q", roundTrip[0].ReasoningContent)
+	}
+	if len(roundTrip[0].ToolCalls) != 1 || roundTrip[0].ToolCalls[0].ID != "call_1" || roundTrip[0].ToolCalls[0].Name != "web_search" {
+		t.Fatalf("expected tool call to survive round trip, got %#v", roundTrip[0].ToolCalls)
+	}
+	if roundTrip[1].ToolCallID != "call_1" || roundTrip[1].Name != "web_search" {
+		t.Fatalf("expected tool result fields to survive round trip, got %#v", roundTrip[1])
+	}
+}
+
+func TestProcessDirectResponsePreservesReasoningForRecoveryMessages(t *testing.T) {
+	a := &Agent{}
+	state := newLoopRuntimeState()
+	messages, finalized, _ := a.processDirectResponse(&provider.Response{
+		Content:          "",
+		ReasoningContent: "empty reasoning",
+	}, nil, state)
+	if finalized {
+		t.Fatal("expected empty response recovery to continue")
+	}
+	if len(messages) < 1 || messages[0].ReasoningContent != "empty reasoning" {
+		t.Fatalf("expected empty response assistant reasoning to be preserved, got %#v", messages)
+	}
+
+	state = newLoopRuntimeState()
+	messages, finalized, _ = a.processDirectResponse(&provider.Response{
+		Content:          "partial",
+		ReasoningContent: "length reasoning",
+		FinishReason:     "length",
+	}, nil, state)
+	if finalized {
+		t.Fatal("expected length recovery to continue")
+	}
+	if len(messages) < 1 || messages[0].ReasoningContent != "length reasoning" {
+		t.Fatalf("expected length response assistant reasoning to be preserved, got %#v", messages)
+	}
+	if got := strings.TrimSpace(state.continuedReasoning.String()); got != "length reasoning" {
+		t.Fatalf("expected continued reasoning to be tracked, got %q", got)
+	}
+}
+
 // --- applyWebSearchEnv ---
 
 func TestApplyWebSearchEnv(t *testing.T) {
@@ -390,6 +457,45 @@ func TestApplyWebSearchEnv(t *testing.T) {
 	}
 	if v := cfg.Get().WebSearch.APIKey; v != "test-key-123" {
 		t.Errorf("expected web_search.api_key=test-key-123, got %q", v)
+	}
+}
+
+func TestApplyOpenCLIEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Skipf("cannot create config manager: %v", err)
+	}
+
+	os.Setenv("LH_OPENCLI_ENABLED", "true")
+	os.Setenv("LH_OPENCLI_COMMAND", "opencli")
+	os.Setenv("LH_OPENCLI_ARGS", "web,read,--url,{url},--stdout,true,--download-images,false,-f,md")
+	os.Setenv("LH_OPENCLI_TIMEOUT_SECONDS", "42")
+	os.Setenv("LH_OPENCLI_MAX_CHARS", "12345")
+	os.Setenv("LH_OPENCLI_FALLBACK_TO_WEB_FETCH", "true")
+	defer func() {
+		os.Unsetenv("LH_OPENCLI_ENABLED")
+		os.Unsetenv("LH_OPENCLI_COMMAND")
+		os.Unsetenv("LH_OPENCLI_ARGS")
+		os.Unsetenv("LH_OPENCLI_TIMEOUT_SECONDS")
+		os.Unsetenv("LH_OPENCLI_MAX_CHARS")
+		os.Unsetenv("LH_OPENCLI_FALLBACK_TO_WEB_FETCH")
+	}()
+
+	applyOpenCLIEnv(cfg)
+
+	got := cfg.Get().OpenCLI
+	if !got.Enabled {
+		t.Fatal("expected opencli.enabled=true")
+	}
+	if got.Command != "opencli" {
+		t.Fatalf("expected opencli.command=opencli, got %q", got.Command)
+	}
+	if len(got.Args) != 10 || got.Args[0] != "web" || got.Args[1] != "read" {
+		t.Fatalf("unexpected args: %#v", got.Args)
+	}
+	if got.TimeoutSeconds != 42 || got.MaxChars != 12345 || !got.FallbackToWebFetch {
+		t.Fatalf("unexpected opencli config: %#v", got)
 	}
 }
 
@@ -975,6 +1081,7 @@ type cronNotifyGateway struct {
 	running    bool
 	messages   []string
 	deliveries []cronNotifyDelivery
+	forwards   []cronNotifyForwardedText
 	nextID     int
 }
 
@@ -982,6 +1089,12 @@ type cronNotifyDelivery struct {
 	chatID       string
 	replyToMsgID string
 	message      string
+}
+
+type cronNotifyForwardedText struct {
+	chatID string
+	title  string
+	chunks []string
 }
 
 func (g *cronNotifyGateway) Name() string { return g.name }
@@ -1029,6 +1142,17 @@ func (g *cronNotifyGateway) SendWithReplyReceipt(ctx context.Context, chatID str
 	return msggateway.SentMessage{ID: id, ChatID: chatID}, nil
 }
 
+func (g *cronNotifyGateway) SendForwardedText(_ context.Context, chatID string, title string, chunks []string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.forwards = append(g.forwards, cronNotifyForwardedText{
+		chatID: chatID,
+		title:  title,
+		chunks: append([]string(nil), chunks...),
+	})
+	return nil
+}
+
 func (g *cronNotifyGateway) IsRunning() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -1045,6 +1169,12 @@ func (g *cronNotifyGateway) deliverySnapshot() []cronNotifyDelivery {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]cronNotifyDelivery(nil), g.deliveries...)
+}
+
+func (g *cronNotifyGateway) forwardSnapshot() []cronNotifyForwardedText {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return append([]cronNotifyForwardedText(nil), g.forwards...)
 }
 
 type staticChatProvider struct {
@@ -2770,11 +2900,52 @@ func TestCronNotificationFallsBackToRecentTelegramTarget(t *testing.T) {
 	}
 }
 
+func TestCronNotificationUsesForwardedTextForLongGatewayMessages(t *testing.T) {
+	gm := msggateway.NewGatewayManager()
+	gw := &cronNotifyGateway{name: "napcat", running: true}
+	if err := gm.Register(gw); err != nil {
+		t.Fatalf("register gateway: %v", err)
+	}
+	a := &Agent{msgGateway: gm}
+
+	raw := strings.Repeat("完整结果", 500)
+	a.sendCronNotification(map[string]string{
+		"platform": "napcat",
+		"chatID":   "group:123",
+	}, cronNotificationPayload{
+		JobID:     "long-cron",
+		Mode:      "agent",
+		Command:   "生成长报告",
+		Outcome:   "succeeded",
+		RawResult: raw,
+	})
+
+	forwards := gw.forwardSnapshot()
+	if len(forwards) != 1 {
+		t.Fatalf("expected one forwarded cron notification, got %#v", forwards)
+	}
+	if forwards[0].chatID != "group:123" || forwards[0].title != "LuckyHarness" {
+		t.Fatalf("unexpected forward metadata: %#v", forwards[0])
+	}
+	joined := strings.Join(forwards[0].chunks, "\n")
+	if joined == "" || !strings.Contains(joined, "完整结果完整结果") {
+		t.Fatalf("expected forwarded chunks to include raw result, got %#v", forwards[0].chunks)
+	}
+	for _, chunk := range forwards[0].chunks {
+		if len([]rune(chunk)) > cronNotificationForwardChunkLimit {
+			t.Fatalf("forwarded chunk exceeds limit: %d", len([]rune(chunk)))
+		}
+	}
+	if got := gw.messageSnapshot(); len(got) != 0 {
+		t.Fatalf("expected long cron notification not to use plain messages, got %#v", got)
+	}
+}
+
 func TestFormatCronNotificationUsesProviderRewrite(t *testing.T) {
 	a := &Agent{
 		provider: &staticChatProvider{
 			name:    "static-chat",
-			content: "我刚帮你把这轮定时巡检处理完了，整体都很顺，唯一值得留意的是结果里提到的那条小波动。要不要我顺手继续帮你往下查一下？",
+			content: "我刚帮你把这轮定时巡检处理完了，完整结果我直接贴在下面。",
 		},
 	}
 
@@ -2787,6 +2958,33 @@ func TestFormatCronNotificationUsesProviderRewrite(t *testing.T) {
 	})
 	if !strings.Contains(got, "我刚帮你把这轮定时巡检处理完了") {
 		t.Fatalf("expected provider rewritten notification, got %q", got)
+	}
+	if !strings.Contains(got, "完整结果：\n服务状态正常，但 latency 有轻微波动。") {
+		t.Fatalf("expected full raw result to be appended, got %q", got)
+	}
+}
+
+func TestFormatCronNotificationAppendsUntruncatedRawResult(t *testing.T) {
+	raw := strings.Repeat("完整内容", 900)
+	a := &Agent{
+		provider: &staticChatProvider{
+			name:    "static-chat",
+			content: "长任务已经跑完了，完整结果如下。",
+		},
+	}
+
+	got := a.formatCronNotification(cronNotificationPayload{
+		JobID:     "long-job",
+		Mode:      "agent",
+		Command:   "抓取长报告",
+		Outcome:   "succeeded",
+		RawResult: raw,
+	})
+	if !strings.Contains(got, raw) {
+		t.Fatal("expected cron notification to include the full untruncated raw result")
+	}
+	if strings.Contains(got, "已截断") {
+		t.Fatalf("expected final notification not to report truncation, got %q", got)
 	}
 }
 
@@ -2891,6 +3089,81 @@ func TestCronToolsPersistAcrossAgentRestart(t *testing.T) {
 	if !a2.CronEngine().IsRunning() {
 		t.Fatal("expected restored cron engine to be running")
 	}
+}
+
+func TestCronEventHandlerPersistsAfterJobExecution(t *testing.T) {
+	dir := t.TempDir()
+	engine := cron.NewEngine()
+	store := cron.NewStore(filepath.Join(dir, "mission.md"))
+	a := &Agent{
+		cronEngine: engine,
+		cronStore:  store,
+	}
+	a.installCronEventHandler()
+
+	ran := make(chan struct{}, 1)
+	schedule := &singleSoonThenLaterSchedule{}
+	if err := engine.AddJobWithMeta(
+		"persist-after-run",
+		"Cron: persist-after-run",
+		"echo persisted",
+		schedule,
+		func() error {
+			ran <- struct{}{}
+			return nil
+		},
+		map[string]string{
+			"mode":          "shell",
+			"command":       "echo persisted",
+			"schedule_text": "每小时",
+		},
+	); err != nil {
+		t.Fatalf("AddJobWithMeta() error = %v", err)
+	}
+
+	engine.Start()
+	defer engine.Stop()
+
+	select {
+	case <-ran:
+	case <-time.After(time.Second):
+		t.Fatal("expected cron job to run")
+	}
+
+	storePath := store.Path()
+	deadline := time.Now().Add(time.Second)
+	for {
+		data, err := os.ReadFile(storePath)
+		if err == nil {
+			content := string(data)
+			if strings.Contains(content, "run_count: 1") && strings.Contains(content, "next_run_unix:") {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected cron execution state to be persisted to %s", storePath)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type singleSoonThenLaterSchedule struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *singleSoonThenLaterSchedule) Next(from time.Time) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls++
+	if s.calls == 1 {
+		return from.Add(10 * time.Millisecond)
+	}
+	return from.Add(time.Hour)
+}
+
+func (s *singleSoonThenLaterSchedule) String() string {
+	return "single soon then later"
 }
 
 func TestAgent_MsgGateway(t *testing.T) {

@@ -5,6 +5,7 @@ import "github.com/yurika0211/luckyharness/internal/multimodal"
 // BuiltinToolService wraps the generic builtin tool registrations.
 type BuiltinToolService struct {
 	searchCfg            *WebSearchConfig
+	opencliCfg           *OpenCLIConfig
 	mediaProcessor       *multimodal.Processor
 	imageGenerator       multimodal.ImageGenerator
 	imageGenDefaults     ImageGenerationDefaults
@@ -14,9 +15,10 @@ type BuiltinToolService struct {
 }
 
 // NewBuiltinToolService creates a builtin tool service.
-func NewBuiltinToolService(searchCfg *WebSearchConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults) *BuiltinToolService {
+func NewBuiltinToolService(searchCfg *WebSearchConfig, opencliCfg *OpenCLIConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults) *BuiltinToolService {
 	return &BuiltinToolService{
 		searchCfg:            searchCfg,
+		opencliCfg:           opencliCfg,
 		mediaProcessor:       mediaProcessor,
 		imageGenerator:       imageGenerator,
 		imageGenDefaults:     imageGenDefaults,
@@ -42,6 +44,7 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	r.Register(FileListTool())
 	r.Register(WebSearchTool(s.searchCfg))
 	r.Register(WebFetchTool(s.searchCfg))
+	r.Register(OpenCLITool(s.opencliCfg, s.searchCfg))
 	r.Register(CurrentTimeTool())
 	r.Register(CalculateTool())
 	r.Register(ImageAnalyzeTool(s.mediaProcessor, s.defaultImageProvider))

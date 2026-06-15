@@ -485,3 +485,138 @@ func TestCallOpenAIIncludesReasoningContentForDeepseekMessages(t *testing.T) {
 		t.Fatalf("expected reasoning_content to be included, got %s", capturedBody)
 	}
 }
+
+func TestCallOpenAIRetriesReasoningContentErrorWithBackfilledAssistantHistory(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	var bodies []string
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			bodyBytes, _ := io.ReadAll(req.Body)
+			bodies = append(bodies, string(bodyBytes))
+			if len(bodies) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API."}}`)),
+					Request:    req,
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+			Model:   "deepseek-reasoner",
+		},
+	}
+
+	resp, err := callOpenAI(context.Background(), cfg, []Message{
+		{Role: "user", Content: "old question"},
+		{Role: "assistant", Content: "old answer without reasoning"},
+		{Role: "user", Content: "new question"},
+	}, CallOptions{})
+	if err != nil {
+		t.Fatalf("callOpenAI returned error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("expected retry response ok, got %q", resp.Content)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected two requests, got %d", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "old answer without reasoning") {
+		t.Fatalf("expected first request to include old assistant history, got %s", bodies[0])
+	}
+	if !strings.Contains(bodies[1], "old answer without reasoning") {
+		t.Fatalf("expected retry request to preserve old assistant history, got %s", bodies[1])
+	}
+	if !strings.Contains(bodies[1], `"reasoning_content":"`+missingReasoningContentPlaceholder+`"`) {
+		t.Fatalf("expected retry request to backfill reasoning_content, got %s", bodies[1])
+	}
+	if !strings.Contains(bodies[1], "new question") {
+		t.Fatalf("expected retry request to keep current user message, got %s", bodies[1])
+	}
+}
+
+func TestCallOpenAIStreamRetriesReasoningContentErrorWithBackfilledAssistantHistory(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	var bodies []string
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			bodyBytes, _ := io.ReadAll(req.Body)
+			bodies = append(bodies, string(bodyBytes))
+			if len(bodies) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"The reasoning_content in the thinking mode must be passed back to the API."}}`)),
+					Request:    req,
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(
+					"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"\"}]}\n\n" +
+						"data: [DONE]\n\n",
+				)),
+				Request: req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		LlmProvider: LlmProvider{
+			BaseURL: "https://api.openai.com/v1",
+			APIKey:  "sk-test",
+			Model:   "deepseek-reasoner",
+		},
+	}
+
+	ch, err := callOpenAIStream(context.Background(), cfg, []Message{
+		{Role: "user", Content: "old question"},
+		{Role: "assistant", Content: "old stream answer without reasoning"},
+		{Role: "user", Content: "new question"},
+	}, CallOptions{})
+	if err != nil {
+		t.Fatalf("callOpenAIStream returned error: %v", err)
+	}
+	var got strings.Builder
+	for chunk := range ch {
+		got.WriteString(chunk.Content)
+	}
+	if got.String() != "ok" {
+		t.Fatalf("expected retry stream content ok, got %q", got.String())
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("expected two requests, got %d", len(bodies))
+	}
+	if !strings.Contains(bodies[0], "old stream answer without reasoning") {
+		t.Fatalf("expected first request to include old assistant history, got %s", bodies[0])
+	}
+	if !strings.Contains(bodies[1], "old stream answer without reasoning") {
+		t.Fatalf("expected retry request to preserve old assistant history, got %s", bodies[1])
+	}
+	if !strings.Contains(bodies[1], `"reasoning_content":"`+missingReasoningContentPlaceholder+`"`) {
+		t.Fatalf("expected retry request to backfill reasoning_content, got %s", bodies[1])
+	}
+	if !strings.Contains(bodies[1], "new question") {
+		t.Fatalf("expected retry request to keep current user message, got %s", bodies[1])
+	}
+}

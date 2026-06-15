@@ -1011,6 +1011,34 @@ func TestSet_WebSearchOptions(t *testing.T) {
 	t.Logf("WebSearch options set correctly")
 }
 
+func TestSet_OpenCLIOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	mgr.Set("opencli.enabled", "true")
+	mgr.Set("opencli.command", "opencli")
+	mgr.Set("opencli.args", "web,read,--url,{url},--stdout,true,--download-images,false,-f,md")
+	mgr.Set("opencli.timeout_seconds", "30")
+	mgr.Set("opencli.max_chars", "1234")
+	mgr.Set("opencli.fallback_to_web_fetch", "true")
+
+	cfg := mgr.Get()
+	if !cfg.OpenCLI.Enabled {
+		t.Fatalf("expected enabled")
+	}
+	if cfg.OpenCLI.Command != "opencli" {
+		t.Fatalf("expected command opencli, got %q", cfg.OpenCLI.Command)
+	}
+	if len(cfg.OpenCLI.Args) != 10 {
+		t.Fatalf("expected 10 args, got %d", len(cfg.OpenCLI.Args))
+	}
+	if cfg.OpenCLI.TimeoutSeconds != 30 || cfg.OpenCLI.MaxChars != 1234 || !cfg.OpenCLI.FallbackToWebFetch {
+		t.Fatalf("unexpected opencli config: %#v", cfg.OpenCLI)
+	}
+}
+
 // TestSet_AgentOptions 测试 agent 子配置
 func TestSet_AgentOptions(t *testing.T) {
 	mgr, err := NewManagerWithDir(t.TempDir())

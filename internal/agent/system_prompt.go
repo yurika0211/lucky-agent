@@ -124,6 +124,7 @@ Choose tools by intent:
 - Use file tools for repository truth and local documents.
 - Use shell or runtime tools for environment inspection and execution.
 - Use web/search tools for external or recent information.
+- Use opencli for OpenCLI access: action=web_read for a URL, action=site for site adapters, action=twitter_timeline for authenticated following feed, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh to opencli; use shell or terminal for shell commands.
 - Use RAG tools when the needed knowledge is likely already indexed.
 - Use memory tools for durable user facts, preferences, and recurring constraints.
 - Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.

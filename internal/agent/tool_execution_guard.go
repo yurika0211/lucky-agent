@@ -99,6 +99,10 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 		if g.onlyImageContent {
 			return "the user requested image recognition only, not opening linked content"
 		}
+	case "opencli":
+		if g.onlyImageContent {
+			return "the user requested image recognition only, not opening linked content"
+		}
 	case "remember":
 		if g.noRemember {
 			return "the user explicitly disallowed writing to memory"

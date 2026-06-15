@@ -1,7 +1,11 @@
 package tool
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -78,6 +82,77 @@ func TestDelegateTaskCall(t *testing.T) {
 	json.Unmarshal([]byte(statusResult), &status)
 	if status["status"] != "completed" {
 		t.Errorf("expected completed, got %v", status["status"])
+	}
+}
+
+func TestDelegateTaskInjectsWritableWorkspace(t *testing.T) {
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	capturedContext := make(chan string, 1)
+	dm.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
+		capturedContext <- contextStr
+		return "done", nil
+	})
+
+	r := NewRegistry()
+	r.Register(DelegateTaskTool(dm))
+	r.Register(TaskStatusTool(dm))
+
+	workspace := filepath.Join(t.TempDir(), "twitter-coser")
+	result, err := r.Call("delegate_task", map[string]any{
+		"description": "Download five images and save them under " + workspace + ".",
+	})
+	if err != nil {
+		t.Fatalf("delegate_task: %v", err)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if got := resp["workspace"]; got != workspace {
+		t.Fatalf("expected response workspace %q, got %v", workspace, got)
+	}
+	if info, err := os.Stat(workspace); err != nil || !info.IsDir() {
+		t.Fatalf("expected workspace directory to exist, info=%v err=%v", info, err)
+	}
+
+	var contextStr string
+	select {
+	case contextStr = <-capturedContext:
+	case <-time.After(time.Second):
+		t.Fatal("executor was not called")
+	}
+	if got := ExtractDelegateWorkspace(contextStr); got != workspace {
+		t.Fatalf("expected extracted workspace %q, got %q; context=%q", workspace, got, contextStr)
+	}
+	if !strings.Contains(contextStr, "Allowed file roots") {
+		t.Fatalf("expected sandbox guidance in context, got %q", contextStr)
+	}
+
+	taskID, _ := resp["task_id"].(string)
+	statusResult, err := r.Call("task_status", map[string]any{"task_id": taskID})
+	if err != nil {
+		t.Fatalf("task_status: %v", err)
+	}
+	var status map[string]any
+	if err := json.Unmarshal([]byte(statusResult), &status); err != nil {
+		t.Fatalf("parse status: %v", err)
+	}
+	if got := status["workspace"]; got != workspace {
+		t.Fatalf("expected status workspace %q, got %v", workspace, got)
+	}
+}
+
+func TestPrepareDelegateExecutionContextUsesDefaultWorkspace(t *testing.T) {
+	workspace, contextStr, err := prepareDelegateExecutionContext("task-99", "summarize", "")
+	if err != nil {
+		t.Fatalf("prepareDelegateExecutionContext: %v", err)
+	}
+	if !strings.Contains(filepath.ToSlash(workspace), "/luckyharness-delegate/task-99") {
+		t.Fatalf("expected default delegate workspace, got %q", workspace)
+	}
+	if got := ExtractDelegateWorkspace(contextStr); got != workspace {
+		t.Fatalf("expected workspace round trip %q, got %q", workspace, got)
 	}
 }
 

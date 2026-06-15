@@ -17,16 +17,23 @@ import (
 )
 
 type qqHandlerTestSender struct {
-	mu       sync.Mutex
-	messages []string
-	acks     []string
-	forwards []qqHandlerForwardedText
+	mu            sync.Mutex
+	messages      []string
+	acks          []string
+	forwards      []qqHandlerForwardedText
+	mediaForwards []qqHandlerForwardedMedia
 }
 
 type qqHandlerForwardedText struct {
 	ChatID string
 	Title  string
 	Chunks []string
+}
+
+type qqHandlerForwardedMedia struct {
+	ChatID string
+	Title  string
+	Items  []gateway.ForwardedMediaItem
 }
 
 func (s *qqHandlerTestSender) Name() string                { return "test" }
@@ -71,6 +78,17 @@ func (s *qqHandlerTestSender) SendForwardedText(_ context.Context, chatID string
 	return nil
 }
 
+func (s *qqHandlerTestSender) SendForwardedMedia(_ context.Context, chatID string, title string, items []gateway.ForwardedMediaItem) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mediaForwards = append(s.mediaForwards, qqHandlerForwardedMedia{
+		ChatID: chatID,
+		Title:  title,
+		Items:  append([]gateway.ForwardedMediaItem(nil), items...),
+	})
+	return nil
+}
+
 func (s *qqHandlerTestSender) Messages() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -87,6 +105,12 @@ func (s *qqHandlerTestSender) Forwards() []qqHandlerForwardedText {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]qqHandlerForwardedText(nil), s.forwards...)
+}
+
+func (s *qqHandlerTestSender) MediaForwards() []qqHandlerForwardedMedia {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]qqHandlerForwardedMedia(nil), s.mediaForwards...)
 }
 
 func TestBuildIntentBits(t *testing.T) {
@@ -232,6 +256,48 @@ func TestSendWithReplyUsesIncrementingMsgSeq(t *testing.T) {
 	}
 	if payloads[0].MsgSeq == payloads[1].MsgSeq {
 		t.Fatalf("expected msg_seq to increment, got %#v", payloads)
+	}
+}
+
+func TestSendForwardedTextSendsChunksSequentially(t *testing.T) {
+	var mu sync.Mutex
+	var payloads []outgoingMessagePayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v2/groups/group-1/messages" {
+			http.Error(w, "unexpected path "+r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+		var payload outgoingMessagePayload
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			http.Error(w, "decode payload: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		mu.Lock()
+		payloads = append(payloads, payload)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a := NewAdapter(Config{
+		AppID:      "app-id",
+		AppSecret:  "app-secret",
+		APIBaseURL: server.URL,
+	})
+	a.accessToken = "token"
+	a.tokenExpiry = time.Now().Add(time.Hour)
+
+	if err := a.SendForwardedText(context.Background(), "group:group-1", "LuckyHarness", []string{"first", "second"}); err != nil {
+		t.Fatalf("SendForwardedText error = %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(payloads) != 2 {
+		t.Fatalf("expected 2 payloads, got %d", len(payloads))
+	}
+	if payloads[0].Content != "first" || payloads[1].Content != "second" {
+		t.Fatalf("unexpected forwarded text payloads: %#v", payloads)
 	}
 }
 
@@ -431,6 +497,52 @@ func TestHandlerForwardsLongAssistantText(t *testing.T) {
 		if qqRuneLen(chunk) > qqForwardNodeChunkLimit {
 			t.Fatalf("forward chunk exceeds limit: %d", qqRuneLen(chunk))
 		}
+	}
+}
+
+func TestHandlerWrapsMultiplePhotosInForwardedMedia(t *testing.T) {
+	tmpDir := t.TempDir()
+	img1 := tmpDir + "/one.png"
+	img2 := tmpDir + "/two.jpg"
+	if err := os.WriteFile(img1, []byte("one"), 0o600); err != nil {
+		t.Fatalf("write first image: %v", err)
+	}
+	if err := os.WriteFile(img2, []byte("two"), 0o600); err != nil {
+		t.Fatalf("write second image: %v", err)
+	}
+
+	sender := &qqHandlerTestSender{}
+	handler := NewHandlerWithOptions(sender, nil, HandlerOptions{
+		PlatformName: "napcat",
+		DisplayName:  "QQ Bot",
+	})
+	msg := &gateway.Message{
+		ID:   "msg-1",
+		Chat: gateway.Chat{ID: "group:123", Type: gateway.ChatGroup},
+	}
+	response := "![第一张](" + img1 + ")\n![第二张](" + img2 + ")"
+
+	if err := handler.sendAssistantResponse(context.Background(), msg, response); err != nil {
+		t.Fatalf("sendAssistantResponse() error = %v", err)
+	}
+	if got := sender.Messages(); len(got) != 0 {
+		t.Fatalf("expected forwarded media to avoid individual sends, got %#v", got)
+	}
+	forwards := sender.MediaForwards()
+	if len(forwards) != 1 {
+		t.Fatalf("expected one forwarded media payload, got %#v", forwards)
+	}
+	if forwards[0].ChatID != "group:123" || forwards[0].Title != "QQ Bot" {
+		t.Fatalf("unexpected forward metadata: %#v", forwards[0])
+	}
+	if len(forwards[0].Items) != 2 {
+		t.Fatalf("expected two forwarded media items, got %#v", forwards[0].Items)
+	}
+	if forwards[0].Items[0].Type != gateway.AttachmentImage || forwards[0].Items[0].Source != img1 || forwards[0].Items[0].Caption != "第一张" {
+		t.Fatalf("unexpected first item: %#v", forwards[0].Items[0])
+	}
+	if forwards[0].Items[1].Type != gateway.AttachmentImage || forwards[0].Items[1].Source != img2 || forwards[0].Items[1].Caption != "第二张" {
+		t.Fatalf("unexpected second item: %#v", forwards[0].Items[1])
 	}
 }
 

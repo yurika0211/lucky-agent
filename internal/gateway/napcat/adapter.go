@@ -260,6 +260,95 @@ func (a *Adapter) SendForwardedText(ctx context.Context, chatID string, title st
 	}
 }
 
+func (a *Adapter) SendForwardedMedia(ctx context.Context, chatID string, title string, items []gateway.ForwardedMediaItem) error {
+	parts := strings.SplitN(chatID, ":", 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("napcat: invalid chat id %q", chatID)
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "LuckyHarness"
+	}
+
+	a.mu.RLock()
+	selfID := strings.TrimSpace(a.selfID)
+	a.mu.RUnlock()
+
+	nodes := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		node, err := a.forwardedMediaNode(title, selfID, item)
+		if err != nil {
+			return err
+		}
+		if node != nil {
+			nodes = append(nodes, node)
+		}
+	}
+	if len(nodes) == 0 {
+		return fmt.Errorf("napcat: no media nodes to forward")
+	}
+
+	switch parts[0] {
+	case "private", "c2c":
+		return a.sendAction(ctx, "send_private_forward_msg", map[string]any{
+			"user_id":  oneBotIDValue(parts[1]),
+			"messages": nodes,
+		})
+	case "group":
+		return a.sendAction(ctx, "send_group_forward_msg", map[string]any{
+			"group_id": oneBotIDValue(parts[1]),
+			"messages": nodes,
+		})
+	default:
+		return fmt.Errorf("napcat: unsupported chat type %q", parts[0])
+	}
+}
+
+func (a *Adapter) forwardedMediaNode(title string, selfID string, item gateway.ForwardedMediaItem) (map[string]any, error) {
+	var content []map[string]any
+	if caption := strings.TrimSpace(item.Caption); caption != "" {
+		content = append(content, map[string]any{
+			"type": "text",
+			"data": map[string]any{"text": caption},
+		})
+	}
+
+	switch item.Type {
+	case gateway.AttachmentImage:
+		cqSource, err := cqMediaSource(item.Source)
+		if err != nil {
+			return nil, err
+		}
+		content = append(content, map[string]any{
+			"type": "image",
+			"data": map[string]any{"file": cqSource},
+		})
+	default:
+		source := strings.TrimSpace(item.Source)
+		if source != "" {
+			content = append(content, map[string]any{
+				"type": "text",
+				"data": map[string]any{"text": source},
+			})
+		}
+	}
+	if len(content) == 0 {
+		return nil, nil
+	}
+
+	data := map[string]any{
+		"name":    title,
+		"content": content,
+	}
+	if selfID != "" {
+		data["uin"] = selfID
+	}
+	return map[string]any{
+		"type": "node",
+		"data": data,
+	}, nil
+}
+
 func (a *Adapter) SetTyping(ctx context.Context, chatID string, userID string) error {
 	parts := strings.SplitN(chatID, ":", 2)
 	if len(parts) != 2 {

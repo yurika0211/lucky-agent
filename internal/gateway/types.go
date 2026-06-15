@@ -93,6 +93,13 @@ type Attachment struct {
 	Data     []byte         `json:"data,omitempty"`      // downloaded file data (populated on demand)
 }
 
+// ForwardedMediaItem represents one media node in a platform forwarded-message envelope.
+type ForwardedMediaItem struct {
+	Type    AttachmentType
+	Source  string
+	Caption string
+}
+
 // AttachmentType represents the type of media attachment.
 type AttachmentType string
 
@@ -105,3 +112,16 @@ const (
 
 // MessageHandler is the callback type for handling incoming messages.
 type MessageHandler func(ctx context.Context, msg *Message) error
+
+// ForwardedMediaSender is implemented by gateways that can bundle multiple media
+// items into one forwarded-message envelope instead of sending each item separately.
+type ForwardedMediaSender interface {
+	SendForwardedMedia(ctx context.Context, chatID string, title string, items []ForwardedMediaItem) error
+}
+
+// ForwardedTextSender is implemented by gateways that can deliver long text as
+// multiple grouped chunks. Platforms without a native forwarded-message envelope
+// may send the chunks sequentially.
+type ForwardedTextSender interface {
+	SendForwardedText(ctx context.Context, chatID string, title string, chunks []string) error
+}
