@@ -701,6 +701,37 @@ func toHookSpecs(specs []config.HookSpec) []hook.Spec {
 	return out
 }
 
+// ReloadHooks rebuilds the tool-execution hook runner from a new config, for
+// config hot-reload. Safe to call while tools execute (Runner.Reload locks).
+func (a *Agent) ReloadHooks(c *config.Config) {
+	if a == nil || a.hooks == nil {
+		return
+	}
+	a.hooks.Reload(buildHookRuntimeConfig(c))
+}
+
+// StartConfigWatch polls the agent's config file and live-applies the changes
+// that are safe to reload without a restart (currently: hooks). It returns a
+// stop function (always non-nil, safe to defer). Intended for long-running
+// entry points such as `lh serve` and `lh msg-gateway start`; one-shot CLI
+// commands need not call it.
+func (a *Agent) StartConfigWatch(interval time.Duration) (func(), error) {
+	if a == nil || a.cfg == nil {
+		return func() {}, nil
+	}
+	w, err := a.cfg.WatchConfig(interval)
+	if err != nil {
+		return func() {}, err
+	}
+	w.OnChange(func(_, newCfg *config.Config) {
+		a.ReloadHooks(newCfg)
+	})
+	if err := w.Start(); err != nil {
+		return func() {}, err
+	}
+	return w.Stop, nil
+}
+
 type multimodalRuntimeConfig struct {
 	APIKey             string
 	APIBase            string

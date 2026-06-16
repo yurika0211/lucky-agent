@@ -687,11 +687,6 @@ func (a *Agent) processToolCallBatch(
 
 	messages = a.fitContextWindow(messages)
 	result.State = StateObserve
-	if sess != nil {
-		if saveErr := sess.Save(); saveErr != nil {
-			logger.Warn("agent session save failed", "session_id", sess.ID, "error", saveErr)
-		}
-	}
 
 	messages = maybeAppendSearchSynthesisMessage(messages, &loopState.forceSearchSynthesis, loopState.successfulSearchEvidence, loopState.consecutiveToolOnlyIters)
 

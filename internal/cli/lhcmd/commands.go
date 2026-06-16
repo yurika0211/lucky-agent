@@ -669,6 +669,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	stopWatch, _ := a.StartConfigWatch(5 * time.Second)
+	defer stopWatch()
 
 	cfg := server.DefaultServerConfig()
 	runtimeCfg := a.Config().Get().Server
@@ -736,6 +738,8 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	stopWatch, _ := a.StartConfigWatch(5 * time.Second)
+	defer stopWatch()
 
 	gm := a.MsgGateway()
 	ctx, cancel := context.WithCancel(context.Background())

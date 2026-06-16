@@ -64,11 +64,12 @@ func startREPL(mgr *config.Manager) error {
 	// 启动配置热重载
 	configWatcher, _ := mgr.WatchConfig(5 * time.Second)
 	configWatcher.OnChange(func(oldCfg, newCfg *config.Config) {
+		a.ReloadHooks(newCfg)
 		diff := config.DiffConfig(oldCfg, newCfg)
 		if diff.HasChanged() {
 			fmt.Println("\n📋 配置已更新:")
 			fmt.Print(diff.Format())
-			fmt.Println("  重启后生效")
+			fmt.Println("  hooks 已热重载；其它改动重启后生效")
 		}
 	})
 	configWatcher.Start()

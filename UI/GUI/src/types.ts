@@ -80,6 +80,23 @@ export type ChatMessage = {
   meta?: string;
 };
 
+export type GatewayStats = {
+  MessagesSent?: number;
+  MessagesReceived?: number;
+  Errors?: number;
+};
+
+export type GatewayStatus = {
+  name: string;
+  running: boolean;
+  stats?: GatewayStats;
+};
+
+export type GatewaysResponse = {
+  gateways?: GatewayStatus[];
+  count?: number;
+};
+
 export type ThoughtNote = {
   id: string;
   kind: 'reasoning' | 'tool' | 'status';

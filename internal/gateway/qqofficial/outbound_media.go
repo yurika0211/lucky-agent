@@ -27,10 +27,6 @@ type outboundMedia struct {
 var (
 	mediaTagPattern      = regexp.MustCompile(`(?im)^[\s` + "`" + `"'“”‘’]*MEDIA:\s*(?P<path>(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?|https?://\S+)[\s` + "`" + `"'“”‘’,.;:)\]}]*$`)
 	markdownImagePattern = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
-	markdownLinkPattern  = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
-	fencedCodePattern    = regexp.MustCompile("(?s)```.*?```")
-	inlineCodePattern    = regexp.MustCompile("`[^`\n]+`")
-	localFilePattern     = regexp.MustCompile(`(?i)(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp3|wav|opus|ogg|aac|flac|m4a|pdf|txt|md|json|csv|docx?|xlsx?|pptx?|zip|rar|7z|svg|xml|html?|js|ts|py|go|ya?ml)\b`)
 )
 
 func resolveOutboundMediaResponse(response string) (string, []outboundMedia, error) {
@@ -111,58 +107,6 @@ func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outb
 	return strings.TrimSpace(text), existing
 }
 
-func extractLocalFiles(content string) (string, []outboundMedia, error) {
-	text := strings.TrimSpace(content)
-	if text == "" {
-		return "", nil, nil
-	}
-
-	masked := maskCodeRegions(text)
-	indexes := localFilePattern.FindAllStringIndex(masked, -1)
-	if len(indexes) == 0 {
-		return normalizeOutboundText(text), nil, nil
-	}
-
-	var media []outboundMedia
-	var ranges [][2]int
-	for _, idx := range indexes {
-		if len(idx) != 2 {
-			continue
-		}
-		rawPath := trimWrappedPath(text[idx[0]:idx[1]])
-		pathForFS := normalizeLocalMediaPath(rawPath)
-		if pathForFS == "" {
-			continue
-		}
-		info, err := os.Stat(pathForFS)
-		if err != nil || info.IsDir() {
-			continue
-		}
-		kind, ok := inferMediaKind(rawPath)
-		if !ok {
-			continue
-		}
-		media = append(media, outboundMedia{
-			Kind:   kind,
-			Source: rawPath,
-		})
-		ranges = append(ranges, [2]int{idx[0], idx[1]})
-	}
-
-	if len(media) == 0 {
-		return normalizeOutboundText(text), nil, nil
-	}
-	return removeRanges(text, ranges), dedupeOutboundMedia(media), nil
-}
-
-func detectImplicitMedia(text string) (outboundMediaKind, bool) {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" || strings.ContainsAny(trimmed, " \t\r\n") {
-		return "", false
-	}
-	return inferMediaKind(trimmed)
-}
-
 func inferMediaKind(source string) (outboundMediaKind, bool) {
 	if isSensitiveOutboundMediaPath(source) {
 		return "", false
@@ -230,25 +174,6 @@ func trimWrappedPath(value string) string {
 	value = strings.Trim(value, "\"'“”‘’`")
 	value = strings.TrimRight(value, ",.;:)}]")
 	return strings.TrimSpace(value)
-}
-
-func maskCodeRegions(value string) string {
-	runes := []rune(value)
-	mask := func(start, end int) {
-		for i := start; i < end && i < len(runes); i++ {
-			if runes[i] != '\n' {
-				runes[i] = ' '
-			}
-		}
-	}
-
-	for _, idx := range fencedCodePattern.FindAllStringIndex(value, -1) {
-		mask(idx[0], idx[1])
-	}
-	for _, idx := range inlineCodePattern.FindAllStringIndex(string(runes), -1) {
-		mask(idx[0], idx[1])
-	}
-	return string(runes)
 }
 
 func removeRanges(text string, ranges [][2]int) string {

@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"fmt"
 	"net/url"
 	"os"
 	"path"
@@ -29,7 +28,6 @@ var (
 	tgMediaDirectivePattern = regexp.MustCompile(`(?i)^tg://(photo|document)\s+(\S+)(?:\s+(.*))?$`)
 	mediaTagPattern         = regexp.MustCompile(`(?im)^[\s` + "`" + `"'“”‘’]*MEDIA:\s*(?P<path>(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?|https?://\S+)[\s` + "`" + `"'“”‘’,.;:)\]}]*$`)
 	markdownImagePattern    = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
-	markdownLinkPattern     = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
 	fencedCodePattern       = regexp.MustCompile("(?s)```.*?```")
 	inlineCodePattern       = regexp.MustCompile("`[^`\n]+`")
 	localFilePattern        = regexp.MustCompile(`(?i)(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp3|wav|opus|ogg|aac|flac|m4a|pdf|txt|md|json|csv|docx?|xlsx?|pptx?|zip|rar|7z|svg|xml|html?|js|ts|py|go|ya?ml)\b`)
@@ -169,14 +167,6 @@ func extractLocalFiles(content string) (string, []outboundMedia, error) {
 	}
 
 	return removeRanges(text, ranges), dedupeOutboundMedia(media), nil
-}
-
-func detectImplicitMedia(text string) (outboundMediaKind, bool) {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" || strings.ContainsAny(trimmed, " \t\r\n") {
-		return "", false
-	}
-	return inferMediaKind(trimmed)
 }
 
 func inferMediaKind(source string) (outboundMediaKind, bool) {
@@ -401,12 +391,4 @@ func telegramMediaDeliveryGuidance(text string) string {
 		return guidance
 	}
 	return text + "\n\n" + guidance
-}
-
-func debugDescribeOutboundResponse(response string) string {
-	text, media, err := resolveOutboundMediaResponse(response)
-	if err != nil {
-		return "error: " + err.Error()
-	}
-	return fmt.Sprintf("text=%q media=%d", text, len(media))
 }

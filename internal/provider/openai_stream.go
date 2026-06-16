@@ -46,16 +46,6 @@ type openaiChatRequest struct {
 	ToolChoice          any                    `json:"tool_choice,omitempty"`
 }
 
-// openaiMessage 是 OpenAI API 的消息格式
-type openaiMessage struct {
-	Role             string               `json:"role"`
-	Content          any                  `json:"content,omitempty"`
-	ReasoningContent string               `json:"reasoning_content,omitempty"`
-	ToolCalls        []openaiToolCallResp `json:"tool_calls,omitempty"`
-	ToolCallID       string               `json:"tool_call_id,omitempty"`
-	Name             string               `json:"name,omitempty"`
-}
-
 type openaiRequestMessage struct {
 	Role             string               `json:"role"`
 	Content          any                  `json:"content,omitempty"`
@@ -178,11 +168,6 @@ func supportsToolChoice(model string) bool {
 		return false
 	}
 	return true
-}
-
-// openaiSSEEvent 是 SSE 事件
-type openaiSSEEvent struct {
-	Data string
 }
 
 // openAIHTTPClient 使用独立 transport，避免 http.DefaultTransport 在某些代理链路上复用连接导致 TLS 记录损坏。

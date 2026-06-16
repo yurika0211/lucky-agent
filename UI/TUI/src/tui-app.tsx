@@ -15,7 +15,8 @@ type SessionsResponse = { sessions?: SessionInfo[]; count?: number; total?: numb
 type SessionDetailResponse = { id?: string; title?: string; messages?: Array<Record<string, unknown>> };
 type ApiSessionResponse = SessionInfo & { id?: string };
 type PickerMode = 'resume' | 'commands' | 'none';
-type RenderLine = { id: string; text: string; color: ReturnType<typeof kindColor> };
+type LineDeco = { color: string; gutter?: string; gutterColor?: string; dim?: boolean; bold?: boolean; italic?: boolean };
+type RenderLine = { id: string; text: string } & LineDeco;
 type BackgroundJobStatus = 'running' | 'stopping' | 'exited' | 'failed';
 type BackgroundJob = {
   id: string;
@@ -39,6 +40,50 @@ type CommandSpec = {
   help: string;
   aliases: string[];
 };
+
+// Clover-green palette (truecolor). Greens lead, slate for dims, amber for tools, rose for errors.
+const THEME = {
+  accent: '#34d399', // emerald-400 — primary clover green
+  accentBright: '#6ee7b7', // emerald-300 — highlights / user marker
+  accentDim: '#0f9b75', // emerald-600 — borders, subdued accent
+  user: '#86efac', // green-300 — user input text
+  assistant: '#dbe4dd', // soft mint-white — assistant body
+  reasoning: '#8aa1a8', // muted slate-teal — thinking
+  tool: '#fbbf24', // amber-400 — tool calls / results
+  error: '#fb7185', // rose-400 — errors
+  meta: '#b8c4cc', // slate-300 — meta / command output
+  border: '#2b6a57', // deep teal-green — idle borders
+  muted: '#7c8a93', // slate — hints, footer, secondary
+  title: '#a7f3d0', // mint — wordmark
+} as const;
+
+// 5-row block font, only the glyphs the wordmark needs. Composed at load so we never hand-transcribe block art.
+const WORDMARK_FONT: Record<string, readonly [string, string, string, string, string]> = {
+  L: ['█   ', '█   ', '█   ', '█   ', '████'],
+  U: ['█  █', '█  █', '█  █', '█  █', '████'],
+  C: ['████', '█   ', '█   ', '█   ', '████'],
+  K: ['█  █', '█ █ ', '██  ', '█ █ ', '█  █'],
+  Y: ['█  █', '█  █', ' ██ ', ' █  ', ' █  '],
+  H: ['█  █', '█  █', '████', '█  █', '█  █'],
+  A: [' ██ ', '█  █', '████', '█  █', '█  █'],
+  R: ['███ ', '█  █', '███ ', '█ █ ', '█  █'],
+  N: ['█  █', '██ █', '█ ██', '█  █', '█  █'],
+  E: ['████', '█   ', '███ ', '█   ', '████'],
+  S: [' ███', '█   ', ' ██ ', '   █', '███ '],
+  ' ': ['  ', '  ', '  ', '  ', '  '],
+};
+
+function bigText(text: string): string[] {
+  const rows = ['', '', '', '', ''];
+  for (const ch of text.toUpperCase()) {
+    const glyph = WORDMARK_FONT[ch] ?? WORDMARK_FONT[' '];
+    for (let r = 0; r < 5; r++) rows[r] += `${glyph[r]} `;
+  }
+  return rows.map((row) => row.replace(/\s+$/, ''));
+}
+
+const WORDMARK_ART = bigText('LUCKY HARNESS');
+const WORDMARK_COLORS = [THEME.accentBright, THEME.accentBright, THEME.accent, THEME.accent, THEME.accentDim] as const;
 
 const COMMANDS: CommandSpec[] = [
   { name: '/review', help: '查看工作区状态和最近提交', aliases: ['review'] },
@@ -124,45 +169,6 @@ const BACKGROUND_JOB_LOG_LINES = 200;
 const BACKGROUND_JOB_STOP_GRACE_MS = 2_000;
 const TRANSCRIPT_SCROLL_STEP_MIN = 5;
 const TRANSCRIPT_SCROLL_STEP_MAX = 12;
-const CLOVER_BANNER_FULL = [
-  '             ####        ####             ',
-  '          ###@@@@##    ##@@@@###          ',
-  '        ##@@@@@@@@##  ##@@@@@@@@##        ',
-  '       ##@@@@@@@@@@####@@@@@@@@@@##       ',
-  '   ######@@@@@@###@@##@@###@@@@@@######   ',
-  ' ##@@@@@@###@@##  ####  ##@@###@@@@@@##  ',
-  '##@@@@@@@@@@##    @@@@    ##@@@@@@@@@@## ',
-  '##@@@@@@@@@@##  ##@@@@##  ##@@@@@@@@@@## ',
-  ' ##@@@@@@###@@##  ####  ##@@###@@@@@@##  ',
-  '   ######@@@@@@###@@##@@###@@@@@@######   ',
-  '       ##@@@@@@@@@@####@@@@@@@@@@##       ',
-  '        ##@@@@@@@@##  ##@@@@@@@@##        ',
-  '          ###@@@@##    ##@@@@###          ',
-  '             ####   ##   ####             ',
-  '                   ####                   ',
-  '                  ####                    ',
-  '                 ####                     ',
-] as const;
-const CLOVER_BANNER_COMPACT = [
-  '        ##      ##        ',
-  '     ##@@@@## ##@@@@##    ',
-  '   ##@@@@@@@@#@@@@@@@@##  ',
-  ' ##@@@@##@@#####@@##@@@@##',
-  '#@@@@@@##  @@@@  ##@@@@@@#',
-  ' ##@@@@##@@#####@@##@@@@##',
-  '   ##@@@@@@@@#@@@@@@@@##  ',
-  '     ##@@@@## ##@@@@##    ',
-  '        ##   ##   ##      ',
-  '             ##           ',
-  '            ##            ',
-] as const;
-const CLOVER_BANNER_MINI = [
-  '  ##  ##  ',
-  '##@@##@@##',
-  '##@@@@@@##',
-  '  ##@@##  ',
-  '   ####   ',
-] as const;
 
 function normalizeApiBase(value: string): string {
   const raw = value.trim();
@@ -227,21 +233,42 @@ function sessionMessageToItem(message: Record<string, unknown>, index: number): 
   };
 }
 
-function kindColor(kind: StreamItemKind): 'greenBright' | 'cyanBright' | 'gray' | 'yellowBright' | 'redBright' | 'whiteBright' {
+function kindColor(kind: StreamItemKind): string {
   switch (kind) {
     case 'user':
-      return 'greenBright';
+      return THEME.user;
     case 'assistant':
-      return 'cyanBright';
+      return THEME.assistant;
     case 'reasoning':
-      return 'gray';
+      return THEME.reasoning;
     case 'tool_call':
     case 'tool_result':
-      return 'yellowBright';
+      return THEME.tool;
     case 'error':
-      return 'redBright';
+      return THEME.error;
     default:
-      return 'whiteBright';
+      return THEME.meta;
+  }
+}
+
+function kindMarker(kind: StreamItemKind): { glyph: string; color: string } {
+  switch (kind) {
+    case 'user':
+      return { glyph: '›', color: THEME.accentBright };
+    case 'assistant':
+      return { glyph: '◆', color: THEME.accent };
+    case 'reasoning':
+      return { glyph: '·', color: THEME.reasoning };
+    case 'tool_call':
+      return { glyph: '▸', color: THEME.tool };
+    case 'tool_result':
+      return { glyph: '↳', color: THEME.tool };
+    case 'status':
+      return { glyph: '•', color: THEME.muted };
+    case 'error':
+      return { glyph: '✗', color: THEME.error };
+    default:
+      return { glyph: '•', color: THEME.meta };
   }
 }
 
@@ -341,13 +368,6 @@ function firstMeaningfulLine(text: string): string {
     .find(Boolean) || '';
 }
 
-function compactEventHeader(item: StreamItem, width: number): string {
-  const prefix = ['•', eventKind(item)].filter(Boolean).join(' ');
-  const summary = firstMeaningfulLine(item.body);
-  const text = summary ? `${prefix}: ${summary}` : prefix;
-  return divyTitle(text, Math.max(24, width));
-}
-
 function isCommandOutput(item: StreamItem): boolean {
   if (item.kind !== 'meta') return false;
   const title = item.title.trim().toLowerCase();
@@ -373,10 +393,6 @@ function auxLineLimit(item: StreamItem): number {
     default:
       return 4;
   }
-}
-
-function compact(lines: string[]): string {
-  return lines.filter(Boolean).join(' · ');
 }
 
 function normalizeCommand(raw: string): string {
@@ -660,13 +676,6 @@ function padRight(text: string, width: number): string {
   return `${text}${' '.repeat(width - text.length)}`;
 }
 
-function centerLine(text: string, width: number): string {
-  const max = Math.max(0, width);
-  if (text.length >= max) return text.slice(0, max);
-  const left = Math.floor((max - text.length) / 2);
-  return `${' '.repeat(left)}${text}`;
-}
-
 function clamped(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
@@ -692,57 +701,81 @@ function isToolCallLike(value: unknown): value is {
 function renderItemLines(item: StreamItem, width: number): RenderLine[] {
   const lines: RenderLine[] = [];
   const color = kindColor(item.kind);
+  const marker = kindMarker(item.kind);
   const contentWidth = Math.max(28, width - 4);
+
   if (item.kind === 'user') {
     const content = renderMarkdown(item.body, contentWidth);
     for (const [index, line] of content.entries()) {
       lines.push({
         id: `${item.id}-user-${index}`,
-        text: `${index === 0 ? '› ' : '  '}${line || ' '}`,
-        color: 'greenBright',
+        text: line || ' ',
+        color: THEME.user,
+        gutter: index === 0 ? `${marker.glyph} ` : '  ',
+        gutterColor: marker.color,
+        bold: index === 0,
       });
     }
-    lines.push({ id: `${item.id}-gap`, text: ' ', color: 'whiteBright' });
+    lines.push({ id: `${item.id}-gap`, text: ' ', color: THEME.user });
     return lines;
   }
 
   if (item.kind === 'assistant') {
-    lines.push({
-      id: `${item.id}-head`,
-      text: 'assistant',
-      color: 'cyanBright',
-    });
     const content = renderMarkdown(item.body, contentWidth);
     for (const [index, line] of content.entries()) {
       lines.push({
         id: `${item.id}-assistant-${index}`,
         text: line || ' ',
-        color,
+        color: THEME.assistant,
+        gutter: index === 0 ? `${marker.glyph} ` : '  ',
+        gutterColor: marker.color,
       });
     }
-    lines.push({ id: `${item.id}-gap`, text: ' ', color: 'whiteBright' });
+    lines.push({ id: `${item.id}-gap`, text: ' ', color: THEME.assistant });
     return lines;
   }
 
+  const summary = firstMeaningfulLine(item.body);
+  const headerText = summary ? `${eventKind(item)}: ${summary}` : eventKind(item);
   lines.push({
     id: `${item.id}-head`,
-    text: compactEventHeader(item, width - 2),
+    text: divyTitle(headerText, Math.max(24, width - 2)),
     color,
+    gutter: `${marker.glyph} `,
+    gutterColor: marker.color,
+    bold: item.kind === 'error',
   });
   const rendered = renderMarkdown(item.body, contentWidth);
   const limit = auxLineLimit(item);
   const bodyLines = limit <= 0 ? [] : clampLines(rendered, limit);
+  const dim = item.kind === 'reasoning';
   for (const [index, line] of bodyLines.entries()) {
     lines.push({
       id: `${item.id}-body-${index}`,
-      text: `  ${line || ' '}`,
+      text: line || ' ',
       color,
+      gutter: '  ',
+      dim,
+      italic: dim,
     });
   }
   if (item.kind === 'meta' || item.kind === 'error') {
-    lines.push({ id: `${item.id}-gap`, text: ' ', color: 'whiteBright' });
+    lines.push({ id: `${item.id}-gap`, text: ' ', color });
   }
   return lines;
+}
+
+function socketDot(state: 'idle' | 'connecting' | 'connected' | 'error'): { glyph: string; color: string; label: string } {
+  switch (state) {
+    case 'connected':
+      return { glyph: '●', color: THEME.accent, label: 'connected' };
+    case 'connecting':
+      return { glyph: '◐', color: THEME.tool, label: 'connecting' };
+    case 'error':
+      return { glyph: '●', color: THEME.error, label: 'socket error' };
+    default:
+      return { glyph: '○', color: THEME.muted, label: 'disconnected' };
+  }
 }
 
 export function App({ apiBase, session, model }: AppProps) {
@@ -1912,9 +1945,7 @@ export function App({ apiBase, session, model }: AppProps) {
     }
   });
 
-  const headerLeft = compact(['LuckyHarness', currentModelLabel, socketState]);
-  const headerRight = compact([currentSessionLabel, status]);
-  const cloverBanner = viewportWidth >= 46 && viewportHeight >= 28 ? CLOVER_BANNER_FULL : viewportWidth >= 30 && viewportHeight >= 22 ? CLOVER_BANNER_COMPACT : CLOVER_BANNER_MINI;
+  const dot = socketDot(socketState);
   const pickerBodyRows =
     pickerMode === 'resume'
       ? Math.max(1, sessionWindow.items.length) + (filteredSessions.length > sessionWindow.items.length ? 1 : 0)
@@ -1922,18 +1953,16 @@ export function App({ apiBase, session, model }: AppProps) {
         ? Math.max(1, commandWindow.items.length) + (filteredCommands.length > commandWindow.items.length ? 1 : 0)
         : 0;
   const pickerHeight = pickerOpen ? Math.min(PICKER_MENU_LIMIT + 5, pickerBodyRows + 4) : 0;
-  const transcriptHeight = Math.max(8, viewportHeight - 6 - pickerHeight);
-  const transcriptLines = useMemo(() => {
-    const bannerLines: RenderLine[] = [
-      ...cloverBanner.map((line, index) => ({
-        id: `clover-${index}`,
-        text: centerLine(line, Math.max(1, viewportWidth - 2)),
-        color: (index % 4 === 0 ? 'greenBright' : 'green') as RenderLine['color'],
-      })),
-      { id: 'clover-gap', text: ' ', color: 'whiteBright' as RenderLine['color'] },
-    ];
-    return [...bannerLines, ...items.flatMap((item) => renderItemLines(item, viewportWidth))];
-  }, [cloverBanner, items, viewportWidth]);
+  // Hero (bordered) + input chrome are fixed; the transcript absorbs the slack. Keep the whole frame
+  // strictly shorter than the viewport (safety row) so the alt-screen never scrolls and drags the hero.
+  const heroBodyRows = (viewportWidth >= 100 ? WORDMARK_ART.length : 1) + 3;
+  const heroRows = heroBodyRows + 2; // round border top + bottom
+  const chromeRows = heroRows + 6; // transcript margin + input margin + input box (3) + footer
+  const transcriptHeight = Math.max(6, viewportHeight - chromeRows - 1 - pickerHeight - (pickerOpen ? 1 : 0));
+  const transcriptLines = useMemo(
+    () => items.flatMap((item) => renderItemLines(item, viewportWidth)),
+    [items, viewportWidth],
+  );
   const maxScrollOffset = Math.max(0, transcriptLines.length - transcriptHeight);
   const normalizedScrollOffset = autoFollowBottom ? maxScrollOffset : Math.min(scrollOffset, maxScrollOffset);
   const transcriptScrollStep = clamped(Math.floor(transcriptHeight / 3), TRANSCRIPT_SCROLL_STEP_MIN, TRANSCRIPT_SCROLL_STEP_MAX);
@@ -1954,31 +1983,57 @@ export function App({ apiBase, session, model }: AppProps) {
 
   return (
     <Box flexDirection="column" paddingX={1} paddingY={0}>
-      <Box justifyContent="space-between">
-        <Text color="greenBright">{divyTitle(headerLeft, Math.max(12, Math.floor(viewportWidth / 2) - 2))}</Text>
-        <Text dimColor>{divyTitle(headerRight, Math.max(12, Math.floor(viewportWidth / 2) - 2))}</Text>
-      </Box>
-      <Box justifyContent="space-between">
-        <Text dimColor>{effectiveBase}</Text>
-        <Text dimColor>{autoFollowBottom ? 'live' : `scroll ${normalizedScrollOffset + 1}-${Math.min(transcriptLines.length, normalizedScrollOffset + transcriptHeight)} / ${transcriptLines.length}`}</Text>
+      <Box borderStyle="round" borderColor={THEME.accentDim} paddingX={1} justifyContent="space-between">
+        <Box flexDirection="column">
+          {viewportWidth >= 100 ? (
+            WORDMARK_ART.map((line, index) => (
+              <Text key={`wm-${index}`} color={WORDMARK_COLORS[index]} wrap="truncate-end">
+                {line}
+              </Text>
+            ))
+          ) : (
+            <Text color={THEME.title} bold wrap="truncate-end">L U C K Y   H A R N E S S</Text>
+          )}
+          <Text color={THEME.muted} wrap="truncate-end">agent runtime · memory · tools · gateways</Text>
+          <Text color={THEME.accent} wrap="truncate-end">{currentModelLabel}</Text>
+          <Text wrap="truncate-end">
+            <Text color={dot.color}>{dot.glyph} </Text>
+            <Text color={THEME.muted}>{dot.label}</Text>
+          </Text>
+        </Box>
+        <Box flexDirection="column" alignItems="flex-end">
+          <Text color={THEME.muted} wrap="truncate-end">{ellipsize(currentSessionLabel, Math.max(12, Math.floor(viewportWidth / 3)))}</Text>
+          <Text color={autoFollowBottom ? THEME.accent : THEME.muted}>
+            {autoFollowBottom ? '● live' : `${normalizedScrollOffset + 1}-${Math.min(transcriptLines.length, normalizedScrollOffset + transcriptHeight)} / ${transcriptLines.length}`}
+          </Text>
+        </Box>
       </Box>
 
       <Box flexDirection="column" flexGrow={1} marginTop={1}>
         <Box flexDirection="column" minHeight={transcriptHeight}>
           {visibleTranscriptLines.map((line) => (
-            <Text key={line.id} color={line.color}>
-              {line.text || ' '}
+            <Text key={line.id}>
+              {line.gutter ? (
+                <Text color={line.gutterColor ?? line.color} bold>
+                  {line.gutter}
+                </Text>
+              ) : null}
+              <Text color={line.color} dimColor={line.dim} bold={line.bold} italic={line.italic}>
+                {line.text || (line.gutter ? '' : ' ')}
+              </Text>
             </Text>
           ))}
           {items.length === 0 && normalizedScrollOffset === 0 ? (
             <>
-              <Text color="cyanBright">assistant</Text>
-              <Text>Ready. Ask a question or run a slash command.</Text>
-              <Text dimColor>Type / to browse commands, /resume to switch sessions, /review for repo context.</Text>
+              <Text>
+                <Text color={THEME.accent} bold>◆ </Text>
+                <Text color={THEME.assistant}>Ready. Ask a question or run a slash command.</Text>
+              </Text>
+              <Text color={THEME.muted}>  Type / for commands · /resume to switch sessions · /review for repo context.</Text>
             </>
           ) : null}
           {visibleTranscriptLines.length < transcriptHeight
-            ? Array.from({ length: Math.max(0, transcriptHeight - visibleTranscriptLines.length - (items.length === 0 && normalizedScrollOffset === 0 ? 3 : 0)) }, (_, index) => (
+            ? Array.from({ length: Math.max(0, transcriptHeight - visibleTranscriptLines.length - (items.length === 0 && normalizedScrollOffset === 0 ? 2 : 0)) }, (_, index) => (
                 <Text key={`pad-${index}`}>{' '}</Text>
               ))
             : null}
@@ -1986,12 +2041,12 @@ export function App({ apiBase, session, model }: AppProps) {
       </Box>
 
       {pickerOpen ? (
-        <Box borderStyle="single" borderColor="green" flexDirection="column" paddingX={1} paddingY={0} marginTop={1}>
+        <Box borderStyle="round" borderColor={THEME.accentDim} flexDirection="column" paddingX={1} paddingY={0} marginTop={1}>
           <Box justifyContent="space-between">
-            <Text color="greenBright">{pickerMode === 'resume' ? 'Resume session' : 'Command palette'}</Text>
-            <Text dimColor>{pickerMode === 'resume' ? 'Up/Down browse · Enter resume · Esc close' : 'Up/Down browse · Enter/Tab insert · Esc close'}</Text>
+            <Text color={THEME.title} bold>{pickerMode === 'resume' ? 'Resume session' : 'Command palette'}</Text>
+            <Text color={THEME.muted}>{pickerMode === 'resume' ? '↑↓ browse · ⏎ resume · esc close' : '↑↓ browse · ⏎/⇥ insert · esc close'}</Text>
           </Box>
-          <Text dimColor>
+          <Text color={THEME.muted}>
             {pickerMode === 'resume'
               ? sessionFilter
                 ? `filter ${sessionFilter}`
@@ -2003,7 +2058,7 @@ export function App({ apiBase, session, model }: AppProps) {
           <Box flexDirection="column" marginTop={1}>
             {pickerMode === 'resume' ? (
               sessionWindow.items.length === 0 ? (
-                <Text dimColor>No sessions available</Text>
+                <Text color={THEME.muted}>No sessions available</Text>
               ) : (
                 sessionWindow.items.map((item, index) => {
                   const absoluteIndex = sessionWindow.start + index;
@@ -2011,14 +2066,14 @@ export function App({ apiBase, session, model }: AppProps) {
                   const title = ellipsize(item.title || item.id, Math.max(16, Math.floor(viewportWidth * 0.35)));
                   const row = `${title}  ${item.id}`;
                   return (
-                    <Text key={item.id} color={selected ? 'greenBright' : 'white'}>
+                    <Text key={item.id} color={selected ? THEME.accentBright : THEME.meta} bold={selected}>
                       {selected ? '›' : ' '} {ellipsize(row, Math.max(24, viewportWidth - 8))}
                     </Text>
                   );
                 })
               )
             ) : commandWindow.items.length === 0 ? (
-              <Text dimColor>No matching commands</Text>
+              <Text color={THEME.muted}>No matching commands</Text>
             ) : (
               commandWindow.items.map((item, index) => {
                 const absoluteIndex = commandWindow.start + index;
@@ -2026,32 +2081,32 @@ export function App({ apiBase, session, model }: AppProps) {
                 const nameColumn = padRight(item.name, 16);
                 const row = `${nameColumn} ${item.help}`;
                 return (
-                  <Text key={item.name} color={selected ? 'greenBright' : 'white'}>
+                  <Text key={item.name} color={selected ? THEME.accentBright : THEME.meta} bold={selected}>
                     {selected ? '›' : ' '} {ellipsize(row, Math.max(24, viewportWidth - 8))}
                   </Text>
                 );
               })
             )}
             {pickerMode === 'resume' && filteredSessions.length > 0 ? (
-              <Text dimColor>
+              <Text color={THEME.muted}>
                 {`  showing ${sessionWindow.start + 1}-${sessionWindow.end} / ${filteredSessions.length}${sessionsTotal ? ` · loaded ${sessions.length}/${sessionsTotal}` : ''}${sessionLoading ? ' · loading...' : sessionsHasMore ? ' · more on Down' : ''}`}
               </Text>
             ) : null}
             {pickerMode === 'commands' && filteredCommands.length > 0 ? (
-              <Text dimColor>{`  showing ${commandWindow.start + 1}-${commandWindow.end} / ${filteredCommands.length}`}</Text>
+              <Text color={THEME.muted}>{`  showing ${commandWindow.start + 1}-${commandWindow.end} / ${filteredCommands.length}`}</Text>
             ) : null}
           </Box>
         </Box>
       ) : null}
 
       <Box flexDirection="column" marginTop={1}>
-        <Box>
-          <Text color="greenBright">› </Text>
+        <Box borderStyle="round" borderColor={pickerMode === 'resume' ? THEME.border : THEME.accent} paddingX={1}>
+          <Text color={THEME.accent} bold>› </Text>
           <TextInput value={input} focus={pickerMode !== 'resume'} onChange={handleInputChange} onSubmit={handleSubmit} placeholder="message or /command" />
         </Box>
-        <Box justifyContent="space-between">
-          <Text dimColor>Enter send · Esc clear · Ctrl+C quit</Text>
-          <Text dimColor>Type / for commands · Up/Down fast scroll · PgUp/PgDn page</Text>
+        <Box justifyContent="space-between" paddingX={1}>
+          <Text color={THEME.muted} wrap="truncate-end">{ellipsize(status, Math.max(16, Math.floor(viewportWidth * 0.5)))}</Text>
+          <Text color={THEME.muted} wrap="truncate-end">⏎ send · / cmds · ⇅ scroll · ^C quit</Text>
         </Box>
       </Box>
     </Box>

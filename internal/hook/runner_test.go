@@ -215,3 +215,32 @@ func TestAuditRecorded(t *testing.T) {
 		t.Errorf("unexpected audit entry: %+v", entries[0])
 	}
 }
+
+func TestReloadSwapsHooksLive(t *testing.T) {
+	requireSh(t)
+	// Start disabled: passthrough.
+	r := NewRunner(Config{Enabled: false})
+	if _, blocked, _ := r.RunPre("x", "{}", "", ""); blocked {
+		t.Fatal("disabled runner should not block")
+	}
+
+	// Reload with an enabled blocking hook — takes effect without rebuilding.
+	r.Reload(Config{
+		Enabled:    true,
+		Timeout:    2 * time.Second,
+		PreToolUse: []Spec{{Command: `echo '{"decision":"block","reason":"now blocked"}'`}},
+	})
+	_, blocked, msg := r.RunPre("x", "{}", "", "")
+	if !blocked {
+		t.Fatal("after reload the runner should block")
+	}
+	if !strings.Contains(msg, "now blocked") {
+		t.Errorf("unexpected block message: %s", msg)
+	}
+
+	// Reload back to disabled: passthrough again.
+	r.Reload(Config{Enabled: false})
+	if _, blocked, _ := r.RunPre("x", "{}", "", ""); blocked {
+		t.Error("after disabling reload the runner should passthrough")
+	}
+}
