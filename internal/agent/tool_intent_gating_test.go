@@ -178,6 +178,19 @@ func TestApplyIntentToolGatingMetricExplanationDoesNotEnableMemory(t *testing.T)
 	assertDisabledTools(t, loopCfg.DisabledTools, "recall", "rag_search", "web_search", "terminal")
 }
 
+func TestApplyIntentToolGatingAllowsMemoryHygiene(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "帮我清洗脏记忆和记忆污染，先审计一下")
+	opts := a.buildLoopCallOptions("帮我清洗脏记忆和记忆污染，先审计一下", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "memory_hygiene", "recall")
+	assertDisabledTools(t, loopCfg.DisabledTools, "terminal", "file_write", "remember", "rag_index")
+}
+
 func TestApplyIntentToolGatingOptimizationIntentKeepsEditTools(t *testing.T) {
 	a := agentWithIntentGateTools(t)
 	loopCfg := DefaultLoopConfig()
@@ -339,7 +352,7 @@ func agentWithIntentGateTools(t *testing.T) *Agent {
 	for _, name := range []string{
 		"terminal", "file_read", "file_list", "file_write", "file_mkdir", "file_move",
 		"file_patch", "file_delete", "web_search", "web_fetch", "opencli", "http_request",
-		"current_time", "calculate", "remember", "recall", "rag_search", "rag_index",
+		"current_time", "calculate", "remember", "recall", "memory_hygiene", "rag_search", "rag_index",
 		"log_grep", "log_tail", "json_query", "yaml_query", "csv_query", "sql_query",
 		"db_schema", "image_analyze", "image_generate", "text_to_speech", "skill_read",
 		"skill_obsidian_run", "cron", "cron_add", "cron_list", "cron_status",

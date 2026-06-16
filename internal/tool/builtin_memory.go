@@ -127,6 +127,50 @@ func RecallTool(handler func(args map[string]any) (string, error)) *Tool {
 	}
 }
 
+// MemoryHygieneTool audits or cleans dirty memories from the durable vault.
+func MemoryHygieneTool(handler func(args map[string]any) (string, error)) *Tool {
+	if handler == nil {
+		handler = func(args map[string]any) (string, error) {
+			return "", fmt.Errorf("memory_hygiene handler not configured")
+		}
+	}
+	return &Tool{
+		Name:        "memory_hygiene",
+		Description: "Audit or clean dirty memories in the LuckyHarness memory vault. Default action=audit is read-only; quarantine archives suspicious memories so they stop being recalled; delete physically removes matching entries.",
+		Category:    CatBuiltin,
+		Source:      "builtin",
+		Permission:  PermApprove,
+		Parameters: map[string]Param{
+			"action": {
+				Type:        "string",
+				Description: "Action: audit, quarantine, or delete. Use audit first unless the user explicitly asks to clean.",
+				Required:    false,
+				Default:     "audit",
+			},
+			"min_severity": {
+				Type:        "string",
+				Description: "Minimum severity to include: low, medium, high, or critical.",
+				Required:    false,
+				Default:     "medium",
+			},
+			"include_inactive": {
+				Type:        "boolean",
+				Description: "Whether to include archived, superseded, expired, or future-dated memories in the scan.",
+				Required:    false,
+				Default:     false,
+			},
+			"limit": {
+				Type:        "number",
+				Description: "Maximum number of findings to return or apply.",
+				Required:    false,
+				Default:     50,
+			},
+		},
+		Handler:      handler,
+		ParallelSafe: false,
+	}
+}
+
 // RAGSearchTool searches the local indexed knowledge base.
 func RAGSearchTool(handler func(args map[string]any) (string, error)) *Tool {
 	if handler == nil {

@@ -127,6 +127,47 @@ func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {
 	return sb.String(), nil
 }
 
+func (s *MemoryToolService) HandleHygiene(args map[string]any) (string, error) {
+	if s == nil || s.store == nil {
+		return "", fmt.Errorf("memory store not initialized")
+	}
+	action := strings.ToLower(strings.TrimSpace(stringArg(args["action"])))
+	if action == "" {
+		action = "audit"
+	}
+	limit := 50
+	if rawLimit, ok := numberArg(args["limit"]); ok {
+		limit = int(rawLimit)
+	}
+	opts := memory.HygieneOptions{
+		MinSeverity:     stringArg(args["min_severity"]),
+		IncludeInactive: boolArg(args["include_inactive"]),
+		MaxFindings:     limit,
+	}
+	var (
+		report memory.HygieneReport
+		err    error
+	)
+	switch action {
+	case "audit", "scan", "dry_run", "dry-run":
+		report = s.store.AuditHygiene(opts)
+	case "quarantine", "archive":
+		report, err = s.store.QuarantineDirty(opts)
+	case "delete", "purge":
+		report, err = s.store.DeleteDirty(opts)
+	default:
+		return "", fmt.Errorf("invalid memory_hygiene action %q (use audit, quarantine, or delete)", action)
+	}
+	if err != nil {
+		return "", err
+	}
+	payload, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(payload), nil
+}
+
 func memorySourceNotice(store *memory.Store) string {
 	return fmt.Sprintf("记忆源：LuckyHarness Obsidian-compatible Markdown vault at %s。legacy memory.md/memory.json 和 RAG SQLite 不是当前 durable memory 事实源。\n", memoryVaultPathForTool(store))
 }
@@ -194,6 +235,11 @@ func stringArg(v any) string {
 		return strings.TrimSpace(s)
 	}
 	return ""
+}
+
+func boolArg(v any) bool {
+	b, _ := v.(bool)
+	return b
 }
 
 func timeArg(v any) (time.Time, bool, error) {
