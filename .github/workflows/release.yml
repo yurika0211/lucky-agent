@@ -87,14 +87,22 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p dist/UI/TUI
+          cp UI/package.json UI/package-lock.json dist/UI/
+          cp UI/TUI/package.json UI/TUI/tsconfig.json dist/UI/TUI/
+          cp -R UI/TUI/src dist/UI/TUI/src
           cd dist
-          tar -czf "../${{ matrix.archive_name }}" "${{ matrix.binary_name }}"
+          tar -czf "../${{ matrix.archive_name }}" "${{ matrix.binary_name }}" UI
 
       - name: Package release archive
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist/${{ matrix.binary_name }}" -DestinationPath "${{ matrix.archive_name }}" -Force
+          New-Item -ItemType Directory -Force -Path "dist/UI/TUI" | Out-Null
+          Copy-Item -Force "UI/package.json", "UI/package-lock.json" "dist/UI/"
+          Copy-Item -Force "UI/TUI/package.json", "UI/TUI/tsconfig.json" "dist/UI/TUI/"
+          Copy-Item -Recurse -Force "UI/TUI/src" "dist/UI/TUI/src"
+          Compress-Archive -Path "dist/${{ matrix.binary_name }}", "dist/UI" -DestinationPath "${{ matrix.archive_name }}" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
