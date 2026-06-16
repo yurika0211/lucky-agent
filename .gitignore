@@ -10,6 +10,7 @@ tmp
 .env
 .env.prod
 config.json
+config.prod.json
 .codex
 .lh-home*
 docs/*
