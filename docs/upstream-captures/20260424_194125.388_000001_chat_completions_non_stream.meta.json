@@ -1,7 +1,0 @@
-{
-  "api_base": "https://api.boaiak.com/v1",
-  "captured_at": "2026-04-24T19:41:25.388787952+08:00",
-  "kind": "chat_completions_non_stream",
-  "model": "gpt-5.4-mini",
-  "provider": "openai"
-}

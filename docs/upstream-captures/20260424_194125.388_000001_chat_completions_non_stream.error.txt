@@ -1,2 +1,0 @@
-stage=do_request
-error=send request: Post "https://api.boaiak.com/v1/chat/completions": proxyconnect tcp: dial tcp 127.0.0.1:7897: socket: operation not permitted
