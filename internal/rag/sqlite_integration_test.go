@@ -270,3 +270,38 @@ func TestRAGManagerWithSQLiteConcurrentIndex(t *testing.T) {
 		t.Errorf("expected 5 documents after concurrent indexing, got %d", mgr.Stats().DocumentCount)
 	}
 }
+
+func TestIndexerSQLiteSaveDocumentDoesNotRaceOnConcurrentIndex(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "rag-race.db")
+
+	e := NewMockEmbedder(64)
+	cfg := DefaultRAGConfig()
+	cfg.EmbeddingDim = 64
+
+	mgr, err := NewRAGManagerWithSQLite(e, cfg, dbPath)
+	if err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	defer mgr.CloseStore()
+
+	done := make(chan struct{}, 8)
+	for i := 0; i < 8; i++ {
+		go func(idx int) {
+			_, _ = mgr.IndexText(
+				"race-"+string(rune('A'+idx)),
+				"Race Doc "+string(rune('A'+idx)),
+				"Content for race document "+string(rune('A'+idx)),
+			)
+			done <- struct{}{}
+		}(i)
+	}
+
+	for i := 0; i < 8; i++ {
+		<-done
+	}
+
+	if got := mgr.Stats().DocumentCount; got != 8 {
+		t.Fatalf("expected 8 documents after concurrent indexing, got %d", got)
+	}
+}

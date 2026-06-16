@@ -172,11 +172,15 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 	idx.stats.ChunkCount = len(idx.chunks)
 	idx.stats.LastIndexed = doc.IndexedAt
 	idx.stats.Sources[source] = len(rawChunks)
+	chunkSnapshot := make(map[string]*Chunk, len(idx.chunks))
+	for id, chunk := range idx.chunks {
+		chunkSnapshot[id] = chunk
+	}
 	idx.mu.Unlock()
 
 	// v0.20.0: Persist to SQLite if available
 	if idx.sqlite != nil {
-		if err := idx.sqlite.SaveDocument(doc, idx.chunks); err != nil {
+		if err := idx.sqlite.SaveDocument(doc, chunkSnapshot); err != nil {
 			idx.rollbackChunks(createdChunkIDs)
 			return nil, fmt.Errorf("save document %s: %w", doc.ID, err)
 		}
