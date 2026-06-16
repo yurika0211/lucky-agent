@@ -2,7 +2,7 @@ param(
   [string]$Version = "latest",
   [string]$Prefix = "$HOME\.local\bin",
   [string]$Repo = "yurika0211/luckyharness",
-  [string]$RepoRef = "main"
+  [string]$RepoRef = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,10 +38,21 @@ Write-Host "installed lh to $Prefix\lh.exe"
 
 $uiSource = Join-Path $tmpDir "UI"
 if (-not (Test-Path $uiSource)) {
-  $repoZip = Join-Path $tmpDir "repo-$RepoRef.zip"
+  if ($RepoRef) {
+    $sourceRef = $RepoRef
+  } elseif ($release.tag_name) {
+    $sourceRef = $release.tag_name
+  } else {
+    $sourceRef = "main"
+  }
+  $repoZip = Join-Path $tmpDir "repo-$sourceRef.zip"
   $repoDir = Join-Path $tmpDir "repo"
   try {
-    Invoke-WebRequest -Uri "https://github.com/$Repo/archive/refs/heads/$RepoRef.zip" -OutFile $repoZip
+    try {
+      Invoke-WebRequest -Uri "https://github.com/$Repo/archive/refs/tags/$sourceRef.zip" -OutFile $repoZip
+    } catch {
+      Invoke-WebRequest -Uri "https://github.com/$Repo/archive/refs/heads/$sourceRef.zip" -OutFile $repoZip
+    }
     New-Item -ItemType Directory -Force -Path $repoDir | Out-Null
     Expand-Archive -Path $repoZip -DestinationPath $repoDir -Force
     $uiIndex = Get-ChildItem -Path $repoDir -Recurse -Filter "index.tsx" |
@@ -51,7 +62,7 @@ if (-not (Test-Path $uiSource)) {
       $uiSource = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $uiIndex.FullName))
     }
   } catch {
-    Write-Warning "could not download TUI files from $Repo@$RepoRef"
+    Write-Warning "could not download TUI files from $Repo@$sourceRef"
   }
 }
 

@@ -10,29 +10,41 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.artifact_name }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - runner: ubuntu-latest
             goos: linux
             goarch: amd64
             artifact_name: lh-linux-amd64
             archive_name: lh-linux-amd64.tar.gz
             binary_name: lh
-          - os: windows-latest
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            artifact_name: lh-linux-arm64
+            archive_name: lh-linux-arm64.tar.gz
+            binary_name: lh
+          - runner: windows-latest
             goos: windows
             goarch: amd64
             artifact_name: lh-windows-amd64
             archive_name: lh-windows-amd64.zip
             binary_name: lh.exe
-          - os: macos-latest
+          - runner: macos-13
             goos: darwin
             goarch: amd64
             artifact_name: lh-darwin-amd64
             archive_name: lh-darwin-amd64.tar.gz
+            binary_name: lh
+          - runner: macos-14
+            goos: darwin
+            goarch: arm64
+            artifact_name: lh-darwin-arm64
+            archive_name: lh-darwin-arm64.tar.gz
             binary_name: lh
     steps:
       - name: Checkout

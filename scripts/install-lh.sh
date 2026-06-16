@@ -2,7 +2,7 @@
 set -eu
 
 repo="${LH_REPO:-yurika0211/luckyharness}"
-repo_ref="${LH_REPO_REF:-main}"
+repo_ref="${LH_REPO_REF:-}"
 version="${1:-latest}"
 prefix="${2:-$HOME/.local/bin}"
 
@@ -36,7 +36,7 @@ archive_name="lh-${os}-${arch}.tar.gz"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
-download_url="$(
+release_metadata="$(
   python3 - "$api_url" "$archive_name" <<'PY'
 import json
 import sys
@@ -52,9 +52,12 @@ with urllib.request.urlopen(req) as resp:
 for asset in data.get("assets", []):
     if asset.get("name") == archive_name:
         print(asset.get("browser_download_url", ""))
+        print(data.get("tag_name", ""))
         break
 PY
 )"
+download_url="$(printf '%s\n' "$release_metadata" | sed -n '1p')"
+release_tag="$(printf '%s\n' "$release_metadata" | sed -n '2p')"
 
 if [ -z "$download_url" ]; then
   echo "could not find release asset: $archive_name" >&2
@@ -70,9 +73,14 @@ install -m 0755 "$tmp_dir/lh" "$prefix/lh"
 echo "installed lh to $prefix/lh"
 
 if [ ! -d "$tmp_dir/UI" ]; then
-  repo_archive="$tmp_dir/repo-${repo_ref}.tar.gz"
+  source_ref="${repo_ref:-$release_tag}"
+  if [ -z "$source_ref" ]; then
+    source_ref="main"
+  fi
+  repo_archive="$tmp_dir/repo-${source_ref}.tar.gz"
   repo_dir="$tmp_dir/repo"
-  if curl -fsSL -o "$repo_archive" "https://github.com/${repo}/archive/refs/heads/${repo_ref}.tar.gz"; then
+  if curl -fsSL -o "$repo_archive" "https://github.com/${repo}/archive/refs/tags/${source_ref}.tar.gz" ||
+    curl -fsSL -o "$repo_archive" "https://github.com/${repo}/archive/refs/heads/${source_ref}.tar.gz"; then
     mkdir -p "$repo_dir"
     tar -xzf "$repo_archive" -C "$repo_dir"
     ui_index="$(find "$repo_dir" -path '*/UI/TUI/src/index.tsx' -print | head -n 1 || true)"

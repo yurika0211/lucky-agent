@@ -1,42 +1,44 @@
-# LuckyHarness
+# LuckyHarness local state
 .luckyharness/
-*.db
-/lh
-tasks/bangumi_published.json
-lh-new
-coverage.out
-cover.out
-tmp
-.env
-.env.prod
+.lh-home*
 config.json
 config.prod.json
-.codex
-.lh-home*
-docs/*
-!docs/tui-message-display-optimization.md
-!docs/tui-product-grade-plan.md
-!docs/tui-slash-command-dropdown-plan.md
-!docs/tui-command-picker-dock-plan.md
-!docs/gui-hermes-parity-checklist.md
-!docs/tui-message-collapse-redesign.md
-!docs/tui-picker-scroll-window-plan.md
-!docs/tui-managed-background-jobs-plan.md
-GA
-bin
 
-*.txt
-skill.md
-gotchas.md
-notes
-tmp
-skill
+# Environment files
+.env
+.env.prod
 
-UI/node_modules
+# Build and coverage outputs
+/lh
+lh-new
+bin/
+coverage.out
+cover.out
+README.html
+UI/GUI/dist/
+
+# Dependency caches
 UI/node_modules/
 UI/GUI/node_modules/
-nul
-docs/
+__pycache__/
+*.pyc
+
+# Local scratch files
+tmp/
+.codex/
+GA/
+tasks/bangumi_published.json
 xiaohongshu-downloads/
 web-articles/
 cases/
+notes/
+nul
+
+# Local notes and ad-hoc files
+*.txt
+skill.md
+gotchas.md
+skill/
+
+# Databases
+*.db

@@ -8,11 +8,11 @@ LuckyHarness 不是一个只把聊天窗口包装起来的 Agent 演示项目。
 
 LuckyHarness 除了 CLI 和 API，也提供面向运行态的 GUI、TUI 和部署知识库视图。GUI 适合观察会话、运行状态和实时活动流；TUI 适合在终端里持续对话、切换会话和执行常用 `lh` 命令；部署知识库用于把配置、运行目录、Compose、消息网关和排障路径整理成可浏览的文档。
 
-![LuckyHarness GUI runtime workspace](public/GUI01.png)
+![LuckyHarness GUI runtime workspace](public/GUI02.png)
 
-![LuckyHarness TUI idle screen](public/TUI01.png)
+![LuckyHarness TUI idle screen](public/TUI04.png)
 
-![LuckyHarness TUI conversation screen](public/TUI02.png)
+![LuckyHarness TUI conversation screen](public/TUI03.png)
 
 ![LuckyHarness deploy vault](public/README.png)
 

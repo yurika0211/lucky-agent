@@ -6,8 +6,8 @@ on:
     tags:
       - '*'
   pull_request:
-    branches: [master]
-    types: [closed]
+    branches: [master, dev-*]
+    types: [opened, synchronize, reopened, ready_for_review]
 
 env:
   REGISTRY: ghcr.io
@@ -25,14 +25,41 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: UI/package-lock.json
       - name: Download dependencies
         run: go mod download
+      - name: Install UI dependencies
+        working-directory: UI
+        run: npm ci
+      - name: Typecheck UI
+        working-directory: UI
+        run: npm run typecheck
       - name: Run tests
         run: go test ./... -race -count=1 -timeout 10m
       - name: Build
         run: go build -o lh ./cmd/lh
       - name: Verify binary
         run: ./lh version
+      - name: Smoke release archive layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .ci-release
+          mkdir -p .ci-release/dist/UI/TUI .ci-release/extract
+          cp lh .ci-release/dist/lh
+          cp UI/package.json UI/package-lock.json .ci-release/dist/UI/
+          cp UI/TUI/package.json UI/TUI/tsconfig.json .ci-release/dist/UI/TUI/
+          cp -R UI/TUI/src .ci-release/dist/UI/TUI/src
+          tar -czf .ci-release/lh-linux-amd64.tar.gz -C .ci-release/dist lh UI
+          tar -xzf .ci-release/lh-linux-amd64.tar.gz -C .ci-release/extract
+          test -x .ci-release/extract/lh
+          test -f .ci-release/extract/UI/package.json
+          test -f .ci-release/extract/UI/TUI/src/index.tsx
 
   docker:
     name: Build Docker Image
