@@ -840,6 +840,9 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session, query strin
 	for _, msg := range recentMessages {
 		msg = p.compactHistoryMessage(msg)
 		tokens := p.est.Estimate(msg.Content) + 4
+		if msg.ReasoningContent != "" {
+			tokens += p.est.Estimate(msg.ReasoningContent)
+		}
 		if used+tokens > recentBudget && len(messages) > 0 {
 			continue
 		}
@@ -1325,6 +1328,15 @@ func summarizeToolResult(toolName, result string) string {
 			return fmt.Sprintf("Fetched page content: %s.", title)
 		}
 		return "Fetched page content and extracted key details."
+	case "opencli":
+		if strings.Contains(strings.ToLower(result), "failed") {
+			return "Tried to access external content via OpenCLI but it failed."
+		}
+		title := extractLineAfterPrefix(result, "# ")
+		if title != "" {
+			return fmt.Sprintf("Extracted page content via OpenCLI: %s.", title)
+		}
+		return "Accessed external content via OpenCLI."
 	default:
 		return truncate(result, 120)
 	}

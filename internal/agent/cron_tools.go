@@ -22,24 +22,15 @@ const (
 	cronTaskModeAgent cronTaskMode = "agent"
 )
 
-const cronNotificationSystemPrompt = `【后台任务汇报设定】
-你是我非常信任、观察力敏锐且语气自然的私人助理。你刚刚在后台为我跑完了一项定时任务（Cron Job），现在需要向我汇报结果。
-
-请彻底抛弃死板的机器日志格式（绝对不要使用“执行状态：成功”、“影响行数：5”这种机械词汇）。你的汇报必须像真实人类一样，流畅、有温度且富有细节。
-
-在汇报时，请自然地融合以下几点：
-
-1. 情境带入：用一句口语化的开场白告诉我你刚忙完什么。
-2. 提炼高价值细节：如果一切正常，一句话带过；如果发现异常、波动或有趣趋势，就把它当重点说出来。
-3. 结果具象化：把数据转成“事情”或“物品”，不要机械罗列。
-4. 主动的下一步：基于结果顺水推舟地给出一个建议或询问。
+const cronNotificationSystemPrompt = `【后台任务开场设定】
+你是我非常信任、观察力敏锐且语气自然的私人助理。你刚刚在后台为我跑完了一项定时任务（Cron Job），现在需要写一段发给用户的简短开场。
 
 输出要求：
-- 直接输出给用户看的最终汇报，不要解释你是怎么写的。
-- 默认用中文。
-- 控制在 2 到 5 句话。
-- 如果执行失败，要说清楚卡在哪里，但仍然保持自然语气。
-- 不要杜撰不存在的结果。`
+- 只写 1 到 2 句话，说明你刚完成了什么，以及结果大体是成功还是失败。
+- 不要复述完整原始结果，系统会在你的开场后面自动附上完整内容。
+- 不要说“要不要我发原文”“要不要我推送完整内容”这类话，因为完整内容会直接发送。
+- 不要杜撰不存在的结果。
+- 默认用中文，语气自然。`
 
 var cronAgentDisabledTools = []string{
 	"cron",
@@ -48,6 +39,8 @@ var cronAgentDisabledTools = []string{
 	"cron_pause",
 	"cron_resume",
 }
+
+const cronNotificationForwardChunkLimit = 1200
 
 type cronNotificationPayload struct {
 	JobID     string
@@ -65,6 +58,28 @@ func (a *Agent) saveCronJobs() error {
 		return nil
 	}
 	return a.cronStore.Save(a.cronEngine)
+}
+
+func (a *Agent) installCronEventHandler() {
+	if a == nil || a.cronEngine == nil {
+		return
+	}
+	a.cronEngine.SetEventHandler(func(event cron.Event) {
+		switch event.Type {
+		case cron.EventJobStarted:
+			fmt.Printf("[cron] job %s started\n", event.JobName)
+		case cron.EventJobCompleted:
+			fmt.Printf("[cron] job %s completed\n", event.JobName)
+			if err := a.saveCronJobs(); err != nil {
+				fmt.Printf("[cron] save failed: %v\n", err)
+			}
+		case cron.EventJobFailed:
+			fmt.Printf("[cron] job %s failed: %v\n", event.JobName, event.Error)
+			if err := a.saveCronJobs(); err != nil {
+				fmt.Printf("[cron] save failed: %v\n", err)
+			}
+		}
+	})
 }
 
 /*
@@ -240,6 +255,11 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	}
 	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	if forwarder, ok := gw.(gateway.ForwardedTextSender); ok && cronNotificationShouldForward(message) {
+		if err := forwarder.SendForwardedText(sendCtx, chatID, "LuckyHarness", splitCronNotificationChunks(message, cronNotificationForwardChunkLimit)); err == nil {
+			return
+		}
+	}
 	if receiptGW, ok := gw.(gateway.ReceiptGateway); ok {
 		var (
 			sent gateway.SentMessage
@@ -262,6 +282,59 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	_ = gw.Send(sendCtx, chatID, message)
 }
 
+func cronNotificationShouldForward(message string) bool {
+	return len([]rune(strings.TrimSpace(message))) > cronNotificationForwardChunkLimit
+}
+
+func splitCronNotificationChunks(text string, limit int) []string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if limit <= 0 || len([]rune(text)) <= limit {
+		return []string{text}
+	}
+
+	var chunks []string
+	var current strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		for len([]rune(line)) > limit {
+			if strings.TrimSpace(current.String()) != "" {
+				chunks = append(chunks, strings.TrimSpace(current.String()))
+				current.Reset()
+			}
+			head, tail := splitCronNotificationRunes(line, limit)
+			chunks = append(chunks, strings.TrimSpace(head))
+			line = tail
+		}
+
+		extra := len([]rune(line))
+		if current.Len() > 0 {
+			extra++
+		}
+		if current.Len() > 0 && len([]rune(current.String()))+extra > limit {
+			chunks = append(chunks, strings.TrimSpace(current.String()))
+			current.Reset()
+		}
+		if current.Len() > 0 {
+			current.WriteByte('\n')
+		}
+		current.WriteString(line)
+	}
+	if strings.TrimSpace(current.String()) != "" {
+		chunks = append(chunks, strings.TrimSpace(current.String()))
+	}
+	return chunks
+}
+
+func splitCronNotificationRunes(text string, limit int) (string, string) {
+	runes := []rune(text)
+	if limit >= len(runes) {
+		return text, ""
+	}
+	return string(runes[:limit]), string(runes[limit:])
+}
+
 func firstCronMetadataValue(metadata map[string]string, keys ...string) string {
 	for _, key := range keys {
 		if value := strings.TrimSpace(metadata[key]); value != "" {
@@ -272,18 +345,18 @@ func firstCronMetadataValue(metadata map[string]string, keys ...string) string {
 }
 
 func (a *Agent) formatCronNotification(payload cronNotificationPayload) string {
-	fallback := fallbackCronNotification(payload)
+	fallback := buildCronNotificationMessage(fallbackCronNotificationIntro(payload), payload)
 	if a == nil || a.provider == nil {
 		return fallback
 	}
 
 	rawResult := strings.TrimSpace(payload.RawResult)
 	if len(rawResult) > 4000 {
-		rawResult = rawResult[:4000] + "\n...（结果过长，已截断）"
+		rawResult = rawResult[:4000] + "\n...（结果较长，开场只参考了前半部分，完整内容会在下方附上）"
 	}
 
 	var userPrompt strings.Builder
-	userPrompt.WriteString("下面是一次后台定时任务的执行信息，请按设定写成发给用户的自然汇报。\n\n")
+	userPrompt.WriteString("下面是一次后台定时任务的执行信息，请按设定写一段简短开场。\n\n")
 	userPrompt.WriteString("job_id: ")
 	userPrompt.WriteString(strings.TrimSpace(payload.JobID))
 	userPrompt.WriteString("\nmode: ")
@@ -304,13 +377,20 @@ func (a *Agent) formatCronNotification(payload cronNotificationPayload) string {
 	if err != nil || resp == nil || strings.TrimSpace(resp.Content) == "" {
 		return fallback
 	}
-	return strings.TrimSpace(resp.Content)
+	intro := strings.TrimSpace(resp.Content)
+	if strings.Contains(intro, "要不要") {
+		intro = fallbackCronNotificationIntro(payload)
+	}
+	return buildCronNotificationMessage(intro, payload)
 }
 
 func fallbackCronNotification(payload cronNotificationPayload) string {
+	return buildCronNotificationMessage(fallbackCronNotificationIntro(payload), payload)
+}
+
+func fallbackCronNotificationIntro(payload cronNotificationPayload) string {
 	jobID := strings.TrimSpace(payload.JobID)
 	command := strings.TrimSpace(payload.Command)
-	rawResult := strings.TrimSpace(payload.RawResult)
 
 	if jobID == "" {
 		jobID = "unknown-job"
@@ -321,11 +401,25 @@ func fallbackCronNotification(payload cronNotificationPayload) string {
 
 	switch strings.ToLower(strings.TrimSpace(payload.Outcome)) {
 	case "failed":
-		return fmt.Sprintf("我刚刚替你跑了一下定时任务“%s”，不过这次没顺利完成，主要卡在这里：%s。要不要我接着帮你看看是配置问题、网络问题，还是任务本身需要调整？", command, rawResult)
+		return fmt.Sprintf("我刚刚替你跑了一下定时任务“%s”，不过这次没顺利完成。完整错误我直接贴在下面。", command)
 	default:
-		if rawResult == "" {
-			return fmt.Sprintf("我刚刚把定时任务“%s”跑完了，整体没有发现特别异常。要不要我顺手把下一步也一起处理掉？", command)
-		}
-		return fmt.Sprintf("我刚刚把定时任务“%s”跑完了，结果我先帮你整理好了：%s。你要是愿意，我可以继续往下帮你判断这里面有没有值得跟进的地方。", command, rawResult)
+		return fmt.Sprintf("我刚刚把定时任务“%s”跑完了。完整结果我直接贴在下面。", command)
 	}
+}
+
+func buildCronNotificationMessage(intro string, payload cronNotificationPayload) string {
+	intro = strings.TrimSpace(intro)
+	rawResult := strings.TrimSpace(payload.RawResult)
+	if intro == "" {
+		intro = fallbackCronNotificationIntro(payload)
+	}
+	if rawResult == "" {
+		return intro
+	}
+
+	heading := "完整结果"
+	if strings.EqualFold(strings.TrimSpace(payload.Outcome), "failed") {
+		heading = "完整错误"
+	}
+	return fmt.Sprintf("%s\n\n%s：\n%s", intro, heading, rawResult)
 }

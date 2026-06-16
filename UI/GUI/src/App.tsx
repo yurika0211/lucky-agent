@@ -10,6 +10,11 @@ import type {
   SessionsResponse,
   WsPayload,
 } from './types';
+import { Markdown } from './components/Markdown';
+import { Gateways } from './components/Gateways';
+
+type ThemeMode = 'light' | 'dark';
+type WorkspaceView = 'chat' | 'gateways';
 
 type Bubble = ChatMessage;
 
@@ -103,6 +108,11 @@ function historyToBubbles(history?: ProviderMessage[]): Bubble[] {
 }
 
 export function App() {
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    const current = typeof document !== 'undefined' ? document.documentElement.dataset.theme : '';
+    return current === 'dark' ? 'dark' : 'light';
+  });
+  const [view, setView] = useState<WorkspaceView>('chat');
   const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
   const [session, setSession] = useState(DEFAULT_SESSION);
   const [status, setStatus] = useState<DashboardStatus>({});
@@ -408,6 +418,15 @@ export function App() {
   }
 
   useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem('lh-gui-theme', theme);
+    } catch {
+      /* localStorage unavailable */
+    }
+  }, [theme]);
+
+  useEffect(() => {
     void loadDashboard();
     void loadSessions('');
     return () => {
@@ -440,12 +459,34 @@ export function App() {
     <div className="dashboard-shell">
       <aside className="rail">
         <div className="brand-mark">LH</div>
-        <button className="rail-button active" type="button" title="Chat workspace">C</button>
-        <button className="rail-button" type="button" title="Sessions">S</button>
-        <button className="rail-button" type="button" title="Activity">A</button>
-        <button className="rail-button" type="button" title="Runtime">R</button>
+        <button
+          className={`rail-button ${view === 'chat' ? 'active' : ''}`}
+          type="button"
+          title="Chat workspace"
+          onClick={() => setView('chat')}
+        >
+          C
+        </button>
+        <button
+          className={`rail-button ${view === 'gateways' ? 'active' : ''}`}
+          type="button"
+          title="Gateways"
+          onClick={() => setView('gateways')}
+        >
+          G
+        </button>
         <div className="rail-spacer" />
-        <button className="rail-button muted" type="button" title="Refresh" onClick={() => void loadDashboard()}>F</button>
+        <button
+          className="rail-button"
+          type="button"
+          title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+          onClick={() => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))}
+        >
+          {theme === 'dark' ? '☀' : '☾'}
+        </button>
+        <button className="rail-button muted" type="button" title="Refresh" onClick={() => void loadDashboard()}>
+          ⟳
+        </button>
         <div className="avatar">GUI</div>
       </aside>
 
@@ -453,7 +494,7 @@ export function App() {
         <section className="topbar panel">
           <div className="topbar-title">
             <span className="eyebrow">LuckyHarness GUI</span>
-            <h1>Agent runtime workspace</h1>
+            <h1>{view === 'gateways' ? 'Messaging gateways' : 'Agent runtime workspace'}</h1>
           </div>
           <div className="topbar-actions">
             <span className={`connection-pill ${connected ? 'ok' : socketState === 'error' ? 'err' : ''}`}>
@@ -487,7 +528,11 @@ export function App() {
           </div>
         </section>
 
-        <section className="content">
+        <section className={`content ${view === 'gateways' ? 'single' : ''}`}>
+          {view === 'gateways' ? (
+            <Gateways fetchRuntime={fetchRuntime} pushActivity={pushActivity} pushFeed={pushFeed} />
+          ) : (
+          <>
           <aside className="left-col">
             <section className="panel">
               <div className="panel-head">
@@ -580,9 +625,7 @@ export function App() {
                       <span>{msg.meta}</span>
                     </div>
                     <div className="bubble-body">
-                      {(msg.body || ' ').split('\n').map((line, index) => (
-                        <div key={`${msg.id}-${index}`}>{line || '\u00a0'}</div>
-                      ))}
+                      <Markdown source={msg.body} />
                     </div>
                   </article>
                 ))
@@ -640,6 +683,8 @@ export function App() {
               <pre className="raw">{rawLog}</pre>
             </section>
           </aside>
+          </>
+          )}
         </section>
       </main>
     </div>

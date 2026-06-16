@@ -235,35 +235,48 @@ func (s *Session) messageCountLocked() int {
 
 // Save 保存会话到磁盘 (Markdown + JSON code fence)
 func (s *Session) Save() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	if err := os.MkdirAll(s.dir, 0700); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
 
-	data := sessionData{
-		ID:           s.ID,
-		Title:        s.Title,
-		Messages:     s.Messages,
-		CreatedAt:    s.CreatedAt,
-		UpdatedAt:    s.UpdatedAt,
-		ShellContext: s.ShellContext,
+	s.mu.RLock()
+	messages := append([]provider.Message(nil), s.Messages...)
+	env := map[string]string(nil)
+	if s.ShellContext.Env != nil {
+		env = make(map[string]string, len(s.ShellContext.Env))
+		for k, v := range s.ShellContext.Env {
+			env[k] = v
+		}
 	}
+	data := sessionData{
+		ID:        s.ID,
+		Title:     s.Title,
+		Messages:  messages,
+		CreatedAt: s.CreatedAt,
+		UpdatedAt: s.UpdatedAt,
+		ShellContext: ShellContext{
+			Cwd: s.ShellContext.Cwd,
+			Env: env,
+		},
+	}
+	dir := s.dir
+	id := s.ID
+	s.mu.RUnlock()
 
-	jsonData, err := json.MarshalIndent(data, "", "  ")
+	jsonData, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("marshal session: %w", err)
 	}
 
 	var b strings.Builder
+	b.Grow(len(jsonData) + 72)
 	b.WriteString("# LuckyHarness Session\n\n")
 	b.WriteString("自动生成，请勿手动编辑 JSON 块。\n\n")
 	b.WriteString("```json\n")
 	b.Write(jsonData)
 	b.WriteString("\n```\n")
 
-	path := filepath.Join(s.dir, s.ID+".md")
+	path := filepath.Join(dir, id+".md")
 	return os.WriteFile(path, []byte(b.String()), 0600)
 }
 
@@ -275,16 +288,6 @@ type sessionData struct {
 	CreatedAt    time.Time          `json:"created_at"`
 	UpdatedAt    time.Time          `json:"updated_at"`
 	ShellContext ShellContext       `json:"shell_context"`
-}
-
-// sessionMeta 是仅元数据的轻量格式（用于启动时批量加载）
-type sessionMeta struct {
-	ID           string       `json:"id"`
-	Title        string       `json:"title"`
-	MessageCount int          `json:"message_count"`
-	CreatedAt    time.Time    `json:"created_at"`
-	UpdatedAt    time.Time    `json:"updated_at"`
-	ShellContext ShellContext `json:"shell_context"`
 }
 
 // SessionInfo 是会话的摘要信息（用于列表展示）

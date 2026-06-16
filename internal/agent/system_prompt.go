@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -19,6 +21,17 @@ var contextThreatPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)system\s+prompt\s+override`),
 	regexp.MustCompile(`(?i)do\s+not\s+tell\s+the\s+user`),
 }
+
+type cachedPromptFileBlock struct {
+	modTime time.Time
+	size    int64
+	block   string
+}
+
+var (
+	promptPathCache      sync.Map // map[string]string
+	promptFileBlockCache sync.Map // map[string]cachedPromptFileBlock
+)
 
 type systemPromptOptions struct {
 	DisabledTools []string
@@ -124,6 +137,7 @@ Choose tools by intent:
 - Use file tools for repository truth and local documents.
 - Use shell or runtime tools for environment inspection and execution.
 - Use web/search tools for external or recent information.
+- Use opencli for OpenCLI access: action=web_read for a URL, action=site for site adapters, action=twitter_timeline for authenticated following feed, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh to opencli; use shell or terminal for shell commands.
 - Use RAG tools when the needed knowledge is likely already indexed.
 - Use memory tools for durable user facts, preferences, and recurring constraints.
 - Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.
@@ -405,27 +419,24 @@ func (a *Agent) buildLuckyHarnessManualPrompt(sess *session.Session) string {
 		return ""
 	}
 
-	data, err := os.ReadFile(manualPath)
-	if err != nil {
-		return ""
-	}
-
-	content := sanitizeContextContent(string(data), filepath.Base(manualPath))
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return ""
-	}
-	if len(content) > 20000 {
-		head := int(float64(len(content)) * 0.7)
-		tail := int(float64(len(content)) * 0.2)
-		if head+tail > len(content) {
-			head = len(content)
-			tail = 0
+	return cachedPromptBlock(manualPath, "manual", func(base, raw string) string {
+		content := sanitizeContextContent(raw, base)
+		content = strings.TrimSpace(content)
+		if content == "" {
+			return ""
 		}
-		content = strings.TrimSpace(content[:head] + "\n\n[... omitted ...]\n\n" + content[len(content)-tail:])
-	}
+		if len(content) > 20000 {
+			head := int(float64(len(content)) * 0.7)
+			tail := int(float64(len(content)) * 0.2)
+			if head+tail > len(content) {
+				head = len(content)
+				tail = 0
+			}
+			content = strings.TrimSpace(content[:head] + "\n\n[... omitted ...]\n\n" + content[len(content)-tail:])
+		}
 
-	return fmt.Sprintf("LuckyHarness manual (%s):\n%s", filepath.Base(manualPath), content)
+		return fmt.Sprintf("LuckyHarness manual (%s):\n%s", base, content)
+	})
 }
 
 /*
@@ -450,18 +461,41 @@ func (a *Agent) buildContextFilesPrompt(sess *session.Session) string {
 		return ""
 	}
 
-	data, err := os.ReadFile(contextPath)
+	return cachedPromptBlock(contextPath, "context", func(base, raw string) string {
+		content := sanitizeContextContent(raw, base)
+		content = strings.TrimSpace(content)
+		if content == "" {
+			return ""
+		}
+		content = utils.CompactMarkdownForPrompt(content, 20000, func(s string) int { return len([]rune(s)) }, utils.MarkdownBudgetOptions{})
+		return fmt.Sprintf("Context file (%s):\n%s", base, content)
+	})
+}
+
+func cachedPromptBlock(path string, kind string, build func(base string, raw string) string) string {
+	st, err := os.Stat(path)
+	if err != nil || st.IsDir() {
+		return ""
+	}
+	key := kind + "\x00" + path
+	if cached, ok := promptFileBlockCache.Load(key); ok {
+		entry := cached.(cachedPromptFileBlock)
+		if entry.size == st.Size() && entry.modTime.Equal(st.ModTime()) {
+			return entry.block
+		}
+	}
+
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-
-	content := sanitizeContextContent(string(data), filepath.Base(contextPath))
-	content = strings.TrimSpace(content)
-	if content == "" {
-		return ""
-	}
-	content = utils.CompactMarkdownForPrompt(content, 20000, func(s string) int { return len([]rune(s)) }, utils.MarkdownBudgetOptions{})
-	return fmt.Sprintf("Context file (%s):\n%s", filepath.Base(contextPath), content)
+	block := build(filepath.Base(path), string(data))
+	promptFileBlockCache.Store(key, cachedPromptFileBlock{
+		modTime: st.ModTime(),
+		size:    st.Size(),
+		block:   block,
+	})
+	return block
 }
 
 /*
@@ -499,11 +533,24 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 		}
 	}
 
+	return cachedExistingPromptPath("manual\x00"+strings.Join(candidates, "\x00"), candidates)
+}
+
+func cachedExistingPromptPath(key string, candidates []string) string {
+	if cached, ok := promptPathCache.Load(key); ok {
+		path := cached.(string)
+		if st, err := os.Stat(path); err == nil && !st.IsDir() {
+			return path
+		}
+		promptPathCache.Delete(key)
+	}
+
 	for _, candidate := range candidates {
 		if strings.TrimSpace(candidate) == "" {
 			continue
 		}
 		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			promptPathCache.Store(key, candidate)
 			return candidate
 		}
 	}
@@ -523,9 +570,18 @@ func findAgentsFile(cwd string) string {
 	if strings.TrimSpace(cwd) == "" {
 		return ""
 	}
+	key := "agents\x00" + cwd
+	if cached, ok := promptPathCache.Load(key); ok {
+		path := cached.(string)
+		if st, err := os.Stat(path); err == nil && !st.IsDir() {
+			return path
+		}
+		promptPathCache.Delete(key)
+	}
 	for dir := cwd; dir != ""; dir = filepath.Dir(dir) {
 		candidate := filepath.Join(dir, "AGENTS.md")
 		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			promptPathCache.Store(key, candidate)
 			return candidate
 		}
 		parent := filepath.Dir(dir)

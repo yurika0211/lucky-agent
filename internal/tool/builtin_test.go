@@ -86,7 +86,7 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"terminal", "shell", "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "current_time", "calculate", "image_analyze", "image_generate", "text_to_speech", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
+	expected := []string{"terminal", "shell", "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "opencli", "current_time", "calculate", "image_analyze", "image_generate", "text_to_speech", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {
@@ -960,6 +960,43 @@ func TestFileListTool(t *testing.T) {
 	}
 	if result == "" {
 		t.Error("expected list result")
+	}
+}
+
+func TestFileToolsResolveRelativePathsAgainstShellContext(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	if _, err := r.CallWithShellContext("file_write", map[string]any{
+		"path":    "nested/out.txt",
+		"content": "ok",
+	}, &ShellContext{Cwd: tmpDir}); err != nil {
+		t.Fatalf("file_write with cwd: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmpDir, "nested", "out.txt")); err != nil {
+		t.Fatalf("expected file under shell cwd: %v", err)
+	}
+
+	listResult, err := r.CallWithShellContext("file_list", map[string]any{
+		"path": ".",
+	}, &ShellContext{Cwd: filepath.Join(tmpDir, "nested")})
+	if err != nil {
+		t.Fatalf("file_list with cwd: %v", err)
+	}
+	if !strings.Contains(listResult, "out.txt") {
+		t.Fatalf("expected out.txt in relative list result, got %q", listResult)
+	}
+
+	readResult, err := r.CallWithShellContext("file_read", map[string]any{
+		"path": "out.txt",
+	}, &ShellContext{Cwd: filepath.Join(tmpDir, "nested")})
+	if err != nil {
+		t.Fatalf("file_read with cwd: %v", err)
+	}
+	if !strings.Contains(readResult, "ok") {
+		t.Fatalf("expected file contents in read result, got %q", readResult)
 	}
 }
 

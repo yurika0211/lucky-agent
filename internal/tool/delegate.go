@@ -4,10 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
 )
+
+const delegateWorkspaceMarker = "LuckyHarness delegate workspace:"
+
+var delegateWorkspacePathRe = regexp.MustCompile(`(?:/tmp/[^\s"'<>，。；；,，)）\]}]+|~[/\\]\.luckyharness[/\\]?[^\s"'<>，。；；,，)）\]}]*)`)
 
 // DelegateConfig 子代理委派配置
 type DelegateConfig struct {
@@ -25,11 +32,128 @@ func DefaultDelegateConfig() DelegateConfig {
 	}
 }
 
+func prepareDelegateExecutionContext(taskID, description, contextStr string) (string, string, error) {
+	workspace := findDelegateWorkspace(description, contextStr)
+	if workspace == "" {
+		workspace = defaultDelegateWorkspace(taskID)
+	}
+	workspace = normalizeDelegateWorkspace(workspace)
+	if err := validatePath(workspace); err != nil {
+		workspace = defaultDelegateWorkspace(taskID)
+	}
+	workspace = normalizeDelegateWorkspace(workspace)
+	if err := validatePath(workspace); err != nil {
+		return "", "", err
+	}
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return "", "", fmt.Errorf("create delegate workspace: %w", err)
+	}
+	return workspace, appendDelegateWorkspaceContext(contextStr, workspace), nil
+}
+
+func findDelegateWorkspace(parts ...string) string {
+	for _, part := range parts {
+		for _, candidate := range delegateWorkspacePathRe.FindAllString(part, -1) {
+			candidate = normalizeDelegateWorkspace(candidate)
+			if candidate == "" {
+				continue
+			}
+			if err := validatePath(candidate); err == nil {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
+func defaultDelegateWorkspace(taskID string) string {
+	return filepath.Join(os.TempDir(), "luckyharness-delegate", sanitizeDelegateTaskID(taskID))
+}
+
+func sanitizeDelegateTaskID(taskID string) string {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return "task"
+	}
+	var b strings.Builder
+	for _, r := range taskID {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-' || r == '_':
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "task"
+	}
+	return b.String()
+}
+
+func normalizeDelegateWorkspace(path string) string {
+	path = strings.TrimSpace(path)
+	path = strings.TrimRight(path, ".,;:，。；：、)]}>\n\r\t ")
+	path = expandSandboxPath(path)
+	if path == "" {
+		return ""
+	}
+	clean := filepath.Clean(path)
+	if info, err := os.Stat(clean); err == nil && !info.IsDir() {
+		return filepath.Dir(clean)
+	}
+	base := filepath.Base(clean)
+	if ext := filepath.Ext(base); ext != "" && !strings.HasPrefix(base, ".") {
+		return filepath.Dir(clean)
+	}
+	return clean
+}
+
+func appendDelegateWorkspaceContext(contextStr, workspace string) string {
+	block := fmt.Sprintf(`%s
+Current working directory: %s
+Allowed file roots: /tmp/ and ~/.luckyharness/.
+Use relative file paths under the current working directory, or explicit paths under the allowed roots. Do not use /home or bare ~, and do not assume "." is the repository root; "." refers to the current working directory above.`, delegateWorkspaceMarker, workspace)
+	contextStr = strings.TrimSpace(contextStr)
+	if contextStr == "" {
+		return block
+	}
+	if strings.Contains(contextStr, delegateWorkspaceMarker) {
+		return contextStr
+	}
+	return contextStr + "\n\n" + block
+}
+
+func ExtractDelegateWorkspace(contextStr string) string {
+	idx := strings.Index(contextStr, delegateWorkspaceMarker)
+	if idx < 0 {
+		return ""
+	}
+	for _, line := range strings.Split(contextStr[idx:], "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "Current working directory") {
+			continue
+		}
+		workspace := normalizeDelegateWorkspace(value)
+		if workspace == "" {
+			return ""
+		}
+		if err := validatePath(workspace); err != nil {
+			return ""
+		}
+		return workspace
+	}
+	return ""
+}
+
 // TaskStatus 子代理任务状态
 type TaskStatus int
 
 const (
-	StatusPending   TaskStatus = iota
+	StatusPending TaskStatus = iota
 	StatusRunning
 	StatusCompleted
 	StatusFailed
@@ -57,6 +181,8 @@ func (s TaskStatus) String() string {
 type DelegateTask struct {
 	ID          string
 	Description string
+	Context     string
+	Workspace   string
 	Status      TaskStatus
 	Result      string
 	Error       string
@@ -195,9 +321,16 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 	dm.mu.Lock()
 	dm.nextID++
 	taskID := fmt.Sprintf("task-%d", dm.nextID)
+	workspace, enrichedContext, err := prepareDelegateExecutionContext(taskID, description, contextStr)
+	if err != nil {
+		dm.mu.Unlock()
+		return "", err
+	}
 	task := &DelegateTask{
 		ID:          taskID,
 		Description: description,
+		Context:     contextStr,
+		Workspace:   workspace,
 		Status:      StatusPending,
 		StartedAt:   time.Now(),
 	}
@@ -205,12 +338,13 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 	dm.mu.Unlock()
 
 	// 异步执行
-	go dm.executeTask(taskID, description, contextStr, time.Duration(timeout)*time.Second)
+	go dm.executeTask(taskID, description, enrichedContext, time.Duration(timeout)*time.Second)
 
 	result, _ := json.Marshal(map[string]any{
-		"task_id": taskID,
-		"status":  "running",
-		"message": fmt.Sprintf("Task '%s' delegated. Use task_status to check progress.", taskID),
+		"task_id":   taskID,
+		"status":    "running",
+		"workspace": workspace,
+		"message":   fmt.Sprintf("Task '%s' delegated. Use task_status to check progress.", taskID),
 	})
 
 	return string(result), nil
@@ -278,13 +412,14 @@ func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
 	}
 
 	result, _ := json.Marshal(map[string]any{
-		"task_id":       task.ID,
-		"description":   task.Description,
-		"status":        task.Status.String(),
-		"result":        task.Result,
-		"error":         task.Error,
-		"started_at":    task.StartedAt.Format(time.RFC3339),
-		"completed_at":  task.CompletedAt.Format(time.RFC3339),
+		"task_id":      task.ID,
+		"description":  task.Description,
+		"workspace":    task.Workspace,
+		"status":       task.Status.String(),
+		"result":       task.Result,
+		"error":        task.Error,
+		"started_at":   task.StartedAt.Format(time.RFC3339),
+		"completed_at": task.CompletedAt.Format(time.RFC3339),
 	})
 
 	return string(result), nil
@@ -300,6 +435,7 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 		tasks = append(tasks, map[string]any{
 			"task_id":     t.ID,
 			"description": t.Description,
+			"workspace":   t.Workspace,
 			"status":      t.Status.String(),
 			"started_at":  t.StartedAt.Format(time.RFC3339),
 		})
@@ -364,16 +500,19 @@ func (dm *DelegateManager) DelegateParallel(descriptions []string, contextStr st
 	// 启动所有任务
 	for i, desc := range descriptions {
 		go func(idx int, description string) {
-			sem <- struct{}{} // 获取信号量
+			sem <- struct{}{}        // 获取信号量
 			defer func() { <-sem }() // 释放信号量
 
 			// 创建任务
 			dm.mu.Lock()
 			dm.nextID++
 			taskID := fmt.Sprintf("parallel-task-%d", dm.nextID)
+			workspace, enrichedContext, workspaceErr := prepareDelegateExecutionContext(taskID, description, contextStr)
 			task := &DelegateTask{
 				ID:          taskID,
 				Description: description,
+				Context:     contextStr,
+				Workspace:   workspace,
 				Status:      StatusPending,
 				StartedAt:   time.Now(),
 			}
@@ -387,8 +526,10 @@ func (dm *DelegateManager) DelegateParallel(descriptions []string, contextStr st
 			var result string
 			var err error
 
-			if dm.agentExecutor != nil {
-				result, err = dm.agentExecutor(ctx, description, contextStr)
+			if workspaceErr != nil {
+				err = workspaceErr
+			} else if dm.agentExecutor != nil {
+				result, err = dm.agentExecutor(ctx, description, enrichedContext)
 			} else {
 				result = fmt.Sprintf("Sub-agent task completed (no executor): %s", description)
 			}

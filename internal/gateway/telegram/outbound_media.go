@@ -1,7 +1,6 @@
 package telegram
 
 import (
-	"fmt"
 	"net/url"
 	"os"
 	"path"
@@ -29,7 +28,6 @@ var (
 	tgMediaDirectivePattern = regexp.MustCompile(`(?i)^tg://(photo|document)\s+(\S+)(?:\s+(.*))?$`)
 	mediaTagPattern         = regexp.MustCompile(`(?im)^[\s` + "`" + `"'“”‘’]*MEDIA:\s*(?P<path>(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?|https?://\S+)[\s` + "`" + `"'“”‘’,.;:)\]}]*$`)
 	markdownImagePattern    = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
-	markdownLinkPattern     = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
 	fencedCodePattern       = regexp.MustCompile("(?s)```.*?```")
 	inlineCodePattern       = regexp.MustCompile("`[^`\n]+`")
 	localFilePattern        = regexp.MustCompile(`(?i)(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp3|wav|opus|ogg|aac|flac|m4a|pdf|txt|md|json|csv|docx?|xlsx?|pptx?|zip|rar|7z|svg|xml|html?|js|ts|py|go|ya?ml)\b`)
@@ -37,10 +35,7 @@ var (
 
 func resolveOutboundMediaResponse(response string) (string, []outboundMedia, error) {
 	text, media := parseOutboundMediaResponse(response)
-	if len(media) > 0 {
-		return text, media, nil
-	}
-	return extractLocalFiles(response)
+	return text, media, nil
 }
 
 func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
@@ -55,9 +50,14 @@ func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if m := tgMediaDirectivePattern.FindStringSubmatch(trimmed); m != nil {
+			source := strings.TrimSpace(m[2])
+			if isSensitiveOutboundMediaPath(source) {
+				kept = append(kept, line)
+				continue
+			}
 			media = append(media, outboundMedia{
 				Kind:    outboundMediaKind(strings.ToLower(m[1])),
-				Source:  strings.TrimSpace(m[2]),
+				Source:  source,
 				Caption: strings.TrimSpace(m[3]),
 			})
 			continue
@@ -106,24 +106,9 @@ func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outb
 			if m == nil {
 				return match
 			}
-			existing = append(existing, outboundMedia{
-				Kind:    outboundMediaPhoto,
-				Source:  strings.TrimSpace(m[2]),
-				Caption: strings.TrimSpace(m[1]),
-			})
-			return ""
-		})
-	}
-
-	if strings.Contains(text, "](") {
-		text = markdownLinkPattern.ReplaceAllStringFunc(text, func(match string) string {
-			m := markdownLinkPattern.FindStringSubmatch(match)
-			if m == nil {
-				return match
-			}
 			source := strings.TrimSpace(m[2])
 			kind, ok := inferMediaKind(source)
-			if !ok {
+			if !ok || kind != outboundMediaPhoto {
 				return match
 			}
 			existing = append(existing, outboundMedia{
@@ -133,15 +118,6 @@ func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outb
 			})
 			return ""
 		})
-	}
-
-	if len(existing) == 0 {
-		if kind, ok := detectImplicitMedia(text); ok {
-			return "", []outboundMedia{{
-				Kind:   kind,
-				Source: strings.TrimSpace(text),
-			}}
-		}
 	}
 
 	return strings.TrimSpace(text), existing
@@ -193,15 +169,10 @@ func extractLocalFiles(content string) (string, []outboundMedia, error) {
 	return removeRanges(text, ranges), dedupeOutboundMedia(media), nil
 }
 
-func detectImplicitMedia(text string) (outboundMediaKind, bool) {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" || strings.ContainsAny(trimmed, " \t\r\n") {
+func inferMediaKind(source string) (outboundMediaKind, bool) {
+	if isSensitiveOutboundMediaPath(source) {
 		return "", false
 	}
-	return inferMediaKind(trimmed)
-}
-
-func inferMediaKind(source string) (outboundMediaKind, bool) {
 	ext := strings.ToLower(mediaSourceExt(source))
 	switch ext {
 	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
@@ -210,6 +181,20 @@ func inferMediaKind(source string) (outboundMediaKind, bool) {
 		return outboundMediaDocument, true
 	default:
 		return "", false
+	}
+}
+
+func isSensitiveOutboundMediaPath(source string) bool {
+	source = strings.TrimSpace(normalizeLocalMediaPath(source))
+	if source == "" {
+		return false
+	}
+	base := strings.ToLower(filepath.Base(source))
+	switch base {
+	case "config.json", ".env", ".env.local", ".env.production", ".env.development", "credentials.json", "token.json", "tokens.json", "secrets.json":
+		return true
+	default:
+		return strings.HasPrefix(base, ".env.")
 	}
 }
 
@@ -406,12 +391,4 @@ func telegramMediaDeliveryGuidance(text string) string {
 		return guidance
 	}
 	return text + "\n\n" + guidance
-}
-
-func debugDescribeOutboundResponse(response string) string {
-	text, media, err := resolveOutboundMediaResponse(response)
-	if err != nil {
-		return "error: " + err.Error()
-	}
-	return fmt.Sprintf("text=%q media=%d", text, len(media))
 }

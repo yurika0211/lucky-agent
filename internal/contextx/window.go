@@ -44,14 +44,16 @@ func (p MessagePriority) String() string {
 
 // Message 代表上下文中的一条消息
 type Message struct {
-	Role       string      `json:"role"`        // system, user, assistant, tool
-	Content    string      `json:"content"`     // 消息内容
-	Name       string      `json:"name"`        // 可选名称
-	Priority   MessagePriority `json:"priority"` // 优先级
-	Category   string      `json:"category"`    // 分类: system, soul, memory_long, memory_medium, memory_short, conversation, tool_result
-	Timestamp  time.Time   `json:"timestamp"`   // 时间戳
-	ToolCalls  []ToolCall  `json:"tool_calls"`  // 工具调用（仅 assistant）
-	SourceID   string      `json:"source_id"`   // 来源 ID（用于追踪裁剪）
+	Role             string          `json:"role"`                        // system, user, assistant, tool
+	Content          string          `json:"content"`                     // 消息内容
+	ReasoningContent string          `json:"reasoning_content,omitempty"` // thinking-mode assistant reasoning
+	Name             string          `json:"name"`                        // 可选名称
+	ToolCallID       string          `json:"tool_call_id,omitempty"`      // 工具结果对应的调用 ID
+	Priority         MessagePriority `json:"priority"`                    // 优先级
+	Category         string          `json:"category"`                    // 分类: system, soul, memory_long, memory_medium, memory_short, conversation, tool_result
+	Timestamp        time.Time       `json:"timestamp"`                   // 时间戳
+	ToolCalls        []ToolCall      `json:"tool_calls"`                  // 工具调用（仅 assistant）
+	SourceID         string          `json:"source_id"`                   // 来源 ID（用于追踪裁剪）
 }
 
 // ToolCall 工具调用
@@ -112,12 +114,12 @@ type WindowConfig struct {
 func DefaultWindowConfig() WindowConfig {
 	return WindowConfig{
 		MaxTokens:            4096,
-		ReservedTokens:      1024,  // 为回复预留 1/4
+		ReservedTokens:       1024, // 为回复预留 1/4
 		Strategy:             TrimLowPriority,
 		SlidingWindowSize:    10,
 		MaxConversationTurns: 50,
-		MemoryBudget:         800,   // 记忆最多占 800 tokens
-		SummarizeThreshold:  0.8,    // 80% 时触发摘要
+		MemoryBudget:         800, // 记忆最多占 800 tokens
+		SummarizeThreshold:   0.8, // 80% 时触发摘要
 	}
 }
 
@@ -154,10 +156,10 @@ func (cw *ContextWindow) Fit(messages []Message) ([]Message, TrimResult) {
 	}
 
 	result := TrimResult{
-		OriginalCount:  len(messages),
-		OriginalTokens: cw.estimator.EstimateMessages(messages),
+		OriginalCount:   len(messages),
+		OriginalTokens:  cw.estimator.EstimateMessages(messages),
 		AvailableTokens: availableTokens,
-		Strategy:       cw.config.Strategy,
+		Strategy:        cw.config.Strategy,
 	}
 
 	// 如果已经在窗口内，直接返回
@@ -380,7 +382,7 @@ func (cw *ContextWindow) trimSummarize(messages []Message, maxTokens int) []Mess
 			Role:      "system",
 			Content:   summary,
 			Priority:  PriorityNormal,
-			Category:   "summary",
+			Category:  "summary",
 			Timestamp: time.Now(),
 			SourceID:  "auto-summary",
 		})

@@ -24,6 +24,8 @@ var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
 const defaultOpenAIUserAgent = "luckyharness"
 
+const missingReasoningContentPlaceholder = "Reasoning content was unavailable in local history."
+
 func maskedKeySuffix(key string) string {
 	key = strings.TrimSpace(key)
 	if len(key) <= 8 {
@@ -42,16 +44,6 @@ type openaiChatRequest struct {
 	Stream              bool                   `json:"stream"`
 	Tools               []openaiTool           `json:"tools,omitempty"`
 	ToolChoice          any                    `json:"tool_choice,omitempty"`
-}
-
-// openaiMessage 是 OpenAI API 的消息格式
-type openaiMessage struct {
-	Role             string               `json:"role"`
-	Content          any                  `json:"content,omitempty"`
-	ReasoningContent string               `json:"reasoning_content,omitempty"`
-	ToolCalls        []openaiToolCallResp `json:"tool_calls,omitempty"`
-	ToolCallID       string               `json:"tool_call_id,omitempty"`
-	Name             string               `json:"name,omitempty"`
 }
 
 type openaiRequestMessage struct {
@@ -176,22 +168,6 @@ func supportsToolChoice(model string) bool {
 		return false
 	}
 	return true
-}
-
-func supportsReasoningContent(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
-	if m == "" {
-		return false
-	}
-	if strings.HasPrefix(m, "deepseek") {
-		return true
-	}
-	return false
-}
-
-// openaiSSEEvent 是 SSE 事件
-type openaiSSEEvent struct {
-	Data string
 }
 
 // openAIHTTPClient 使用独立 transport，避免 http.DefaultTransport 在某些代理链路上复用连接导致 TLS 记录损坏。
@@ -537,6 +513,12 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 
 	if resp.StatusCode != http.StatusOK {
 		log.Printf("[provider] openai non-200: model=%s url=%s status=%d body=%s", cfg.LlmProvider.Model, strings.TrimRight(cfg.LlmProvider.BaseURL, "/")+"/chat/completions", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		if isReasoningContentRequiredError(resp.StatusCode, respBody) {
+			if retryMessages, changed := backfillAssistantMessagesMissingReasoningContent(normalizedMessages); changed {
+				log.Printf("[provider] retrying with backfilled assistant reasoning_content: messages=%d", len(retryMessages))
+				return callOpenAI(ctx, cfg, retryMessages, opts)
+			}
+		}
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -620,6 +602,38 @@ func shouldPreferStreamFirst(model string) bool {
 		return true
 	}
 	return false
+}
+
+func requiresReasoningContentRoundTrip(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	return strings.Contains(m, "deepseek")
+}
+
+func isReasoningContentRequiredError(statusCode int, body []byte) bool {
+	if statusCode != http.StatusBadRequest {
+		return false
+	}
+	msg := strings.ToLower(string(body))
+	return strings.Contains(msg, "reasoning_content") && strings.Contains(msg, "thinking") && strings.Contains(msg, "must")
+}
+
+func backfillAssistantMessagesMissingReasoningContent(messages []Message) ([]Message, bool) {
+	out := make([]Message, len(messages))
+	changed := false
+	for i, msg := range messages {
+		if msg.Role == "assistant" && strings.TrimSpace(msg.ReasoningContent) == "" {
+			msg.ReasoningContent = missingReasoningContentPlaceholder
+			changed = true
+		}
+		out[i] = msg
+	}
+	if !changed {
+		return messages, false
+	}
+	return out, true
 }
 
 // retryWithStream 非流式返回空 content 时，用流式重试获取完整响应
@@ -758,6 +772,12 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		capture.writeResponseMeta(resp.StatusCode, resp.Header)
 		capture.writeResponseBody(respBody)
 		log.Printf("[provider] openai stream non-200: model=%s url=%s status=%d body=%s", cfg.LlmProvider.Model, strings.TrimRight(cfg.LlmProvider.BaseURL, "/")+"/chat/completions", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		if isReasoningContentRequiredError(resp.StatusCode, respBody) {
+			if retryMessages, changed := backfillAssistantMessagesMissingReasoningContent(normalizedMessages); changed {
+				log.Printf("[provider] retrying stream with backfilled assistant reasoning_content: messages=%d", len(retryMessages))
+				return callOpenAIStream(ctx, cfg, retryMessages, opts)
+			}
+		}
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 	capture.writeResponseMeta(resp.StatusCode, resp.Header)
@@ -890,7 +910,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 // toOpenAIMessages 将通用 Message 转换为 OpenAI 格式
 func toOpenAIMessages(messages []Message, model string) ([]openaiRequestMessage, error) {
 	result := make([]openaiRequestMessage, 0, len(messages))
-	includeReasoning := supportsReasoningContent(model)
+	backfillMissingReasoning := requiresReasoningContentRoundTrip(model)
 	for _, m := range messages {
 		// 兼容旧会话：tool 消息缺失 tool_call_id 时，不能以 role=tool 发送。
 		// 否则部分 API 网关会返回 400（Invalid input[*].call_id）。
@@ -902,10 +922,14 @@ func toOpenAIMessages(messages []Message, model string) ([]openaiRequestMessage,
 			if m.Name != "" && !strings.HasPrefix(content, "[Tool:") {
 				content = fmt.Sprintf("[Tool: %s] %s", m.Name, content)
 			}
-			result = append(result, openaiRequestMessage{
+			msg := openaiRequestMessage{
 				Role:    "assistant",
 				Content: content,
-			})
+			}
+			if backfillMissingReasoning {
+				msg.ReasoningContent = missingReasoningContentPlaceholder
+			}
+			result = append(result, msg)
 			continue
 		}
 
@@ -920,8 +944,10 @@ func toOpenAIMessages(messages []Message, model string) ([]openaiRequestMessage,
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
-		if includeReasoning && strings.TrimSpace(m.ReasoningContent) != "" {
+		if strings.TrimSpace(m.ReasoningContent) != "" {
 			msg.ReasoningContent = m.ReasoningContent
+		} else if backfillMissingReasoning && m.Role == "assistant" {
+			msg.ReasoningContent = missingReasoningContentPlaceholder
 		}
 		// v0.16.0: 处理 tool_calls（assistant 消息）
 		if len(m.ToolCalls) > 0 {

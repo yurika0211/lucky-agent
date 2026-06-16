@@ -204,6 +204,43 @@ func TestApplyIntentToolGatingReadOnlyExternalIssueKeepsFetchOnly(t *testing.T) 
 	assertDisabledTools(t, loopCfg.DisabledTools, "terminal", "file_patch", "file_write", "http_request")
 }
 
+func TestApplyIntentToolGatingWebIntentKeepsUnifiedOpenCLI(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "给我打开这个网页 https://example.com 看正文")
+	opts := a.buildLoopCallOptions("给我打开这个网页 https://example.com 看正文", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "opencli", "web_fetch")
+	assertDisabledTools(t, loopCfg.DisabledTools, "web_search")
+}
+
+func TestApplyIntentToolGatingTwitterTimelineUsesUnifiedOpenCLI(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "看看我的 Twitter 关注动态")
+	opts := a.buildLoopCallOptions("看看我的 Twitter 关注动态", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "opencli")
+}
+
+func TestApplyIntentToolGatingOpenCLIDoctorUsesUnifiedOpenCLI(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "跑一下 opencli doctor 看 Chrome Bridge 是否正常")
+	opts := a.buildLoopCallOptions("跑一下 opencli doctor 看 Chrome Bridge 是否正常", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "opencli")
+}
+
 func TestApplyIntentToolGatingDatabaseSchemaOnlyBlocksSQLQuery(t *testing.T) {
 	a := agentWithIntentGateTools(t)
 	loopCfg := DefaultLoopConfig()
@@ -301,7 +338,7 @@ func agentWithIntentGateTools(t *testing.T) *Agent {
 	reg := tool.NewRegistry()
 	for _, name := range []string{
 		"terminal", "file_read", "file_list", "file_write", "file_mkdir", "file_move",
-		"file_patch", "file_delete", "web_search", "web_fetch", "http_request",
+		"file_patch", "file_delete", "web_search", "web_fetch", "opencli", "http_request",
 		"current_time", "calculate", "remember", "recall", "rag_search", "rag_index",
 		"log_grep", "log_tail", "json_query", "yaml_query", "csv_query", "sql_query",
 		"db_schema", "image_analyze", "image_generate", "text_to_speech", "skill_read",

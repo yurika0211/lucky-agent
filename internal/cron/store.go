@@ -167,6 +167,7 @@ func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() 
 	}
 
 	restored := 0
+	loadedAt := time.Now()
 	for _, pj := range state.Jobs {
 		schedule, err := ParsePersistedScheduleJob(pj)
 		if err != nil {
@@ -199,6 +200,7 @@ func (s *Store) Load(engine *Engine, taskBuilder func(job PersistedJob) (func() 
 			return restored, fmt.Errorf("restore job %s: %w", pj.ID, err)
 		}
 		state := buildRestoredJobState(pj)
+		state = normalizeRestoredJobState(schedule, state, loadedAt)
 		if err := engine.RestoreJobState(pj.ID, state); err != nil {
 			return restored, fmt.Errorf("restore state for job %s: %w", pj.ID, err)
 		}
@@ -496,6 +498,19 @@ func buildRestoredJobState(job PersistedJob) RestoredJobState {
 		RunHistory:     restoreRunHistory(job.RunHistory),
 		DeleteAfterRun: job.DeleteAfterRun,
 	}
+}
+
+func normalizeRestoredJobState(schedule Schedule, state RestoredJobState, now time.Time) RestoredJobState {
+	if schedule == nil || state.Paused || state.NextRun == nil || state.NextRun.After(now) {
+		return state
+	}
+	next := schedule.Next(now)
+	if next.IsZero() {
+		state.NextRun = nil
+		return state
+	}
+	state.NextRun = &next
+	return state
 }
 
 func restoreRunHistory(history []PersistedRunRecord) []RunRecord {

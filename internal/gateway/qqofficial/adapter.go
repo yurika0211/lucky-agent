@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -263,6 +262,24 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 	default:
 		return fmt.Errorf("qqofficial: unsupported chat type %q", parts[0])
 	}
+}
+
+func (a *Adapter) SendForwardedText(ctx context.Context, chatID string, title string, chunks []string) error {
+	sent := 0
+	for _, chunk := range chunks {
+		chunk = strings.TrimSpace(chunk)
+		if chunk == "" {
+			continue
+		}
+		if err := a.Send(ctx, chatID, chunk); err != nil {
+			return err
+		}
+		sent++
+	}
+	if sent == 0 {
+		return a.Send(ctx, chatID, "")
+	}
+	return nil
 }
 
 func (a *Adapter) SendPhoto(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
@@ -624,14 +641,9 @@ func (a *Adapter) uploadMedia(ctx context.Context, scope, targetID, source strin
 		FileType:   fileType,
 		SrvSendMsg: false,
 	}
-	source = strings.TrimSpace(source)
+	source = normalizeLocalMediaPath(source)
 	if source == "" {
 		return "", fmt.Errorf("qqofficial: empty media source")
-	}
-	if strings.HasPrefix(strings.ToLower(source), "file://") {
-		if u, err := url.Parse(source); err == nil {
-			source = u.Path
-		}
 	}
 	if strings.HasPrefix(strings.ToLower(source), "http://") || strings.HasPrefix(strings.ToLower(source), "https://") {
 		payload.URL = source

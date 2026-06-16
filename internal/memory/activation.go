@@ -108,9 +108,19 @@ func (s *Store) Activate(query string, opts ActivationOptions) []ActivationScore
 	queryTerms := extractQueryTerms(queryLower)
 	now := time.Now()
 
+	if !opts.UpdateAccessStats {
+		s.mu.RLock()
+		activated := s.activateLocked(queryLower, queryTerms, now, opts)
+		s.mu.RUnlock()
+		if len(activated) == 0 {
+			return []ActivationScore{}
+		}
+		sortActivationScores(activated)
+		return activated
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
 	activated := s.activateLocked(queryLower, queryTerms, now, opts)
 	if len(activated) == 0 {
 		return []ActivationScore{}

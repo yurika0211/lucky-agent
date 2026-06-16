@@ -21,8 +21,8 @@ type ContentType int
 
 const (
 	ContentAuto    ContentType = iota // 自动检测
-	ContentEnglish                     // 英文文本
-	ContentChinese                     // 中文文本
+	ContentEnglish                    // 英文文本
+	ContentChinese                    // 中文文本
 	ContentCode                       // 代码
 	ContentMixed                      // 混合内容
 )
@@ -102,6 +102,9 @@ func (te *TokenEstimator) EstimateMessage(msg Message) int {
 	}
 
 	contentTokens := te.Estimate(msg.Content)
+	if msg.ReasoningContent != "" {
+		contentTokens += te.Estimate(msg.ReasoningContent)
+	}
 
 	// 工具调用额外开销
 	if len(msg.ToolCalls) > 0 {

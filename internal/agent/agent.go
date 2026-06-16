@@ -19,6 +19,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/hook"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
@@ -114,6 +115,7 @@ type Agent struct {
 	sessions              *session.Manager
 	tools                 *tool.Registry
 	gateway               *tool.Gateway           // 统一工具网关
+	hooks                 *hook.Runner            // 工具执行前后的 hook 运行器
 	msgGateway            *gateway.GatewayManager // 消息平台网关
 	mcpClient             *tool.MCPClient         // MCP 客户端
 	delegate              *tool.DelegateManager   // 子代理委派管理器
@@ -582,7 +584,15 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		Format: strings.TrimSpace(c.TTS.Format),
 		Speed:  c.TTS.Speed,
 	}
-	toolServices := tool.NewServices(searchCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr)
+	opencliCfg := &tool.OpenCLIConfig{
+		Enabled:            c.OpenCLI.Enabled,
+		Command:            c.OpenCLI.Command,
+		Args:               append([]string(nil), c.OpenCLI.Args...),
+		TimeoutSeconds:     c.OpenCLI.TimeoutSeconds,
+		MaxChars:           c.OpenCLI.MaxChars,
+		FallbackToWebFetch: c.OpenCLI.FallbackToWebFetch,
+	}
+	toolServices := tool.NewServices(searchCfg, opencliCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr)
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
@@ -595,16 +605,6 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 	})
 
 	cronEngine := cron.NewEngine()
-	cronEngine.SetEventHandler(func(event cron.Event) {
-		switch event.Type {
-		case cron.EventJobStarted:
-			fmt.Printf("[cron] job %s started\n", event.JobName)
-		case cron.EventJobCompleted:
-			fmt.Printf("[cron] job %s completed\n", event.JobName)
-		case cron.EventJobFailed:
-			fmt.Printf("[cron] job %s failed: %v\n", event.JobName, event.Error)
-		}
-	})
 
 	return supportRuntime{
 		tools:          tools,
@@ -659,6 +659,77 @@ func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
 		cfg.Pool.TaskTimeout = time.Duration(worker.TimeoutSeconds) * time.Second
 	}
 	return cfg
+}
+
+/**
+ * buildHookRuntimeConfig 将主配置中的 Hooks 段转换为 hook 运行时配置，
+ * 写法对齐 buildAutonomyRuntimeConfig：读取配置段并补默认值。
+ */
+func buildHookRuntimeConfig(c *config.Config) hook.Config {
+	cfg := hook.Config{
+		Timeout:   30 * time.Second,
+		MaxOutput: 1 << 20, // 1MB
+	}
+	if c == nil {
+		return cfg
+	}
+	h := c.Hooks
+	cfg.Enabled = h.Enabled
+	cfg.FailClosed = h.FailClosed
+	if h.TimeoutSeconds > 0 {
+		cfg.Timeout = time.Duration(h.TimeoutSeconds) * time.Second
+	}
+	cfg.PreToolUse = toHookSpecs(h.PreToolUse)
+	cfg.PostToolUse = toHookSpecs(h.PostToolUse)
+	return cfg
+}
+
+// toHookSpecs 将配置层的 HookSpec 列表转换为 hook 包的 Spec 列表。
+func toHookSpecs(specs []config.HookSpec) []hook.Spec {
+	if len(specs) == 0 {
+		return nil
+	}
+	out := make([]hook.Spec, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, hook.Spec{
+			Match:   s.Match,
+			Sources: s.Sources,
+			Command: s.Command,
+			Script:  s.Script,
+		})
+	}
+	return out
+}
+
+// ReloadHooks rebuilds the tool-execution hook runner from a new config, for
+// config hot-reload. Safe to call while tools execute (Runner.Reload locks).
+func (a *Agent) ReloadHooks(c *config.Config) {
+	if a == nil || a.hooks == nil {
+		return
+	}
+	a.hooks.Reload(buildHookRuntimeConfig(c))
+}
+
+// StartConfigWatch polls the agent's config file and live-applies the changes
+// that are safe to reload without a restart (currently: hooks). It returns a
+// stop function (always non-nil, safe to defer). Intended for long-running
+// entry points such as `lh serve` and `lh msg-gateway start`; one-shot CLI
+// commands need not call it.
+func (a *Agent) StartConfigWatch(interval time.Duration) (func(), error) {
+	if a == nil || a.cfg == nil {
+		return func() {}, nil
+	}
+	w, err := a.cfg.WatchConfig(interval)
+	if err != nil {
+		return func() {}, err
+	}
+	w.OnChange(func(_, newCfg *config.Config) {
+		a.ReloadHooks(newCfg)
+	})
+	if err := w.Start(); err != nil {
+		return func() {}, err
+	}
+	return w.Stop, nil
 }
 
 type multimodalRuntimeConfig struct {
@@ -862,6 +933,7 @@ func resolveTTSConfig(c *config.Config) (ttsRuntimeConfig, bool) {
 // New 创建 Agent
 func New(cfg *config.Manager) (*Agent, error) {
 	applyWebSearchEnv(cfg)
+	applyOpenCLIEnv(cfg)
 	c := cfg.Get()
 	soulRT := initSoulRuntime(c)
 	providerRT, err := initProviderRuntime(cfg, c)
@@ -892,6 +964,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		sessions:       memoryRT.sessions,
 		tools:          supportRT.tools,
 		gateway:        supportRT.toolGateway,
+		hooks:          hook.NewRunner(buildHookRuntimeConfig(c)),
 		msgGateway:     gateway.NewGatewayManager(),
 		mcpClient:      supportRT.mcpClient,
 		delegate:       supportRT.delegateMgr,
@@ -950,12 +1023,14 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 	}
 
-	// v0.36.0: 启动定时任务引擎
-	supportRT.cronEngine.Start()
+	a.installCronEventHandler()
 	if restored, restoreErr := a.restoreCronJobs(); restoreErr != nil {
 		fmt.Printf("[cron] restore failed: %v\n", restoreErr)
 	} else if restored > 0 {
 		fmt.Printf("[cron] restored %d jobs\n", restored)
+		if err := a.saveCronJobs(); err != nil {
+			fmt.Printf("[cron] save restored jobs failed: %v\n", err)
+		}
 	}
 	if err := a.initHeartbeatService(); err != nil {
 		fmt.Printf("[heartbeat] init failed: %v\n", err)
@@ -964,6 +1039,11 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// v0.38.0: 设置 delegate 的 Agent 执行器，让 delegate_task 真正走 Agent Loop
 	supportRT.delegateMgr.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
 		sess := memoryRT.sessions.NewWithTitle("delegate-task")
+		if workspace := tool.ExtractDelegateWorkspace(contextStr); workspace != "" {
+			if err := os.MkdirAll(workspace, 0o755); err == nil {
+				sess.SetCwd(workspace)
+			}
+		}
 		prompt := description
 		if contextStr != "" {
 			prompt = fmt.Sprintf("%s\n\nContext: %s", description, contextStr)
@@ -1404,6 +1484,7 @@ type streamConvergenceState struct {
 	emptyResponseRetries     int
 	lengthRecoveryCount      int
 	continuedResponse        strings.Builder
+	continuedReasoning       strings.Builder
 	toolCallRepeatCount      map[string]int
 	toolCallLastResult       map[string]string
 	toolURLRepeatCount       map[string]int
@@ -1807,7 +1888,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	if clean == "" {
 		if state.emptyResponseRetries < maxEmptyResponseRetries && remaining > 1 {
 			state.emptyResponseRetries++
-			messages = append(messages, provider.Message{Role: "assistant", Content: response})
+			messages = append(messages, provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoning.String()})
 			messages = append(messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
@@ -1827,9 +1908,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	// 原生流式可携带 finish_reason，遇到 length 时走续写恢复。
 	if strings.EqualFold(streamFinishReason, "length") {
 		appendContinuation(&state.continuedResponse, response)
+		appendContinuation(&state.continuedReasoning, reasoning.String())
 		if state.lengthRecoveryCount < maxLengthContinuationRetries && remaining > 1 {
 			state.lengthRecoveryCount++
-			messages = append(messages, provider.Message{Role: "assistant", Content: response})
+			messages = append(messages, provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoning.String()})
 			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
@@ -1847,11 +1929,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	state.lengthRecoveryCount = 0
 
 	finalResponse := response
+	finalReasoning := reasoning.String()
 	if state.hasContinuation() {
 		appendContinuation(&state.continuedResponse, response)
+		appendContinuation(&state.continuedReasoning, reasoning.String())
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
+		finalReasoning = strings.TrimSpace(state.continuedReasoning.String())
 	}
-	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state)
+	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state, finalReasoning)
 }
 
 // streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
@@ -1976,7 +2061,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	if clean == "" {
 		if state.emptyResponseRetries < maxEmptyResponseRetries && remaining > 1 {
 			state.emptyResponseRetries++
-			messages = append(messages, provider.Message{Role: "assistant", Content: response})
+			messages = append(messages, provider.Message{Role: "assistant", Content: response, ReasoningContent: resp.ReasoningContent})
 			messages = append(messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
@@ -2001,9 +2086,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			time.Sleep(50 * time.Millisecond)
 		}
 		appendContinuation(&state.continuedResponse, response)
+		appendContinuation(&state.continuedReasoning, resp.ReasoningContent)
 		if state.lengthRecoveryCount < maxLengthContinuationRetries && remaining > 1 {
 			state.lengthRecoveryCount++
-			messages = append(messages, provider.Message{Role: "assistant", Content: response})
+			messages = append(messages, provider.Message{Role: "assistant", Content: response, ReasoningContent: resp.ReasoningContent})
 			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
 			messages = a.fitContextWindow(messages)
 			nextRound := round + 1
@@ -2027,15 +2113,22 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	}
 
 	finalResponse := response
+	finalReasoning := resp.ReasoningContent
 	if state.hasContinuation() {
 		appendContinuation(&state.continuedResponse, response)
+		appendContinuation(&state.continuedReasoning, resp.ReasoningContent)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
+		finalReasoning = strings.TrimSpace(state.continuedReasoning.String())
 	}
-	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state)
+	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state, finalReasoning)
 }
 
 // finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引
 func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, citationLogs ...[]toolCallLog) {
+	a.finalizeStreamWithReasoning(events, sess, turnInput, response, "", citationLogs...)
+}
+
+func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
 	response = utils.SanitizeToolProtocolOutput(response)
@@ -2045,7 +2138,7 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, t
 	}
 	response = appendNaturalCitations(response, logs)
 	if sess != nil {
-		sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
+		sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent})
 		_ = sess.Save()
 	}
 
@@ -2076,12 +2169,18 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, t
 	events <- ChatEvent{Type: ChatEventDone, Content: response}
 }
 
-func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, state *streamConvergenceState) {
+func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, state *streamConvergenceState, reasoning ...string) {
 	if state == nil {
 		a.finalizeStream(events, sess, turnInput, response)
 		return
 	}
-	a.finalizeStream(events, sess, turnInput, response, state.citationToolCalls)
+	reasoningContent := ""
+	if len(reasoning) > 0 {
+		reasoningContent = reasoning[0]
+	} else if strings.TrimSpace(state.continuedReasoning.String()) != "" {
+		reasoningContent = strings.TrimSpace(state.continuedReasoning.String())
+	}
+	a.finalizeStreamWithReasoning(events, sess, turnInput, response, reasoningContent, state.citationToolCalls)
 }
 
 // streamToolCallAcc 流式 tool_calls 增量累积器
@@ -2796,11 +2895,15 @@ func (a *Agent) toContextMessages(messages []provider.Message) []contextx.Messag
 		}
 
 		result[i] = contextx.Message{
-			Role:      msg.Role,
-			Content:   msg.Content,
-			Priority:  priority,
-			Category:  category,
-			Timestamp: time.Now(),
+			Role:             msg.Role,
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			Name:             msg.Name,
+			ToolCallID:       msg.ToolCallID,
+			ToolCalls:        toContextToolCalls(msg.ToolCalls),
+			Priority:         priority,
+			Category:         category,
+			Timestamp:        time.Now(),
 		}
 	}
 	return result
@@ -2814,11 +2917,45 @@ func (a *Agent) fromContextMessages(messages []contextx.Message) []provider.Mess
 	result := make([]provider.Message, len(messages))
 	for i, msg := range messages {
 		result[i] = provider.Message{
-			Role:    msg.Role,
-			Content: msg.Content,
+			Role:             msg.Role,
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			ToolCallID:       msg.ToolCallID,
+			Name:             msg.Name,
+			ToolCalls:        fromContextToolCalls(msg.ToolCalls),
 		}
 	}
 	return result
+}
+
+func toContextToolCalls(calls []provider.ToolCall) []contextx.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]contextx.ToolCall, len(calls))
+	for i, call := range calls {
+		out[i] = contextx.ToolCall{
+			ID:        call.ID,
+			Name:      call.Name,
+			Arguments: call.Arguments,
+		}
+	}
+	return out
+}
+
+func fromContextToolCalls(calls []contextx.ToolCall) []provider.ToolCall {
+	if len(calls) == 0 {
+		return nil
+	}
+	out := make([]provider.ToolCall, len(calls))
+	for i, call := range calls {
+		out[i] = provider.ToolCall{
+			ID:        call.ID,
+			Name:      call.Name,
+			Arguments: call.Arguments,
+		}
+	}
+	return out
 }
 
 // applyWebSearchEnv 从环境变量覆盖 web_search 配置
@@ -2865,5 +3002,30 @@ func applyWebSearchEnv(cfg *config.Manager) {
 		if v := os.Getenv("LH_WEB_SEARCH_PROXY"); v != "" {
 			_ = cfg.Set("web_search.proxy", v)
 		}
+	}
+}
+
+// applyOpenCLIEnv 从环境变量覆盖 opencli 配置。
+/*
+applyOpenCLIEnv 使用环境变量补全 opencli 相关配置。
+*/
+func applyOpenCLIEnv(cfg *config.Manager) {
+	if v := os.Getenv("LH_OPENCLI_ENABLED"); v != "" {
+		_ = cfg.Set("opencli.enabled", v)
+	}
+	if v := os.Getenv("LH_OPENCLI_COMMAND"); v != "" {
+		_ = cfg.Set("opencli.command", v)
+	}
+	if v := os.Getenv("LH_OPENCLI_ARGS"); v != "" {
+		_ = cfg.Set("opencli.args", v)
+	}
+	if v := os.Getenv("LH_OPENCLI_TIMEOUT_SECONDS"); v != "" {
+		_ = cfg.Set("opencli.timeout_seconds", v)
+	}
+	if v := os.Getenv("LH_OPENCLI_MAX_CHARS"); v != "" {
+		_ = cfg.Set("opencli.max_chars", v)
+	}
+	if v := os.Getenv("LH_OPENCLI_FALLBACK_TO_WEB_FETCH"); v != "" {
+		_ = cfg.Set("opencli.fallback_to_web_fetch", v)
 	}
 }

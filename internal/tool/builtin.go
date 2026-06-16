@@ -4,11 +4,11 @@ import "github.com/yurika0211/luckyharness/internal/multimodal"
 
 // RegisterBuiltinTools 注册所有内置工具
 func RegisterBuiltinTools(r *Registry, mediaProcessor ...*multimodal.Processor) {
-	RegisterBuiltinToolsWithConfig(r, nil, mediaProcessor...)
+	RegisterBuiltinToolsWithConfig(r, nil, nil, mediaProcessor...)
 }
 
 // RegisterBuiltinToolsWithConfig 注册所有内置工具（带搜索配置）
-func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, mediaProcessor ...*multimodal.Processor) {
+func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, opencliCfg *OpenCLIConfig, mediaProcessor ...*multimodal.Processor) {
 	var processor *multimodal.Processor
 	if len(mediaProcessor) > 0 {
 		processor = mediaProcessor[0]
@@ -26,6 +26,7 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, med
 	r.Register(FileFindTool())
 	r.Register(WebSearchTool(searchCfg))
 	r.Register(WebFetchTool(searchCfg))
+	r.Register(OpenCLITool(opencliCfg, searchCfg))
 	r.Register(DefuddleCompatTool(searchCfg))
 	r.Register(CurrentTimeTool())
 	r.Register(CalculateTool())

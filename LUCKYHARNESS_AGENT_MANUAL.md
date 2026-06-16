@@ -123,6 +123,14 @@ Gateways adapt the same agent runtime to external chat surfaces.
 - Gateway readiness requires more than a running process; verify platform-ready
   logs, token/config state, and command registration when relevant.
 
+## Web Extraction
+
+- `web_search` is for finding candidate sources.
+- `web_fetch` is the default page reader.
+- `opencli` is the unified OpenCLI entrypoint. Use `action=web_read` for URL-to-Markdown extraction, `action=site` for site adapters, `action=twitter_timeline` for the authenticated Twitter/X following feed, `action=browser` for browser primitives, and `action=raw` for doctor/list/external/plugin commands.
+- Use `opencli.*` config keys to control the binary, default web-read args, timeout, max output, and fallback behavior.
+- In source runs, `LH_OPENCLI_*` environment variables can provide the same settings without editing config files.
+
 ## Provider And Multimodal Behavior
 
 - Provider, model, API base, retry, fallback, rate limit, and circuit breaker

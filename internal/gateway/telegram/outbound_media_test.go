@@ -132,34 +132,31 @@ func TestParseOutboundMediaResponseMarkdownImage(t *testing.T) {
 
 func TestParseOutboundMediaResponseMarkdownSandboxLink(t *testing.T) {
 	text, media := parseOutboundMediaResponse("PNG 在这里：[quadratic.png](sandbox:/tmp/quadratic.png)")
-	if text != "PNG 在这里：" {
+	if text != "PNG 在这里：[quadratic.png](sandbox:/tmp/quadratic.png)" {
 		t.Fatalf("unexpected text: %q", text)
 	}
-	if len(media) != 1 || media[0].Kind != outboundMediaPhoto {
-		t.Fatalf("expected one photo media item, got %#v", media)
-	}
-	if media[0].Source != "sandbox:/tmp/quadratic.png" {
-		t.Fatalf("unexpected source: %q", media[0].Source)
+	if len(media) != 0 {
+		t.Fatalf("markdown link should not auto-send media, got %#v", media)
 	}
 }
 
 func TestParseOutboundMediaResponseImplicitDocument(t *testing.T) {
 	text, media := parseOutboundMediaResponse("/tmp/output.pdf")
-	if text != "" {
-		t.Fatalf("expected empty text, got %q", text)
+	if text != "/tmp/output.pdf" {
+		t.Fatalf("expected path to remain text, got %q", text)
 	}
-	if len(media) != 1 || media[0].Kind != outboundMediaDocument {
-		t.Fatalf("expected implicit document media, got %#v", media)
+	if len(media) != 0 {
+		t.Fatalf("implicit document should not auto-send media, got %#v", media)
 	}
 }
 
 func TestParseOutboundMediaResponseImplicitAudioDocument(t *testing.T) {
 	text, media := parseOutboundMediaResponse("/tmp/output.mp3")
-	if text != "" {
-		t.Fatalf("expected empty text, got %q", text)
+	if text != "/tmp/output.mp3" {
+		t.Fatalf("expected path to remain text, got %q", text)
 	}
-	if len(media) != 1 || media[0].Kind != outboundMediaDocument {
-		t.Fatalf("expected implicit audio document media, got %#v", media)
+	if len(media) != 0 {
+		t.Fatalf("implicit audio path should not auto-send media, got %#v", media)
 	}
 }
 
@@ -173,6 +170,47 @@ func TestResolveOutboundMediaResponseMediaTag(t *testing.T) {
 	}
 	if len(media) != 1 || media[0].Kind != outboundMediaDocument {
 		t.Fatalf("expected MEDIA tag to resolve to document, got %#v", media)
+	}
+}
+
+func TestResolveOutboundMediaResponseDoesNotSendConfigJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"api_key":"secret"}`), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	text, media, err := resolveOutboundMediaResponse("配置在这里 " + configPath)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse: %v", err)
+	}
+	if text != "配置在这里 "+configPath {
+		t.Fatalf("expected config path to remain text, got %q", text)
+	}
+	if len(media) != 0 {
+		t.Fatalf("config.json should not be sent as media, got %#v", media)
+	}
+
+	text, media, err = resolveOutboundMediaResponse("MEDIA:" + configPath)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse MEDIA config: %v", err)
+	}
+	if text != "MEDIA:"+configPath {
+		t.Fatalf("expected sensitive MEDIA tag to remain text, got %q", text)
+	}
+	if len(media) != 0 {
+		t.Fatalf("explicit config.json MEDIA tag should be blocked, got %#v", media)
+	}
+
+	text, media, err = resolveOutboundMediaResponse("tg://document " + configPath)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse tg config: %v", err)
+	}
+	if text != "tg://document "+configPath {
+		t.Fatalf("expected sensitive tg directive to remain text, got %q", text)
+	}
+	if len(media) != 0 {
+		t.Fatalf("explicit config.json tg directive should be blocked, got %#v", media)
 	}
 }
 
@@ -248,7 +286,7 @@ func TestSendAssistantResponsePhotoDirective(t *testing.T) {
 	}
 }
 
-func TestSendAssistantResponseImplicitDocument(t *testing.T) {
+func TestSendAssistantResponseBareDocumentPathStaysText(t *testing.T) {
 	adapter, cleanup, recorder := newCaptureBotAdapter(t)
 	defer cleanup()
 
@@ -272,7 +310,7 @@ func TestSendAssistantResponseImplicitDocument(t *testing.T) {
 	}
 
 	methods := recorder.snapshot()
-	if len(methods) != 1 || methods[0] != "sendDocument" {
+	if len(methods) != 1 || methods[0] != "sendMessage" {
 		t.Fatalf("unexpected methods: %#v", methods)
 	}
 }

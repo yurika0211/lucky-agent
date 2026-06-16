@@ -29,6 +29,9 @@ type Config struct {
 	// Web 搜索配置
 	WebSearch WebSearchConfig `json:"web_search,omitempty"`
 
+	// OpenCLI 内容抽取配置
+	OpenCLI OpenCLIConfig `json:"opencli,omitempty"`
+
 	// Embedding 配置（供 RAG / 记忆向量化使用）
 	Embedding EmbeddingConfig `json:"embedding,omitempty"`
 
@@ -79,6 +82,28 @@ type Config struct {
 
 	// Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
+
+	// Hooks 配置工具执行前后的可插拔 hook（PreToolUse / PostToolUse）
+	Hooks HooksConfig `json:"hooks,omitempty"`
+}
+
+// HooksConfig 配置工具执行边界上的 hook。Enabled 为 false 时所有 hook 不生效，
+// 保持未配置 hook 的运行时行为不变。
+type HooksConfig struct {
+	Enabled        bool       `json:"enabled,omitempty"`
+	TimeoutSeconds int        `json:"timeout_seconds,omitempty"` // 单个 hook 的执行超时，默认 30s
+	FailClosed     bool       `json:"fail_closed,omitempty"`     // hook 出错/超时时是否拦截（默认放行）
+	PreToolUse     []HookSpec `json:"pre_tool_use,omitempty"`
+	PostToolUse    []HookSpec `json:"post_tool_use,omitempty"`
+}
+
+// HookSpec 声明单个外部命令 hook。Match/Sources 为空表示匹配全部工具/来源。
+// Command 经平台 shell 执行；或用 Script 指定脚本路径（按扩展名选择解释器）。
+type HookSpec struct {
+	Match   []string `json:"match,omitempty"`   // 工具名，空=全部
+	Sources []string `json:"sources,omitempty"` // 来源 cli/telegram/qq/...，空=全部
+	Command string   `json:"command,omitempty"` // 外部命令
+	Script  string   `json:"script,omitempty"`  // 或脚本路径
 }
 
 type LlmProviderConfig struct {
@@ -438,6 +463,16 @@ type WebSearchConfig struct {
 	Proxy      string `json:"proxy,omitempty"`       // HTTP/SOCKS5 代理
 }
 
+// OpenCLIConfig OpenCLI 内容抽取配置
+type OpenCLIConfig struct {
+	Enabled            bool     `json:"enabled,omitempty"`               // 是否启用 OpenCLI 抽取器
+	Command            string   `json:"command,omitempty"`               // 可执行文件名，默认 opencli
+	Args               []string `json:"args,omitempty"`                  // 参数模板，支持 {url} / {max_chars} 占位符
+	TimeoutSeconds     int      `json:"timeout_seconds,omitempty"`       // 超时时间（秒）
+	MaxChars           int      `json:"max_chars,omitempty"`             // 默认最大返回字符数
+	FallbackToWebFetch bool     `json:"fallback_to_web_fetch,omitempty"` // OpenCLI 失败后是否回退到 web_fetch
+}
+
 // FallbackEntry 是降级链中的一个节点配置
 type FallbackEntry struct {
 	Provider string `json:"provider"`
@@ -464,6 +499,14 @@ func DefaultConfig() *Config {
 		WebSearch: WebSearchConfig{
 			Provider:   "brave",
 			MaxResults: 5,
+		},
+		OpenCLI: OpenCLIConfig{
+			Enabled:            false,
+			Command:            "opencli",
+			Args:               []string{"web", "read", "--url", "{url}", "--stdout", "true", "--download-images", "false", "-f", "md"},
+			TimeoutSeconds:     20,
+			MaxChars:           50000,
+			FallbackToWebFetch: true,
 		},
 		Multimodal: MultimodalConfig{
 			Provider:               "openai",
@@ -1191,6 +1234,22 @@ func (m *Manager) Set(key, value string) error {
 		m.config.WebSearch.MaxResults = n
 	case "web_search.proxy":
 		m.config.WebSearch.Proxy = value
+	case "opencli.enabled":
+		m.config.OpenCLI.Enabled = parseBool(value)
+	case "opencli.command":
+		m.config.OpenCLI.Command = value
+	case "opencli.args":
+		m.config.OpenCLI.Args = splitCSV(value)
+	case "opencli.timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.OpenCLI.TimeoutSeconds = n
+	case "opencli.max_chars":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.OpenCLI.MaxChars = n
+	case "opencli.fallback_to_web_fetch":
+		m.config.OpenCLI.FallbackToWebFetch = parseBool(value)
 	case "stream_mode":
 		m.config.StreamMode = value
 	case "agent.max_iterations":
