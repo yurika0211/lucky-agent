@@ -225,11 +225,23 @@ git push origin v0.1.0
 ```
 
 仓库会在 tag push 后自动构建并发布 `Windows / macOS / Linux` 产物到 Releases 页面。下载后直接解压即可使用。
+Release 压缩包会同时包含 `lh` 二进制和 TUI 工作区；安装脚本会登记 TUI 目录，之后可以直接运行：
+
+```bash
+lh tui
+```
+
+TUI 需要本机安装 Node.js/npm。安装脚本会自动安装或回退下载 UI/TUI，并在 TUI 目录执行 `npm ci`；如果安装时没有 npm，装好 Node.js 后重新执行安装脚本即可。
+
+### Linux
 
 一键安装到 `PATH`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yurika0211/luckyharness/main/scripts/install-lh.sh | sh
+curl -fsSL https://yurika0211.github.io/luckyharness/install-lh.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+lh init
+lh tui
 ```
 
 如果你想指定版本或安装目录：
@@ -238,7 +250,31 @@ curl -fsSL https://raw.githubusercontent.com/yurika0211/luckyharness/main/script
 sh scripts/install-lh.sh v0.1.0 "$HOME/bin"
 ```
 
-Windows 用户可以用：
+### macOS
+
+macOS 使用同一个 shell 安装脚本：
+
+```bash
+curl -fsSL https://yurika0211.github.io/luckyharness/install-lh.sh | sh
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+exec zsh -l
+lh init
+lh tui
+```
+
+### Windows
+
+Windows 用户可以用 PowerShell：
+
+```powershell
+iwr https://yurika0211.github.io/luckyharness/install-lh.ps1 -OutFile "$env:TEMP\install-lh.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-lh.ps1" -Prefix "$HOME\.local\bin"
+$env:Path = "$HOME\.local\bin;$env:Path"
+lh.exe init
+lh.exe tui
+```
+
+如果你想指定版本或安装目录：
 
 ```powershell
 .\scripts\install-lh.ps1 -Version v0.1.0 -Prefix "$HOME\bin"
