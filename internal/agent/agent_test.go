@@ -577,17 +577,33 @@ func TestSaveConversationMemory(t *testing.T) {
 
 	a.saveConversationMemory("我喜欢Rust语言", "Rust确实很棒")
 
-	// Check that memory was saved
+	// Reusable user preferences should still be saved as memory facts.
 	recent := a.memory.Recent(10)
 	found := false
 	for _, e := range recent {
-		if strings.Contains(e.Content, "Rust") {
+		if strings.Contains(e.Content, "Rust") && !strings.HasPrefix(e.Content, "User:") {
 			found = true
 			break
 		}
 	}
 	if !found {
 		t.Error("expected Rust-related memory to be saved")
+	}
+}
+
+func TestSaveConversationMemoryDoesNotStoreRawConversationInMemoryStore(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	a.shortTerm = memory.NewShortTermBuffer(10)
+
+	a.saveConversationMemory("hello", "hi there")
+
+	if a.shortTerm.MessageCount() != 2 {
+		t.Errorf("expected 2 messages in short term buffer, got %d", a.shortTerm.MessageCount())
+	}
+	for _, e := range a.memory.Recent(10) {
+		if strings.HasPrefix(e.Content, "User:") || strings.HasPrefix(e.Content, "Assistant:") || e.Category == "conversation" {
+			t.Fatalf("raw conversation should not be persisted to memory.Store: %#v", e)
+		}
 	}
 }
 
@@ -599,6 +615,25 @@ func TestSaveConversationMemory_ShortTermBuffer(t *testing.T) {
 
 	if a.shortTerm.MessageCount() != 2 {
 		t.Errorf("expected 2 messages in short term buffer, got %d", a.shortTerm.MessageCount())
+	}
+}
+
+func TestContextPlannerFiltersRawConversationShortMemory(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	a.memory.SaveWithTier("User: hello about deploy", "conversation", memory.TierShort, 0.9)
+	a.memory.SaveWithTier("Assistant: deploy answer", "conversation", memory.TierShort, 0.9)
+	a.memory.SaveWithTier("Project deploy constraint: run tests before release", "project", memory.TierShort, 0.9)
+
+	planner := newContextPlanner(a, defaultContextBuildOptions())
+	msg := planner.buildRelevantMemoryMessage("deploy")
+	if msg.Content == "" {
+		t.Fatal("expected filtered working memory to keep project fact")
+	}
+	if strings.Contains(msg.Content, "User: hello") || strings.Contains(msg.Content, "Assistant: deploy") {
+		t.Fatalf("raw conversation memory leaked into context:\n%s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "run tests before release") {
+		t.Fatalf("expected project fact in context:\n%s", msg.Content)
 	}
 }
 
