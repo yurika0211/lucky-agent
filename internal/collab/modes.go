@@ -4,6 +4,8 @@ package collab
 type CollabMode string
 
 const (
+	// ModeAuto lets the runtime planner choose a collaboration mode.
+	ModeAuto CollabMode = "auto"
 	// ModePipeline 串行流水线 — 前一步输出作为后一步输入
 	ModePipeline CollabMode = "pipeline"
 	// ModeParallel 并行执行 — 所有子任务同时执行，结果聚合
@@ -14,12 +16,12 @@ const (
 
 // ModeConfig 协作模式配置
 type ModeConfig struct {
-	Mode             CollabMode        `json:"mode" yaml:"mode"`
-	DebateRounds     int               `json:"debate_rounds,omitempty" yaml:"debate_rounds,omitempty"`
+	Mode             CollabMode          `json:"mode" yaml:"mode"`
+	DebateRounds     int                 `json:"debate_rounds,omitempty" yaml:"debate_rounds,omitempty"`
 	Aggregation      AggregationStrategy `json:"aggregation,omitempty" yaml:"aggregation,omitempty"`
-	FailFast         bool              `json:"fail_fast,omitempty" yaml:"fail_fast,omitempty"`           // Pipeline: 任一失败即终止
-	MaxConcurrent    int               `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty"` // Parallel: 最大并发数
-	RequireConsensus bool              `json:"require_consensus,omitempty" yaml:"require_consensus,omitempty"` // Debate: 是否需要一致
+	FailFast         bool                `json:"fail_fast,omitempty" yaml:"fail_fast,omitempty"`                 // Pipeline: 任一失败即终止
+	MaxConcurrent    int                 `json:"max_concurrent,omitempty" yaml:"max_concurrent,omitempty"`       // Parallel: 最大并发数
+	RequireConsensus bool                `json:"require_consensus,omitempty" yaml:"require_consensus,omitempty"` // Debate: 是否需要一致
 }
 
 // DefaultModeConfig 默认模式配置
@@ -49,7 +51,7 @@ func DefaultModeConfig(mode CollabMode) ModeConfig {
 // Validate 验证模式配置
 func (c ModeConfig) Validate() error {
 	switch c.Mode {
-	case ModePipeline, ModeParallel, ModeDebate:
+	case ModeAuto, ModePipeline, ModeParallel, ModeDebate:
 		// valid
 	default:
 		return ErrInvalidMode
@@ -69,6 +71,8 @@ func (c ModeConfig) Validate() error {
 // ModeDescription 返回模式描述
 func ModeDescription(mode CollabMode) string {
 	switch mode {
+	case ModeAuto:
+		return "Auto: Runtime planner chooses the collaboration mode"
 	case ModePipeline:
 		return "Pipeline: Agents execute sequentially, each receiving the previous agent's output"
 	case ModeParallel:
@@ -88,6 +92,8 @@ func AllModes() []CollabMode {
 // ParseMode 解析模式字符串
 func ParseMode(s string) (CollabMode, error) {
 	switch s {
+	case "", "auto", "Auto", "AUTO":
+		return ModeAuto, nil
 	case "pipeline", "Pipeline", "PIPELINE":
 		return ModePipeline, nil
 	case "parallel", "Parallel", "PARALLEL":

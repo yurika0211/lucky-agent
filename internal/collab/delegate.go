@@ -2,6 +2,7 @@ package collab
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -21,23 +22,23 @@ const (
 
 // SubTask 子任务
 type SubTask struct {
-	ID          string         `json:"id"`
-	ParentID    string         `json:"parent_id"`
-	AgentID     string         `json:"agent_id"`     // 被委派的 Agent
-	Description string         `json:"description"`
-	Input       string         `json:"input"`        // 子任务输入
-	Output      string         `json:"output"`       // 子任务输出
-	State       TaskState      `json:"state"`
-	Error       string         `json:"error,omitempty"`
-	StartedAt   time.Time      `json:"started_at"`
-	CompletedAt time.Time      `json:"completed_at,omitempty"`
-	Timeout     time.Duration  `json:"timeout"`
+	ID          string        `json:"id"`
+	ParentID    string        `json:"parent_id"`
+	AgentID     string        `json:"agent_id"` // 被委派的 Agent
+	Description string        `json:"description"`
+	Input       string        `json:"input"`  // 子任务输入
+	Output      string        `json:"output"` // 子任务输出
+	State       TaskState     `json:"state"`
+	Error       string        `json:"error,omitempty"`
+	StartedAt   time.Time     `json:"started_at"`
+	CompletedAt time.Time     `json:"completed_at,omitempty"`
+	Timeout     time.Duration `json:"timeout"`
 }
 
 // CollabTask 协作任务（包含多个子任务）
 type CollabTask struct {
 	ID          string            `json:"id"`
-	Mode        CollabMode        `json:"mode"`         // 协作模式
+	Mode        CollabMode        `json:"mode"` // 协作模式
 	Description string            `json:"description"`
 	Input       string            `json:"input"`
 	SubTasks    []*SubTask        `json:"sub_tasks"`
@@ -56,6 +57,7 @@ type DelegateManager struct {
 	tasks    map[string]*CollabTask
 	nextID   int
 	handler  TaskHandler // 子任务执行处理器
+	planner  *Planner
 }
 
 // TaskHandler 子任务执行处理器接口
@@ -76,7 +78,18 @@ func NewDelegateManager(registry *Registry, handler TaskHandler) *DelegateManage
 		registry: registry,
 		tasks:    make(map[string]*CollabTask),
 		handler:  handler,
+		planner:  NewPlanner(nil),
 	}
+}
+
+// SetPlanner replaces the default Dijkstra/Markov planner.
+func (dm *DelegateManager) SetPlanner(planner *Planner) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	if planner == nil {
+		planner = NewPlanner(nil)
+	}
+	dm.planner = planner
 }
 
 // Delegate 创建并执行协作任务
@@ -91,12 +104,15 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 
 	// 创建子任务
 	subTasks := make([]*SubTask, 0, len(agentIDs))
+	agents := make([]*AgentProfile, 0, len(agentIDs))
 	for i, agentID := range agentIDs {
 		// 验证 Agent 存在
-		if _, ok := dm.registry.Get(agentID); !ok {
+		profile, ok := dm.registry.Get(agentID)
+		if !ok {
 			dm.mu.Unlock()
 			return nil, fmt.Errorf("agent %s not found in registry", agentID)
 		}
+		agents = append(agents, profile)
 
 		subID := fmt.Sprintf("%s-sub-%d", taskID, i+1)
 		subTasks = append(subTasks, &SubTask{
@@ -110,6 +126,24 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 		})
 	}
 
+	var plan *PlanResult
+	planner := dm.planner
+	if mode == "" || mode == ModeAuto {
+		if planner == nil {
+			planner = NewPlanner(nil)
+			dm.planner = planner
+		}
+		result := planner.Plan(PlanRequest{
+			Description: description,
+			Input:       input,
+			AgentIDs:    append([]string(nil), agentIDs...),
+			Agents:      agents,
+			Timeout:     timeout,
+		})
+		plan = &result
+		mode = result.Mode
+	}
+
 	task := &CollabTask{
 		ID:          taskID,
 		Mode:        mode,
@@ -120,6 +154,15 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 		CreatedAt:   time.Now(),
 		Timeout:     timeout,
 		Metadata:    make(map[string]string),
+	}
+	if plan != nil {
+		task.Metadata["planner"] = plan.Version
+		task.Metadata["planned_mode"] = string(plan.Mode)
+		task.Metadata["planner_path"] = fmt.Sprint(plan.Path)
+		task.Metadata["planner_weight"] = fmt.Sprintf("%.6f", plan.TotalWeight)
+		if payload, err := json.Marshal(plan); err == nil {
+			task.Metadata["planner_trace"] = string(payload)
+		}
 	}
 
 	dm.tasks[taskID] = task
@@ -228,6 +271,8 @@ func (dm *DelegateManager) CancelTask(taskID string) error {
 
 // executePipeline 串行执行
 func (dm *DelegateManager) executePipeline(ctx context.Context, task *CollabTask) {
+	defer dm.observePlannedOutcome(task)
+
 	dm.mu.Lock()
 	task.State = TaskRunning
 	dm.mu.Unlock()
@@ -273,6 +318,8 @@ func (dm *DelegateManager) executePipeline(ctx context.Context, task *CollabTask
 
 // executeParallel 并行执行
 func (dm *DelegateManager) executeParallel(ctx context.Context, task *CollabTask) {
+	defer dm.observePlannedOutcome(task)
+
 	dm.mu.Lock()
 	task.State = TaskRunning
 	dm.mu.Unlock()
@@ -330,11 +377,13 @@ func (dm *DelegateManager) executeParallel(ctx context.Context, task *CollabTask
 
 // executeDebate 辩论模式 — Agent 轮流发言，最后投票
 func (dm *DelegateManager) executeDebate(ctx context.Context, task *CollabTask) {
+	defer dm.observePlannedOutcome(task)
+
 	dm.mu.Lock()
 	task.State = TaskRunning
 	dm.mu.Unlock()
 
-	rounds := 2 // 默认 2 轮辩论
+	rounds := 2                            // 默认 2 轮辩论
 	positions := make(map[string][]string) // agentID -> positions per round
 	votes := make(map[string]string)       // agentID -> voted position
 
@@ -413,6 +462,24 @@ func (dm *DelegateManager) executeDebate(ctx context.Context, task *CollabTask) 
 	task.Metadata["debate_votes"] = fmt.Sprintf("%d", len(votes))
 	task.CompletedAt = time.Now()
 	dm.mu.Unlock()
+}
+
+func (dm *DelegateManager) observePlannedOutcome(task *CollabTask) {
+	if task == nil {
+		return
+	}
+	dm.mu.RLock()
+	mode := task.Mode
+	state := task.State
+	outcome := stateToOutcome(state)
+	if task.Metadata["partial_failure"] == "true" {
+		outcome = "failure"
+	}
+	planner := dm.planner
+	dm.mu.RUnlock()
+	if planner != nil {
+		planner.ObserveOutcome(mode, outcome)
+	}
 }
 
 // executeSubTask 执行单个子任务
