@@ -546,6 +546,11 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 	if len(results) == 0 {
 		return provider.Message{}
 	}
+	results = filterRecallContextEntries(results)
+	if len(results) == 0 {
+		return provider.Message{}
+	}
+	route.Entries = results
 	results = prioritizeMemoryForContext(results)
 	header := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
 	if vault := p.agent.memoryVaultPath(); vault != "" {
@@ -607,6 +612,28 @@ func typedMemoryFactLines(entries []memory.Entry, limit int) []string {
 		}
 	}
 	return lines
+}
+
+func filterRecallContextEntries(entries []memory.Entry) []memory.Entry {
+	if len(entries) == 0 {
+		return nil
+	}
+	out := make([]memory.Entry, 0, len(entries))
+	for _, e := range entries {
+		if isRawConversationShortMemory(e) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+func isRawConversationShortMemory(e memory.Entry) bool {
+	if e.Tier != memory.TierShort {
+		return false
+	}
+	content := strings.TrimSpace(e.Content)
+	return strings.HasPrefix(content, "User:") || strings.HasPrefix(content, "Assistant:")
 }
 
 func memoryRefHint(e memory.Entry) string {

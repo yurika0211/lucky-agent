@@ -2284,10 +2284,13 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 	return messages
 }
 
-// saveConversationMemory 智能保存对话记忆
-// - 用户消息：推断分类（preference/project/knowledge/conversation）
-// - 助手回复：截断到 150 字，不存完整回复
-// - 重要性：根据内容长度和类型动态调整
+// saveConversationMemory updates volatile conversation memory.
+//
+// Session history already owns the raw turn transcript. ShortTermBuffer keeps a
+// compressible overflow summary for that transcript, while memory.Store should
+// only receive reusable facts/constraints. Storing every raw User/Assistant
+// turn in memory.Store duplicates session history and can make later recall
+// treat ordinary conversation as hard Working Memory.
 func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
 	assistantResponse = utils.SanitizeToolProtocolOutput(assistantResponse)
 	// v0.43.0: 写入 ShortTermBuffer（滑动窗口 + 摘要压缩）
@@ -2296,14 +2299,23 @@ func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
 		a.shortTerm.Add("assistant", utils.Truncate(assistantResponse, 300))
 	}
 
-	// 同时写入旧 Store（兼容，用于长期记忆提升）
 	userCategory := inferCategory(userInput)
-	userImportance := inferImportance(userInput)
-	a.memory.SaveWithTier("User: "+utils.Truncate(userInput, 150), userCategory, memory.TierShort, userImportance)
+	if shouldPersistUserTurnMemory(userCategory, userInput) {
+		userImportance := inferImportance(userInput)
+		a.memory.SaveWithTier(utils.Truncate(userInput, 180), userCategory, memory.TierShort, userImportance)
+	}
+}
 
-	// 助手回复：只存摘要，不存完整内容
-	assistantSummary := utils.Truncate(assistantResponse, 150)
-	a.memory.SaveWithTier("Assistant: "+assistantSummary, "conversation", memory.TierShort, 0.2)
+func shouldPersistUserTurnMemory(category string, input string) bool {
+	if strings.TrimSpace(input) == "" {
+		return false
+	}
+	switch category {
+	case "preference", "project", "identity":
+		return true
+	default:
+		return false
+	}
 }
 
 // inferCategory 从用户输入推断记忆分类
