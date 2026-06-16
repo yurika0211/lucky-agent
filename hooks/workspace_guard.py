@@ -6,8 +6,8 @@ Match this on: file_write, file_patch, file_delete, file_move, file_mkdir,
 shell, terminal.
 
 Allowed roots can be customized with LH_HOOK_ALLOWED_ROOTS using os.pathsep
-separation. By default the repository root and two LuckyHarness temp artifact
-directories are allowed.
+separation. By default only ~/.luckyharness/workspace is allowed. Relative
+paths without an explicit workdir are resolved under that workspace.
 """
 import json
 import os
@@ -16,13 +16,8 @@ import shlex
 import sys
 
 
-HOOK_DIR = os.path.dirname(os.path.abspath(__file__))
-REPO_ROOT = os.path.abspath(os.path.join(HOOK_DIR, os.pardir))
-DEFAULT_ALLOWED_ROOTS = (
-    REPO_ROOT,
-    "/tmp/luckyharness",
-    "/tmp/luckyharness-artifacts",
-)
+DEFAULT_WORKSPACE = os.path.join(os.path.expanduser("~"), ".luckyharness", "workspace")
+DEFAULT_ALLOWED_ROOTS = (DEFAULT_WORKSPACE,)
 
 FILE_TOOLS = {"file_write", "file_patch", "file_delete", "file_move", "file_mkdir"}
 PATH_KEYS = ("path", "dst", "dest", "to", "target", "src", "source")
@@ -44,6 +39,13 @@ def allowed_roots() -> list[str]:
     return [os.path.realpath(os.path.abspath(os.path.expanduser(p))) for p in roots]
 
 
+def default_workspace() -> str:
+    raw = os.environ.get("LH_HOOK_WORKSPACE", "").strip()
+    if raw:
+        return os.path.realpath(os.path.abspath(os.path.expanduser(raw)))
+    return os.path.realpath(os.path.abspath(DEFAULT_WORKSPACE))
+
+
 def normalize_path(path: str, base: str) -> str:
     path = os.path.expanduser(path.strip())
     if not path:
@@ -51,6 +53,16 @@ def normalize_path(path: str, base: str) -> str:
     if not os.path.isabs(path):
         path = os.path.join(base, path)
     return os.path.realpath(os.path.abspath(path))
+
+
+def has_explicit_workdir(args: dict) -> bool:
+    value = args.get("workdir")
+    return isinstance(value, str) and value.strip() != ""
+
+
+def is_relative_path(path: str) -> bool:
+    path = os.path.expanduser(path.strip())
+    return path != "" and not os.path.isabs(path)
 
 
 def is_inside(path: str, roots: list[str]) -> bool:
@@ -69,10 +81,16 @@ def check_path(raw: str, base: str, roots: list[str]) -> None:
 
 
 def check_file_tool(args: dict, roots: list[str]) -> None:
-    base = normalize_path(str(args.get("workdir") or ""), REPO_ROOT) or REPO_ROOT
+    explicit_workdir = has_explicit_workdir(args)
+    base = normalize_path(str(args.get("workdir") or ""), default_workspace()) or default_workspace()
     for key in PATH_KEYS:
         value = args.get(key)
         if isinstance(value, str) and value.strip():
+            if not explicit_workdir and is_relative_path(value):
+                decision_block(
+                    "relative filesystem mutation without explicit workdir is blocked; "
+                    "use an absolute path under ~/.luckyharness/workspace or set workdir to that workspace"
+                )
             check_path(value, base, roots)
 
 
@@ -109,8 +127,14 @@ def check_shell(args: dict, roots: list[str]) -> None:
     command = str(args.get("command") or "")
     if not MUTATING_SHELL.search(command):
         return
-    base = normalize_path(str(args.get("workdir") or ""), REPO_ROOT) or REPO_ROOT
+    explicit_workdir = has_explicit_workdir(args)
+    base = normalize_path(str(args.get("workdir") or ""), default_workspace()) or default_workspace()
     for token in shell_path_tokens(command):
+        if not explicit_workdir and is_relative_path(token):
+            decision_block(
+                "relative shell filesystem mutation without explicit workdir is blocked; "
+                "use an absolute path under ~/.luckyharness/workspace or set workdir to that workspace"
+            )
         check_path(token, base, roots)
 
 

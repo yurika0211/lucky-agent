@@ -88,6 +88,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	timeIntent := hasTimeToolIntent(intentText)
 	calcIntent := hasCalculationIntent(intentText)
 	memoryIntent := hasMemoryIntent(intentText)
+	memoryHygieneIntent := hasMemoryHygieneIntent(intentText)
 	rememberIntent := hasRememberIntent(intentText)
 	ragIndexIntent := hasRAGIndexIntent(intentText)
 	skillIntent := hasSkillIntent(intentText)
@@ -96,7 +97,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	delegateIntent := hasDelegateIntent(intentText)
 
 	strongToolIntent := localIntent || editIntent || webIntent || timeIntent || calcIntent ||
-		memoryIntent || rememberIntent || ragIndexIntent || skillIntent || mediaIntent ||
+		memoryIntent || memoryHygieneIntent || rememberIntent || ragIndexIntent || skillIntent || mediaIntent ||
 		dbIntent || delegateIntent
 	if noToolDirective && !strongToolIntent {
 		return allowed, true
@@ -169,6 +170,9 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	}
 	if memoryIntent {
 		addIntentTools(allowed, "recall", "rag_search")
+	}
+	if memoryHygieneIntent {
+		addIntentTools(allowed, "recall", "memory_hygiene")
 	}
 	if rememberIntent && !intentTextContainsAny(intentText, "不要写入记忆", "不要记住", "不要保存到记忆") {
 		addIntentTools(allowed, "remember")
@@ -324,6 +328,13 @@ func hasMemoryIntent(text string) bool {
 		"查记忆", "查一下记忆", "从记忆", "记忆里", "回忆一下", "检索记忆",
 		"历史上下文", "之前说过", "之前聊过", "之前提到", "我说过",
 		"recall memory", "memory recall", "rag_search", "用 rag 搜索", "用rag搜索",
+	)
+}
+
+func hasMemoryHygieneIntent(text string) bool {
+	return intentTextContainsAny(text,
+		"清洗记忆", "清理记忆", "脏记忆", "脏数据", "记忆污染", "清洗脏记忆",
+		"memory_hygiene", "memory hygiene", "dirty memory", "memory cleanup", "clean memory",
 	)
 }
 

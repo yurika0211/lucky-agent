@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LuckyHarness 部署知识库</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script>
+    window.tailwind = window.tailwind || {};
+    window.tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'Microsoft YaHei', 'sans-serif']
+          },
+          colors: {
+            ink: '#24313d',
+            soft: '#f6f8f7',
+            line: '#d8dfdc',
+            paper: '#ffffff',
+            graph: '#edf3ef',
+            leaf: '#237452',
+            river: '#2d6f93',
+            clay: '#9a5f24',
+            berry: '#9b4262'
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&family=Roboto+Mono:wght@400;500&display=swap');
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+    }
+    html {
+      height: 100%;
+      overflow: hidden;
+      scroll-behavior: smooth;
+    }
+    body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+    }
+    .theme-light {
+      --bg: #f6f4ec;
+      --bg-soft: #f2f0e7;
+      --panel: #f6f4ec;
+      --line: #e2e1d9;
+      --line-strong: #b7b5ac;
+      --text: #1d1d1b;
+      --muted: #6f6e69;
+      --faint: #9a9891;
+      --accent: #24837b;
+      --accent-soft: rgba(36, 131, 123, .12);
+      --warn: #bc5215;
+      --code: #1b1f26;
+      --code-text: #e9efe9;
+    }
+    .theme-dark {
+      --bg: #13141c;
+      --bg-soft: #1a1b26;
+      --panel: #191a27;
+      --line: #2a2c3d;
+      --line-strong: #414868;
+      --text: #c0c8e0;
+      --muted: #8c91aa;
+      --faint: #5d637c;
+      --accent: #3aa99f;
+      --accent-soft: rgba(58, 169, 159, .16);
+      --warn: #da702c;
+      --code: #0f1117;
+      --code-text: #dce6df;
+    }
+    .theme-light,
+    .theme-dark {
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      transition: background .18s ease, color .18s ease;
+    }
+    .site-header {
+      height: 50px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg);
+    }
+    .publish-shell {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      height: calc(100vh - 50px);
+      min-height: calc(100vh - 50px);
+      overflow: hidden;
+    }
+    .content-column {
+      border-right: 1px solid var(--line);
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: 34px 48px 72px;
+      scrollbar-gutter: stable;
+    }
+    .article-column {
+      border-right: 1px solid var(--line);
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: 34px 48px 72px;
+      scrollbar-gutter: stable;
+    }
+    .right-column {
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: 32px 24px;
+      scrollbar-gutter: stable;
+    }
+    .content-column::-webkit-scrollbar,
+    .article-column::-webkit-scrollbar,
+    .right-column::-webkit-scrollbar {
+      width: 12px;
+    }
+    .content-column::-webkit-scrollbar-track,
+    .article-column::-webkit-scrollbar-track,
+    .right-column::-webkit-scrollbar-track {
+      background: var(--bg);
+      border-left: 1px solid var(--line);
+    }
+    .content-column::-webkit-scrollbar-thumb,
+    .article-column::-webkit-scrollbar-thumb,
+    .right-column::-webkit-scrollbar-thumb {
+      min-height: 48px;
+      border: 3px solid var(--bg);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--muted) 58%, transparent);
+    }
+    .content-column::-webkit-scrollbar-thumb:hover,
+    .article-column::-webkit-scrollbar-thumb:hover,
+    .right-column::-webkit-scrollbar-thumb:hover {
+      background: color-mix(in srgb, var(--muted) 72%, transparent);
+    }
+    .brand-mark {
+      width: 28px;
+      height: 28px;
+    }
+    .markdown-page h1 {
+      margin: 0 0 42px;
+      font-size: clamp(34px, 5vw, 42px);
+      font-weight: 400;
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    .markdown-page h2 {
+      margin: 38px 0 14px;
+      font-size: 25px;
+      font-weight: 400;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+    .markdown-page p {
+      margin: 0 0 18px;
+      max-width: 620px;
+      font-size: 17px;
+      line-height: 1.5;
+    }
+    .markdown-page a,
+    .link-button {
+      color: var(--text);
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 2px;
+    }
+    .publish-rule {
+      margin: 36px 0 32px;
+      border: 0;
+      border-top: 1px solid var(--line);
+    }
+    .entry-card {
+      min-height: 112px;
+      border: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 86%, white 14%);
+      border-radius: 4px;
+      padding: 12px 14px;
+      text-align: left;
+      transition: border-color .15s ease, background .15s ease;
+    }
+    .entry-card:hover {
+      border-color: var(--line-strong);
+      background: var(--bg-soft);
+    }
+    .note-section {
+      scroll-margin-top: 74px;
+    }
+    .note-kicker {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .note-list li {
+      margin: 8px 0;
+      padding-left: 2px;
+      color: var(--text);
+      line-height: 1.55;
+    }
+    .note-list li::marker {
+      color: var(--faint);
+    }
+    .publish-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 16px;
+    }
+    .publish-table th,
+    .publish-table td {
+      border: 1px solid var(--line);
+      padding: 6px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .publish-table th {
+      font-weight: 600;
+    }
+    .sidebar-title {
+      color: var(--muted);
+      font-size: 15px;
+      font-weight: 400;
+    }
+    .search-input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: transparent;
+      padding: 8px 10px 8px 34px;
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+    }
+    .search-input:focus {
+      border-color: var(--line-strong);
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+    .graph-box {
+      position: relative;
+      height: 292px;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: color-mix(in srgb, var(--bg) 92%, var(--accent) 8%);
+    }
+    .mini-node {
+      position: absolute;
+      z-index: 2;
+      display: flex;
+      max-width: 92px;
+      align-items: center;
+      gap: 4px;
+      border: 0;
+      background: transparent;
+      color: var(--text);
+      font-size: 9.5px;
+      line-height: 1.05;
+      text-align: left;
+      transform: translate(-50%, -50%);
+      cursor: pointer;
+    }
+    .mini-node-label {
+      max-width: 74px;
+      overflow: hidden;
+      text-overflow: clip;
+    }
+    .mini-node-dot {
+      width: 9px;
+      height: 9px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg) 76%, transparent);
+    }
+    .mini-node.active .mini-node-dot {
+      width: 17px;
+      height: 17px;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    .mini-node.active {
+      z-index: 3;
+      font-size: 10.5px;
+      font-weight: 600;
+    }
+    .terminal {
+      margin-top: 14px;
+      border-radius: 4px;
+      background: var(--code);
+      color: var(--code-text);
+      font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    .terminal pre {
+      margin: 0;
+      overflow-x: auto;
+      padding: 14px 16px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+    .terminal code { white-space: pre-wrap; word-break: break-word; }
+    .copy-button {
+      border: 1px solid color-mix(in srgb, var(--code-text) 18%, transparent);
+      border-radius: 4px;
+      padding: 4px 8px;
+      color: var(--code-text);
+      font-size: 12px;
+    }
+    .tag-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border-radius: 4px;
+      background: var(--bg-soft);
+      padding: 2px 6px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .toast {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      z-index: 50;
+      transform: translateX(-50%);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: var(--text);
+      color: var(--bg);
+      padding: 8px 14px;
+      font-size: 13px;
+    }
+    @media (max-width: 1180px) {
+      .publish-shell { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .content-column,
+      .article-column {
+        padding-left: 36px;
+        padding-right: 36px;
+      }
+      .right-column {
+        padding-left: 22px;
+        padding-right: 22px;
+      }
+    }
+    @media (max-width: 900px) {
+      .publish-shell {
+        display: block;
+        height: auto;
+        overflow: visible;
+      }
+      html,
+      body {
+        height: auto;
+        overflow: auto;
+      }
+      .content-column {
+        height: auto;
+        overflow: visible;
+        border-right: 0;
+        padding: 26px 22px 34px;
+      }
+      .article-column {
+        height: auto;
+        overflow: visible;
+        border-top: 1px solid var(--line);
+        border-right: 0;
+        padding: 28px 22px 34px;
+      }
+      .right-column {
+        height: auto;
+        border-top: 1px solid var(--line);
+        padding: 24px 22px 42px;
+      }
+      .site-header { height: auto; }
+      .markdown-page h1 {
+        margin-bottom: 32px;
+        font-size: 33px;
+      }
+      .markdown-page h2 {
+        margin-top: 32px;
+        font-size: 23px;
+      }
+      .markdown-page p {
+        font-size: 16px;
+        line-height: 1.55;
+      }
+      .publish-rule {
+        margin: 30px 0 28px;
+      }
+      .entry-card {
+        min-height: 96px;
+        padding: 12px 14px;
+      }
+      .graph-box {
+        height: 260px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div x-data="deploymentVault()" x-init="init()" :class="dark ? 'theme-dark' : 'theme-light'">
+    <header class="site-header flex items-center justify-between px-5">
+      <a href="#home" @click.prevent="goHome()" class="flex items-center gap-4 text-sm font-semibold no-underline" style="color: var(--text);">
+        <svg class="brand-mark" viewBox="0 0 34 34" fill="none" aria-hidden="true">
+          <path d="M4 28L14 5L30 28H4Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"></path>
+          <path d="M14 5V28" stroke="currentColor" stroke-width="2.2"></path>
+          <path d="M14 19L25 28" stroke="currentColor" stroke-width="2.2"></path>
+        </svg>
+        <span>LuckyHarness Deploy Vault</span>
+      </a>
+      <div class="flex items-center gap-2">
+        <button type="button" @click="focusGraph()" class="grid h-8 w-8 place-items-center rounded border" style="border-color: var(--line); background: var(--panel); color: var(--text);" title="Interactive Graph">
+          <i data-lucide="network" class="h-4 w-4"></i>
+        </button>
+        <button type="button" @click="dark = !dark; $nextTick(() => refreshIcons())" class="grid h-8 w-8 place-items-center rounded border" style="border-color: var(--line); background: var(--panel); color: var(--text);" title="切换主题">
+          <i data-lucide="moon" class="h-4 w-4"></i>
+        </button>
+      </div>
+    </header>
+
+    <div class="publish-shell">
+      <main id="home" x-ref="homeColumn" class="content-column markdown-page">
+        <article>
+          <h1>Home</h1>
+          <p>
+            LuckyHarness 是一套围绕 Agent 运行时构建的部署知识库。这里把 README 里的配置、源码运行、Docker、NapCat、Telegram、OpenCLI 和运维排查拆成可跳转的笔记节点。
+          </p>
+          <p>
+            这个页面不是线性教程，而是一个可浏览的部署 vault。你可以从任意节点进入：先看总览，再沿着 graph、入口卡片、表格或 backlinks 找到下一步。
+          </p>
+
+          <hr class="publish-rule" />
+
+          <div class="grid gap-8 sm:grid-cols-3">
+            <template x-for="card in entryCards()" :key="card.id">
+              <button type="button" @click="jump(card.id)" class="entry-card">
+                <span class="block text-[16px] font-semibold underline underline-offset-2" x-text="card.title"></span>
+                <span class="mx-auto mt-2 block max-w-[150px] text-center text-sm leading-5" style="color: var(--muted);" x-text="card.description"></span>
+              </button>
+            </template>
+          </div>
+
+          <hr class="publish-rule" />
+
+          <h2 id="recent">部署入口</h2>
+          <table class="publish-table">
+            <thead>
+              <tr>
+                <th>节点</th>
+                <th>位置</th>
+              </tr>
+            </thead>
+            <tbody>
+              <template x-for="item in recentRows()" :key="item.id">
+                <tr :style="active === item.id ? 'background: var(--accent-soft);' : ''">
+                  <td>
+                    <button type="button" @click="jump(item.id)" class="link-button text-left" x-text="node(item.id).title"></button>
+                  </td>
+                  <td x-text="item.label"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+
+        </article>
+      </main>
+
+      <section x-ref="articleColumn" class="article-column markdown-page">
+        <article :id="'note-' + active" class="note-section">
+          <div id="article-top" class="note-kicker mb-3" x-text="current().group"></div>
+          <h1 x-text="current().title"></h1>
+          <p x-text="current().summary"></p>
+
+          <div class="mt-5">
+            <span class="tag-pill">
+              <i data-lucide="file-text" class="h-3.5 w-3.5"></i>
+              <span x-text="'#' + current().id"></span>
+            </span>
+          </div>
+
+          <hr class="publish-rule" />
+
+          <h2 id="article-points">要点</h2>
+          <ul class="note-list list-disc pl-6">
+            <template x-for="point in current().points" :key="point">
+              <li x-text="point"></li>
+            </template>
+          </ul>
+
+          <h2 id="article-links">链接到</h2>
+          <p class="flex flex-wrap gap-x-3 gap-y-2">
+            <template x-for="rel in current().related" :key="rel">
+              <a :href="'#note-' + rel" @click.prevent="jump(rel)" x-text="node(rel).title"></a>
+            </template>
+          </p>
+
+          <template x-if="current().commands && current().commands.length">
+            <div>
+              <h2 id="article-commands">命令</h2>
+              <template x-for="cmd in current().commands" :key="cmd.label">
+                <div class="terminal">
+                  <div class="flex items-center justify-between border-b px-4 py-2 text-xs" style="border-color: rgba(255,255,255,.12); color: var(--code-text);">
+                    <span x-text="cmd.label"></span>
+                    <button type="button" @click="copyText(cmd.body)" class="copy-button">复制</button>
+                  </div>
+                  <pre><code x-text="cmd.body"></code></pre>
+                </div>
+              </template>
+            </div>
+          </template>
+        </article>
+      </section>
+
+      <aside class="right-column">
+        <div class="relative">
+          <i data-lucide="search" class="pointer-events-none absolute left-3 top-2.5 h-4 w-4" style="color: var(--faint);"></i>
+          <input id="page-search" name="page-search" x-model="query" class="search-input" type="search" placeholder="Search page or heading..." />
+        </div>
+        <template x-if="query.trim()">
+          <section class="mt-4">
+            <div class="mb-2 text-xs uppercase tracking-wide" style="color: var(--faint);">Search results</div>
+            <div class="space-y-2">
+              <template x-for="item in visibleNotes()" :key="item.id">
+                <button type="button" @click="jump(item.id)" class="block w-full text-left text-sm" style="color: var(--muted);" x-text="item.title"></button>
+              </template>
+              <template x-if="visibleNotes().length === 0">
+                <p class="text-sm" style="color: var(--muted);">没有匹配节点</p>
+              </template>
+            </div>
+          </section>
+        </template>
+
+        <section id="interactive-graph" class="mt-9">
+          <div class="mb-2 flex items-center justify-between">
+            <div class="sidebar-title uppercase tracking-wide">Interactive Graph</div>
+            <div class="flex gap-2">
+              <button type="button" @click="copyNoteLink(active)" title="复制当前节点">
+                <i data-lucide="share-2" class="h-4 w-4"></i>
+              </button>
+              <button type="button" @click="jump(active)" title="打开当前节点">
+                <i data-lucide="arrow-up-right" class="h-4 w-4"></i>
+              </button>
+            </div>
+          </div>
+          <!-- 交互: 点击 graph 中的节点会跳到对应 note，并高亮当前节点相关边 -->
+          <div class="graph-box">
+            <svg class="graph-lines pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" x-html="localEdgeSvg()"></svg>
+            <template x-for="graphNode in localGraphNodes()" :key="graphNode.id">
+              <button type="button" @click="jump(graphNode.id)" class="mini-node" :class="active === graphNode.id ? 'active' : ''" :style="`left:${graphNode.x}%; top:${graphNode.y}%`">
+                <span class="mini-node-dot"></span>
+                <span class="mini-node-label" x-text="graphNode.title"></span>
+              </button>
+            </template>
+          </div>
+        </section>
+
+        <section class="mt-11">
+          <h2 class="sidebar-title mb-4">On this page</h2>
+          <div class="space-y-2">
+            <template x-for="item in articleSections()" :key="item.id">
+              <button type="button" @click="scrollArticleSection(item.id)" class="block w-full text-left text-sm" :style="item.id === 'article-top' ? 'color: var(--text); font-weight: 600;' : 'color: var(--muted);'" x-text="item.title"></button>
+            </template>
+          </div>
+        </section>
+
+        <section class="mt-11">
+          <h2 class="sidebar-title mb-4">Backlinks</h2>
+          <div class="space-y-2">
+            <template x-for="item in backlinks(active)" :key="item.id">
+              <button type="button" @click="jump(item.id)" class="flex w-full items-center justify-between gap-3 text-left text-sm" style="color: var(--muted);">
+                <span x-text="item.title"></span>
+                <i data-lucide="corner-down-right" class="h-3.5 w-3.5"></i>
+              </button>
+            </template>
+            <template x-if="backlinks(active).length === 0">
+              <p class="text-sm" style="color: var(--muted);">没有入链节点</p>
+            </template>
+          </div>
+        </section>
+
+        <section class="mt-11">
+          <h2 class="sidebar-title mb-4">Current note</h2>
+          <p class="text-sm leading-6" style="color: var(--muted);" x-text="current().summary"></p>
+        </section>
+
+        <footer class="mt-24 text-right text-xs" style="color: var(--faint);">
+          © LuckyHarness
+        </footer>
+      </aside>
+    </div>
+
+    <div x-show="copied" x-transition class="toast">已复制</div>
+  </div>
+
+  <script>
+    function deploymentVault() {
+      return {
+        active: 'overview',
+        query: '',
+        copied: false,
+        dark: false,
+        edges: [
+          ['overview', 'config'],
+          ['overview', 'runtime'],
+          ['config', 'source'],
+          ['config', 'dev-docker'],
+          ['config', 'prod-docker'],
+          ['runtime', 'api'],
+          ['runtime', 'opencli'],
+          ['source', 'api'],
+          ['dev-docker', 'api'],
+          ['prod-docker', 'api'],
+          ['image-run', 'api'],
+          ['api', 'telegram'],
+          ['api', 'qqofficial'],
+          ['api', 'napcat'],
+          ['api', 'weixin'],
+          ['napcat', 'systemd'],
+          ['telegram', 'ops'],
+          ['qqofficial', 'ops'],
+          ['napcat', 'ops'],
+          ['weixin', 'ops'],
+          ['ops', 'troubleshooting'],
+          ['troubleshooting', 'commands'],
+          ['opencli', 'commands']
+        ],
+        notes: [
+          {
+            id: 'overview',
+            title: '部署总览',
+            short: '三条主路径和统一运行时',
+            group: '00 Overview',
+            icon: 'map',
+            kind: 'core',
+            x: 50,
+            y: 12,
+            summary: 'LuckyHarness 的部署主线是 Config First：所有入口围绕同一份 HOME、config.json、SOUL、记忆、RAG 和消息网关运行。',
+            points: [
+              '核心入口包括 lh chat、lh serve、lh msg-gateway start。',
+              '部署路径包括源码运行、开发 Compose、生产 Compose 和镜像直跑。',
+              '服务健康检查固定为 GET /api/v1/health。',
+              '运行时行为尽量以 config.json 为准，环境变量只做局部覆盖。'
+            ],
+            related: ['config', 'runtime', 'source', 'dev-docker', 'prod-docker'],
+            commands: [
+              { label: '最短验证链路', body: 'lh init\nlh config set provider openai\nlh config set api_key sk-your-api-key\nlh config set model gpt-5.4-mini\nlh chat "Hello"\nlh serve\ncurl http://127.0.0.1:9090/api/v1/health' }
+            ]
+          },
+          {
+            id: 'config',
+            title: 'config.json',
+            short: '所有部署方式的中心',
+            group: '10 Runtime',
+            icon: 'file-cog',
+            kind: 'core',
+            x: 30,
+            y: 28,
+            summary: '默认配置路径是 ${HOME}/.luckyharness/config.json。本机和容器都必须先确认 HOME 指向哪里。',
+            points: [
+              '本机默认读取当前用户 HOME 下的 .luckyharness/config.json。',
+              'Docker 中推荐 HOME=/var/lib/luckyharness。',
+              'provider、api_key、api_base、model 是最小可用配置。',
+              '消息网关配置集中在 msg_gateway。'
+            ],
+            related: ['runtime', 'source', 'dev-docker', 'prod-docker', 'napcat'],
+            commands: [
+              { label: '初始化和配置', body: 'lh init\nlh config set provider openai\nlh config set api_key sk-your-api-key\nlh config set api_base https://api.openai.com/v1\nlh config set model gpt-5.4-mini\nlh config list' }
+            ]
+          },
+          {
+            id: 'runtime',
+            title: '运行目录 HOME',
+            short: 'sessions / memory / rag / workspace',
+            group: '10 Runtime',
+            icon: 'folder-cog',
+            kind: 'core',
+            x: 70,
+            y: 28,
+            summary: 'HOME 决定 LuckyHarness 读取配置、写入会话、记忆、RAG、runtime 数据的位置。Docker 和 systemd 必须显式固定。',
+            points: [
+              '源码开发可用 HOME="$PWD/.lh-home" 隔离运行数据。',
+              '容器内 HOME 通常设为 /var/lib/luckyharness。',
+              '初始化后会生成 sessions、memory、logs、rag、workspace、runtime 等目录。',
+              '如果 HOME 错了，程序会读取另一份 config.json。'
+            ],
+            related: ['config', 'source', 'dev-docker', 'prod-docker', 'systemd'],
+            commands: [
+              { label: '本地隔离运行', body: 'mkdir -p .lh-home\nHOME="$PWD/.lh-home" lh init\nHOME="$PWD/.lh-home" lh serve --addr 127.0.0.1:9090' }
+            ]
+          },
+          {
+            id: 'source',
+            title: '源码运行部署',
+            short: '开发和排查首选',
+            group: '20 Deploy',
+            icon: 'code-2',
+            kind: 'deploy',
+            x: 16,
+            y: 48,
+            summary: '源码运行适合开发功能、验证 prompt/tool/agent loop，也适合排查真实运行路径。',
+            points: [
+              '需要 Go 1.25+。',
+              '先 lh init，再设置模型配置。',
+              '可以通过 LH_OPENCLI_* 覆盖网页读取工具配置。',
+              '本地排查建议隔离 HOME，方便复现和清理。'
+            ],
+            related: ['config', 'runtime', 'api', 'opencli'],
+            commands: [
+              { label: '源码启动 API', body: 'go run ./cmd/lh init\nexport LH_OPENCLI_ENABLED=true\nexport LH_OPENCLI_COMMAND=opencli\nexport LH_OPENCLI_ARGS="web,read,--url,{url},--stdout,true,--download-images,false,-f,md"\ngo run ./cmd/lh serve --addr 127.0.0.1:9090' },
+              { label: '源码启动网关', body: 'go run ./cmd/lh msg-gateway start --platform telegram\ngo run ./cmd/lh msg-gateway start --platform napcat\ngo run ./cmd/lh msg-gateway start --platform qqofficial' }
+            ]
+          },
+          {
+            id: 'dev-docker',
+            title: '开发 Compose',
+            short: '本地源码构建',
+            group: '20 Deploy',
+            icon: 'container',
+            kind: 'deploy',
+            x: 34,
+            y: 62,
+            summary: '开发 Compose 从当前仓库 Dockerfile 构建 luckyharness:dev，并把 ./config.json 挂载进容器运行目录。',
+            points: [
+              '使用 docker-compose.yml。',
+              '宿主机 ./config.json 会挂载到容器 HOME 的 .luckyharness/config.json。',
+              'named volume lh-home 持久化整个 HOME。',
+              '如果需要外部访问 API，server.addr 应配置成 0.0.0.0:9090。'
+            ],
+            related: ['config', 'runtime', 'api', 'napcat'],
+            commands: [
+              { label: '开发 Compose 启动', body: 'go run ./cmd/lh init\ncp ~/.luckyharness/config.json ./config.json\n# 编辑 ./config.json\ndocker compose up -d luckyharness\ndocker compose logs -f luckyharness' },
+              { label: '同时启动 API 和 NapCat', body: 'docker compose up -d --build luckyharness luckyharness-napcat\ndocker compose logs -f luckyharness-napcat' }
+            ]
+          },
+          {
+            id: 'prod-docker',
+            title: '生产 Compose',
+            short: '预构建镜像和 profile',
+            group: '20 Deploy',
+            icon: 'cloud',
+            kind: 'deploy',
+            x: 66,
+            y: 62,
+            summary: '生产 Compose 使用 ghcr.io/yurika0211/luckyharness:latest，通过 profile 控制 Telegram 或 NapCat 网关是否启动。',
+            points: [
+              '使用 docker-compose.prod.yml。',
+              '宿主机 config.json 以只读方式挂载。',
+              '可以通过 LH_IMAGE、LH_PORT、LH_NAPCAT_PORT 覆盖镜像和端口。',
+              '生产环境建议用防火墙和 allowed_* 限制入口。'
+            ],
+            related: ['config', 'runtime', 'api', 'ops'],
+            commands: [
+              { label: '生产 API', body: 'cp config.example.json config.json\n# 编辑 config.json\ndocker compose -f docker-compose.prod.yml up -d luckyharness' },
+              { label: '生产 NapCat profile', body: 'export LH_IMAGE=ghcr.io/yurika0211/luckyharness:latest\nexport LH_NAPCAT_PORT=6701\ndocker compose -f docker-compose.prod.yml --profile napcat up -d\ndocker compose -f docker-compose.prod.yml logs -f luckyharness-napcat' }
+            ]
+          },
+          {
+            id: 'image-run',
+            title: '镜像直跑',
+            short: '不用 Compose 的单容器',
+            group: '20 Deploy',
+            icon: 'box',
+            kind: 'deploy',
+            x: 84,
+            y: 48,
+            summary: '镜像直跑适合最小容器部署。关键是明确 command、HOME 和 config.json 挂载路径。',
+            points: [
+              '可以 docker build -t luckyharness:local .',
+              '必须设置 HOME=/var/lib/luckyharness。',
+              '必须把配置挂到 /var/lib/luckyharness/.luckyharness/config.json。',
+              '运行 NapCat 时要映射 6701 并监听 0.0.0.0:6701。'
+            ],
+            related: ['config', 'runtime', 'api', 'napcat'],
+            commands: [
+              { label: 'docker run API', body: 'docker build -t luckyharness:local .\ndocker run -d \\\n  --name luckyharness \\\n  -p 9090:9090 \\\n  -e HOME=/var/lib/luckyharness \\\n  -v "$PWD/config.json:/var/lib/luckyharness/.luckyharness/config.json:ro" \\\n  luckyharness:local serve' },
+              { label: 'docker run NapCat 网关', body: 'docker run -d \\\n  --name luckyharness-napcat \\\n  -p 6701:6701 \\\n  -e HOME=/var/lib/luckyharness \\\n  -v "$PWD/config.json:/var/lib/luckyharness/.luckyharness/config.json:ro" \\\n  luckyharness:local \\\n  msg-gateway start --platform napcat --napcat-listen 0.0.0.0:6701' }
+            ]
+          },
+          {
+            id: 'api',
+            title: 'HTTP API',
+            short: 'serve 和健康检查',
+            group: '30 Services',
+            icon: 'server',
+            kind: 'core',
+            x: 50,
+            y: 48,
+            summary: 'lh serve 启动 HTTP API 服务。部署是否成功，先看 /api/v1/health。',
+            points: [
+              '本机调试可监听 127.0.0.1:9090。',
+              '容器或外部访问通常要监听 0.0.0.0:9090。',
+              'Docker healthcheck 走容器内部 http://127.0.0.1:9090/api/v1/health。',
+              'Bot 已启动但外部访问不到 API 时，优先检查 server.addr。'
+            ],
+            related: ['source', 'dev-docker', 'prod-docker', 'telegram', 'napcat'],
+            commands: [
+              { label: '启动和验证', body: 'lh serve --addr 127.0.0.1:9090\ncurl http://127.0.0.1:9090/api/v1/health' }
+            ]
+          },
+          {
+            id: 'opencli',
+            title: 'OpenCLI',
+            short: '统一网页读取入口',
+            group: '30 Services',
+            icon: 'globe-2',
+            kind: 'service',
+            x: 50,
+            y: 76,
+            summary: 'OpenCLI 是网页内容抽取链的一部分。源码运行可以用 LH_OPENCLI_* 环境变量覆盖配置。',
+            points: [
+              'opencli.enabled 控制是否启用。',
+              '默认模板是 web read --url {url} --stdout true --download-images false -f md。',
+              'OpenCLI 失败后可回退到 web_fetch。',
+              '不要把 bash/sh 当成 opencli 子命令。'
+            ],
+            related: ['source', 'commands', 'troubleshooting'],
+            commands: [
+              { label: '环境变量覆盖', body: 'export LH_OPENCLI_ENABLED=true\nexport LH_OPENCLI_COMMAND=opencli\nexport LH_OPENCLI_ARGS="web,read,--url,{url},--stdout,true,--download-images,false,-f,md"\nexport LH_OPENCLI_TIMEOUT_SECONDS=20\nexport LH_OPENCLI_MAX_CHARS=50000\nexport LH_OPENCLI_FALLBACK_TO_WEB_FETCH=true' }
+            ]
+          },
+          {
+            id: 'telegram',
+            title: 'Telegram 网关',
+            short: 'Bot API 长轮询',
+            group: '40 Gateways',
+            icon: 'send',
+            kind: 'gateway',
+            x: 25,
+            y: 84,
+            summary: 'Telegram 网关适合个人或团队聊天入口。注意同一个 token 不能被多个进程同时轮询。',
+            points: [
+              '需要 msg_gateway.telegram.token。',
+              '代理不可达会出现 proxyconnect tcp connection refused。',
+              'Conflict terminated by other getUpdates request 表示另一个进程正在用同一 token。',
+              '进度展示可通过 progress_* 配置控制。'
+            ],
+            related: ['api', 'ops', 'troubleshooting'],
+            commands: [
+              { label: '启动 Telegram', body: 'lh config set msg_gateway.telegram.token your-bot-token\nlh msg-gateway start --platform telegram' }
+            ]
+          },
+          {
+            id: 'qqofficial',
+            title: 'QQ 官方机器人',
+            short: 'AppID / AppSecret',
+            group: '40 Gateways',
+            icon: 'badge-check',
+            kind: 'gateway',
+            x: 40,
+            y: 90,
+            summary: 'QQ 官方机器人网关使用官方 AppID / AppSecret。sandbox 要和机器人环境一致。',
+            points: [
+              '需要 msg_gateway.qqofficial.app_id 和 app_secret。',
+              '可通过 --qq-appid 和 --qq-appsecret 临时覆盖启动。',
+              '生产建议配置 allowed_chats 或 allowed_users。',
+              '内置 /help、/status、/tools、/session 等命令。'
+            ],
+            related: ['api', 'ops', 'commands'],
+            commands: [
+              { label: '启动 QQ 官方机器人', body: 'lh config set msg_gateway.qqofficial.app_id your-app-id\nlh config set msg_gateway.qqofficial.app_secret your-app-secret\nlh msg-gateway start --platform qqofficial' },
+              { label: '临时覆盖凭证', body: 'lh msg-gateway start --platform qqofficial \\\n  --qq-appid your-app-id \\\n  --qq-appsecret your-app-secret \\\n  --qq-sandbox' }
+            ]
+          },
+          {
+            id: 'napcat',
+            title: 'NapCat QQ',
+            short: 'OneBot v11 反向 WS',
+            group: '40 Gateways',
+            icon: 'plug-zap',
+            kind: 'gateway',
+            x: 60,
+            y: 90,
+            summary: 'NapCat 模式由 LuckyHarness 监听 WebSocket，NapCat 作为客户端主动连接。',
+            points: [
+              '默认监听 ws://127.0.0.1:6701/onebot/v11/ws。',
+              '跨机器部署不要使用 127.0.0.1，要换成 LuckyHarness 所在机器 IP 或域名。',
+              '设置 access_token 后，NapCat URL 要带同一个 token。',
+              '群聊默认 mention 模式，只响应 @bot 或回复 bot。'
+            ],
+            related: ['api', 'systemd', 'ops', 'troubleshooting'],
+            commands: [
+              { label: '配置 NapCat', body: 'lh config set msg_gateway.platform napcat\nlh config set msg_gateway.napcat.listen_addr 0.0.0.0:6701\nlh config set msg_gateway.napcat.path /onebot/v11/ws\nlh config set msg_gateway.napcat.access_token your-strong-token\nlh config set msg_gateway.napcat.group_trigger_mode mention' },
+              { label: 'NapCat 连接 URL', body: 'ws://127.0.0.1:6701/onebot/v11/ws?access_token=your-strong-token\nws://192.168.1.10:6701/onebot/v11/ws?access_token=your-strong-token\nws://luckyharness-napcat:6701/onebot/v11/ws' }
+            ]
+          },
+          {
+            id: 'weixin',
+            title: 'Weixin 网关',
+            short: 'iLink Bot API',
+            group: '40 Gateways',
+            icon: 'message-circle',
+            kind: 'gateway',
+            x: 75,
+            y: 84,
+            summary: 'Weixin 网关用于个人微信消息接入。默认私聊 open，群聊 disabled。',
+            points: [
+              '需要 msg_gateway.weixin.token 和 account_id。',
+              'base_url 默认是 https://ilinkai.weixin.qq.com。',
+              'dm_policy 和 group_policy 控制私聊和群聊入口。',
+              'allowed_users 和 group_allowed_users 用于 allowlist。'
+            ],
+            related: ['api', 'ops', 'commands'],
+            commands: [
+              { label: '启动 Weixin', body: 'lh config set msg_gateway.weixin.token your-token\nlh config set msg_gateway.weixin.account_id your-account-id\nlh msg-gateway start --platform weixin' }
+            ]
+          },
+          {
+            id: 'systemd',
+            title: 'systemd 托管',
+            short: '非 Docker 长期运行',
+            group: '50 Ops',
+            icon: 'cpu',
+            kind: 'ops',
+            x: 80,
+            y: 70,
+            summary: '不用 Docker 时，可以用 systemd 托管 luckyharness 二进制，适合长期运行 NapCat 网关。',
+            points: [
+              'Service 中显式设置 HOME=/var/lib/luckyharness。',
+              'WorkingDirectory 指向部署目录。',
+              'ExecStart 写完整命令。',
+              '使用 Restart=always 和 RestartSec=5。'
+            ],
+            related: ['runtime', 'napcat', 'ops'],
+            commands: [
+              { label: 'systemd 单元示例', body: '[Unit]\nDescription=LuckyHarness NapCat Gateway\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=luckyharness\nWorkingDirectory=/opt/luckyharness\nEnvironment=HOME=/var/lib/luckyharness\nExecStart=/usr/local/bin/luckyharness msg-gateway start --platform napcat --napcat-listen 0.0.0.0:6701\nRestart=always\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target' },
+              { label: '启用服务', body: 'sudo systemctl daemon-reload\nsudo systemctl enable --now luckyharness-napcat\nsudo journalctl -u luckyharness-napcat -f' }
+            ]
+          },
+          {
+            id: 'ops',
+            title: '上线检查',
+            short: 'HOME、端口、token、白名单',
+            group: '50 Ops',
+            icon: 'list-checks',
+            kind: 'ops',
+            x: 50,
+            y: 96,
+            summary: '上线前优先检查 HOME、config.json、server.addr、网关凭证、端口暴露和白名单。',
+            points: [
+              '容器内最终可读到 ${HOME}/.luckyharness/config.json。',
+              '外部访问 API 时 server.addr 不能只绑定 127.0.0.1。',
+              'NapCat 跨机器连接时 URL 使用局域网 IP 或域名。',
+              '生产部署建议设置 access_token、allowed_chats、allowed_users。'
+            ],
+            related: ['troubleshooting', 'commands', 'telegram', 'napcat'],
+            commands: [
+              { label: '常用检查命令', body: 'lh config list\ncurl http://127.0.0.1:9090/api/v1/health\ndocker compose logs -f luckyharness\ndocker compose logs -f luckyharness-napcat' }
+            ]
+          },
+          {
+            id: 'troubleshooting',
+            title: '故障排查',
+            short: 'README 常见问题',
+            group: '50 Ops',
+            icon: 'wrench',
+            kind: 'ops',
+            x: 18,
+            y: 70,
+            summary: '大多数部署问题来自 HOME 指错、server.addr 绑定错误、网关 token 冲突或 NapCat 连接地址不可达。',
+            points: [
+              '容器启动只打印帮助：确认 command 是否执行 serve。',
+              'Telegram conflict：另一个进程正在轮询同一个 token。',
+              'NapCat 没有 connected 日志：检查 IP、端口、路径、防火墙。',
+              '群聊没反应：确认 group_trigger_mode 和 @bot 上报。'
+            ],
+            related: ['ops', 'telegram', 'napcat', 'api'],
+            commands: [
+              { label: 'NapCat 排查', body: 'lh config get msg_gateway.napcat.listen_addr\nlh config get msg_gateway.napcat.path\nlh msg-gateway start --platform napcat --napcat-listen 0.0.0.0:6701\n# NapCat URL: ws://<lh-host>:6701/onebot/v11/ws' }
+            ]
+          },
+          {
+            id: 'commands',
+            title: '命令索引',
+            short: 'README 常用命令',
+            group: '60 Index',
+            icon: 'terminal-square',
+            kind: 'ops',
+            x: 8,
+            y: 30,
+            summary: 'README 的常用命令可以作为部署验证顺序，从初始化、配置、聊天、API 到网关启动。',
+            points: [
+              'lh init 初始化运行目录。',
+              'lh config list/get/set 管理配置。',
+              'lh chat 验证模型链路。',
+              'lh serve 和 lh msg-gateway start 启动运行入口。'
+            ],
+            related: ['overview', 'source', 'api', 'telegram', 'napcat'],
+            commands: [
+              { label: '常用命令', body: 'lh init\nlh config list\nlh config get provider\nlh config set model gpt-5.4-mini\nlh chat\nlh chat "Summarize this repository"\nlh serve\nlh msg-gateway start --platform telegram\nlh msg-gateway start --platform qqofficial\nlh msg-gateway start --platform napcat\nlh rag index ./docs\nlh rag search "deployment"' }
+            ]
+          }
+        ],
+        init() {
+          const id = this.idFromHash();
+          if (id && this.node(id).id) {
+            this.active = id;
+          }
+          this.$nextTick(() => {
+            this.refreshIcons();
+            if (id) this.scrollTo(id, false);
+          });
+          window.addEventListener('hashchange', () => {
+            const next = this.idFromHash();
+            if (next && this.node(next).id) {
+              this.active = next;
+              this.$nextTick(() => this.scrollTo(next, false));
+            }
+          });
+        },
+        refreshIcons() {
+          if (window.lucide) window.lucide.createIcons();
+        },
+        idFromHash() {
+          return decodeURIComponent(window.location.hash.replace(/^#note-/, '').replace(/^#/, ''));
+        },
+        node(id) {
+          return this.notes.find((note) => note.id === id) || {};
+        },
+        current() {
+          return this.node(this.active) || this.notes[0];
+        },
+        visibleNotes() {
+          const q = this.query.trim().toLowerCase();
+          if (!q) return this.notes;
+          return this.notes.filter((note) => {
+            const commands = (note.commands || []).map((cmd) => `${cmd.label} ${cmd.body}`).join(' ');
+            return [note.title, note.short, note.group, note.summary, note.points.join(' '), commands].join(' ').toLowerCase().includes(q);
+          });
+        },
+        groupedNotes() {
+          const groups = [];
+          for (const note of this.visibleNotes()) {
+            let group = groups.find((item) => item.name === note.group);
+            if (!group) {
+              group = { name: note.group, items: [] };
+              groups.push(group);
+            }
+            group.items.push(note);
+          }
+          return groups;
+        },
+        entryCards() {
+          return [
+            { id: 'config', title: '配置入口', description: '先确认 HOME 和 config.json，再启动任何服务' },
+            { id: 'prod-docker', title: '部署路径', description: '源码、开发 Compose、生产 Compose、镜像直跑' },
+            { id: 'napcat', title: '消息网关', description: 'Telegram、QQ 官方机器人、NapCat、Weixin' }
+          ];
+        },
+        recentRows() {
+          return [
+            { id: 'overview', label: '部署地图' },
+            { id: 'source', label: '源码运行' },
+            { id: 'dev-docker', label: '开发 Docker' },
+            { id: 'prod-docker', label: '生产 Docker' },
+            { id: 'napcat', label: 'NapCat / OneBot v11' },
+            { id: 'opencli', label: 'OpenCLI 网页读取' },
+            { id: 'systemd', label: 'systemd 托管' },
+            { id: 'troubleshooting', label: '排查路径' }
+          ];
+        },
+        pageLinks() {
+          const q = this.query.trim();
+          const ids = q
+            ? this.visibleNotes().map((note) => note.id)
+            : ['overview', 'config', 'runtime', 'source', 'dev-docker', 'prod-docker', 'api', 'opencli', 'napcat', 'ops', 'troubleshooting', 'commands'];
+          return ids.map((id) => this.node(id)).filter((note) => note.id);
+        },
+        articleSections() {
+          const sections = [
+            { id: 'article-top', title: currentTitle(this.current()) },
+            { id: 'article-points', title: '要点' },
+            { id: 'article-links', title: '链接到' }
+          ];
+          if (this.current().commands && this.current().commands.length) {
+            sections.push({ id: 'article-commands', title: '命令' });
+          }
+          return sections;
+        },
+        backlinks(id) {
+          return this.notes.filter((note) => note.related && note.related.includes(id));
+        },
+        localGraphNodes() {
+          const center = this.current();
+          if (!center.id) return [];
+          const ids = [];
+          const push = (id) => {
+            if (id && id !== center.id && this.node(id).id && !ids.includes(id)) ids.push(id);
+          };
+          for (const id of center.related || []) push(id);
+          for (const note of this.backlinks(center.id)) push(note.id);
+
+          const ring = ids.slice(0, 10);
+          const nodes = [{ id: center.id, title: center.title, x: 50, y: 50 }];
+          const radiusX = ring.length > 7 ? 36 : 32;
+          const radiusY = ring.length > 7 ? 34 : 30;
+          ring.forEach((id, index) => {
+            const angle = (-90 + (360 / ring.length) * index) * Math.PI / 180;
+            const note = this.node(id);
+            nodes.push({
+              id,
+              title: note.title,
+              x: 50 + Math.cos(angle) * radiusX,
+              y: 50 + Math.sin(angle) * radiusY
+            });
+          });
+          return nodes;
+        },
+        localEdgeSvg() {
+          const nodes = this.localGraphNodes();
+          const center = nodes[0];
+          if (!center) return '';
+          return nodes.slice(1).map((node) => {
+            return `<line x1="${center.x}" y1="${center.y}" x2="${node.x}" y2="${node.y}" stroke="currentColor" opacity=".3" stroke-width=".55" vector-effect="non-scaling-stroke"></line>`;
+          }).join('');
+        },
+        edgeSvg() {
+          return this.edges.map(([from, to]) => {
+            const a = this.node(from);
+            const b = this.node(to);
+            if (!a.id || !b.id) return '';
+            const activeEdge = from === this.active || to === this.active;
+            const stroke = activeEdge ? 'rgba(35,116,82,.72)' : 'rgba(36,49,61,.28)';
+            const width = activeEdge ? '.72' : '.42';
+            return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${stroke}" stroke-width="${width}" vector-effect="non-scaling-stroke"></line>`;
+          }).join('');
+        },
+        jump(id) {
+          if (!this.node(id).id) return;
+          this.active = id;
+          history.replaceState(null, '', '#note-' + encodeURIComponent(id));
+          this.$nextTick(() => {
+            this.refreshIcons();
+            this.scrollTo(id, true);
+          });
+        },
+        goHome() {
+          this.active = 'overview';
+          history.replaceState(null, '', window.location.href.split('#')[0]);
+          this.$nextTick(() => {
+            this.refreshIcons();
+            if (this.$refs.homeColumn) {
+              this.$refs.homeColumn.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+            if (this.$refs.articleColumn) {
+              this.$refs.articleColumn.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+            if (window.matchMedia('(max-width: 900px)').matches) {
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+          });
+        },
+        scrollTo(id, smooth) {
+          const article = this.$refs.articleColumn;
+          if (!article) return;
+          if (window.matchMedia('(max-width: 900px)').matches) {
+            article.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' });
+          } else {
+            article.scrollTo({ top: 0, behavior: smooth ? 'smooth' : 'auto' });
+          }
+        },
+        scrollArticleSection(id) {
+          const article = this.$refs.articleColumn;
+          const el = document.getElementById(id);
+          if (!article || !el) return;
+          const top = article.scrollTop + el.getBoundingClientRect().top - article.getBoundingClientRect().top;
+          article.scrollTo({ top: Math.max(0, top - 8), behavior: 'smooth' });
+        },
+        focusGraph() {
+          const el = document.getElementById('interactive-graph');
+          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        },
+        async copyText(value) {
+          try {
+            await navigator.clipboard.writeText(value);
+          } catch (err) {
+            const area = document.createElement('textarea');
+            area.value = value;
+            document.body.appendChild(area);
+            area.select();
+            document.execCommand('copy');
+            area.remove();
+          }
+          this.copied = true;
+          window.setTimeout(() => { this.copied = false; }, 1200);
+        },
+        copyNoteLink(id) {
+          const url = window.location.href.split('#')[0] + '#note-' + encodeURIComponent(id);
+          this.copyText(url);
+        }
+      };
+    }
+
+    function currentTitle(note) {
+      return note && note.title ? note.title : '当前文章';
+    }
+  </script>
+</body>
+</html>

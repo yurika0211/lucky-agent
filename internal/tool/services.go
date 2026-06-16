@@ -45,6 +45,7 @@ func (s *Services) RegisterCoreTools(r *Registry) {
 	if s.Memory != nil {
 		r.Register(RememberTool(s.Memory.HandleRemember))
 		r.Register(RecallTool(s.Memory.HandleRecall))
+		r.Register(MemoryHygieneTool(s.Memory.HandleHygiene))
 	}
 	if s.RAG != nil {
 		r.Register(RAGSearchTool(s.RAG.HandleSearch))
