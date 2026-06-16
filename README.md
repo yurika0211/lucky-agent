@@ -215,6 +215,35 @@ go run ./cmd/lh serve --addr 127.0.0.1:9090
 curl http://127.0.0.1:9090/api/v1/health
 ```
 
+## 发布与安装
+
+如果你只想拿预编译二进制，推荐走 GitHub Release：
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+仓库会在 tag push 后自动构建并发布 `Windows / macOS / Linux` 产物到 Releases 页面。下载后直接解压即可使用。
+
+一键安装到 `PATH`：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yurika0211/luckyharness/main/scripts/install-lh.sh | sh
+```
+
+如果你想指定版本或安装目录：
+
+```bash
+sh scripts/install-lh.sh v0.1.0 "$HOME/bin"
+```
+
+Windows 用户可以用：
+
+```powershell
+.\scripts\install-lh.ps1 -Version v0.1.0 -Prefix "$HOME\bin"
+```
+
 ## 部署说明
 
 LuckyHarness 的部署路径可以按阶段来理解。开发时，你可以直接从源码运行，方便追 prompt、工具和 agent loop 的真实路径；需要验证容器行为时，可以用开发环境 Docker；等到要放到 VPS、云主机或长期运行节点上，再切到生产环境 Docker。
