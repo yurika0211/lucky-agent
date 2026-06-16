@@ -3,6 +3,12 @@
   "api_key": "sk-your-api-key",
   "api_base": "https://api.openai.com/v1",
   "model": "gpt-5.4-mini",
+  "llm_provider": {
+    "name": "openai",
+    "api_key": "sk-your-api-key",
+    "base_url": "https://api.openai.com/v1",
+    "model": "gpt-5.4-mini"
+  },
   "embedding": {
     "model": "jina-embeddings-v4",
     "api_key": "",
@@ -51,6 +57,14 @@
   "extra_headers": {
     "User-Agent": "luckyharness"
   },
+  "fallbacks": [
+    {
+      "provider": "openai",
+      "api_key": "sk-your-fallback-api-key",
+      "api_base": "https://api.openai.com/v1",
+      "model": "gpt-5.4-mini"
+    }
+  ],
   "web_search": {
     "provider": "brave",
     "api_key": "",
@@ -163,6 +177,7 @@
     "platform": "telegram",
     "start_all": false,
     "api_addr": "127.0.0.1:9090",
+    "token": "",
     "telegram": {
       "token": "",
       "proxy": "",
@@ -208,6 +223,17 @@
       "split_multiline_messages": false,
       "poll_timeout_ms": 35000,
       "send_chunk_delay_ms": 350
+    },
+    "openclawweixin": {
+      "account_id": "",
+      "state_dir": "",
+      "dm_policy": "open",
+      "group_policy": "disabled",
+      "allowed_users": [],
+      "group_allowed_users": [],
+      "split_multiline_messages": false,
+      "poll_timeout_ms": 35000,
+      "send_chunk_delay_ms": 350
     }
   },
   "hooks": {
@@ -218,13 +244,16 @@
       {
         "match": ["file_delete", "shell"],
         "sources": [],
-        "command": "/path/to/pre_guard.sh"
+        "command": "/path/to/pre_guard.sh",
+        "script": ""
       }
     ],
     "post_tool_use": [
       {
         "match": [],
-        "command": "/path/to/redact_secrets.sh"
+        "sources": [],
+        "command": "/path/to/redact_secrets.sh",
+        "script": ""
       }
     ]
   }
