@@ -535,7 +535,7 @@ func TestFeedbackStoreShouldAdjustStrategyHighPartial(t *testing.T) {
 // --- ContextAwareRetriever integration tests ---
 
 func TestContextAwareRetrieverSearch(t *testing.T) {
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	// Index some content
@@ -563,7 +563,7 @@ func TestContextAwareRetrieverSearch(t *testing.T) {
 }
 
 func TestContextAwareRetrieverFollowUp(t *testing.T) {
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	_, err := rag.IndexText("test", "Go Programming", "Go is a statically typed compiled language designed at Google")
@@ -588,7 +588,7 @@ func TestContextAwareRetrieverFollowUp(t *testing.T) {
 }
 
 func TestContextAwareRetrieverSearchWithResponse(t *testing.T) {
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	_, err := rag.IndexText("test", "Go Programming", "Go is a statically typed compiled language")
@@ -614,7 +614,7 @@ func TestContextAwareRetrieverSearchWithResponse(t *testing.T) {
 }
 
 func TestContextAwareRetrieverConversationContext(t *testing.T) {
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 	rewriter := NewQueryRewriter(RewriteNone)
 	detector := NewFollowUpDetector(0.5)

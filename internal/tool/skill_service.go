@@ -47,9 +47,9 @@ func (s *SkillToolService) RegisterReadTool(r *Registry) {
 			},
 			"format": {
 				Type:        "string",
-				Description: "Response format: text or json. Defaults to text for backward compatibility.",
+				Description: "Response format: json or text.",
 				Required:    false,
-				Default:     "text",
+				Default:     "json",
 			},
 		},
 		Handler: s.HandleRead,
@@ -62,7 +62,7 @@ func (s *SkillToolService) HandleRead(args map[string]any) (string, error) {
 	format, _ := args["format"].(string)
 	format = strings.ToLower(strings.TrimSpace(format))
 	if format == "" {
-		format = "text"
+		format = "json"
 	}
 
 	if name == "" {

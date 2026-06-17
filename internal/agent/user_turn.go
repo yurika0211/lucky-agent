@@ -129,17 +129,6 @@ func deriveRoutingTextFromMessage(msg provider.Message) string {
 	return ""
 }
 
-func attachmentFromContentPart(part provider.ContentPart) (gateway.Attachment, bool) {
-	if part.Type != "image" || part.Image == nil {
-		return gateway.Attachment{}, false
-	}
-	return gateway.Attachment{
-		Type:     gateway.AttachmentImage,
-		FilePath: strings.TrimSpace(part.Image.FilePath),
-		MimeType: strings.TrimSpace(part.Image.MimeType),
-	}, true
-}
-
 func contentPartFromAttachment(att gateway.Attachment) (provider.ContentPart, bool) {
 	if att.Type != gateway.AttachmentImage {
 		return provider.ContentPart{}, false

@@ -160,7 +160,7 @@ func TestStreamIndexerBasic(t *testing.T) {
 	os.WriteFile(file1, []byte("# Document 1\nThis is content."), 0644)
 
 	// Create mock embedder
-	embedder := NewMockEmbedder(128)
+	embedder := newMockEmbedder(128)
 
 	// Create RAG manager
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
@@ -215,7 +215,7 @@ func TestStreamIndexerScan(t *testing.T) {
 	file1 := filepath.Join(tmpDir, "file1.md")
 	os.WriteFile(file1, []byte("# File 1"), 0644)
 
-	embedder := NewMockEmbedder(128)
+	embedder := newMockEmbedder(128)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	si := NewStreamIndexer(rag, StreamConfig{
@@ -268,7 +268,7 @@ func TestStreamIndexerProcessBatch(t *testing.T) {
 		os.WriteFile(path, []byte("# File %d"), 0644)
 	}
 
-	embedder := NewMockEmbedder(128)
+	embedder := newMockEmbedder(128)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	si := NewStreamIndexer(rag, StreamConfig{
@@ -309,7 +309,7 @@ func TestStreamIndexerProcessBatch(t *testing.T) {
 func TestStreamIndexerStats(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	embedder := NewMockEmbedder(128)
+	embedder := newMockEmbedder(128)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	si := NewStreamIndexer(rag, StreamConfig{
@@ -329,7 +329,7 @@ func TestStreamIndexerStats(t *testing.T) {
 }
 
 func TestStreamIndexerAddRemoveWatchDir(t *testing.T) {
-	embedder := NewMockEmbedder(128)
+	embedder := newMockEmbedder(128)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	si := NewStreamIndexer(rag, DefaultStreamConfig())
@@ -353,7 +353,7 @@ func TestStreamIndexerAddRemoveWatchDir(t *testing.T) {
 }
 
 func TestStreamIndexerStartStop(t *testing.T) {
-	embedder := NewMockEmbedder(128)
+	embedder := newMockEmbedder(128)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	si := NewStreamIndexer(rag, StreamConfig{
@@ -395,7 +395,7 @@ func TestStreamIndexerOnChangeCallback(t *testing.T) {
 	file1 := filepath.Join(tmpDir, "callback.md")
 	os.WriteFile(file1, []byte("# Callback Test"), 0644)
 
-	embedder := NewMockEmbedder(128)
+	embedder := newMockEmbedder(128)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	si := NewStreamIndexer(rag, StreamConfig{
@@ -434,7 +434,7 @@ func TestStreamIndexerOnIndexCallback(t *testing.T) {
 	file1 := filepath.Join(tmpDir, "index_callback.md")
 	os.WriteFile(file1, []byte("# Index Callback Test"), 0644)
 
-	embedder := NewMockEmbedder(128)
+	embedder := newMockEmbedder(128)
 	rag := NewRAGManager(embedder, DefaultRAGConfig())
 
 	si := NewStreamIndexer(rag, StreamConfig{

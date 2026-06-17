@@ -394,8 +394,6 @@ func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGa
 	if !cmd.Flags().Changed("token") && cfg != nil {
 		if cfg.MsgGateway.Telegram.Token != "" {
 			opts.Token = cfg.MsgGateway.Telegram.Token
-		} else if cfg.MsgGateway.Token != "" {
-			opts.Token = cfg.MsgGateway.Token
 		}
 	}
 

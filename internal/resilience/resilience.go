@@ -163,8 +163,8 @@ type State int
 
 const (
 	StateClosed   State = iota // Normal: requests pass through
-	StateOpen                   // Tripped: requests are rejected
-	StateHalfOpen               // Probing: limited requests to test recovery
+	StateOpen                  // Tripped: requests are rejected
+	StateHalfOpen              // Probing: limited requests to test recovery
 )
 
 func (s State) String() string {
@@ -342,10 +342,10 @@ func (cb *CircuitBreaker) Stats() CircuitBreakerStats {
 
 // CircuitBreakerStats holds circuit breaker statistics.
 type CircuitBreakerStats struct {
-	State               State        `json:"state"`
-	ConsecutiveFailures int          `json:"consecutiveFailures"`
-	HalfOpenSuccesses   int          `json:"halfOpenSuccesses"`
-	HalfOpenRequests    int          `json:"halfOpenRequests"`
+	State               State         `json:"state"`
+	ConsecutiveFailures int           `json:"consecutiveFailures"`
+	HalfOpenSuccesses   int           `json:"halfOpenSuccesses"`
+	HalfOpenRequests    int           `json:"halfOpenRequests"`
 	TimeUntilHalfOpen   time.Duration `json:"timeUntilHalfOpen,omitempty"`
 }
 
@@ -408,11 +408,6 @@ func NewResilientProviderWithRetry(inner provider.Provider, retryCfg RetryConfig
 // Name returns the wrapped provider's name.
 func (rp *ResilientProvider) Name() string {
 	return rp.inner.Name()
-}
-
-// CircuitBreaker returns the circuit breaker instance (nil if not configured).
-func (rp *ResilientProvider) CircuitBreaker() *CircuitBreaker {
-	return rp.cb
 }
 
 // Chat sends a message with retry and circuit breaker protection.

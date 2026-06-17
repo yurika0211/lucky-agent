@@ -13,7 +13,7 @@ func TestRAGManagerWithSQLite(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "rag-test.db")
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 
@@ -69,7 +69,7 @@ func TestRAGManagerWithSQLitePersistence(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "rag-persist.db")
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 
@@ -114,7 +114,7 @@ func TestRAGManagerWithSQLiteRemoveDocument(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "rag-remove.db")
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 
@@ -146,7 +146,7 @@ func TestRAGManagerWithSQLiteDirectoryIndex(t *testing.T) {
 	os.WriteFile(filepath.Join(testDir, "a.md"), []byte("# Article A\n\nContent about Go."), 0644)
 	os.WriteFile(filepath.Join(testDir, "b.txt"), []byte("Content about Python."), 0644)
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 
@@ -169,7 +169,7 @@ func TestRAGManagerWithSQLiteStats(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "rag-stats.db")
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 
@@ -210,7 +210,7 @@ func TestRAGManagerWithSQLiteStats(t *testing.T) {
 
 func TestRAGManagerMemoryFallback(t *testing.T) {
 	// Test that in-memory backend still works
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 
@@ -239,7 +239,7 @@ func TestRAGManagerWithSQLiteConcurrentIndex(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "rag-concurrent.db")
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 
@@ -275,7 +275,7 @@ func TestIndexerSQLiteSaveDocumentDoesNotRaceOnConcurrentIndex(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "rag-race.db")
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 

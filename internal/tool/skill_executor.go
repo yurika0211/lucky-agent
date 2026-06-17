@@ -6,17 +6,11 @@ import "fmt"
 // Loader discovers skill metadata; registry owns lifecycle; executor turns a
 // loaded skill tool definition into a callable Tool handler.
 type SkillExecutor struct {
-	handlerFactory func(toolDef SkillToolDef, skillDir string, skillName string) func(args map[string]any) (string, error)
 }
 
 // NewSkillExecutor creates the default skill executor.
 func NewSkillExecutor() *SkillExecutor {
 	return &SkillExecutor{}
-}
-
-// NewSkillExecutorWithFactory creates a skill executor with a custom handler factory.
-func NewSkillExecutorWithFactory(factory func(toolDef SkillToolDef, skillDir string, skillName string) func(args map[string]any) (string, error)) *SkillExecutor {
-	return &SkillExecutor{handlerFactory: factory}
 }
 
 // HandlerFor returns the callable handler for one skill tool definition.
@@ -26,11 +20,6 @@ func (e *SkillExecutor) HandlerFor(skill *SkillInfo, toolDef SkillToolDef) (func
 	}
 	if toolDef.Handler != nil {
 		return toolDef.Handler, nil
-	}
-	if e != nil && e.handlerFactory != nil {
-		if handler := e.handlerFactory(toolDef, skill.Dir, skill.Name); handler != nil {
-			return handler, nil
-		}
 	}
 	return defaultSkillHandler(toolDef, skill.Dir, skill.Name), nil
 }

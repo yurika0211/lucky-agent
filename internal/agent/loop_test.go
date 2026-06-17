@@ -51,15 +51,15 @@ func TestDefaultLoopConfig(t *testing.T) {
 func TestFilterFunctionTools(t *testing.T) {
 	tools := []map[string]any{
 		{"type": "function", "function": map[string]any{"name": "autonomy"}},
-		{"type": "function", "function": map[string]any{"name": "shell"}},
+		{"type": "function", "function": map[string]any{"name": "terminal"}},
 	}
 
 	got := filterFunctionTools(tools, []string{"autonomy"})
 	if len(got) != 1 {
 		t.Fatalf("expected one tool after filtering, got %d", len(got))
 	}
-	if functionToolNameFromSchema(got[0]) != "shell" {
-		t.Fatalf("expected shell tool to remain, got %#v", got[0])
+	if functionToolNameFromSchema(got[0]) != "terminal" {
+		t.Fatalf("expected terminal tool to remain, got %#v", got[0])
 	}
 }
 
@@ -142,15 +142,15 @@ func TestExtractRequiredToolNames(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Register(&tool.Tool{Name: "file_read", Enabled: true})
 	reg.Register(&tool.Tool{Name: "current_time", Enabled: true})
-	reg.Register(&tool.Tool{Name: "shell", Enabled: true})
+	reg.Register(&tool.Tool{Name: "terminal", Enabled: true})
 
 	a := &Agent{tools: reg}
-	got := a.extractRequiredToolNames("请必须调用 file_read 和 current_time，最后不要用 shell")
+	got := a.extractRequiredToolNames("请必须调用 file_read 和 current_time，最后不要用 terminal")
 
 	if len(got) != 3 {
 		t.Fatalf("expected 3 required tools, got %d (%v)", len(got), got)
 	}
-	if got[0] != "file_read" || got[1] != "current_time" || got[2] != "shell" {
+	if got[0] != "file_read" || got[1] != "current_time" || got[2] != "terminal" {
 		t.Fatalf("unexpected order: %v", got)
 	}
 }
@@ -188,7 +188,7 @@ func TestIsUsefulSearchEvidence(t *testing.T) {
 	if isUsefulSearchEvidence("web_search", "No results found for '四川大学 食堂' (all search sources failed)") {
 		t.Fatal("expected no-results output not to count as evidence")
 	}
-	if isUsefulSearchEvidence("shell", "Results for: 四川大学 食堂") {
+	if isUsefulSearchEvidence("terminal", "Results for: 四川大学 食堂") {
 		t.Fatal("non-search tools should not count as search evidence")
 	}
 }

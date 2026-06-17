@@ -15,7 +15,6 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, ope
 	}
 
 	r.Register(TerminalTool())
-	r.Register(LegacyShellTool())
 	r.Register(FileReadTool())
 	r.Register(FileWriteTool())
 	r.Register(FileMkdirTool())
@@ -23,11 +22,9 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, ope
 	r.Register(FileDeleteTool())
 	r.Register(FilePatchTool())
 	r.Register(FileListTool())
-	r.Register(FileFindTool())
 	r.Register(WebSearchTool(searchCfg))
 	r.Register(WebFetchTool(searchCfg))
 	r.Register(OpenCLITool(opencliCfg, searchCfg))
-	r.Register(DefuddleCompatTool(searchCfg))
 	r.Register(CurrentTimeTool())
 	r.Register(CalculateTool())
 	r.Register(ImageAnalyzeTool(processor, ""))

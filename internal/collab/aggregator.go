@@ -26,7 +26,7 @@ const (
 type AggregationResult struct {
 	Strategy  AggregationStrategy `json:"strategy"`
 	Output    string              `json:"output"`
-	Count     int                 `json:"count"`     // 参与聚合的子结果数
+	Count     int                 `json:"count"`                // 参与聚合的子结果数
 	BestIndex int                 `json:"best_index,omitempty"` // 最佳结果索引（AggBest）
 	Votes     map[string]int      `json:"votes,omitempty"`      // 投票结果（AggVote）
 	Metadata  map[string]string   `json:"metadata,omitempty"`
@@ -34,8 +34,8 @@ type AggregationResult struct {
 
 // Aggregator 结果聚合器
 type Aggregator struct {
-	mu        sync.RWMutex
-	scorers   map[AggregationStrategy]ScorerFunc
+	mu      sync.RWMutex
+	scorers map[AggregationStrategy]ScorerFunc
 }
 
 // ScorerFunc 评分函数 — 返回 0~1 的分数
@@ -61,13 +61,6 @@ func NewAggregator() *Aggregator {
 	}
 
 	return a
-}
-
-// SetScorer 设置评分函数
-func (a *Aggregator) SetScorer(strategy AggregationStrategy, scorer ScorerFunc) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.scorers[strategy] = scorer
 }
 
 // Aggregate 聚合子任务结果

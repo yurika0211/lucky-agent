@@ -11,36 +11,6 @@ import (
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
 
-// ── escapeMarkdownV2 ─────────────────────────────────────────────────────────
-
-func TestEscapeMarkdownV2(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"plain text", "hello world", "hello world"},
-		{"underscore", "hello_world", `hello\_world`},
-		{"asterisk", "bold*text", `bold\*text`},
-		{"brackets", "[link](url)", `\[link\]\(url\)`},
-		{"tilde", "~strikethrough~", `\~strikethrough\~`},
-		{"hash", "#heading", `\#heading`},
-		{"plus", "1+1=2", `1\+1\=2`},
-		{"minus", "- item", `\- item`},
-		{"pipe", "a|b", `a\|b`},
-		{"braces", "{json}", `\{json\}`},
-		{"dot", "end.", `end\.`},
-		{"exclamation", "wow!", `wow\!`},
-		{"empty", "", ""},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := escapeMarkdownV2(tt.input)
-			assert.Equal(t, tt.want, got)
-		})
-	}
-}
-
 // ── isMentioned / isReplyToBot ────────────────────────────────────────────────
 // These require *tgbotapi.Message objects which are hard to construct in tests.
 // Tested indirectly through integration tests.

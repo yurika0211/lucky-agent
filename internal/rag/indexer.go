@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	embedderpkg "github.com/yurika0211/luckyharness/internal/embedder"
 )
 
 const defaultEmbeddingBatchSize = 16
@@ -43,7 +45,7 @@ type IndexStats struct {
 // Indexer processes documents into chunks and stores them in the vector store.
 type Indexer struct {
 	store    VectorStoreBackend
-	embedder EmbeddingProvider
+	embedder embedderpkg.Embedder
 	sqlite   *SQLiteStore // v0.20.0: optional SQLite backend for document persistence
 
 	mu        sync.RWMutex
@@ -52,7 +54,7 @@ type Indexer struct {
 	stats     IndexStats
 }
 
-func NewIndexer(store VectorStoreBackend, embedder EmbeddingProvider) *Indexer {
+func NewIndexer(store VectorStoreBackend, embedder embedderpkg.Embedder) *Indexer {
 	indexer := &Indexer{
 		store:     store,
 		embedder:  embedder,
@@ -70,7 +72,7 @@ func NewIndexer(store VectorStoreBackend, embedder EmbeddingProvider) *Indexer {
 }
 
 // NewIndexerWithBackend creates an indexer with a VectorStoreBackend (alias for NewIndexer).
-func NewIndexerWithBackend(store VectorStoreBackend, embedder EmbeddingProvider) *Indexer {
+func NewIndexerWithBackend(store VectorStoreBackend, embedder embedderpkg.Embedder) *Indexer {
 	return NewIndexer(store, embedder)
 }
 

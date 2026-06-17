@@ -169,7 +169,7 @@ func (s *MemoryToolService) HandleHygiene(args map[string]any) (string, error) {
 }
 
 func memorySourceNotice(store *memory.Store) string {
-	return fmt.Sprintf("记忆源：LuckyHarness Obsidian-compatible Markdown vault at %s。legacy memory.md/memory.json 和 RAG SQLite 不是当前 durable memory 事实源。\n", memoryVaultPathForTool(store))
+	return fmt.Sprintf("记忆源：LuckyHarness Obsidian-compatible Markdown vault at %s。RAG SQLite 不是当前 durable memory 事实源。\n", memoryVaultPathForTool(store))
 }
 
 func memoryVaultPathForTool(store *memory.Store) string {

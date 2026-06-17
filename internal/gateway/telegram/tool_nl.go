@@ -418,29 +418,6 @@ func compactAgentTraceDetail(args string) string {
 	return ""
 }
 
-func compactToolTraceDetail(args string) string {
-	parsed := parseToolCallArgs(args)
-	if memory := pickArg(parsed, "content", "text", "memory", "query", "name"); memory != "" {
-		return clipOneLine(memory, 48)
-	}
-	return ""
-}
-
-func verboseToolTraceDetail(args string) string {
-	parsed := parseToolCallArgs(args)
-	if hint := pickArg(parsed,
-		"query", "q", "keyword",
-		"url", "uri", "link",
-		"path", "file", "filepath", "filename",
-		"cmd", "command", "script",
-		"name", "title", "task_id", "content", "text"); hint != "" {
-		return clipOneLine(hint, 72)
-	}
-	raw := clipOneLine(strings.TrimSpace(args), 72)
-	raw = strings.Trim(raw, "{}")
-	return raw
-}
-
 func isInternalThinkingProgress(content string) bool {
 	trimmed := strings.TrimSpace(content)
 	if trimmed == "" {

@@ -699,24 +699,6 @@ func temporalWarningLines(route memory.RouteAnalysis) []string {
 	return lines
 }
 
-func memoryGraphHint(e memory.Entry) string {
-	var parts []string
-	if len(e.Links) > 0 {
-		parts = append(parts, "links="+strings.Join(limitStrings(e.Links, 4), ","))
-	}
-	if e.Path != "" {
-		ref := e.Path
-		if e.BlockID != "" {
-			ref += "#" + e.BlockID
-		}
-		parts = append(parts, "ref="+ref)
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return " " + strings.Join(parts, " ")
-}
-
 func limitStrings(values []string, limit int) []string {
 	if limit <= 0 || len(values) <= limit {
 		return values
@@ -1314,18 +1296,6 @@ func summarizeConversationRange(messages []provider.Message, header string, est 
 		}
 	}
 	return ""
-}
-
-/*
-toContextMessage 将 provider 消息包装成 contextx 消息。
-*/
-func toContextMessage(msg provider.Message) contextx.Message {
-	return contextx.Message{
-		Role:      msg.Role,
-		Content:   msg.Content,
-		Name:      msg.Name,
-		Timestamp: time.Now(),
-	}
 }
 
 /*

@@ -11,16 +11,15 @@ import (
 	"time"
 )
 
-func terminalToolWithName(name string, hidden bool) *Tool {
+func TerminalTool() *Tool {
 	return &Tool{
-		Name:            name,
-		Description:     "Run a terminal command when you need to inspect runtime state, execute project commands, check the environment, or perform real system actions that cannot be answered from files alone.",
-		Category:        CatBuiltin,
-		Source:          "builtin",
-		Permission:      PermApprove,
-		ShellAware:      true,
-		ParallelSafe:    false,
-		HiddenFromModel: hidden,
+		Name:         "terminal",
+		Description:  "Run a terminal command when you need to inspect runtime state, execute project commands, check the environment, or perform real system actions that cannot be answered from files alone.",
+		Category:     CatBuiltin,
+		Source:       "builtin",
+		Permission:   PermApprove,
+		ShellAware:   true,
+		ParallelSafe: false,
 		Parameters: map[string]Param{
 			"command": {Type: "string", Description: "Concrete terminal command to run. Prefer precise inspection or execution commands over exploratory one-liners.", Required: true},
 			"timeout": {Type: "number", Description: "Timeout in seconds (default 30)", Required: false, Default: 30},
@@ -29,10 +28,6 @@ func terminalToolWithName(name string, hidden bool) *Tool {
 		Handler: handleShell,
 	}
 }
-
-func TerminalTool() *Tool    { return terminalToolWithName("terminal", false) }
-func LegacyShellTool() *Tool { return terminalToolWithName("shell", true) }
-func ShellTool() *Tool       { return TerminalTool() }
 
 func handleShell(args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
@@ -133,163 +128,6 @@ func FileReadTool() *Tool {
 		},
 		Handler: handleFileRead,
 	}
-}
-
-func FileFindTool() *Tool {
-	return &Tool{
-		Name:            "file_find",
-		Description:     "Compatibility file search tool. Find candidate files or directories by name/pattern before reading them.",
-		Category:        CatBuiltin,
-		Source:          "builtin",
-		Permission:      PermAuto,
-		ShellAware:      true,
-		HiddenFromModel: true,
-		Parameters: map[string]Param{
-			"path":        {Type: "string", Description: "Directory path to search from.", Required: true},
-			"pattern":     {Type: "string", Description: "Substring or glob-like pattern to match against file or directory paths.", Required: false},
-			"query":       {Type: "string", Description: "Alternate name for pattern.", Required: false},
-			"name":        {Type: "string", Description: "Alternate name for pattern.", Required: false},
-			"recursive":   {Type: "boolean", Description: "Whether to search recursively. Default true.", Required: false, Default: true},
-			"max_results": {Type: "number", Description: "Maximum number of matches to return. Default 50.", Required: false, Default: 50},
-		},
-		Handler: handleFileFind,
-	}
-}
-
-func handleFileFind(args map[string]any) (string, error) {
-	path, err := resolvePathArg(args, "path")
-	if err != nil {
-		return "", err
-	}
-
-	pattern := firstNonEmptyStringArg(args, "pattern", "query", "name")
-	if pattern == "" {
-		return "", fmt.Errorf("pattern is required")
-	}
-	pattern = strings.ToLower(strings.TrimSpace(pattern))
-
-	recursive := true
-	if r, ok := args["recursive"]; ok {
-		if parsed, ok := r.(bool); ok {
-			recursive = parsed
-		}
-	}
-
-	maxResults := 50
-	if v, ok := args["max_results"]; ok {
-		switch n := v.(type) {
-		case float64:
-			maxResults = int(n)
-		case int:
-			maxResults = n
-		}
-	}
-	if maxResults <= 0 {
-		maxResults = 50
-	}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", fmt.Errorf("stat path: %w", err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("path is not a directory: %s", path)
-	}
-
-	matches := make([]string, 0, min(maxResults, 16))
-	appendMatch := func(candidate string, entry os.DirEntry) {
-		if len(matches) >= maxResults {
-			return
-		}
-		suffix := ""
-		if entry != nil && entry.IsDir() {
-			suffix = "/"
-		}
-		matches = append(matches, candidate+suffix)
-	}
-
-	if recursive {
-		stopWalk := errors.New("file find truncated")
-		err = filepath.WalkDir(path, func(walkPath string, entry os.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if walkPath == path {
-				return nil
-			}
-			rel, relErr := filepath.Rel(path, walkPath)
-			if relErr != nil {
-				return relErr
-			}
-			normalized := strings.ToLower(filepath.ToSlash(rel))
-			if fileFindMatches(normalized, pattern) {
-				appendMatch(rel, entry)
-				if len(matches) >= maxResults {
-					return stopWalk
-				}
-			}
-			return nil
-		})
-		if err != nil && !errors.Is(err, stopWalk) {
-			return "", fmt.Errorf("walk directory: %w", err)
-		}
-	} else {
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			return "", fmt.Errorf("read directory: %w", err)
-		}
-		for _, entry := range entries {
-			normalized := strings.ToLower(entry.Name())
-			if fileFindMatches(normalized, pattern) {
-				appendMatch(entry.Name(), entry)
-				if len(matches) >= maxResults {
-					break
-				}
-			}
-		}
-	}
-
-	if len(matches) == 0 {
-		return fmt.Sprintf("No files found in %s matching %q", path, pattern), nil
-	}
-
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Matches in %s for %q:\n", path, pattern))
-	for _, match := range matches {
-		b.WriteString("  ")
-		b.WriteString(match)
-		b.WriteString("\n")
-	}
-	return strings.TrimRight(b.String(), "\n"), nil
-}
-
-func fileFindMatches(candidate string, pattern string) bool {
-	if candidate == "" || pattern == "" {
-		return false
-	}
-	if strings.Contains(candidate, pattern) {
-		return true
-	}
-	glob := strings.ReplaceAll(pattern, "**", "*")
-	if ok, err := filepath.Match(glob, candidate); err == nil && ok {
-		return true
-	}
-	base := filepath.Base(candidate)
-	if ok, err := filepath.Match(glob, base); err == nil && ok {
-		return true
-	}
-	return false
-}
-
-func firstNonEmptyStringArg(args map[string]any, keys ...string) string {
-	for _, key := range keys {
-		value, _ := args[key].(string)
-		value = strings.TrimSpace(value)
-		if value != "" {
-			return value
-		}
-	}
-	return ""
 }
 
 func handleFileRead(args map[string]any) (string, error) {

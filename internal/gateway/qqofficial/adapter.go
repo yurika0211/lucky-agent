@@ -148,7 +148,6 @@ type Adapter struct {
 	accessToken string
 	tokenExpiry time.Time
 	seq         int64
-	sessionID   string
 	replySeq    atomic.Uint32
 }
 
@@ -842,8 +841,4 @@ func stripLeadingQQMention(text string) string {
 func mustJSON(v any) json.RawMessage {
 	data, _ := json.Marshal(v)
 	return data
-}
-
-func debugID(n int64) string {
-	return strconv.FormatInt(n, 10)
 }

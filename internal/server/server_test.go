@@ -95,41 +95,6 @@ func TestDefaultServerConfig(t *testing.T) {
 	}
 }
 
-func TestHandleHealth(t *testing.T) {
-	a := createTestAgent(t)
-	s := New(a, DefaultServerConfig())
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
-	w := httptest.NewRecorder()
-	s.handleHealth(w, req)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
-	}
-
-	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["status"] != "ok" {
-		t.Errorf("expected ok, got %v", resp["status"])
-	}
-	if resp["version"] != "v0.21.0" {
-		t.Errorf("expected v0.21.0, got %v", resp["version"])
-	}
-}
-
-func TestHandleHealthMethodNotAllowed(t *testing.T) {
-	a := createTestAgent(t)
-	s := New(a, DefaultServerConfig())
-
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/health", nil)
-	w := httptest.NewRecorder()
-	s.handleHealth(w, req)
-
-	if w.Code != http.StatusMethodNotAllowed {
-		t.Errorf("expected 405, got %d", w.Code)
-	}
-}
-
 func TestHandleRoot(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())
@@ -515,7 +480,7 @@ func TestCORSMiddleware(t *testing.T) {
 	}))
 
 	// OPTIONS 预检
-	req := httptest.NewRequest(http.MethodOptions, "/api/v1/health", nil)
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/health/live", nil)
 	req.Header.Set("Origin", "http://localhost:3000")
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
@@ -538,7 +503,7 @@ func TestCORSMiddlewareDisabled(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	req := httptest.NewRequest(http.MethodOptions, "/api/v1/health", nil)
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/health/live", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
@@ -647,7 +612,7 @@ func TestAuthMiddlewareWithKeys(t *testing.T) {
 	}
 }
 
-func TestAuthMiddlewareHealthBypass(t *testing.T) {
+func TestAuthMiddlewareHealthEndpointBypass(t *testing.T) {
 	a := createTestAgent(t)
 	cfg := DefaultServerConfig()
 	cfg.APIKeys = []string{"test-key-123"}
@@ -658,7 +623,7 @@ func TestAuthMiddlewareHealthBypass(t *testing.T) {
 	}))
 
 	// 健康检查不需要认证
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health/live", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -705,7 +670,7 @@ func TestRateLimitMiddleware(t *testing.T) {
 
 	// 前两个请求应该通过
 	for i := 0; i < 2; i++ {
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/health/live", nil)
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
@@ -714,7 +679,7 @@ func TestRateLimitMiddleware(t *testing.T) {
 	}
 
 	// 第三个应该被限流
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/health/live", nil)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 	if w.Code != http.StatusTooManyRequests {

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/multimodal"
 	"github.com/yurika0211/luckyharness/internal/rag"
@@ -86,7 +87,7 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"terminal", "shell", "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "opencli", "current_time", "calculate", "image_analyze", "image_generate", "text_to_speech", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
+	expected := []string{"terminal", "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "opencli", "current_time", "calculate", "image_analyze", "image_generate", "text_to_speech", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {
@@ -101,37 +102,19 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 		}
 	}
 
-	expectedCount := len(expected) + 2 // hidden compatibility tools: file_find, defuddle
-	if r.Count() != expectedCount {
-		t.Errorf("expected %d builtin tools, got %d", expectedCount, r.Count())
+	if r.Count() != len(expected) {
+		t.Errorf("expected %d builtin tools, got %d", len(expected), r.Count())
 	}
 
 	visible := r.ListModelVisible()
 	foundTerminal := false
-	foundShell := false
 	for _, tool := range visible {
 		if tool.Name == "terminal" {
 			foundTerminal = true
 		}
-		if tool.Name == "shell" {
-			foundShell = true
-		}
 	}
 	if !foundTerminal {
 		t.Error("expected terminal to be model-visible")
-	}
-	if foundShell {
-		t.Error("expected shell compatibility tool to be hidden from model")
-	}
-	if compat, ok := r.Get("file_find"); !ok || compat == nil {
-		t.Error("expected file_find compatibility tool to be registered")
-	} else if !compat.HiddenFromModel {
-		t.Error("expected file_find compatibility tool to be hidden from model")
-	}
-	if compat, ok := r.Get("defuddle"); !ok || compat == nil {
-		t.Error("expected defuddle compatibility tool to be registered")
-	} else if !compat.HiddenFromModel {
-		t.Error("expected defuddle compatibility tool to be hidden from model")
 	}
 }
 
@@ -1000,33 +983,6 @@ func TestFileToolsResolveRelativePathsAgainstShellContext(t *testing.T) {
 	}
 }
 
-func TestFileFindTool(t *testing.T) {
-	r := NewRegistry()
-	RegisterBuiltinTools(r)
-
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "alpha.txt"), []byte("a"), 0o644); err != nil {
-		t.Fatalf("write alpha file: %v", err)
-	}
-	if err := os.Mkdir(filepath.Join(dir, "nested"), 0o755); err != nil {
-		t.Fatalf("mkdir nested: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "nested", "beta.go"), []byte("package nested"), 0o644); err != nil {
-		t.Fatalf("write beta file: %v", err)
-	}
-
-	result, err := r.Call("file_find", map[string]any{
-		"path":    dir,
-		"pattern": "beta",
-	})
-	if err != nil {
-		t.Fatalf("file_find: %v", err)
-	}
-	if !strings.Contains(result, "nested/beta.go") {
-		t.Fatalf("expected nested/beta.go in result, got %q", result)
-	}
-}
-
 func TestFileListToolTruncatesRecursiveOutput(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -1080,7 +1036,7 @@ func TestMemoryToolServiceRememberAndRecall(t *testing.T) {
 	if !strings.Contains(recall, "Python") {
 		t.Fatalf("unexpected recall result: %q", recall)
 	}
-	if !strings.Contains(recall, "LuckyHarness Obsidian-compatible Markdown vault") || !strings.Contains(recall, "memory.md/memory.json") {
+	if !strings.Contains(recall, "LuckyHarness Obsidian-compatible Markdown vault") || !strings.Contains(recall, "RAG SQLite") {
 		t.Fatalf("expected recall result to identify authoritative memory source, got %q", recall)
 	}
 }
@@ -1107,7 +1063,7 @@ func TestMemoryToolServiceRememberLongTerm(t *testing.T) {
 }
 
 func TestRAGToolServiceSearchAndIndex(t *testing.T) {
-	emb := rag.NewMockEmbedder(8)
+	emb := embedder.NewMockEmbedder(8)
 	mgr := rag.NewRAGManager(emb, rag.DefaultRAGConfig())
 	svc := NewRAGToolService(mgr)
 
@@ -1214,10 +1170,6 @@ func TestToolPermissions(t *testing.T) {
 	terminalPerm, _ := r.CheckPermission("terminal")
 	if terminalPerm != PermApprove {
 		t.Errorf("terminal should be approve, got %s", terminalPerm)
-	}
-	shellPerm, _ := r.CheckPermission("shell")
-	if shellPerm != PermApprove {
-		t.Errorf("shell compatibility tool should be approve, got %s", shellPerm)
 	}
 
 	// current_time 应该是 auto

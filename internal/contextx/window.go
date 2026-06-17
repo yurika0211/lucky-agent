@@ -136,11 +136,6 @@ func (cw *ContextWindow) Config() WindowConfig {
 
 // NewContextWindow 创建上下文窗口管理器
 func NewContextWindow(config WindowConfig) *ContextWindow {
-	availableTokens := config.MaxTokens - config.ReservedTokens
-	if availableTokens <= 0 {
-		availableTokens = config.MaxTokens / 2 // 至少留一半给回复
-	}
-
 	return &ContextWindow{
 		config:    config,
 		estimator: NewTokenEstimator(config.MaxTokens),

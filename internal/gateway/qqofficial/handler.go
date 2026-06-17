@@ -2030,32 +2030,6 @@ func (h *Handler) queueStatus(chatID string) (running bool, queued int) {
 	return running, queued
 }
 
-func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
-	input = qqInputWithMediaDeliveryGuidance(input)
-	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
-		return nil
-	}
-
-	sessionID := h.getSessionID(msg.Chat.ID)
-	response, err := h.agent.ChatWithSessionInput(ctx, sessionID, input)
-	if err != nil && strings.Contains(err.Error(), "session not found") {
-		sessionID = h.resetSession(msg.Chat.ID)
-		response, err = h.agent.ChatWithSessionInput(ctx, sessionID, input)
-	}
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-			return ctx.Err()
-		}
-		return err
-	}
-
-	response = strings.TrimSpace(response)
-	if response == "" {
-		response = "我这边暂时还没有整理出可发送的结果。"
-	}
-	return h.sendAssistantResponse(ctx, msg, response)
-}
-
 func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attachments []gateway.Attachment) agent.UserTurnInput {
 	baseText = strings.TrimSpace(baseText)
 	if len(attachments) == 0 {

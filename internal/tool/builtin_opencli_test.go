@@ -133,7 +133,7 @@ func TestBuildOpenCLIInvocationRawRejectsShellCommand(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected shell command to be rejected")
 	}
-	if !strings.Contains(err.Error(), "use the shell/terminal tool") {
+	if !strings.Contains(err.Error(), "use the terminal tool") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

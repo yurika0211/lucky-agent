@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// Persistence handles saving and loading RAG index data to/from disk (JSON format).
-// This is the legacy persistence mechanism; v0.20.0+ uses SQLiteStore for automatic persistence.
+// Persistence handles saving and loading RAG index data to/from disk as JSON.
+// It is used when the SQLite store is unavailable.
 type Persistence struct {
 	dir string // directory for persistence files
 }

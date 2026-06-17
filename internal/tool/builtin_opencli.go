@@ -30,7 +30,7 @@ func OpenCLITool(cfg *OpenCLIConfig, fallbackCfg *WebSearchConfig) *Tool {
 	normalized := normalizeOpenCLIConfig(cfg)
 	return &Tool{
 		Name:        "opencli",
-		Description: "Run OpenCLI for website adapters, authenticated browser sessions, URL-to-Markdown extraction, and raw OpenCLI commands. Use action=web_read for any URL, action=site for adapters like twitter/youtube/zhihu/xiaohongshu, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh commands here; use shell or terminal for shell execution.",
+		Description: "Run OpenCLI for website adapters, authenticated browser sessions, URL-to-Markdown extraction, and raw OpenCLI commands. Use action=web_read for any URL, action=site for adapters like twitter/youtube/zhihu/xiaohongshu, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh commands here; use terminal for shell execution.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
@@ -268,7 +268,7 @@ func normalizeRawOpenCLIArgs(args []string) ([]string, error) {
 		if ok {
 			return unwrapped, nil
 		}
-		return nil, fmt.Errorf("opencli action=raw only accepts OpenCLI arguments, not shell command %q; use the shell/terminal tool for bash or sh commands", args[0])
+		return nil, fmt.Errorf("opencli action=raw only accepts OpenCLI arguments, not shell command %q; use the terminal tool for bash or sh commands", args[0])
 	}
 	return args, nil
 }
@@ -641,27 +641,6 @@ func stripOpenCLIUpdateNotice(output string) string {
 		break
 	}
 	return strings.TrimSpace(strings.Join(lines[:end], "\n"))
-}
-
-func openCLIConfigToQueryDescription(cfg *OpenCLIConfig) string {
-	if cfg == nil {
-		return ""
-	}
-	return fmt.Sprintf("opencli command=%s args=%s timeout=%ds", cfg.Command, strings.Join(cfg.Args, " "), cfg.TimeoutSeconds)
-}
-
-func openCLIConfigSummary(cfg *OpenCLIConfig) string {
-	if cfg == nil {
-		return "OpenCLI website and browser access."
-	}
-	return fmt.Sprintf("OpenCLI website and browser access. Command: %s. Web read args: %s.", cfg.Command, strings.Join(cfg.Args, " "))
-}
-
-func openCLIContentHint(cfg *OpenCLIConfig) string {
-	if cfg == nil {
-		return ""
-	}
-	return fmt.Sprintf("OpenCLI web_read is configured to use %s.", openCLIConfigToQueryDescription(cfg))
 }
 
 func firstMarkdownTitle(result string) string {

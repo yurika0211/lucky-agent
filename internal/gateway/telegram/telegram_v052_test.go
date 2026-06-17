@@ -168,7 +168,7 @@ func TestAdapterReactToMessage(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Token = "invalid-token"
 	adapter := NewAdapter(cfg)
-	
+
 	// 不应该 panic（bot 为 nil 时会跳过）
 	adapter.ReactToMessage("12345", "1", "👍")
 }
@@ -341,7 +341,7 @@ func TestAdapterProcessUpdate(t *testing.T) {
 func TestAdapterConvertMessage(t *testing.T) {
 	cfg := DefaultConfig()
 	adapter := NewAdapter(cfg)
-	
+
 	// 测试私聊消息
 	msg := &tgbotapi.Message{
 		MessageID: 1,
@@ -356,7 +356,7 @@ func TestAdapterConvertMessage(t *testing.T) {
 		},
 		Text: "hello",
 	}
-	
+
 	result := adapter.convertMessage(msg)
 	if result == nil {
 		t.Error("expected non-nil message")
@@ -373,7 +373,7 @@ func TestAdapterConvertMessage(t *testing.T) {
 func TestAdapterConvertMessageGroup(t *testing.T) {
 	cfg := DefaultConfig()
 	adapter := NewAdapter(cfg)
-	
+
 	msg := &tgbotapi.Message{
 		MessageID: 1,
 		Chat: &tgbotapi.Chat{
@@ -388,7 +388,7 @@ func TestAdapterConvertMessageGroup(t *testing.T) {
 		},
 		Text: "group message",
 	}
-	
+
 	result := adapter.convertMessage(msg)
 	if result == nil {
 		t.Error("expected non-nil message")
@@ -415,7 +415,7 @@ func TestAdapterIsMentioned(t *testing.T) {
 	cfg := DefaultConfig()
 	adapter := NewAdapter(cfg)
 	adapter.botUsername = "testbot"
-	
+
 	msg := &tgbotapi.Message{
 		Text: "hello @testbot",
 		Entities: []tgbotapi.MessageEntity{
@@ -426,16 +426,16 @@ func TestAdapterIsMentioned(t *testing.T) {
 			},
 		},
 	}
-	
+
 	if !adapter.isMentioned(msg) {
 		t.Error("expected message to be mentioned")
 	}
-	
+
 	// 测试未提及
 	msg2 := &tgbotapi.Message{
 		Text: "hello world",
 	}
-	
+
 	if adapter.isMentioned(msg2) {
 		t.Error("expected message not to be mentioned")
 	}
@@ -445,7 +445,7 @@ func TestAdapterIsMentioned(t *testing.T) {
 func TestAdapterIsReplyToBot(t *testing.T) {
 	cfg := DefaultConfig()
 	adapter := NewAdapter(cfg)
-	
+
 	// 测试回复给 bot（需要设置 IsBot=true）
 	msg := &tgbotapi.Message{
 		ReplyToMessage: &tgbotapi.Message{
@@ -455,11 +455,11 @@ func TestAdapterIsReplyToBot(t *testing.T) {
 			},
 		},
 	}
-	
+
 	if !adapter.isReplyToBot(msg) {
 		t.Error("expected reply to bot")
 	}
-	
+
 	// 测试回复给别人
 	msg2 := &tgbotapi.Message{
 		ReplyToMessage: &tgbotapi.Message{
@@ -469,7 +469,7 @@ func TestAdapterIsReplyToBot(t *testing.T) {
 			},
 		},
 	}
-	
+
 	if adapter.isReplyToBot(msg2) {
 		t.Error("expected not reply to bot")
 	}
@@ -507,15 +507,6 @@ func TestAdapterSplitMessage(t *testing.T) {
 	chunks = adapter.splitMessage(longMsg)
 	if len(chunks) < 2 {
 		t.Errorf("expected >= 2 chunks, got %d", len(chunks))
-	}
-}
-
-// TestAdapterEscapeMarkdownV2 测试 escapeMarkdownV2
-func TestAdapterEscapeMarkdownV2(t *testing.T) {
-	input := "hello_world.test"
-	result := escapeMarkdownV2(input)
-	if result == "" {
-		t.Error("expected non-empty result")
 	}
 }
 

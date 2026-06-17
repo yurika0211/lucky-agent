@@ -164,19 +164,9 @@ func (s *CronToolService) HandleAdd(args map[string]any) (string, error) {
 		modeText = strings.ToLower(strings.TrimSpace(mode))
 	}
 	command, _ := args["command"].(string)
-	if strings.TrimSpace(command) == "" {
-		if legacy, ok := args["task"].(string); ok && strings.TrimSpace(legacy) != "" {
-			command = legacy
-		}
-	}
-	if strings.TrimSpace(command) == "" {
-		if legacy, ok := args["prompt"].(string); ok && strings.TrimSpace(legacy) != "" {
-			command = legacy
-		}
-	}
 	command = strings.TrimSpace(command)
 	if command == "" {
-		return "", fmt.Errorf("command is required (task/prompt are accepted as legacy aliases)")
+		return "", fmt.Errorf("command is required")
 	}
 	id = strings.TrimSpace(id)
 	if id == "" {

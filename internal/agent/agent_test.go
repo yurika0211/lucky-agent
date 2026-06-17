@@ -2409,27 +2409,6 @@ func TestResolveImageGenerationConfigPrefersDedicatedGeminiConfig(t *testing.T) 
 	}
 }
 
-func TestResolveImageGenerationConfigPromotesLegacyGeminiModel(t *testing.T) {
-	cfg := &config.Config{
-		Multimodal: config.MultimodalConfig{
-			APIKey:          "legacy-key",
-			APIBase:         "https://api.shiokou.asia/v1",
-			GenerationModel: "gemini-3.1-flash-image-preview",
-		},
-	}
-
-	genCfg, ok := resolveImageGenerationConfig(cfg)
-	if !ok {
-		t.Fatal("expected legacy gemini config to resolve")
-	}
-	if genCfg.Provider != "gemini" {
-		t.Fatalf("expected gemini provider, got %q", genCfg.Provider)
-	}
-	if genCfg.APIBase != "https://api.shiokou.asia/v1" {
-		t.Fatalf("expected legacy api base, got %q", genCfg.APIBase)
-	}
-}
-
 func TestResolveTTSConfigPrefersDedicatedConfig(t *testing.T) {
 	cfg := &config.Config{
 		TTS: config.TTSConfig{
@@ -2752,44 +2731,6 @@ func TestRunLoopEphemeralSkipsFinalAnswerPersistence(t *testing.T) {
 	dir := filepath.Join(cfg.HomeDir(), "knowledge", "final_answers")
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("expected ephemeral loop not to write final answer documents, stat err=%v", err)
-	}
-}
-
-func TestCronAddAcceptsLegacyAliasesAndAutoID(t *testing.T) {
-	tmpDir := t.TempDir()
-	cfg, _ := config.NewManagerWithDir(tmpDir)
-	cfg.Set("provider", "openai")
-	cfg.Set("api_key", "sk-test")
-	cfg.Set("model", "gpt-3.5-turbo")
-
-	a, err := New(cfg)
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	defer a.Close()
-
-	resp, err := a.Tools().Call("cron_add", map[string]any{
-		"schedule": "每两个小时",
-		"mode":     "agent",
-		"task":     "提醒我喝水",
-	})
-	if err != nil {
-		t.Fatalf("cron_add(task alias) error = %v", err)
-	}
-	var out map[string]any
-	if err := json.Unmarshal([]byte(resp), &out); err != nil {
-		t.Fatalf("unmarshal cron_add response: %v", err)
-	}
-	id, _ := out["id"].(string)
-	if strings.TrimSpace(id) == "" {
-		t.Fatal("expected generated id")
-	}
-	job, ok := a.CronEngine().GetJob(id)
-	if !ok {
-		t.Fatalf("expected job %q to exist", id)
-	}
-	if got := job.Metadata["command"]; got != "提醒我喝水" {
-		t.Fatalf("expected command to come from task alias, got %q", got)
 	}
 }
 

@@ -60,11 +60,6 @@ func newToolExecutionGuard(userInput string) *toolExecutionGuard {
 	}
 }
 
-func (g *toolExecutionGuard) isBlocked(call provider.ToolCall) bool {
-	_, blocked := g.blockMessage(call)
-	return blocked
-}
-
 func (g *toolExecutionGuard) blockMessage(call provider.ToolCall) (string, bool) {
 	if g == nil {
 		return "", false
@@ -81,7 +76,7 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 	args := parseToolCallArgs(call.Arguments)
 
 	switch name {
-	case "terminal", "shell":
+	case "terminal":
 		return g.blockShellReason(guardStringArg(args, "command"))
 	case "file_write", "file_patch", "file_mkdir", "file_move":
 		if g.noWrite || g.readOnly || g.readOnlyExternal {

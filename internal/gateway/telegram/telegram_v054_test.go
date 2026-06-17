@@ -2037,31 +2037,6 @@ func TestV054HandlerHandleMessageWithAttachments(t *testing.T) {
 }
 
 // ============================================================
-// escapeMarkdownV2 测试
-// ============================================================
-
-func TestV054EscapeMarkdownV2(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"hello", "hello"},
-		{"hello_world", "hello\\_world"},
-		{"*bold*", "\\*bold\\*"},
-		{"[link]", "\\[link\\]"},
-		{"test.text", "test\\.text"},
-		{"a!b", "a\\!b"},
-	}
-
-	for _, tt := range tests {
-		result := escapeMarkdownV2(tt.input)
-		if result != tt.expected {
-			t.Errorf("escapeMarkdownV2(%q) = %q, want %q", tt.input, result, tt.expected)
-		}
-	}
-}
-
-// ============================================================
 // waitRateLimit 测试
 // ============================================================
 

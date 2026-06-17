@@ -20,11 +20,6 @@
     "api_key": "",
     "api_base": "",
     "image_model": "gpt-5.4-mini",
-    "generation_model": "gpt-image-1.5",
-    "generation_size": "1024x1024",
-    "generation_quality": "auto",
-    "generation_background": "auto",
-    "generation_output_format": "png",
     "transcription_model": "whisper-1",
     "image_provider": ""
   },
@@ -177,7 +172,6 @@
     "platform": "telegram",
     "start_all": false,
     "api_addr": "127.0.0.1:9090",
-    "token": "",
     "telegram": {
       "token": "",
       "proxy": "",

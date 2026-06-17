@@ -346,20 +346,6 @@ func (c *FetchCache) Set(rawURL string, maxChars int, result *FetchResult) {
 	}
 }
 
-// Clear removes all cached fetch entries.
-func (c *FetchCache) Clear() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.entries = make(map[string]*fetchCacheEntry)
-}
-
-// Len returns the number of cached fetch entries.
-func (c *FetchCache) Len() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return len(c.entries)
-}
-
 func (c *FetchCache) evictOldest() {
 	var oldestKey string
 	var oldestTime time.Time

@@ -316,8 +316,8 @@ func TestCallWithShellContextResolvesOpenAICompatibleName(t *testing.T) {
 func TestFormatToolList(t *testing.T) {
 	r := NewRegistry()
 	r.Register(&Tool{
-		Name:        "shell",
-		Description: "Execute shell commands",
+		Name:        "terminal",
+		Description: "Execute terminal commands",
 		Category:    CatBuiltin,
 		Permission:  PermApprove,
 	})
@@ -332,8 +332,8 @@ func TestFormatToolList(t *testing.T) {
 	if list == "" {
 		t.Error("expected non-empty tool list")
 	}
-	if !contains(list, "shell") {
-		t.Error("expected shell in list")
+	if !contains(list, "terminal") {
+		t.Error("expected terminal in list")
 	}
 	if !contains(list, "skill_search") {
 		t.Error("expected skill_search in list")

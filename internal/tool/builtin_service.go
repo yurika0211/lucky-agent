@@ -34,7 +34,6 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 		return
 	}
 	r.Register(TerminalTool())
-	r.Register(LegacyShellTool())
 	r.Register(FileReadTool())
 	r.Register(FileWriteTool())
 	r.Register(FileMkdirTool())

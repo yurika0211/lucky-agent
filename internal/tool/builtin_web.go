@@ -196,27 +196,6 @@ func deepSearchOrder(provider string, cfg *WebSearchConfig) []string {
 	return order
 }
 
-func buildSearchEngineForSource(source string, cfg *WebSearchConfig) searchpkg.SearchEngine {
-	switch source {
-	case "searxng":
-		baseURL := cfg.BaseURL
-		if baseURL == "" {
-			baseURL = os.Getenv("SEARXNG_BASE_URL")
-		}
-		return searchpkg.NewSearXNGEngine(baseURL, cfg.Proxy)
-	case "exa":
-		return searchpkg.NewExaEngine(resolveExaAPIKey(cfg))
-	case "ddgs":
-		return searchpkg.NewDDGSEngine()
-	case "ddg-lite":
-		return searchpkg.NewDDGLiteEngine()
-	case "brave":
-		return searchpkg.NewBraveEngine(resolveBraveAPIKey(cfg), cfg.Proxy)
-	default:
-		return nil
-	}
-}
-
 type searchEntry struct {
 	Title   string
 	URL     string
@@ -258,23 +237,6 @@ func searchWithBrave(cfg *WebSearchConfig, query string, count int) (string, err
 
 func searchWithBraveEntries(cfg *WebSearchConfig, query string, count int) ([]searchEntry, error) {
 	engine := searchpkg.NewBraveEngine(resolveBraveAPIKey(cfg), cfg.Proxy)
-	results, err := engine.Search(context.Background(), query, count)
-	if err != nil {
-		return nil, err
-	}
-	return toSearchEntries(results), nil
-}
-
-func searchWithExa(cfg *WebSearchConfig, query string, count int) (string, error) {
-	entries, err := searchWithExaEntries(cfg, query, count)
-	if err != nil {
-		return "", err
-	}
-	return formatEntries(query, entries, count), nil
-}
-
-func searchWithExaEntries(cfg *WebSearchConfig, query string, count int) ([]searchEntry, error) {
-	engine := searchpkg.NewExaEngine(resolveExaAPIKey(cfg))
 	results, err := engine.Search(context.Background(), query, count)
 	if err != nil {
 		return nil, err
@@ -407,26 +369,6 @@ func WebFetchTool(cfg *WebSearchConfig) *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
-		Parameters: map[string]Param{
-			"url":       {Type: "string", Description: "Exact URL to fetch and convert into readable text.", Required: true},
-			"max_chars": {Type: "number", Description: "Maximum readable text to return. Lower this when you only need a focused excerpt.", Required: false, Default: 50000},
-		},
-		Handler:      func(args map[string]any) (string, error) { return handleWebFetch(cfg, args) },
-		ParallelSafe: true,
-	}
-}
-
-func DefuddleCompatTool(cfg *WebSearchConfig) *Tool {
-	if cfg == nil {
-		cfg = defaultWebSearchConfig()
-	}
-	return &Tool{
-		Name:            "defuddle",
-		Description:     "Compatibility fetch tool. Extract readable content from a URL using the standard web fetch pipeline.",
-		Category:        CatBuiltin,
-		Source:          "builtin",
-		Permission:      PermApprove,
-		HiddenFromModel: true,
 		Parameters: map[string]Param{
 			"url":       {Type: "string", Description: "Exact URL to fetch and convert into readable text.", Required: true},
 			"max_chars": {Type: "number", Description: "Maximum readable text to return. Lower this when you only need a focused excerpt.", Required: false, Default: 50000},
