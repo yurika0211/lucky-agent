@@ -1077,6 +1077,40 @@ func TestSet_AgentOptions(t *testing.T) {
 	t.Logf("Agent options set correctly")
 }
 
+func TestSet_ContextMemoryHygieneOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	if err := mgr.Set("context.memory_hygiene_before_context", "true"); err != nil {
+		t.Fatalf("set memory_hygiene_before_context: %v", err)
+	}
+	if err := mgr.Set("context.memory_hygiene_action", "quarantine"); err != nil {
+		t.Fatalf("set memory_hygiene_action: %v", err)
+	}
+	if err := mgr.Set("context.memory_hygiene_min_severity", "high"); err != nil {
+		t.Fatalf("set memory_hygiene_min_severity: %v", err)
+	}
+	if err := mgr.Set("context.memory_hygiene_max_findings", "7"); err != nil {
+		t.Fatalf("set memory_hygiene_max_findings: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if !cfg.Context.MemoryHygieneBeforeContext {
+		t.Fatal("expected memory hygiene before context to be enabled")
+	}
+	if cfg.Context.MemoryHygieneAction != "quarantine" {
+		t.Fatalf("unexpected hygiene action: %q", cfg.Context.MemoryHygieneAction)
+	}
+	if cfg.Context.MemoryHygieneMinSeverity != "high" {
+		t.Fatalf("unexpected hygiene severity: %q", cfg.Context.MemoryHygieneMinSeverity)
+	}
+	if cfg.Context.MemoryHygieneMaxFindings != 7 {
+		t.Fatalf("unexpected hygiene max findings: %d", cfg.Context.MemoryHygieneMaxFindings)
+	}
+}
+
 // TestSet_StreamMode 测试 stream_mode
 func TestSet_StreamMode(t *testing.T) {
 	mgr, err := NewManagerWithDir(t.TempDir())

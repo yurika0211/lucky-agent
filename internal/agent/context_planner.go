@@ -122,6 +122,9 @@ BuildInput 根据结构化用户输入、会话和预算生成最终上下文消
 func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, input UserTurnInput) []provider.Message {
 	input = input.Normalize()
 	routingText := input.RoutingText
+	if p.agent != nil {
+		p.agent.runContextMemoryHygieneHook()
+	}
 	hasStructuredParts := len(input.Message.ContentParts) > 0
 	if hasStructuredParts && !p.supportsImageContentParts() {
 		input.Message = stripContentParts(input.Message)
@@ -771,6 +774,7 @@ func (p *contextPlanner) buildMidtermSummaryMessage(query string) provider.Messa
 	}
 	var b strings.Builder
 	b.WriteString("[Session History — Mid-term]\n")
+	b.WriteString("Compressed summary; non-authoritative. Prefer raw recent messages, tool outputs, or workspace state when they conflict.\n")
 	for _, sm := range summaries {
 		b.WriteString("- ")
 		if len(sm.Topics) > 0 {
@@ -1154,10 +1158,6 @@ func (p *contextPlanner) tryLLMConversationSummary(ctx context.Context, sess *se
 func (p *contextPlanner) persistCompressedSummary(sess *session.Session, messages []provider.Message, summary string) {
 	if p == nil || p.agent == nil || strings.TrimSpace(summary) == "" {
 		return
-	}
-
-	if p.agent.memory != nil {
-		_ = p.agent.memory.SaveWithTier(summary, "context_compression", memory.TierMedium, 0.65)
 	}
 
 	if p.agent.midTerm == nil {

@@ -802,20 +802,39 @@ func compactToolResultForContext(toolName, result string) string {
 		out = fmt.Sprintf("[Tool Summary]\n- tool: %s\n- finding: %s\n\n%s", toolName, summary, out)
 	}
 
-	limit := 4000
+	limit := 8000
 	switch toolName {
 	case "web_search":
-		limit = 900
+		limit = 2400
 	case "web_fetch", "opencli":
-		limit = 1800
+		limit = 6000
 	case "file_list":
-		limit = 600
+		limit = 1200
 	}
 
-	if len(out) <= limit {
+	return truncateToolResultForContext(out, limit)
+}
+
+func truncateToolResultForContext(out string, limit int) string {
+	if limit <= 0 {
 		return out
 	}
-	return out[:limit] + "\n... (truncated for context)"
+	runes := []rune(out)
+	if len(runes) <= limit {
+		return out
+	}
+	marker := fmt.Sprintf(
+		"\n\n... (middle omitted for context: %d chars; do not rely on omitted details without another tool check) ...\n\n",
+		len(runes)-limit,
+	)
+	markerRunes := []rune(marker)
+	if len(markerRunes) >= limit {
+		return string(runes[:limit])
+	}
+	room := limit - len(markerRunes)
+	head := room * 2 / 3
+	tail := room - head
+	return string(runes[:head]) + marker + string(runes[len(runes)-tail:])
 }
 
 // extractRequiredToolNames 从用户输入中提取显式点名的工具（按出现顺序）。

@@ -265,7 +265,7 @@ func buildContextToolResult(toolName, rawResult string, successfulSearchEvidence
 			*successfulSearchEvidence = *successfulSearchEvidence + 1
 		}
 		if toolName == "web_search" && detailedSearchEvidence != nil {
-			if *detailedSearchEvidence >= 2 {
+			if *detailedSearchEvidence >= 4 {
 				contextResult = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
 			} else {
 				*detailedSearchEvidence = *detailedSearchEvidence + 1
