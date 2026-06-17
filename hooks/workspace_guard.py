@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: keep filesystem mutations inside allowed workspace roots.
+"""PreToolUse hook: keep filesystem mutations inside allowed LuckyHarness roots.
 
 Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
 Match this on: file_write, file_patch, file_delete, file_move, file_mkdir,
 shell, terminal.
 
 Allowed roots can be customized with LH_HOOK_ALLOWED_ROOTS using os.pathsep
-separation. By default only ~/.luckyharness/workspace is allowed. Relative
-paths without an explicit workdir are resolved under that workspace.
+separation. By default ~/.luckyharness is allowed, except private credential,
+session, log, and database paths. Relative paths without an explicit workdir
+are resolved under ~/.luckyharness/workspace.
 """
 import json
 import os
@@ -17,7 +18,21 @@ import sys
 
 
 DEFAULT_WORKSPACE = os.path.join(os.path.expanduser("~"), ".luckyharness", "workspace")
-DEFAULT_ALLOWED_ROOTS = (DEFAULT_WORKSPACE,)
+DEFAULT_LUCKYHARNESS = os.path.join(os.path.expanduser("~"), ".luckyharness")
+DEFAULT_ALLOWED_ROOTS = (DEFAULT_LUCKYHARNESS,)
+DEFAULT_PROTECTED_ROOTS = (
+    os.path.join(DEFAULT_LUCKYHARNESS, "sessions"),
+    os.path.join(DEFAULT_LUCKYHARNESS, "logs"),
+    os.path.join(DEFAULT_LUCKYHARNESS, "tokens"),
+    os.path.join(DEFAULT_LUCKYHARNESS, "profiles"),
+)
+DEFAULT_PROTECTED_FILES = (
+    os.path.join(DEFAULT_LUCKYHARNESS, "config.json"),
+    os.path.join(DEFAULT_LUCKYHARNESS, "config.prod.json"),
+    os.path.join(DEFAULT_LUCKYHARNESS, "SOUL.md"),
+    os.path.join(DEFAULT_LUCKYHARNESS, "hook-audit.jsonl"),
+    os.path.join(DEFAULT_LUCKYHARNESS, "luckyharness.db"),
+)
 
 FILE_TOOLS = {"file_write", "file_patch", "file_delete", "file_move", "file_mkdir"}
 PATH_KEYS = ("path", "dst", "dest", "to", "target", "src", "source")
@@ -37,6 +52,18 @@ def allowed_roots() -> list[str]:
     raw = os.environ.get("LH_HOOK_ALLOWED_ROOTS", "")
     roots = [p for p in raw.split(os.pathsep) if p.strip()] if raw else list(DEFAULT_ALLOWED_ROOTS)
     return [os.path.realpath(os.path.abspath(os.path.expanduser(p))) for p in roots]
+
+
+def protected_roots() -> list[str]:
+    raw = os.environ.get("LH_HOOK_PROTECTED_ROOTS", "")
+    roots = [p for p in raw.split(os.pathsep) if p.strip()] if raw else list(DEFAULT_PROTECTED_ROOTS)
+    return [os.path.realpath(os.path.abspath(os.path.expanduser(p))) for p in roots]
+
+
+def protected_files() -> list[str]:
+    raw = os.environ.get("LH_HOOK_PROTECTED_FILES", "")
+    files = [p for p in raw.split(os.pathsep) if p.strip()] if raw else list(DEFAULT_PROTECTED_FILES)
+    return [os.path.realpath(os.path.abspath(os.path.expanduser(p))) for p in files]
 
 
 def default_workspace() -> str:
@@ -72,15 +99,47 @@ def is_inside(path: str, roots: list[str]) -> bool:
     return False
 
 
-def check_path(raw: str, base: str, roots: list[str]) -> None:
+def is_protected_file(path: str, files: list[str]) -> bool:
+    base = os.path.basename(path).lower()
+    if base in ("config", "config.json", "config.yaml", "config.yml", "soul.md", "hook-audit.jsonl"):
+        return True
+    if base.startswith("config."):
+        return True
+    if base in (
+        "auth.json",
+        "chat_sessions.json",
+        "credentials.json",
+        "keys.json",
+        "oauth.json",
+        "token.json",
+        "tokens.json",
+        "secrets.json",
+    ):
+        return True
+    if "_chat_completions_" in base:
+        return True
+    if base == ".env" or base.startswith(".env."):
+        return True
+    if base.endswith((".db", ".sqlite", ".sqlite3", ".pem", ".key", ".crt")):
+        return True
+    return path in files
+
+
+def check_path(raw: str, base: str, roots: list[str], private_roots: list[str], private_files: list[str]) -> None:
     if not raw or raw.startswith("-"):
         return
     path = normalize_path(raw, base)
-    if path and not is_inside(path, roots):
-        decision_block(f"filesystem mutation outside allowed workspace roots is blocked: {path}")
+    if not path:
+        return
+    if is_inside(path, private_roots) or is_protected_file(path, private_files):
+        decision_block(f"filesystem mutation of protected LuckyHarness private data is blocked: {path}")
+    if not is_inside(path, roots):
+        decision_block(f"filesystem mutation outside allowed roots is blocked: {path}")
 
 
 def check_file_tool(args: dict, roots: list[str]) -> None:
+    private_roots = protected_roots()
+    private_files = protected_files()
     explicit_workdir = has_explicit_workdir(args)
     base = normalize_path(str(args.get("workdir") or ""), default_workspace()) or default_workspace()
     for key in PATH_KEYS:
@@ -89,9 +148,9 @@ def check_file_tool(args: dict, roots: list[str]) -> None:
             if not explicit_workdir and is_relative_path(value):
                 decision_block(
                     "relative filesystem mutation without explicit workdir is blocked; "
-                    "use an absolute path under ~/.luckyharness/workspace or set workdir to that workspace"
+                    "use an absolute path under ~/.luckyharness or set workdir to an allowed root"
                 )
-            check_path(value, base, roots)
+            check_path(value, base, roots, private_roots, private_files)
 
 
 def shell_path_tokens(command: str) -> list[str]:
@@ -124,6 +183,8 @@ def shell_path_tokens(command: str) -> list[str]:
 
 
 def check_shell(args: dict, roots: list[str]) -> None:
+    private_roots = protected_roots()
+    private_files = protected_files()
     command = str(args.get("command") or "")
     if not MUTATING_SHELL.search(command):
         return
@@ -133,9 +194,9 @@ def check_shell(args: dict, roots: list[str]) -> None:
         if not explicit_workdir and is_relative_path(token):
             decision_block(
                 "relative shell filesystem mutation without explicit workdir is blocked; "
-                "use an absolute path under ~/.luckyharness/workspace or set workdir to that workspace"
+                "use an absolute path under ~/.luckyharness or set workdir to an allowed root"
             )
-        check_path(token, base, roots)
+        check_path(token, base, roots, private_roots, private_files)
 
 
 def main() -> None:
