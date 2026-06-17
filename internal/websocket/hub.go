@@ -22,7 +22,6 @@ type Client struct {
 	Hub        *Hub
 	Send       chan *Message
 	LastActive time.Time
-	mu         sync.Mutex
 }
 
 // Hub coordinates websocket clients and session broadcasts.

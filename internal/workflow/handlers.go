@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -41,18 +40,18 @@ func (h *ServerHandlers) RegisterRoutes(r *gin.RouterGroup) {
 
 // CreateWorkflowRequest is the request body for creating a workflow.
 type CreateWorkflowRequest struct {
-	Name        string `json:"name" binding:"required"`
-	Description string `json:"description,omitempty"`
+	Name        string  `json:"name" binding:"required"`
+	Description string  `json:"description,omitempty"`
 	Tasks       []*Task `json:"tasks" binding:"required"`
-	Version     string `json:"version,omitempty"`
+	Version     string  `json:"version,omitempty"`
 }
 
 // UpdateWorkflowRequest is the request body for updating a workflow.
 type UpdateWorkflowRequest struct {
-	Name        string `json:"name,omitempty"`
-	Description string `json:"description,omitempty"`
+	Name        string  `json:"name,omitempty"`
+	Description string  `json:"description,omitempty"`
 	Tasks       []*Task `json:"tasks,omitempty"`
-	Version     string `json:"version,omitempty"`
+	Version     string  `json:"version,omitempty"`
 }
 
 // StartWorkflowRequest is the request body for starting a workflow.
@@ -158,7 +157,7 @@ func (h *ServerHandlers) ListInstances(c *gin.Context) {
 	instances := h.engine.ListInstances()
 	c.JSON(http.StatusOK, gin.H{
 		"instances": instances,
-		"count":      len(instances),
+		"count":     len(instances),
 	})
 }
 
@@ -216,22 +215,6 @@ func (h *ServerHandlers) GetInstanceResults(c *gin.Context) {
 		"status":     snapshot.Status,
 		"results":    snapshot.Results,
 	})
-}
-
-// ParseWorkflowFromJSON parses a workflow from JSON bytes.
-func ParseWorkflowFromJSON(data []byte) (*Workflow, error) {
-	return FromJSON(data)
-}
-
-// ParseWorkflowFromYAML parses a workflow from YAML bytes.
-func ParseWorkflowFromYAML(data []byte) (*Workflow, error) {
-	// For now, we'll use JSON unmarshaling as YAML is a superset of JSON
-	// In production, you'd want to use gopkg.in/yaml.v3
-	var workflow Workflow
-	if err := json.Unmarshal(data, &workflow); err != nil {
-		return nil, err
-	}
-	return &workflow, nil
 }
 
 func generateID() string {

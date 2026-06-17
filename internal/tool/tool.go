@@ -53,7 +53,7 @@ type Tool struct {
 	ShellAware bool
 	// ParallelSafe 标记该工具可安全并发执行（无状态、无副作用冲突）
 	// 如 web_search, web_fetch, file_read, current_time, recall 等
-	// shell, file_write 等有状态依赖的工具不应标记
+	// terminal, file_write 等有状态依赖的工具不应标记
 	ParallelSafe bool
 	// HiddenFromModel 标记该工具不应暴露给大模型的工具菜单。
 	// 适用于内部脚本入口、低层 skill 动作等。

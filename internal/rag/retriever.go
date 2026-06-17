@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	embedderpkg "github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/logger"
 )
 
@@ -48,11 +49,11 @@ func DefaultRetrieverConfig() RetrieverConfig {
 type Retriever struct {
 	store    VectorStoreBackend
 	indexer  *Indexer
-	embedder EmbeddingProvider
+	embedder embedderpkg.Embedder
 	config   RetrieverConfig
 }
 
-func NewRetriever(store VectorStoreBackend, indexer *Indexer, embedder EmbeddingProvider, config RetrieverConfig) *Retriever {
+func NewRetriever(store VectorStoreBackend, indexer *Indexer, embedder embedderpkg.Embedder, config RetrieverConfig) *Retriever {
 	if config.TopK <= 0 {
 		config.TopK = 5
 	}
@@ -71,7 +72,7 @@ func NewRetriever(store VectorStoreBackend, indexer *Indexer, embedder Embedding
 }
 
 // NewRetrieverWithBackend creates a retriever with a VectorStoreBackend (alias for NewRetriever).
-func NewRetrieverWithBackend(store VectorStoreBackend, indexer *Indexer, embedder EmbeddingProvider, config RetrieverConfig) *Retriever {
+func NewRetrieverWithBackend(store VectorStoreBackend, indexer *Indexer, embedder embedderpkg.Embedder, config RetrieverConfig) *Retriever {
 	return NewRetriever(store, indexer, embedder, config)
 }
 

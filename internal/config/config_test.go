@@ -63,15 +63,6 @@ func TestDefaultConfig(t *testing.T) {
 	if len(cfg.Autonomy.Worker.DisabledTools) != 1 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" {
 		t.Errorf("expected autonomy.worker.disabled_tools [autonomy], got %v", cfg.Autonomy.Worker.DisabledTools)
 	}
-	if cfg.Multimodal.GenerationModel != "gpt-image-1.5" {
-		t.Errorf("expected multimodal.generation_model gpt-image-1.5, got %s", cfg.Multimodal.GenerationModel)
-	}
-	if cfg.Multimodal.GenerationSize != "1024x1024" {
-		t.Errorf("expected multimodal.generation_size 1024x1024, got %s", cfg.Multimodal.GenerationSize)
-	}
-	if cfg.Multimodal.GenerationOutputFormat != "png" {
-		t.Errorf("expected multimodal.generation_output_format png, got %s", cfg.Multimodal.GenerationOutputFormat)
-	}
 	if cfg.ImageGeneration.Provider != "openai" {
 		t.Errorf("expected image_generation.provider openai, got %s", cfg.ImageGeneration.Provider)
 	}
@@ -270,21 +261,6 @@ func TestManagerSetMultimodalImageProvider(t *testing.T) {
 	if err := mgr.Set("multimodal.image_model", "gpt-4.1-mini"); err != nil {
 		t.Fatalf("Set multimodal.image_model: %v", err)
 	}
-	if err := mgr.Set("multimodal.generation_model", "gpt-image-1"); err != nil {
-		t.Fatalf("Set multimodal.generation_model: %v", err)
-	}
-	if err := mgr.Set("multimodal.generation_size", "1536x1024"); err != nil {
-		t.Fatalf("Set multimodal.generation_size: %v", err)
-	}
-	if err := mgr.Set("multimodal.generation_quality", "high"); err != nil {
-		t.Fatalf("Set multimodal.generation_quality: %v", err)
-	}
-	if err := mgr.Set("multimodal.generation_background", "transparent"); err != nil {
-		t.Fatalf("Set multimodal.generation_background: %v", err)
-	}
-	if err := mgr.Set("multimodal.generation_output_format", "webp"); err != nil {
-		t.Fatalf("Set multimodal.generation_output_format: %v", err)
-	}
 	if err := mgr.Set("multimodal.transcription_model", "whisper-1"); err != nil {
 		t.Fatalf("Set multimodal.transcription_model: %v", err)
 	}
@@ -304,21 +280,6 @@ func TestManagerSetMultimodalImageProvider(t *testing.T) {
 	}
 	if cfg.Multimodal.ImageModel != "gpt-4.1-mini" {
 		t.Fatalf("expected gpt-4.1-mini, got %q", cfg.Multimodal.ImageModel)
-	}
-	if cfg.Multimodal.GenerationModel != "gpt-image-1" {
-		t.Fatalf("expected gpt-image-1, got %q", cfg.Multimodal.GenerationModel)
-	}
-	if cfg.Multimodal.GenerationSize != "1536x1024" {
-		t.Fatalf("expected 1536x1024, got %q", cfg.Multimodal.GenerationSize)
-	}
-	if cfg.Multimodal.GenerationQuality != "high" {
-		t.Fatalf("expected high, got %q", cfg.Multimodal.GenerationQuality)
-	}
-	if cfg.Multimodal.GenerationBackground != "transparent" {
-		t.Fatalf("expected transparent, got %q", cfg.Multimodal.GenerationBackground)
-	}
-	if cfg.Multimodal.GenerationOutputFormat != "webp" {
-		t.Fatalf("expected webp, got %q", cfg.Multimodal.GenerationOutputFormat)
 	}
 	if cfg.Multimodal.TranscriptionModel != "whisper-1" {
 		t.Fatalf("expected whisper-1, got %q", cfg.Multimodal.TranscriptionModel)

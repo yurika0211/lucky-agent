@@ -40,10 +40,10 @@ func init() {
 
 // Config holds telemetry configuration.
 type Config struct {
-	Enabled      bool   `yaml:"enabled"`
-	ExporterType string `yaml:"exporter_type"` // stdout, otlp
-	OTLPEndpoint string `yaml:"otlp_endpoint"` // e.g., localhost:4317
-	SampleRate   float64 `yaml:"sample_rate"`  // 0.0 - 1.0
+	Enabled      bool    `yaml:"enabled"`
+	ExporterType string  `yaml:"exporter_type"` // stdout, otlp
+	OTLPEndpoint string  `yaml:"otlp_endpoint"` // e.g., localhost:4317
+	SampleRate   float64 `yaml:"sample_rate"`   // 0.0 - 1.0
 }
 
 // DefaultConfig returns default telemetry configuration.
@@ -286,54 +286,7 @@ func GRPCUnaryInterceptor() grpc.UnaryServerInterceptor {
 			span.SetStatus(codes.Ok, "")
 		}
 
-		// Add trace ID to outgoing metadata
-		if traceID := TraceIDFromContext(ctx); traceID != "" {
-			md := metadata.New(map[string]string{"x-trace-id": traceID})
-			ctx = metadata.NewOutgoingContext(ctx, md)
-		}
-
 		return resp, err
-	}
-}
-
-// GRPCStreamInterceptor returns a gRPC stream server interceptor for tracing.
-func GRPCStreamInterceptor() grpc.StreamServerInterceptor {
-	return func(srv interface{}, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		ctx := ss.Context()
-
-		// Extract trace context from metadata
-		if md, ok := metadata.FromIncomingContext(ctx); ok {
-			headers := propagation.HeaderCarrier{}
-			for k, v := range md {
-				headers.Set(k, v[0])
-			}
-			ctx = propagator.Extract(ctx, headers)
-		}
-
-		// Start span
-		ctx, span := tracer.Start(ctx, info.FullMethod,
-			trace.WithAttributes(
-				attribute.String("rpc.system", "grpc"),
-				attribute.String("rpc.method", info.FullMethod),
-			),
-		)
-		defer span.End()
-
-		// Wrap stream with new context
-		wrapped := &wrappedStream{ServerStream: ss, ctx: ctx}
-
-		// Call handler
-		err := handler(srv, wrapped)
-
-		// Set span status
-		if err != nil {
-			span.SetStatus(codes.Error, err.Error())
-			span.RecordError(err)
-		} else {
-			span.SetStatus(codes.Ok, "")
-		}
-
-		return err
 	}
 }
 

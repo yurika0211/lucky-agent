@@ -53,7 +53,7 @@ func TestSelectIntentAwareRecentHistoryDropsUnrelatedFiller(t *testing.T) {
 		{Role: "assistant", Content: "recipe filler assistant chatter with no benchmark relevance"},
 		{Role: "user", Content: "Context packer benchmark acceptance gates: CMR >= 0.95 and P95PackerMS <= 10."},
 		{Role: "assistant", Content: "Keep Quality >= baseline and track context noise."},
-		{Role: "tool", Name: "shell", Content: "go test ./cmd/lh-context-packer-bench ./internal/agent"},
+		{Role: "tool", Name: "terminal", Content: "go test ./cmd/lh-context-packer-bench ./internal/agent"},
 		{Role: "assistant", Content: "Next summarize prompt tokens and bucket tokens."},
 	}
 

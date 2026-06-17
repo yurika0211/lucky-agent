@@ -10,8 +10,7 @@ import (
 )
 
 const (
-	naturalCitationHeader       = "References:"
-	legacyNaturalCitationHeader = "参考说明："
+	naturalCitationHeader = "References:"
 )
 
 var citationURLRe = regexp.MustCompile(`https?://[^\s<>"')\]]+`)
@@ -27,7 +26,7 @@ func appendNaturalCitations(response string, toolCalls []toolCallLog) string {
 	if len(citations) == 0 {
 		return response
 	}
-	if strings.Contains(response, naturalCitationHeader) || strings.Contains(response, legacyNaturalCitationHeader) {
+	if strings.Contains(response, naturalCitationHeader) {
 		return response
 	}
 	response = closeDanglingMarkdownFence(response)
@@ -95,22 +94,6 @@ func countLeadingRunes(s string, target rune) int {
 		count++
 	}
 	return count
-}
-
-func naturalCitationsFromExecuted(executed []executedToolCall) []naturalCitation {
-	if len(executed) == 0 {
-		return nil
-	}
-	logs := make([]toolCallLog, 0, len(executed))
-	for _, execResult := range executed {
-		logs = append(logs, toolCallLog{
-			Name:      execResult.ToolCall.Name,
-			Arguments: execResult.ToolCall.Arguments,
-			Result:    execResult.Result,
-			Duration:  execResult.Duration,
-		})
-	}
-	return naturalCitationsFromToolLogs(logs)
 }
 
 func naturalCitationsFromToolLogs(toolCalls []toolCallLog) []naturalCitation {
@@ -418,17 +401,4 @@ func clipCitationText(text string, limit int) string {
 	}
 	runes := []rune(text)
 	return string(runes[:limit]) + "..."
-}
-
-func joinNaturalList(items []string) string {
-	switch len(items) {
-	case 0:
-		return ""
-	case 1:
-		return items[0]
-	case 2:
-		return items[0] + " 和 " + items[1]
-	default:
-		return strings.Join(items[:len(items)-1], "、") + " 和 " + items[len(items)-1]
-	}
 }

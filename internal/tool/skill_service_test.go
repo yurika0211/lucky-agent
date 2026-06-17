@@ -119,21 +119,3 @@ func TestSkillReadNamedJSONIncludesContentAndPath(t *testing.T) {
 		t.Fatalf("expected tool metadata, got %#v", payload.Tools)
 	}
 }
-
-func TestSkillReadTextRemainsBackwardCompatible(t *testing.T) {
-	svc := NewSkillToolService([]*SkillInfo{
-		{
-			Name:        "content",
-			Description: "Parent hub for multi-stage content workflows.",
-			Dir:         "/tmp/content-skill",
-		},
-	})
-
-	out, err := svc.HandleRead(map[string]any{})
-	if err != nil {
-		t.Fatalf("HandleRead text list: %v", err)
-	}
-	if !strings.Contains(out, "Available skills:") || !strings.Contains(out, "- content: Parent hub for multi-stage content workflows.") {
-		t.Fatalf("unexpected text output: %q", out)
-	}
-}

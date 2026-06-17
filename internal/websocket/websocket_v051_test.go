@@ -1,11 +1,9 @@
 package websocket
 
 import (
-	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -15,19 +13,6 @@ import (
 // ============================================================
 // WS-1: AgentHandler 完整测试
 // ============================================================
-
-// mockMsgHandler 简单消息处理器模拟
-type mockMsgHandler struct {
-	mu     sync.Mutex
-	msgs   []*Message
-	cancel context.CancelFunc
-}
-
-func (h *mockMsgHandler) HandleMessage(client *Client, msg *Message) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.msgs = append(h.msgs, msg)
-}
 
 // TestAgentHandlerBasic 测试 AgentHandler 基本功能
 func TestAgentHandlerBasic(t *testing.T) {
@@ -59,60 +44,6 @@ func TestAgentHandlerWithNilAgent(t *testing.T) {
 // ============================================================
 // WS-2: Hub SendToClient 测试
 // ============================================================
-
-func _TestHubSendToClient(t *testing.T) {
-	handler := &mockHandler{}
-	cfg := DefaultHubConfig()
-	hub := NewHub(handler, cfg)
-
-	go hub.Run()
-	defer hub.Stop()
-
-	server := httptest.NewServer(hub)
-	defer server.Close()
-
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/v1/ws?session=send-client-test"
-
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("Dial error: %v", err)
-	}
-	defer ws.Close()
-
-	time.Sleep(100 * time.Millisecond)
-
-	// 获取客户端 ID
-	hub.mu.RLock()
-	var clientID string
-	for id := range hub.clients {
-		clientID = id
-		break
-	}
-	hub.mu.RUnlock()
-
-	if clientID == "" {
-		t.Fatal("expected non-empty client ID")
-	}
-
-	// 发送到客户端
-	msg, _ := NewMessage(TypeStatus, "send-client-test", StatusData{State: "test"})
-	hub.SendToClient(clientID, msg)
-
-	// 读取消息
-	ws.SetReadDeadline(time.Now().Add(2 * time.Second))
-	_, raw, err := ws.ReadMessage()
-	if err != nil {
-		t.Fatalf("ReadMessage error: %v", err)
-	}
-
-	var received Message
-	if err := json.Unmarshal(raw, &received); err != nil {
-		t.Fatalf("Unmarshal error: %v", err)
-	}
-	if received.Type != TypeStatus {
-		t.Errorf("expected type %s, got %s", TypeStatus, received.Type)
-	}
-}
 
 func TestHubSendToNonExistentClient(t *testing.T) {
 	handler := &mockHandler{}

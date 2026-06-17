@@ -108,18 +108,8 @@ func (a *Agent) restoreCronJobs() (int, error) {
 		for k, v := range job.Metadata {
 			metadata[k] = v
 		}
-		if isLegacyAutoCronSessionID(job.ID, metadata["session_id"]) {
-			delete(metadata, "session_id")
-			delete(job.Metadata, "session_id")
-		}
 		return a.buildCronTask(job.ID, mode, command, metadata), metadata, nil
 	})
-}
-
-func isLegacyAutoCronSessionID(jobID, sessionID string) bool {
-	jobID = strings.TrimSpace(jobID)
-	sessionID = strings.TrimSpace(sessionID)
-	return jobID != "" && sessionID == "cron-"+jobID
 }
 
 /*
@@ -183,7 +173,7 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, meta
 			if a.gateway == nil {
 				return fmt.Errorf("gateway is not initialized")
 			}
-			res, err := a.gateway.Execute("shell", map[string]any{
+			res, err := a.gateway.Execute("terminal", map[string]any{
 				"command": command,
 				"timeout": 300,
 			}, "")
@@ -382,10 +372,6 @@ func (a *Agent) formatCronNotification(payload cronNotificationPayload) string {
 		intro = fallbackCronNotificationIntro(payload)
 	}
 	return buildCronNotificationMessage(intro, payload)
-}
-
-func fallbackCronNotification(payload cronNotificationPayload) string {
-	return buildCronNotificationMessage(fallbackCronNotificationIntro(payload), payload)
 }
 
 func fallbackCronNotificationIntro(payload cronNotificationPayload) string {

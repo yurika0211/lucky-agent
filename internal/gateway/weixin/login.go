@@ -97,40 +97,6 @@ func (c *LoginClient) FetchQRCode(ctx context.Context) (*QRCodeLogin, error) {
 	return login, nil
 }
 
-func (c *LoginClient) PollQRCodeStatus(ctx context.Context, qrCode string, interval time.Duration) (*QRCodeLogin, error) {
-	if strings.TrimSpace(qrCode) == "" {
-		return nil, fmt.Errorf("weixin login: qrcode is required")
-	}
-	if interval <= 0 {
-		interval = 2 * time.Second
-	}
-	for {
-		login, err := c.GetQRCodeStatus(ctx, qrCode)
-		if err != nil {
-			return nil, err
-		}
-		switch normalizeLoginStatus(login.Status) {
-		case "confirmed", "success", "logged_in":
-			if strings.TrimSpace(login.Token) == "" || strings.TrimSpace(login.AccountID) == "" {
-				return nil, fmt.Errorf("weixin login: login succeeded but token/account_id missing")
-			}
-			return login, nil
-		case "expired", "cancelled", "canceled", "failed":
-			msg := strings.TrimSpace(login.Description)
-			if msg == "" {
-				msg = strings.TrimSpace(login.Status)
-			}
-			return nil, fmt.Errorf("weixin login: %s", msg)
-		}
-
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(interval):
-		}
-	}
-}
-
 func (c *LoginClient) GetQRCodeStatus(ctx context.Context, qrCode string) (*QRCodeLogin, error) {
 	u := c.baseURL + "/" + epGetQRCodeState + "?qrcode=" + url.QueryEscape(strings.TrimSpace(qrCode))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -164,10 +130,6 @@ func (c *LoginClient) GetQRCodeStatus(ctx context.Context, qrCode string) (*QRCo
 		BaseURL:     strings.TrimRight(baseURL, "/"),
 		Description: desc,
 	}, nil
-}
-
-func normalizeLoginStatus(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
 }
 
 func decodeMaybeDataURL(v string) ([]byte, error) {

@@ -476,17 +476,6 @@ func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 		}
 	} else {
 		ragManager = ragMgr
-		ragPersist = rag.NewPersistence(cfg.HomeDir() + "/rag")
-		if ragPersist.Exists() {
-			tempMgr := rag.NewRAGManager(activeEmb, ragConfig)
-			if docCount, loadErr := ragPersist.Load(tempMgr); loadErr == nil && docCount > 0 {
-				for _, docID := range tempMgr.ListDocuments() {
-					if doc, ok := tempMgr.GetDocument(docID); ok {
-						ragManager.IndexText(doc.Path, doc.Title, "")
-					}
-				}
-			}
-		}
 	}
 
 	return ragRuntime{
@@ -801,11 +790,6 @@ func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, b
 		return multimodalRuntimeConfig{}, false
 	}
 
-	// Backward-compatible fallback for the old implicit OpenAI-only behavior.
-	if cfg.APIKey != "" && (strings.EqualFold(c.Provider, "openai") || strings.Contains(strings.ToLower(c.APIBase), "openai.com")) {
-		return cfg, true
-	}
-
 	return multimodalRuntimeConfig{}, false
 }
 
@@ -827,26 +811,8 @@ func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfi
 		OutputCompression: c.ImageGeneration.OutputCompression,
 		Count:             c.ImageGeneration.Count,
 	}
-	if cfg.Model == "" {
-		cfg.Model = strings.TrimSpace(c.Multimodal.GenerationModel)
-	}
-	if cfg.Size == "" {
-		cfg.Size = strings.TrimSpace(c.Multimodal.GenerationSize)
-	}
-	if cfg.Quality == "" {
-		cfg.Quality = strings.TrimSpace(c.Multimodal.GenerationQuality)
-	}
-	if cfg.Background == "" {
-		cfg.Background = strings.TrimSpace(c.Multimodal.GenerationBackground)
-	}
-	if cfg.OutputFormat == "" {
-		cfg.OutputFormat = strings.TrimSpace(c.Multimodal.GenerationOutputFormat)
-	}
 	if cfg.Provider == "" {
 		cfg.Provider = "openai"
-	}
-	if cfg.Provider == "openai" && looksLikeGeminiImageModel(cfg.Model) {
-		cfg.Provider = "gemini"
 	}
 	if cfg.AuthMode == "" {
 		cfg.AuthMode = "bearer"
@@ -889,11 +855,6 @@ func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfi
 		return imageGenerationRuntimeConfig{}, false
 	}
 	return cfg, true
-}
-
-func looksLikeGeminiImageModel(model string) bool {
-	model = strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(model, "gemini") || strings.HasPrefix(model, "google/gemini")
 }
 
 func resolveTTSConfig(c *config.Config) (ttsRuntimeConfig, bool) {
@@ -1188,14 +1149,6 @@ Style requirements:
 	return strings.TrimSpace(resp.Content), nil
 }
 
-// chatWithSession 是 Chat/ChatWithSession 的共享实现。
-/*
-chatWithSession 是 Chat 与 ChatWithSession 共用的内部实现。
-*/
-func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
-	return a.chatWithSessionInput(ctx, sess, TextUserTurnInput(userInput))
-}
-
 func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
 	input = input.Normalize()
 	routingText := input.RoutingText
@@ -1314,14 +1267,6 @@ func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string, cfg config
 	if loopCfg.ToolOnlyIterationLimit > toolOnlyIterationLimit {
 		loopCfg.ToolOnlyIterationLimit = toolOnlyIterationLimit
 	}
-}
-
-// chatStreamSimple 是不使用工具的简单流式聊天（作为 RunLoop 的回退）。
-/*
-chatStreamSimple 使用不带工具调用的简单流式聊天作为回退路径。
-*/
-func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, userInput string) (string, error) {
-	return a.chatStreamSimpleInput(ctx, sess, TextUserTurnInput(userInput))
 }
 
 func (a *Agent) chatStreamSimpleInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
@@ -1880,7 +1825,6 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	}
 	if len(response) > emittedContentBytes {
 		events <- ChatEvent{Type: ChatEventContent, Content: response[emittedContentBytes:]}
-		emittedContentBytes = len(response)
 	}
 	clean := strings.TrimSpace(response)
 
@@ -2839,28 +2783,6 @@ func (a *Agent) Close() error {
 
 	return firstErr
 }
-
-// buildRAGContext 构建 RAG 检索上下文
-func (a *Agent) buildRAGContext(ctx context.Context, messages []provider.Message, query string) []provider.Message {
-	if a.ragManager == nil {
-		return messages
-	}
-
-	stats := a.ragManager.Stats()
-	if stats.DocumentCount == 0 {
-		return messages // 没有索引文档，跳过 RAG
-	}
-
-	ragCtx, _, err := a.ragManager.SearchWithContext(ctx, query)
-	if err != nil || ragCtx == "" {
-		return messages
-	}
-
-	return append(messages, provider.Message{Role: "system", Content: ragCtx})
-}
-
-// unused suppress
-var _ = time.Second
 
 // toContextMessages 将 provider.Message 转换为 contextx.Message
 /*

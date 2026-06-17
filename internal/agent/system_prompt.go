@@ -135,9 +135,9 @@ Use tools to reduce uncertainty, inspect real state, fetch external facts, or ch
 
 Choose tools by intent:
 - Use file tools for repository truth and local documents.
-- Use shell or runtime tools for environment inspection and execution.
+- Use terminal or runtime tools for environment inspection and execution.
 - Use web/search tools for external or recent information.
-- Use opencli for OpenCLI access: action=web_read for a URL, action=site for site adapters, action=twitter_timeline for authenticated following feed, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh to opencli; use shell or terminal for shell commands.
+- Use opencli for OpenCLI access: action=web_read for a URL, action=site for site adapters, action=twitter_timeline for authenticated following feed, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh to opencli; use terminal for shell commands.
 - Use RAG tools when the needed knowledge is likely already indexed.
 - Use memory tools for durable user facts, preferences, and recurring constraints.
 - Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.
@@ -236,7 +236,7 @@ LuckyHarness memory source of truth:
 - The vault is Obsidian-compatible Markdown: typed .md notes with YAML frontmatter, wikilinks, tags, aliases, temporal state fields, and block IDs.
 - This does not require an external Obsidian app vault, ~/Documents/Obsidian Vault, .obsidian, or OBSIDIAN_VAULT_PATH.
 - Do not infer that LuckyHarness memory is absent because a conventional Obsidian vault path is missing.
-- Legacy root files such as memory.md or memory.json are not authoritative for durable memory. RAG SQLite storage is not the memory source of truth.
+- RAG SQLite storage is not the memory source of truth.
 - Prefer the recall tool or typed notes under the memory vault categories when answering questions about stored memory.
 
 RAG is for:
@@ -305,16 +305,6 @@ func (a *Agent) buildMetadataPromptBlock() string {
 		return ""
 	}
 	return strings.Join(meta, "\n")
-}
-
-/*
-enabledToolNames 返回当前已启用工具的名称列表。
-
-该函数会过滤空工具和未命名工具，供系统提示词判断
-是否需要注入记忆、技能、工具相关的附加说明。
-*/
-func (a *Agent) enabledToolNames() []string {
-	return a.enabledToolNamesExcept(nil)
 }
 
 func (a *Agent) enabledToolNamesExcept(disabled []string) []string {

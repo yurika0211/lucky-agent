@@ -103,7 +103,7 @@ func TestSQLiteStoreSearch(t *testing.T) {
 	}
 	defer store.Close()
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 
 	// Index some documents
 	texts := []struct {
@@ -159,7 +159,7 @@ func TestSQLiteStoreSearchWithFilter(t *testing.T) {
 	}
 	defer store.Close()
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 
 	vec1, _ := e.Embed(context.Background(), "Go programming")
 	vec2, _ := e.Embed(context.Background(), "Python data science")
@@ -225,7 +225,7 @@ func TestSQLiteStorePersistence(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "persist.db")
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 
 	// Create and populate store
 	store1, err := NewSQLiteStore(64, dbPath)
@@ -278,7 +278,7 @@ func TestSQLiteStoreUpsertUpdate(t *testing.T) {
 	}
 	defer store.Close()
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 
 	vec1, _ := e.Embed(context.Background(), "original content")
 	store.Upsert("doc1", vec1, map[string]string{"version": "1"})
@@ -346,7 +346,7 @@ func TestSQLiteStoreConcurrentAccess(t *testing.T) {
 	}
 	defer store.Close()
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 
 	// Concurrent upserts
 	done := make(chan bool, 10)

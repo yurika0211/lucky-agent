@@ -2,7 +2,6 @@ package tool
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/utils"
@@ -11,7 +10,6 @@ import (
 // Gateway 统一工具网关
 // 提供统一的工具调度入口，支持路由、计量、配额和订阅管理
 type Gateway struct {
-	mu       sync.RWMutex
 	registry *Registry
 	tracker  *UsageTracker
 	sub      *SubscriptionManager

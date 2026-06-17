@@ -10,7 +10,7 @@ func TestPersistenceSaveLoad(t *testing.T) {
 	dir := t.TempDir()
 	p := NewPersistence(dir)
 
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	mgr := NewRAGManager(embedder, RAGConfig{EmbeddingDim: 64})
 
 	// Index some content
@@ -77,7 +77,7 @@ func TestPersistenceMultipleDocs(t *testing.T) {
 	dir := t.TempDir()
 	p := NewPersistence(dir)
 
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	mgr := NewRAGManager(embedder, RAGConfig{EmbeddingDim: 64})
 
 	// Index multiple documents
@@ -116,7 +116,7 @@ func TestPersistenceNoData(t *testing.T) {
 	dir := t.TempDir()
 	p := NewPersistence(dir)
 
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	mgr := NewRAGManager(embedder, RAGConfig{EmbeddingDim: 64})
 
 	// Load from empty dir should succeed with 0 docs
@@ -142,7 +142,7 @@ func TestPersistenceLastSaved(t *testing.T) {
 		t.Error("expected zero time before save")
 	}
 
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	mgr := NewRAGManager(embedder, RAGConfig{EmbeddingDim: 64})
 	mgr.IndexText("src", "Title", "Content")
 
@@ -161,7 +161,7 @@ func TestPersistenceClear(t *testing.T) {
 	dir := t.TempDir()
 	p := NewPersistence(dir)
 
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	mgr := NewRAGManager(embedder, RAGConfig{EmbeddingDim: 64})
 	mgr.IndexText("src", "Title", "Content")
 
@@ -186,7 +186,7 @@ func TestPersistenceOverwrite(t *testing.T) {
 	dir := t.TempDir()
 	p := NewPersistence(dir)
 
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 
 	// Save first version
 	mgr1 := NewRAGManager(embedder, RAGConfig{EmbeddingDim: 64})
@@ -211,7 +211,7 @@ func TestPersistenceSearchAfterLoad(t *testing.T) {
 	dir := t.TempDir()
 	p := NewPersistence(dir)
 
-	embedder := NewMockEmbedder(64)
+	embedder := newMockEmbedder(64)
 	mgr := NewRAGManager(embedder, RAGConfig{EmbeddingDim: 64})
 
 	// Index and save

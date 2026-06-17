@@ -189,7 +189,7 @@ func TestInferCategory(t *testing.T) {
 		toolName string
 		expected Category
 	}{
-		{"shell", CatBuiltin},
+		{"terminal", CatBuiltin},
 		{"file_read", CatBuiltin},
 		{"current_time", CatBuiltin},
 		{"mcp_server_tool", CatMCP},
@@ -231,11 +231,11 @@ func TestSubscriptionManagerSetTierConfig(t *testing.T) {
 	sm := NewSubscriptionManager()
 
 	customConfig := TierConfig{
-		Tier:            SubFree,
+		Tier:              SubFree,
 		AllowedCategories: []Category{CatBuiltin, CatSkill},
-		MaxCallsPerDay:  200,
-		MaxCallsPerHour: 50,
-		Priority:        0,
+		MaxCallsPerDay:    200,
+		MaxCallsPerHour:   50,
+		Priority:          0,
 	}
 	sm.SetTierConfig(SubFree, customConfig)
 

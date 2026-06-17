@@ -40,28 +40,6 @@ func TestToolRouterAlias(t *testing.T) {
 	}
 }
 
-func TestBuiltinShellCompatibility(t *testing.T) {
-	r := NewRegistry()
-	RegisterBuiltinTools(r)
-	router := NewToolRouter(r)
-
-	name, err := router.Resolve("shell")
-	if err != nil {
-		t.Fatalf("resolve shell compatibility name: %v", err)
-	}
-	if name != "shell" {
-		t.Errorf("expected shell compatibility tool to resolve to shell, got %s", name)
-	}
-
-	name, err = router.Resolve("terminal")
-	if err != nil {
-		t.Fatalf("resolve terminal name: %v", err)
-	}
-	if name != "terminal" {
-		t.Errorf("expected terminal tool, got %s", name)
-	}
-}
-
 func TestToolRouterAliasNotFound(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -277,11 +255,11 @@ func TestMatchPattern(t *testing.T) {
 		expected bool
 	}{
 		{"*", "anything", true},
-		{"shell", "shell", true},
-		{"shell", "bash", false},
+		{"terminal", "terminal", true},
+		{"terminal", "bash", false},
 		{"web_*", "web_search", true},
 		{"web_*", "web_fetch", true},
-		{"web_*", "shell", false},
+		{"web_*", "terminal", false},
 		{"*_search", "web_search", true},
 		{"*_search", "file_read", false},
 	}

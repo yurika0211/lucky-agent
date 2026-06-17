@@ -217,25 +217,25 @@ curl http://127.0.0.1:9090/api/v1/health
 
 ## 发布与安装
 
-如果你只想拿预编译二进制，推荐走 GitHub Release：
+如果你需要安装已发布版本，推荐使用 GitHub Releases 中的预构建二进制包。发布新版本时，先创建 annotated tag，再推送到远端：
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag -a v0.1.0 -m "Release v0.1.0"
+git push origin refs/tags/v0.1.0
 ```
 
-仓库会在 tag push 后自动构建并发布 `Windows / macOS / Linux` 产物到 Releases 页面。下载后直接解压即可使用。
-Release 压缩包会同时包含 `lh` 二进制和 TUI 工作区；安装脚本会登记 TUI 目录，之后可以直接运行：
+仓库会在推送匹配 `v*` 的 Git tag 后自动构建 `Windows / macOS / Linux` release assets，并发布到 GitHub Releases 页面。下载对应平台的 release archive 后直接解压即可使用。
+Release archive 会同时包含 `lh` 二进制和 TUI 工作区；安装脚本会写入 TUI 安装路径，之后可以直接运行：
 
 ```bash
 lh tui
 ```
 
-TUI 需要本机安装 Node.js/npm。安装脚本会自动安装或回退下载 UI/TUI，并在 TUI 目录执行 `npm ci`；如果安装时没有 npm，装好 Node.js 后重新执行安装脚本即可。
+TUI 需要本机安装 Node.js/npm。安装脚本会优先使用 release archive 内置的 UI/TUI；如果旧版本 archive 未包含 UI，会按同一 release tag 回退下载源码中的 UI/TUI，并在 TUI 目录执行 `npm ci`。如果安装时没有 npm，装好 Node.js 后重新执行安装脚本即可。
 
 ### Linux
 
-一键安装到 `PATH`：
+安装最新 release 到 `PATH`：
 
 ```bash
 curl -fsSL https://yurika0211.github.io/luckyharness/install-lh.sh | sh
@@ -244,7 +244,7 @@ lh init
 lh tui
 ```
 
-如果你想指定版本或安装目录：
+如需固定 release tag 或安装前缀：
 
 ```bash
 sh scripts/install-lh.sh v0.1.0 "$HOME/bin"
@@ -252,7 +252,7 @@ sh scripts/install-lh.sh v0.1.0 "$HOME/bin"
 
 ### macOS
 
-macOS 使用同一个 shell 安装脚本：
+macOS 使用同一个 shell 安装脚本安装最新 release：
 
 ```bash
 curl -fsSL https://yurika0211.github.io/luckyharness/install-lh.sh | sh
@@ -274,7 +274,7 @@ lh.exe init
 lh.exe tui
 ```
 
-如果你想指定版本或安装目录：
+如需固定 release tag 或安装前缀：
 
 ```powershell
 .\scripts\install-lh.ps1 -Version v0.1.0 -Prefix "$HOME\bin"
@@ -1079,3 +1079,7 @@ go run ./cmd/lh msg-gateway start --platform weixin
 - typing 状态
 - `context_token` 持久化
 - 微信专用富文本格式优化
+
+## 交流群
+
+![QQ交流群](public/Qgroup.png)

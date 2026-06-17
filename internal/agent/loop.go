@@ -1062,15 +1062,6 @@ func buildFinalAnswerFilename(source string, now time.Time) string {
 	return fmt.Sprintf("%s_%x.md", now.Format("20060102_150405"), h.Sum64())
 }
 
-// RunLoopStream 执行流式 Agent Loop
-// executeTool 执行工具调用（通过 Gateway）
-/*
-executeTool 在无会话上下文时执行一次工具调用。
-*/
-func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, error) {
-	return a.executeToolWithSession(name, arguments, autoApprove, nil)
-}
-
 // executeToolWithSession 执行工具调用（带 session，支持 shell 上下文持久化）
 /*
 executeToolWithSession 在带会话上下文的情况下执行一次工具调用。
@@ -1133,8 +1124,8 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 		return "", err
 	}
 
-	// terminal/shell 执行后更新 session 的 cwd/env
-	if sess != nil && (name == "terminal" || name == "shell") {
+	// terminal 执行后更新 session 的 cwd/env
+	if sess != nil && name == "terminal" {
 		a.updateShellContext(sess, arguments, result.Output)
 	}
 

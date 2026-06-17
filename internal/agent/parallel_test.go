@@ -31,8 +31,8 @@ func TestParallelToolExecution(t *testing.T) {
 		},
 	}
 	serialShell := &tool.Tool{
-		Name:         "shell",
-		Description:  "Run shell command",
+		Name:         "terminal",
+		Description:  "Run terminal command",
 		Permission:   tool.PermApprove,
 		Category:     tool.CatBuiltin,
 		ParallelSafe: false,
@@ -55,9 +55,9 @@ func TestParallelToolExecution(t *testing.T) {
 	if !f.ParallelSafe {
 		t.Error("web_fetch should be ParallelSafe")
 	}
-	sh, _ := reg.Get("shell")
+	sh, _ := reg.Get("terminal")
 	if sh.ParallelSafe {
-		t.Error("shell should NOT be ParallelSafe")
+		t.Error("terminal should NOT be ParallelSafe")
 	}
 }
 

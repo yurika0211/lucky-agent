@@ -313,7 +313,6 @@ func (s *Server) Start() error {
 
 	// API v1 路由（声明式注册）
 	s.registerRoutes(mux, []routeEntry{
-		{path: "/api/v1/health", handler: s.handleHealth},
 		{path: "/api/v1/health/live", handler: s.handleHealthLiveness},
 		{path: "/api/v1/health/ready", handler: s.handleHealthReadiness},
 		{path: "/api/v1/health/detail", handler: s.handleHealthDetail},
@@ -410,7 +409,7 @@ func (s *Server) Start() error {
 		"rate_limit", s.config.RateLimit,
 	)
 	fmt.Printf("🚀 LuckyHarness API Server running at http://localhost%s\n", s.config.Addr)
-	fmt.Printf("   API: /api/v1/chat | /api/v1/health | /api/v1/stats\n")
+	fmt.Printf("   API: /api/v1/chat | /api/v1/health/live | /api/v1/stats\n")
 	return nil
 }
 
@@ -472,19 +471,6 @@ func (s *Server) HealthCheck() *health.HealthCheck {
 }
 
 // ===== 路由处理 =====
-
-// handleHealth 健康检查（兼容旧版）
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-		return
-	}
-	s.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"status":    "ok",
-		"version":   "v0.21.0",
-		"timestamp": time.Now().Format(time.RFC3339),
-	})
-}
 
 // handleHealthLiveness 存活检查
 func (s *Server) handleHealthLiveness(w http.ResponseWriter, r *http.Request) {
@@ -1195,7 +1181,9 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"GET  /api/v1/tools      — 工具列表",
 			"GET  /api/v1/stats      — 服务器统计",
 			"GET  /api/v1/soul       — SOUL 信息",
-			"GET  /api/v1/health     — 健康检查",
+			"GET  /api/v1/health/live — 存活检查",
+			"GET  /api/v1/health/ready — 就绪检查",
+			"GET  /api/v1/health/detail — 详细健康检查",
 		},
 	})
 }
@@ -1253,7 +1241,7 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 健康检查不需要认证
-		if r.URL.Path == "/api/v1/health" || r.URL.Path == "/" {
+		if strings.HasPrefix(r.URL.Path, "/api/v1/health/") || r.URL.Path == "/" {
 			next.ServeHTTP(w, r)
 			return
 		}

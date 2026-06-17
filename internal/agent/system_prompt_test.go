@@ -210,7 +210,6 @@ func TestBuildSystemPromptPinsLuckyHarnessMarkdownMemoryVault(t *testing.T) {
 		filepath.Join(mgr.HomeDir(), "memory"),
 		"Obsidian-compatible Markdown",
 		"does not require an external Obsidian app vault",
-		"Legacy root files such as memory.md or memory.json are not authoritative",
 		"RAG SQLite storage is not the memory source of truth",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -220,7 +219,7 @@ func TestBuildSystemPromptPinsLuckyHarnessMarkdownMemoryVault(t *testing.T) {
 	if strings.Contains(prompt, "~/Documents/Obsidian Vault is required") ||
 		strings.Contains(prompt, "OBSIDIAN_VAULT_PATH is required") ||
 		strings.Contains(prompt, "luckyharness.db is the memory source") {
-		t.Fatalf("prompt contains legacy/external-vault memory claim:\n%s", prompt)
+		t.Fatalf("prompt contains incorrect external-vault memory claim:\n%s", prompt)
 	}
 }
 

@@ -373,13 +373,6 @@ func (m *Manager) ProfileDataDir(name string) string {
 	return m.profileDataDir(name)
 }
 
-// ActiveDataDir 返回当前活跃 profile 的数据目录
-func (m *Manager) ActiveDataDir() string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.profileDataDir(m.activeName)
-}
-
 // ActiveName 返回当前活跃 profile 名称
 func (m *Manager) ActiveName() string {
 	m.mu.RLock()

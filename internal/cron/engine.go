@@ -182,8 +182,7 @@ func (s OnceSchedule) String() string {
 }
 
 // DescribeSchedule returns a stable human-readable summary of a schedule.
-// Structured persistence should use serializeSchedule; this string is for
-// display and legacy migration only.
+// Structured persistence should use serializeSchedule; this string is for display fallback.
 func DescribeSchedule(schedule Schedule) string {
 	if schedule == nil {
 		return ""

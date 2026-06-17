@@ -349,11 +349,12 @@ func (a *Adapter) forwardedMediaNode(title string, selfID string, item gateway.F
 	}, nil
 }
 
-func (a *Adapter) SetTyping(ctx context.Context, chatID string, userID string) error {
+func (a *Adapter) SetTyping(ctx context.Context, chatID string, _ string) error {
 	parts := strings.SplitN(chatID, ":", 2)
 	if len(parts) != 2 {
 		return nil
 	}
+	userID := ""
 	switch parts[0] {
 	case "private", "c2c":
 		userID = strings.TrimSpace(parts[1])

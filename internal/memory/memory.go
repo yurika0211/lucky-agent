@@ -948,9 +948,6 @@ func (s *Store) load() error {
 	if err := s.ensureVaultDirs(); err != nil {
 		return err
 	}
-	if err := s.archiveLegacyRootFiles(); err != nil {
-		return err
-	}
 
 	maxID := int64(0)
 	err := filepath.Walk(s.dir, func(path string, info os.FileInfo, err error) error {
@@ -1108,7 +1105,6 @@ This directory is the LuckyHarness durable memory source of truth.
 - Memory notes are Obsidian-compatible Markdown files under the category folders.
 - Authoritative memory notes use YAML frontmatter with type: memory.
 - Wikilinks, tags, aliases, temporal state fields, and block IDs are part of the memory graph.
-- Root-level legacy files such as memory.md, memory.json, and memory.txt are not authoritative memory.
 - The RAG SQLite database is for indexed documents, not durable user memory.
 - An external Obsidian app vault, .obsidian directory, or OBSIDIAN_VAULT_PATH is not required for LuckyHarness memory.
 `) + "\n"
@@ -1116,44 +1112,6 @@ This directory is the LuckyHarness durable memory source of truth.
 		return fmt.Errorf("write memory vault readme: %w", err)
 	}
 	return nil
-}
-
-func (s *Store) archiveLegacyRootFiles() error {
-	for _, name := range []string{"memory.md", "memory.json", "memory.txt"} {
-		path := filepath.Join(s.dir, name)
-		st, err := os.Stat(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return fmt.Errorf("stat legacy memory file %s: %w", path, err)
-		}
-		if st.IsDir() {
-			continue
-		}
-		if strings.EqualFold(filepath.Ext(path), ".md") {
-			if _, ok, err := parseMemoryNote(path, s.dir); err != nil {
-				return fmt.Errorf("parse legacy memory candidate %s: %w", path, err)
-			} else if ok {
-				continue
-			}
-		}
-		target := filepath.Join(s.dir, "90_Archive", archiveNameForLegacyFile(name, st.ModTime()))
-		if err := os.MkdirAll(filepath.Dir(target), 0700); err != nil {
-			return fmt.Errorf("create legacy memory archive dir: %w", err)
-		}
-		if err := os.Rename(path, target); err != nil {
-			return fmt.Errorf("archive legacy memory file %s: %w", path, err)
-		}
-	}
-	return nil
-}
-
-func archiveNameForLegacyFile(name string, modTime time.Time) string {
-	if modTime.IsZero() {
-		modTime = time.Now()
-	}
-	return fmt.Sprintf("legacy-%s-%s", modTime.Format("20060102-150405"), name)
 }
 
 func normalizeEntryForNote(e *Entry) {
@@ -1957,77 +1915,6 @@ func entryIsActive(e *Entry, asOf time.Time) bool {
 		return false
 	}
 	return true
-}
-
-func (s *Store) propagateGraphScoresLocked(scores map[string]float64, now time.Time) {
-	if s.graph == nil || len(scores) == 0 {
-		return
-	}
-	baseScores := make(map[string]float64, len(scores))
-	for id, score := range scores {
-		baseScores[id] = score
-	}
-
-	for id, score := range baseScores {
-		entry := s.entries[id]
-		if !entryIsActive(entry, now) {
-			continue
-		}
-
-		for _, link := range s.graph.Forward[id] {
-			for _, key := range graphKeysForLink(link) {
-				for _, targetID := range s.graph.Names[key] {
-					s.addPropagatedScoreLocked(scores, targetID, id, score, 0.55, now)
-				}
-				for _, targetID := range s.graph.Backlinks[key] {
-					s.addPropagatedScoreLocked(scores, targetID, id, score, 0.35, now)
-				}
-			}
-		}
-
-		for _, alias := range graphAliasesForEntry(entry) {
-			key := graphKey(alias)
-			for _, targetID := range s.graph.Backlinks[key] {
-				s.addPropagatedScoreLocked(scores, targetID, id, score, 0.45, now)
-			}
-		}
-
-		for _, tag := range entry.Tags {
-			key := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(tag)), "#")
-			for _, targetID := range s.graph.Tags[key] {
-				s.addPropagatedScoreLocked(scores, targetID, id, score, 0.18, now)
-			}
-		}
-	}
-}
-
-func (s *Store) addPropagatedScoreLocked(scores map[string]float64, targetID, sourceID string, sourceScore, coefficient float64, now time.Time) {
-	if targetID == "" || targetID == sourceID {
-		return
-	}
-	target := s.entries[targetID]
-	if !entryIsActive(target, now) {
-		return
-	}
-	boost := sourceScore * coefficient * max(target.Weight(now), 0.05)
-	if boost <= 0 {
-		return
-	}
-	scores[targetID] += boost
-}
-
-func (s *Store) scoreMapToEntriesLocked(scores map[string]float64, now time.Time) []entryScore {
-	scored := make([]entryScore, 0, len(scores))
-	for id, score := range scores {
-		entry := s.entries[id]
-		if !entryIsActive(entry, now) {
-			continue
-		}
-		entry.AccessCount++
-		entry.AccessedAt = now
-		scored = append(scored, entryScore{entry: *entry, score: score})
-	}
-	return scored
 }
 
 func (s *Store) rebuildGraphLocked() {

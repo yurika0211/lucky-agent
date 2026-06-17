@@ -70,7 +70,7 @@ func (e *batchCountingEmbedder) Name() string   { return "batch-count" }
 func (e *batchCountingEmbedder) Model() string  { return "batch-count" }
 
 func TestMockEmbedder(t *testing.T) {
-	e := NewMockEmbedder(128)
+	e := newMockEmbedder(128)
 
 	if e.Dimension() != 128 {
 		t.Errorf("expected dimension 128, got %d", e.Dimension())
@@ -111,7 +111,7 @@ func TestMockEmbedder(t *testing.T) {
 }
 
 func TestMockEmbedderBatch(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	texts := []string{"hello", "world", "test"}
 	vecs, err := e.EmbedBatch(context.Background(), texts)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestOpenAIEmbedder(t *testing.T) {
 		Model:     "text-embedding-3-small",
 		Dimension: 256,
 	}
-	e := NewOpenAIEmbedder(cfg)
+	e := newOpenAIEmbedder(cfg)
 
 	if e.Name() != "openai" {
 		t.Errorf("expected name 'openai', got %s", e.Name())
@@ -152,7 +152,7 @@ func TestOpenAIEmbedder(t *testing.T) {
 }
 
 func TestOpenAIEmbedderDefaults(t *testing.T) {
-	e := NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{})
+	e := newOpenAIEmbedder(embedder.OpenAIEmbedderConfig{})
 	if e.Dimension() != 1536 {
 		t.Errorf("expected default dimension 1536, got %d", e.Dimension())
 	}
@@ -232,7 +232,7 @@ func TestVectorStoreDelete(t *testing.T) {
 
 func TestVectorStoreSearch(t *testing.T) {
 	store := NewVectorStore(64)
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 
 	// Index some documents
 	texts := []struct {
@@ -284,7 +284,7 @@ func TestVectorStoreSearch(t *testing.T) {
 
 func TestVectorStoreSearchWithFilter(t *testing.T) {
 	store := NewVectorStore(64)
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 
 	vec1, _ := e.Embed(context.Background(), "test1")
 	vec2, _ := e.Embed(context.Background(), "test2")
@@ -396,7 +396,7 @@ func TestDocID(t *testing.T) {
 }
 
 func TestIndexerIndexText(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -438,7 +438,7 @@ func TestIndexerIndexFile(t *testing.T) {
 	content := "# Test Article\n\nThis is the first paragraph.\n\nThis is the second paragraph with more details."
 	os.WriteFile(path, []byte(content), 0644)
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -459,7 +459,7 @@ func TestIndexerIndexDirectory(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "doc2.txt"), []byte("Plain text content."), 0644)
 	os.WriteFile(filepath.Join(dir, "skip.json"), []byte("{}"), 0644) // should be skipped
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -474,7 +474,7 @@ func TestIndexerIndexDirectory(t *testing.T) {
 }
 
 func TestIndexerRemoveDocument(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -500,7 +500,7 @@ func TestIndexerRemoveDocument(t *testing.T) {
 }
 
 func TestIndexerReIndex(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -517,7 +517,7 @@ func TestIndexerReIndex(t *testing.T) {
 }
 
 func TestIndexerGetChunk(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -536,7 +536,7 @@ func TestIndexerGetChunk(t *testing.T) {
 }
 
 func TestIndexerListDocuments(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -550,7 +550,7 @@ func TestIndexerListDocuments(t *testing.T) {
 }
 
 func TestRetrieverSearch(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -590,7 +590,7 @@ func TestRetrieverSearch(t *testing.T) {
 }
 
 func TestRetrieverMinScore(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -609,7 +609,7 @@ func TestRetrieverMinScore(t *testing.T) {
 }
 
 func TestRetrieverMMR(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -638,7 +638,7 @@ func TestRetrieverMMR(t *testing.T) {
 }
 
 func TestRetrieverFilterSource(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -664,7 +664,7 @@ func TestRetrieverFilterSource(t *testing.T) {
 func TestRetrieverExcludesGeneratedFinalAnswersByDefault(t *testing.T) {
 	t.Setenv("LH_RAG_INCLUDE_GENERATED", "")
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 
@@ -712,7 +712,7 @@ func TestRetrieverBuildContext(t *testing.T) {
 		},
 	}
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 	retriever := NewRetriever(store, idx, e, DefaultRetrieverConfig())
@@ -730,7 +730,7 @@ func TestRetrieverBuildContext(t *testing.T) {
 }
 
 func TestRetrieverUpdateConfig(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	store := NewVectorStore(64)
 	idx := NewIndexer(store, e)
 	retriever := NewRetriever(store, idx, e, DefaultRetrieverConfig())
@@ -746,7 +746,7 @@ func TestRetrieverUpdateConfig(t *testing.T) {
 }
 
 func TestRAGManager(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 	mgr := NewRAGManager(e, cfg)
@@ -783,7 +783,7 @@ func TestRAGManager(t *testing.T) {
 }
 
 func TestRAGManagerSearchWithContext(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 	mgr := NewRAGManager(e, cfg)
@@ -807,7 +807,7 @@ func TestRAGManagerSearchWithContext(t *testing.T) {
 }
 
 func TestRAGManagerRemoveDocument(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 	mgr := NewRAGManager(e, cfg)
@@ -830,7 +830,7 @@ func TestRAGManagerRemoveDocument(t *testing.T) {
 }
 
 func TestRAGManagerListDocuments(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 	mgr := NewRAGManager(e, cfg)
@@ -845,7 +845,7 @@ func TestRAGManagerListDocuments(t *testing.T) {
 }
 
 func TestRAGManagerGetDocument(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 	mgr := NewRAGManager(e, cfg)
@@ -863,7 +863,7 @@ func TestRAGManagerGetDocument(t *testing.T) {
 }
 
 func TestRAGManagerUpdateRetrieverConfig(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	mgr := NewRAGManager(e, DefaultRAGConfig())
 
 	mgr.UpdateRetrieverConfig(RetrieverConfig{TopK: 20})
@@ -879,7 +879,7 @@ func TestRAGManagerIndexFile(t *testing.T) {
 	content := "# My Article\n\nThis is the content of my article about Go."
 	os.WriteFile(path, []byte(content), 0644)
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 	mgr := NewRAGManager(e, cfg)
@@ -899,7 +899,7 @@ func TestRAGManagerIndexDirectory(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "b.txt"), []byte("Content B."), 0644)
 	os.WriteFile(filepath.Join(dir, "c.json"), []byte("{}"), 0644)
 
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 	mgr := NewRAGManager(e, cfg)
@@ -914,7 +914,7 @@ func TestRAGManagerIndexDirectory(t *testing.T) {
 }
 
 func TestRAGManagerMultipleSearches(t *testing.T) {
-	e := NewMockEmbedder(64)
+	e := newMockEmbedder(64)
 	cfg := DefaultRAGConfig()
 	cfg.EmbeddingDim = 64
 	mgr := NewRAGManager(e, cfg)

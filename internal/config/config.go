@@ -121,17 +121,12 @@ type EmbeddingConfig struct {
 }
 
 type MultimodalConfig struct {
-	Provider               string `json:"provider,omitempty"`
-	APIKey                 string `json:"api_key,omitempty"`
-	APIBase                string `json:"api_base,omitempty"`
-	ImageModel             string `json:"image_model,omitempty"`
-	GenerationModel        string `json:"generation_model,omitempty"`
-	GenerationSize         string `json:"generation_size,omitempty"`
-	GenerationQuality      string `json:"generation_quality,omitempty"`
-	GenerationBackground   string `json:"generation_background,omitempty"`
-	GenerationOutputFormat string `json:"generation_output_format,omitempty"`
-	TranscriptionModel     string `json:"transcription_model,omitempty"`
-	ImageProvider          string `json:"image_provider,omitempty"`
+	Provider           string `json:"provider,omitempty"`
+	APIKey             string `json:"api_key,omitempty"`
+	APIBase            string `json:"api_base,omitempty"`
+	ImageModel         string `json:"image_model,omitempty"`
+	TranscriptionModel string `json:"transcription_model,omitempty"`
+	ImageProvider      string `json:"image_provider,omitempty"`
 }
 
 type ImageGenerationConfig struct {
@@ -267,7 +262,6 @@ type MsgGatewayConfig struct {
 	Platform       string                   `json:"platform,omitempty"`
 	StartAll       bool                     `json:"start_all,omitempty"`
 	APIAddr        string                   `json:"api_addr,omitempty"`
-	Token          string                   `json:"token,omitempty"` // 兼容: telegram token
 	Telegram       MsgGatewayTelegram       `json:"telegram,omitempty"`
 	QQOfficial     MsgGatewayQQOfficial     `json:"qqofficial,omitempty"`
 	NapCat         MsgGatewayNapCat         `json:"napcat,omitempty"`
@@ -513,14 +507,9 @@ func DefaultConfig() *Config {
 			FallbackToWebFetch: true,
 		},
 		Multimodal: MultimodalConfig{
-			Provider:               "openai",
-			ImageModel:             "gpt-5.4-mini",
-			GenerationModel:        "gpt-image-1.5",
-			GenerationSize:         "1024x1024",
-			GenerationQuality:      "auto",
-			GenerationBackground:   "auto",
-			GenerationOutputFormat: "png",
-			TranscriptionModel:     "whisper-1",
+			Provider:           "openai",
+			ImageModel:         "gpt-5.4-mini",
+			TranscriptionModel: "whisper-1",
 		},
 		ImageGeneration: ImageGenerationConfig{
 			Provider:     "openai",
@@ -717,21 +706,6 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Multimodal.ImageModel == "" {
 		cfg.Multimodal.ImageModel = def.Multimodal.ImageModel
 	}
-	if cfg.Multimodal.GenerationModel == "" {
-		cfg.Multimodal.GenerationModel = def.Multimodal.GenerationModel
-	}
-	if cfg.Multimodal.GenerationSize == "" {
-		cfg.Multimodal.GenerationSize = def.Multimodal.GenerationSize
-	}
-	if cfg.Multimodal.GenerationQuality == "" {
-		cfg.Multimodal.GenerationQuality = def.Multimodal.GenerationQuality
-	}
-	if cfg.Multimodal.GenerationBackground == "" {
-		cfg.Multimodal.GenerationBackground = def.Multimodal.GenerationBackground
-	}
-	if cfg.Multimodal.GenerationOutputFormat == "" {
-		cfg.Multimodal.GenerationOutputFormat = def.Multimodal.GenerationOutputFormat
-	}
 	if cfg.Multimodal.TranscriptionModel == "" {
 		cfg.Multimodal.TranscriptionModel = def.Multimodal.TranscriptionModel
 	}
@@ -745,39 +719,19 @@ func normalizeConfig(cfg *Config) {
 		cfg.ImageGeneration.AuthMode = def.ImageGeneration.AuthMode
 	}
 	if cfg.ImageGeneration.Model == "" {
-		if cfg.Multimodal.GenerationModel != "" {
-			cfg.ImageGeneration.Model = cfg.Multimodal.GenerationModel
-		} else {
-			cfg.ImageGeneration.Model = def.ImageGeneration.Model
-		}
+		cfg.ImageGeneration.Model = def.ImageGeneration.Model
 	}
 	if cfg.ImageGeneration.Size == "" {
-		if cfg.Multimodal.GenerationSize != "" {
-			cfg.ImageGeneration.Size = cfg.Multimodal.GenerationSize
-		} else {
-			cfg.ImageGeneration.Size = def.ImageGeneration.Size
-		}
+		cfg.ImageGeneration.Size = def.ImageGeneration.Size
 	}
 	if cfg.ImageGeneration.Quality == "" {
-		if cfg.Multimodal.GenerationQuality != "" {
-			cfg.ImageGeneration.Quality = cfg.Multimodal.GenerationQuality
-		} else {
-			cfg.ImageGeneration.Quality = def.ImageGeneration.Quality
-		}
+		cfg.ImageGeneration.Quality = def.ImageGeneration.Quality
 	}
 	if cfg.ImageGeneration.Background == "" {
-		if cfg.Multimodal.GenerationBackground != "" {
-			cfg.ImageGeneration.Background = cfg.Multimodal.GenerationBackground
-		} else {
-			cfg.ImageGeneration.Background = def.ImageGeneration.Background
-		}
+		cfg.ImageGeneration.Background = def.ImageGeneration.Background
 	}
 	if cfg.ImageGeneration.OutputFormat == "" {
-		if cfg.Multimodal.GenerationOutputFormat != "" {
-			cfg.ImageGeneration.OutputFormat = cfg.Multimodal.GenerationOutputFormat
-		} else {
-			cfg.ImageGeneration.OutputFormat = def.ImageGeneration.OutputFormat
-		}
+		cfg.ImageGeneration.OutputFormat = def.ImageGeneration.OutputFormat
 	}
 	if cfg.ImageGeneration.APIKey == "" && cfg.ImageGeneration.Provider == "openai" && cfg.Multimodal.APIKey != "" {
 		cfg.ImageGeneration.APIKey = cfg.Multimodal.APIKey
@@ -964,12 +918,6 @@ func normalizeConfig(cfg *Config) {
 
 	if cfg.MsgGateway.APIAddr == "" {
 		cfg.MsgGateway.APIAddr = def.MsgGateway.APIAddr
-	}
-	if cfg.MsgGateway.Telegram.Token == "" && cfg.MsgGateway.Token != "" {
-		cfg.MsgGateway.Telegram.Token = cfg.MsgGateway.Token
-	}
-	if cfg.MsgGateway.Token == "" && cfg.MsgGateway.Telegram.Token != "" {
-		cfg.MsgGateway.Token = cfg.MsgGateway.Telegram.Token
 	}
 	if cfg.MsgGateway.Telegram.ChatTimeoutSeconds <= 0 {
 		cfg.MsgGateway.Telegram.ChatTimeoutSeconds = def.MsgGateway.Telegram.ChatTimeoutSeconds
@@ -1170,16 +1118,6 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Multimodal.APIBase = value
 	case "multimodal.image_model":
 		m.config.Multimodal.ImageModel = value
-	case "multimodal.generation_model":
-		m.config.Multimodal.GenerationModel = value
-	case "multimodal.generation_size":
-		m.config.Multimodal.GenerationSize = value
-	case "multimodal.generation_quality":
-		m.config.Multimodal.GenerationQuality = value
-	case "multimodal.generation_background":
-		m.config.Multimodal.GenerationBackground = value
-	case "multimodal.generation_output_format":
-		m.config.Multimodal.GenerationOutputFormat = value
 	case "multimodal.transcription_model":
 		m.config.Multimodal.TranscriptionModel = value
 	case "multimodal.image_provider":
@@ -1362,12 +1300,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.StartAll = parseBool(value)
 	case "msg_gateway.api_addr":
 		m.config.MsgGateway.APIAddr = value
-	case "msg_gateway.token":
-		m.config.MsgGateway.Token = value
-		m.config.MsgGateway.Telegram.Token = value
 	case "msg_gateway.telegram.token":
 		m.config.MsgGateway.Telegram.Token = value
-		m.config.MsgGateway.Token = value
 	case "msg_gateway.telegram.proxy":
 		m.config.MsgGateway.Telegram.Proxy = value
 	case "msg_gateway.telegram.chat_timeout_seconds":

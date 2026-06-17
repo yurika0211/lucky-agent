@@ -67,14 +67,6 @@ func (c Course) ModuleByID(id string) (Module, bool) {
 	return Module{}, false
 }
 
-// ModuleAt returns a module by zero-based index.
-func (c Course) ModuleAt(index int) (Module, bool) {
-	if index < 0 || index >= len(c.Modules) {
-		return Module{}, false
-	}
-	return c.Modules[index], true
-}
-
 // IndexOfModule returns a module index by ID.
 func (c Course) IndexOfModule(moduleID string) int {
 	for i, m := range c.Modules {

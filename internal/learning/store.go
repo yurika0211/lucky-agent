@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 )
@@ -167,19 +166,6 @@ func (s *ProgressStore) StartCourse(course Course) (CourseProgress, error) {
 	return cp, nil
 }
 
-// ActiveCourseProgress returns the active course progress.
-func (s *ProgressStore) ActiveCourseProgress() (CourseProgress, bool, error) {
-	p, err := s.Load()
-	if err != nil {
-		return CourseProgress{}, false, err
-	}
-	if p.ActiveCourseID == "" {
-		return CourseProgress{}, false, nil
-	}
-	cp, ok := p.Courses[p.ActiveCourseID]
-	return cp, ok, nil
-}
-
 // SubmitEvidence records learner evidence and marks the module completed.
 func (s *ProgressStore) SubmitEvidence(course Course, evidenceText string, accept bool) (CourseProgress, ModuleProgress, error) {
 	if err := course.Validate(); err != nil {
@@ -291,13 +277,4 @@ func CourseCompletion(course Course, cp CourseProgress) (int, int) {
 		}
 	}
 	return done, total
-}
-
-// SortedEvidence returns stable evidence text for display and tests.
-func SortedEvidence(mp ModuleProgress) []Evidence {
-	out := append([]Evidence(nil), mp.Evidence...)
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].AddedAt.Before(out[j].AddedAt)
-	})
-	return out
 }

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sync"
+
+	embedderpkg "github.com/yurika0211/luckyharness/internal/embedder"
 )
 
 // VectorStoreBackend is the interface that both in-memory and persistent
@@ -32,7 +34,7 @@ type RAGManager struct {
 	store     VectorStoreBackend // v0.20.0: supports both in-memory and SQLite backends
 	indexer   *Indexer
 	retriever *Retriever
-	embedder  EmbeddingProvider
+	embedder  embedderpkg.Embedder
 
 	mu sync.RWMutex
 }
@@ -50,7 +52,7 @@ func DefaultRAGConfig() RAGConfig {
 }
 
 // NewRAGManager creates a new RAG system with the given embedder and in-memory store.
-func NewRAGManager(embedder EmbeddingProvider, config RAGConfig) *RAGManager {
+func NewRAGManager(embedder embedderpkg.Embedder, config RAGConfig) *RAGManager {
 	dim := config.EmbeddingDim
 	if dim <= 0 {
 		dim = embedder.Dimension()
@@ -72,7 +74,7 @@ func NewRAGManager(embedder EmbeddingProvider, config RAGConfig) *RAGManager {
 }
 
 // NewRAGManagerWithSQLite creates a new RAG system with SQLite-backed persistent store.
-func NewRAGManagerWithSQLite(embedder EmbeddingProvider, config RAGConfig, dbPath string) (*RAGManager, error) {
+func NewRAGManagerWithSQLite(embedder embedderpkg.Embedder, config RAGConfig, dbPath string) (*RAGManager, error) {
 	dim := config.EmbeddingDim
 	if dim <= 0 {
 		dim = embedder.Dimension()

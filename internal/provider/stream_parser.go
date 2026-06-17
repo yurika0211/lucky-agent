@@ -27,10 +27,6 @@ func (sb *stringsBuilder) String() string {
 	return string(sb.data)
 }
 
-func (sb *stringsBuilder) Len() int {
-	return len(sb.data)
-}
-
 // NewStreamParser 创建流式解析器
 func NewStreamParser() *StreamParser {
 	return &StreamParser{
