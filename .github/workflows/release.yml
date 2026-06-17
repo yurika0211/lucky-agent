@@ -19,12 +19,14 @@ jobs:
           - runner: ubuntu-latest
             goos: linux
             goarch: amd64
+            cc: gcc
             artifact_name: lh-linux-amd64
             archive_name: lh-linux-amd64.tar.gz
             binary_name: lh
           - runner: ubuntu-24.04-arm
             goos: linux
             goarch: arm64
+            cc: gcc
             artifact_name: lh-linux-arm64
             archive_name: lh-linux-arm64.tar.gz
             binary_name: lh
@@ -34,15 +36,17 @@ jobs:
             artifact_name: lh-windows-amd64
             archive_name: lh-windows-amd64.zip
             binary_name: lh.exe
-          - runner: macos-13
+          - runner: macos-14
             goos: darwin
             goarch: amd64
+            cc: clang -arch x86_64
             artifact_name: lh-darwin-amd64
             archive_name: lh-darwin-amd64.tar.gz
             binary_name: lh
           - runner: macos-14
             goos: darwin
             goarch: arm64
+            cc: clang -arch arm64
             artifact_name: lh-darwin-arm64
             archive_name: lh-darwin-arm64.tar.gz
             binary_name: lh
@@ -69,6 +73,7 @@ jobs:
         shell: bash
         env:
           CGO_ENABLED: 1
+          CC: ${{ matrix.cc }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           VERSION: ${{ github.ref_name }}
