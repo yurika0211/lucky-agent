@@ -26,6 +26,11 @@ LuckyHarness 是一个面向长期运行的 Agent runtime。它把 CLI、HTTP AP
    - 定时任务与自动化助手
    - Agent 能力评测与实验
 
+4. [[Drift控制规范]]
+   - 记忆、上下文、RAG、配置和多 Agent 行为漂移的分类
+   - 自动 hygiene、摘要持久化和工具结果截断的约束
+   - drift 相关测试与评审清单
+
 ## 快速入口
 
 ```bash
