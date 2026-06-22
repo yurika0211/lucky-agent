@@ -87,13 +87,8 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 	}
 	msg.Content = routingText
 
-	parts := append([]provider.ContentPart(nil), msg.ContentParts...)
-	if len(parts) == 0 && routingText != "" {
-		parts = append(parts, provider.ContentPart{
-			Type: "text",
-			Text: routingText,
-		})
-	}
+	parts := contentPartsWithRoutingText(msg.ContentParts, routingText)
+	parts = filterAttachmentContentParts(parts, in.Attachments)
 	for _, att := range in.Attachments {
 		if part, ok := contentPartFromAttachment(att); ok {
 			parts = append(parts, part)
@@ -204,6 +199,71 @@ func filterNonEmptyStrings(values []string) []string {
 func (in UserTurnInput) WithRoutingText(text string) UserTurnInput {
 	in.RoutingText = strings.TrimSpace(text)
 	return in.Normalize()
+}
+
+func contentPartsWithRoutingText(parts []provider.ContentPart, routingText string) []provider.ContentPart {
+	out := append([]provider.ContentPart(nil), parts...)
+	routingText = strings.TrimSpace(routingText)
+	if routingText == "" {
+		return out
+	}
+	for i := range out {
+		if out[i].Type == "text" {
+			out[i].Text = routingText
+			return out
+		}
+	}
+	return append([]provider.ContentPart{{
+		Type: "text",
+		Text: routingText,
+	}}, out...)
+}
+
+func filterAttachmentContentParts(parts []provider.ContentPart, attachments []gateway.Attachment) []provider.ContentPart {
+	if len(parts) == 0 || len(attachments) == 0 {
+		return parts
+	}
+	out := parts[:0]
+	for _, part := range parts {
+		if contentPartMatchesAttachment(part, attachments) {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func contentPartMatchesAttachment(part provider.ContentPart, attachments []gateway.Attachment) bool {
+	for _, att := range attachments {
+		attPart, ok := contentPartFromAttachment(att)
+		if !ok {
+			continue
+		}
+		if sameContentPart(part, attPart) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameContentPart(a, b provider.ContentPart) bool {
+	if a.Type != b.Type {
+		return false
+	}
+	switch a.Type {
+	case "text":
+		return strings.TrimSpace(a.Text) == strings.TrimSpace(b.Text)
+	case "image":
+		if a.Image == nil || b.Image == nil {
+			return a.Image == nil && b.Image == nil
+		}
+		return strings.TrimSpace(a.Image.URL) == strings.TrimSpace(b.Image.URL) &&
+			strings.TrimSpace(a.Image.FilePath) == strings.TrimSpace(b.Image.FilePath) &&
+			strings.TrimSpace(a.Image.MimeType) == strings.TrimSpace(b.Image.MimeType) &&
+			strings.TrimSpace(a.Image.Detail) == strings.TrimSpace(b.Image.Detail)
+	default:
+		return a == b
+	}
 }
 
 func deriveRoutingTextFromMessage(msg provider.Message) string {

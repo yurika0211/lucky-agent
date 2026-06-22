@@ -2051,7 +2051,33 @@ func (h *Handler) inputWithMessageScope(input agent.UserTurnInput, msg *gateway.
 		SenderName:  msg.Sender.Username,
 		DisplayName: msg.Sender.DisplayName(),
 	}
-	return input.WithScope(scope)
+	input = input.WithScope(scope)
+	if h.platform() == "napcat" {
+		input = input.WithRoutingText(napcatSenderContextText(input.RoutingText, msg.Sender))
+	}
+	return input
+}
+
+func napcatSenderContextText(text string, sender gateway.User) string {
+	text = strings.TrimSpace(text)
+	qq := strings.TrimSpace(sender.ID)
+	if qq == "" {
+		return text
+	}
+
+	var b strings.Builder
+	b.WriteString("[NapCat message sender]\n")
+	b.WriteString("QQ: ")
+	b.WriteString(qq)
+	if name := strings.TrimSpace(sender.DisplayName()); name != "" && name != qq {
+		b.WriteString("\nName: ")
+		b.WriteString(name)
+	}
+	if text != "" {
+		b.WriteString("\n\n")
+		b.WriteString(text)
+	}
+	return b.String()
 }
 
 func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {

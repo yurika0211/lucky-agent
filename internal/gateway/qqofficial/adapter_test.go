@@ -500,6 +500,83 @@ func TestBuildUserTurnInputPreservesAttachments(t *testing.T) {
 	}
 }
 
+func TestNapcatSenderContextTextIncludesQQAndOriginalText(t *testing.T) {
+	got := napcatSenderContextText("hello", gateway.User{
+		ID:       "678",
+		Username: "tester",
+	})
+
+	for _, want := range []string{
+		"[NapCat message sender]",
+		"QQ: 678",
+		"Name: @tester",
+		"hello",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in sender context, got %q", want, got)
+		}
+	}
+}
+
+func TestInputWithMessageScopeInjectsNapcatSenderQQ(t *testing.T) {
+	h := NewHandlerWithOptions(&qqHandlerTestSender{}, nil, HandlerOptions{PlatformName: "napcat"})
+	input := agent.MultimodalUserTurnInput("看一下附件", []gateway.Attachment{
+		{
+			Type:     gateway.AttachmentImage,
+			FilePath: "/tmp/example.jpg",
+			MimeType: "image/jpeg",
+		},
+	})
+	got := h.inputWithMessageScope(input, &gateway.Message{
+		ID:   "msg-1",
+		Chat: gateway.Chat{ID: "group:123", Type: gateway.ChatGroup},
+		Sender: gateway.User{
+			ID:       "3256247459",
+			Username: "shiokou",
+		},
+	})
+
+	if got.Scope.Platform != "napcat" || got.Scope.SenderID != "3256247459" {
+		t.Fatalf("expected napcat scoped sender, got %#v", got.Scope)
+	}
+	for _, want := range []string{"QQ: 3256247459", "Name: @shiokou", "看一下附件"} {
+		if !strings.Contains(got.RoutingText, want) {
+			t.Fatalf("expected %q in routing text, got %q", want, got.RoutingText)
+		}
+		if !strings.Contains(got.Message.Content, want) {
+			t.Fatalf("expected %q in message content, got %q", want, got.Message.Content)
+		}
+	}
+	if len(got.Message.ContentParts) != 2 {
+		t.Fatalf("expected text plus one image part, got %#v", got.Message.ContentParts)
+	}
+	if got.Message.ContentParts[0].Type != "text" || !strings.Contains(got.Message.ContentParts[0].Text, "QQ: 3256247459") {
+		t.Fatalf("expected first content part to include sender context, got %#v", got.Message.ContentParts[0])
+	}
+	if got.Message.ContentParts[1].Image == nil || got.Message.ContentParts[1].Image.FilePath != "/tmp/example.jpg" {
+		t.Fatalf("expected image content part to be preserved once, got %#v", got.Message.ContentParts[1])
+	}
+}
+
+func TestInputWithMessageScopeDoesNotInjectQQOfficialSenderQQ(t *testing.T) {
+	h := NewHandlerWithOptions(&qqHandlerTestSender{}, nil, HandlerOptions{PlatformName: "qqofficial"})
+	got := h.inputWithMessageScope(agent.TextUserTurnInput("hello"), &gateway.Message{
+		ID:   "msg-1",
+		Chat: gateway.Chat{ID: "c2c:user-1", Type: gateway.ChatPrivate},
+		Sender: gateway.User{
+			ID:       "user-1",
+			Username: "tester",
+		},
+	})
+
+	if strings.Contains(got.RoutingText, "[NapCat message sender]") || strings.Contains(got.Message.Content, "[NapCat message sender]") {
+		t.Fatalf("qqofficial input should not include napcat sender context, got %#v", got)
+	}
+	if got.RoutingText != "hello" || got.Message.Content != "hello" {
+		t.Fatalf("expected original text to be unchanged, got routing=%q content=%q", got.RoutingText, got.Message.Content)
+	}
+}
+
 func TestQQProgressHelpers(t *testing.T) {
 	if got := qqThinkingMessage("Thinking... (round 2)", 2); got == "" {
 		t.Fatal("expected non-empty thinking message")
