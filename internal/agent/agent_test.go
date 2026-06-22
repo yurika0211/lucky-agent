@@ -711,6 +711,8 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
 func TestContextMemoryHygieneHookQuarantinesDirtyMemoryBeforeRecall(t *testing.T) {
 	cfg, err := config.NewManagerWithDir(t.TempDir())
 	if err != nil {
