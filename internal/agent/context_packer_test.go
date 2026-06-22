@@ -102,6 +102,28 @@ func TestSelectIntentAwareRecentHistoryDropsExplicitlyIrrelevantTail(t *testing.
 	}
 }
 
+func TestSelectIntentAwareRecentHistoryPreservesLatestUserTurn(t *testing.T) {
+	planner := &contextPlanner{est: contextx.NewTokenEstimator(4096)}
+	messages := []provider.Message{
+		{Role: "user", Content: "old memory topic about seven-second novel"},
+		{Role: "assistant", Content: "old answer about seven-second novel"},
+		{Role: "tool", Name: "recall", Content: "Memory recall. Query: seven-second novel"},
+		{Role: "assistant", Content: "retrieved unrelated prior task"},
+		{Role: "user", Content: "中文输出。行啊，开始工作吧，用刚才的大纲输出正文"},
+		{Role: "assistant", Content: "我会继续当前九拍双线大纲"},
+	}
+
+	terms := []string{"seven-second", "novel", "memory"}
+	selected := planner.selectIntentAwareRecentHistory(messages, terms)
+	text := messagesToTestText(selected)
+	if !strings.Contains(text, "用刚才的大纲输出正文") {
+		t.Fatalf("expected latest user instruction to be preserved, got:\n%s", text)
+	}
+	if !strings.Contains(text, "继续当前九拍双线大纲") {
+		t.Fatalf("expected assistant response after latest user turn to be preserved, got:\n%s", text)
+	}
+}
+
 func messagesToTestText(messages []provider.Message) string {
 	var b strings.Builder
 	for _, msg := range messages {

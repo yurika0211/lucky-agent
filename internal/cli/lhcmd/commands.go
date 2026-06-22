@@ -24,6 +24,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/gateway/qqofficial"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 	"github.com/yurika0211/luckyharness/internal/gateway/weixin"
+	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 )
@@ -1141,6 +1142,81 @@ func runRAGStats(cmd *cobra.Command, args []string) error {
 		fmt.Println("  Sources:")
 		for src, count := range stats.Sources {
 			fmt.Printf("    %s: %d chunks\n", src, count)
+		}
+	}
+	return nil
+}
+
+func runMemoryMigrateGraph(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	apply, _ := cmd.Flags().GetBool("apply")
+	archiveDirty, _ := cmd.Flags().GetBool("archive-dirty")
+	limit, _ := cmd.Flags().GetInt("limit")
+
+	store, err := memory.NewStore(filepath.Join(mgr.HomeDir(), "memory"))
+	if err != nil {
+		return fmt.Errorf("open memory store: %w", err)
+	}
+	report, err := store.MigrateGraphMemory(memory.GraphMigrationOptions{
+		Apply:            apply,
+		ArchiveDirty:     archiveDirty,
+		MaxDirtyFindings: limit,
+	})
+	if err != nil {
+		return err
+	}
+
+	if apply {
+		fmt.Println("Memory graph migration applied.")
+	} else {
+		fmt.Println("Memory graph migration dry-run. Re-run with --apply to write changes.")
+	}
+	fmt.Printf("  Scanned: %d\n", report.Scanned)
+	fmt.Printf("  Link updates: %d", report.WouldUpdateLinks)
+	if apply {
+		fmt.Printf(" (applied %d)", report.UpdatedLinks)
+	}
+	fmt.Println()
+	fmt.Printf("  Dirty archives: %d", report.WouldArchive)
+	if apply {
+		fmt.Printf(" (archived %d)", report.Archived)
+	}
+	fmt.Println()
+
+	maxShow := 12
+	if len(report.Entries) > 0 {
+		fmt.Println("  Planned entries:")
+		for i, entry := range report.Entries {
+			if i >= maxShow {
+				fmt.Printf("    ... %d more\n", len(report.Entries)-maxShow)
+				break
+			}
+			action := "link"
+			if entry.Archive {
+				action = "archive"
+			}
+			fmt.Printf("    - %s %s [%s/%s]", action, entry.ID, entry.Category, entry.Tier)
+			if entry.Path != "" {
+				fmt.Printf(" @%s", entry.Path)
+			}
+			fmt.Println()
+			if entry.Archive {
+				fmt.Printf("      reason=%s archive=%s\n", entry.Reason, entry.ArchivePath)
+				continue
+			}
+			if len(entry.AddLinks) > 0 {
+				fmt.Printf("      links=%s\n", strings.Join(entry.AddLinks, ", "))
+			}
+			if len(entry.AddTags) > 0 {
+				fmt.Printf("      tags=%s\n", strings.Join(entry.AddTags, ", "))
+			}
 		}
 	}
 	return nil

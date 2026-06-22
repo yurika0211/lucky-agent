@@ -15,7 +15,7 @@ type WatchPattern struct {
 	ID          string
 	Name        string
 	Description string
-	Pattern     string   // glob 模式
+	Pattern     string // glob 模式
 	Interval    time.Duration
 	LastCheck   time.Time
 	LastResult  string
@@ -65,7 +65,6 @@ func (w *Watcher) AddPattern(id, name, description, pattern string, interval tim
 	if _, exists := w.patterns[id]; exists {
 		return fmt.Errorf("pattern %s already exists", id)
 	}
-
 	wp := &WatchPattern{
 		ID:          id,
 		Name:        name,
@@ -74,7 +73,6 @@ func (w *Watcher) AddPattern(id, name, description, pattern string, interval tim
 		Interval:    interval,
 		Action:      action,
 	}
-
 	w.patterns[id] = wp
 	return nil
 }
@@ -87,7 +85,6 @@ func (w *Watcher) RemovePattern(id string) error {
 	if _, exists := w.patterns[id]; !exists {
 		return fmt.Errorf("pattern %s not found", id)
 	}
-
 	delete(w.patterns, id)
 	return nil
 }

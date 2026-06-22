@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
@@ -206,6 +209,103 @@ func TestAccessTokenResponseUnmarshalExpiresInNumber(t *testing.T) {
 	if resp.AccessToken != "abc" || resp.ExpiresIn != 7200 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
+}
+
+func TestAdapterReconnectsAfterGatewayReconnectOp(t *testing.T) {
+	var connections atomic.Int32
+	messageReceived := make(chan *gateway.Message, 1)
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			http.Error(w, "unexpected token path "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(accessTokenResponse{AccessToken: "token", ExpiresIn: 3600})
+	}))
+	defer tokenServer.Close()
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		n := connections.Add(1)
+		if err := conn.WriteJSON(gatewayFrame{Op: helloOp, D: mustJSON(helloPayload{HeartbeatInterval: 60_000})}); err != nil {
+			t.Errorf("write hello: %v", err)
+			return
+		}
+		var identify gatewayFrame
+		if err := conn.ReadJSON(&identify); err != nil {
+			t.Errorf("read identify: %v", err)
+			return
+		}
+		if identify.Op != identifyOp {
+			t.Errorf("expected identify op, got %d", identify.Op)
+			return
+		}
+		if n == 1 {
+			_ = conn.WriteJSON(gatewayFrame{Op: reconnectOp})
+			return
+		}
+		raw, _ := json.Marshal(incomingMessageEvent{
+			ID:      "msg-reconnected",
+			Content: "hello after reconnect",
+			Author:  messageAuthor{ID: "user-1", Username: "tester"},
+		})
+		_ = conn.WriteJSON(gatewayFrame{
+			Op: dispatchEventOp,
+			T:  "C2C_MESSAGE_CREATE",
+			D:  raw,
+		})
+		<-r.Context().Done()
+	}))
+	defer wsServer.Close()
+
+	a := NewAdapter(Config{
+		AppID:         "app-id",
+		AppSecret:     "secret",
+		GatewayURL:    wsToHTTPTestURL(t, wsServer.URL),
+		ReconnectWait: 1,
+	})
+	a.accessTokenURL = tokenServer.URL + "/token"
+	a.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+		messageReceived <- msg
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer a.Stop()
+
+	select {
+	case msg := <-messageReceived:
+		if msg.Text != "hello after reconnect" {
+			t.Fatalf("unexpected message after reconnect: %+v", msg)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for reconnected message; connections=%d", connections.Load())
+	}
+	if got := connections.Load(); got < 2 {
+		t.Fatalf("expected at least 2 websocket connections, got %d", got)
+	}
+	if !a.IsRunning() {
+		t.Fatal("adapter should remain running after reconnect")
+	}
+}
+
+func wsToHTTPTestURL(t *testing.T, raw string) string {
+	t.Helper()
+	addr := strings.TrimPrefix(raw, "http://")
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		t.Fatalf("unexpected test server URL %q: %v", raw, err)
+	}
+	return "ws://" + addr
 }
 
 func TestSendWithReplyUsesIncrementingMsgSeq(t *testing.T) {

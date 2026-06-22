@@ -32,6 +32,9 @@ func addTUICmd(root *cobra.Command) {
 	root.AddCommand(tuiCmd)
 }
 
+/**
+ * 启动TUI的函数，带ui的目录，url还有session的id,最后还有启动的模型
+ */
 func runTUI(uiDir, apiBase, session, model string) error {
 	resolved, err := resolveUIWorkspace(uiDir)
 	if err != nil {
@@ -53,6 +56,9 @@ func runTUI(uiDir, apiBase, session, model string) error {
 	return cmd.Run()
 }
 
+/**
+ * resolve UI Workspace
+ */
 func resolveUIWorkspace(explicit string) (string, error) {
 	candidates := tuiDirCandidates(explicit)
 	for _, candidate := range candidates {

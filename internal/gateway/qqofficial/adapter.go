@@ -138,17 +138,24 @@ type uploadFileResponse struct {
 type Adapter struct {
 	cfg Config
 
-	mu         sync.RWMutex
-	handler    gateway.MessageHandler
-	running    bool
-	cancel     context.CancelFunc
-	conn       *websocket.Conn
-	httpClient *http.Client
+	mu              sync.RWMutex
+	handler         gateway.MessageHandler
+	running         bool
+	cancel          context.CancelFunc
+	conn            *websocket.Conn
+	httpClient      *http.Client
+	gatewayDialer   websocketDialer
+	accessTokenURL  string
+	reconnectSignal chan struct{}
 
 	accessToken string
 	tokenExpiry time.Time
 	seq         int64
 	replySeq    atomic.Uint32
+}
+
+type websocketDialer interface {
+	DialContext(ctx context.Context, urlStr string, requestHeader http.Header) (*websocket.Conn, *http.Response, error)
 }
 
 type qqStreamSender struct {
@@ -177,8 +184,11 @@ func NewAdapter(cfg Config) *Adapter {
 	cfg.RemoveAt = cfg.RemoveAt || def.RemoveAt
 
 	return &Adapter{
-		cfg:        cfg,
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		cfg:             cfg,
+		httpClient:      &http.Client{Timeout: 15 * time.Second},
+		gatewayDialer:   websocket.DefaultDialer,
+		accessTokenURL:  "https://bots.qq.com/app/getAppAccessToken",
+		reconnectSignal: make(chan struct{}, 1),
 	}
 }
 
@@ -194,22 +204,35 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if strings.TrimSpace(a.cfg.AppID) == "" || strings.TrimSpace(a.cfg.AppSecret) == "" {
 		return fmt.Errorf("qqofficial: app_id and app_secret are required")
 	}
+	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		return nil
+	}
+	a.mu.Unlock()
+
 	startCtx, cancel := context.WithCancel(ctx)
+	a.mu.Lock()
 	a.cancel = cancel
+	a.running = true
+	a.mu.Unlock()
 
 	if _, err := a.ensureAccessToken(startCtx); err != nil {
 		cancel()
+		a.mu.Lock()
+		a.running = false
+		a.mu.Unlock()
 		return err
 	}
 	if err := a.connectGateway(startCtx); err != nil {
 		cancel()
+		a.mu.Lock()
+		a.running = false
+		a.mu.Unlock()
 		return err
 	}
-	a.mu.Lock()
-	a.running = true
-	a.mu.Unlock()
 
-	go a.readLoop(startCtx)
+	go a.superviseGateway(startCtx)
 	return nil
 }
 
@@ -325,7 +348,11 @@ func (a *Adapter) ensureAccessToken(ctx context.Context) (string, error) {
 		"appId":        a.cfg.AppID,
 		"clientSecret": a.cfg.AppSecret,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://bots.qq.com/app/getAppAccessToken", bytes.NewReader(body))
+	tokenURL := a.accessTokenURL
+	if strings.TrimSpace(tokenURL) == "" {
+		tokenURL = "https://bots.qq.com/app/getAppAccessToken"
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("qqofficial: create token request: %w", err)
 	}
@@ -358,7 +385,11 @@ func (a *Adapter) connectGateway(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, a.cfg.normalizedGatewayURL(), http.Header{
+	dialer := a.gatewayDialer
+	if dialer == nil {
+		dialer = websocket.DefaultDialer
+	}
+	conn, _, err := dialer.DialContext(ctx, a.cfg.normalizedGatewayURL(), http.Header{
 		"Authorization": []string{"QQBot " + token},
 		"X-Union-Appid": []string{a.cfg.AppID},
 	})
@@ -422,16 +453,49 @@ func (a *Adapter) heartbeatLoop(ctx context.Context, conn *websocket.Conn, inter
 			a.mu.RLock()
 			seq := a.seq
 			a.mu.RUnlock()
-			_ = conn.WriteJSON(gatewayFrame{Op: heartbeatOp, D: mustJSON(seq)})
+			if err := conn.WriteJSON(gatewayFrame{Op: heartbeatOp, D: mustJSON(seq)}); err != nil {
+				a.closeConnIfCurrent(conn)
+				a.requestReconnect()
+				return
+			}
 		}
 	}
 }
 
-func (a *Adapter) readLoop(ctx context.Context) {
+func (a *Adapter) superviseGateway(ctx context.Context) {
+	for {
+		err := a.readLoop(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err != nil {
+			fmt.Printf("[qqofficial] gateway connection closed: %v\n", err)
+		}
+		a.closeCurrentConn()
+		if !a.waitBeforeReconnect(ctx) {
+			return
+		}
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			if err := a.connectGateway(ctx); err != nil {
+				fmt.Printf("[qqofficial] reconnect failed: %v\n", err)
+				if !a.waitBeforeReconnect(ctx) {
+					return
+				}
+				continue
+			}
+			break
+		}
+	}
+}
+
+func (a *Adapter) readLoop(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		default:
 		}
 		a.mu.RLock()
@@ -439,14 +503,11 @@ func (a *Adapter) readLoop(ctx context.Context) {
 		handler := a.handler
 		a.mu.RUnlock()
 		if conn == nil {
-			return
+			return fmt.Errorf("qqofficial: websocket connection is nil")
 		}
 		var frame gatewayFrame
 		if err := conn.ReadJSON(&frame); err != nil {
-			a.mu.Lock()
-			a.running = false
-			a.mu.Unlock()
-			return
+			return fmt.Errorf("qqofficial: read gateway frame: %w", err)
 		}
 		if frame.S != nil {
 			a.mu.Lock()
@@ -460,13 +521,54 @@ func (a *Adapter) readLoop(ctx context.Context) {
 				_ = handler(ctx, msg)
 			}
 		case reconnectOp, invalidSessOp:
-			a.mu.Lock()
-			a.running = false
-			a.mu.Unlock()
-			return
+			return fmt.Errorf("qqofficial: gateway requested reconnect op=%d", frame.Op)
 		case heartbeatAckOp:
 		}
 	}
+}
+
+func (a *Adapter) requestReconnect() {
+	select {
+	case a.reconnectSignal <- struct{}{}:
+	default:
+	}
+}
+
+func (a *Adapter) waitBeforeReconnect(ctx context.Context) bool {
+	wait := time.Duration(a.cfg.ReconnectWait) * time.Second
+	if wait <= 0 {
+		wait = time.Duration(DefaultConfig().ReconnectWait) * time.Second
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-a.reconnectSignal:
+		return true
+	case <-time.After(wait):
+		return true
+	}
+}
+
+func (a *Adapter) closeCurrentConn() {
+	a.mu.Lock()
+	conn := a.conn
+	a.conn = nil
+	a.mu.Unlock()
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
+func (a *Adapter) closeConnIfCurrent(conn *websocket.Conn) {
+	if conn == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.conn == conn {
+		a.conn = nil
+	}
+	a.mu.Unlock()
+	_ = conn.Close()
 }
 
 func (a *Adapter) convertDispatch(eventType string, raw json.RawMessage) *gateway.Message {

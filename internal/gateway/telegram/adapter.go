@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,6 +55,12 @@ func NewAdapter(cfg Config) *Adapter {
 	}
 	if cfg.PollTimeout <= 0 {
 		cfg.PollTimeout = 30
+	}
+	if cfg.AttachmentDownloadLimit <= 0 {
+		cfg.AttachmentDownloadLimit = defaultAttachmentDownloadLimit
+	}
+	if cfg.AttachmentDownloadTimeout <= 0 {
+		cfg.AttachmentDownloadTimeout = 30
 	}
 
 	return &Adapter{
@@ -847,6 +854,10 @@ func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
 
 // convertMessage converts a Telegram message to a gateway.Message.
 func (a *Adapter) convertMessage(tgMsg *tgbotapi.Message) *gateway.Message {
+	return a.convertMessageWithAttachments(tgMsg, true)
+}
+
+func (a *Adapter) convertMessageWithAttachments(tgMsg *tgbotapi.Message, includeAttachments bool) *gateway.Message {
 	chatType := gateway.ChatPrivate
 	switch tgMsg.Chat.Type {
 	case "group":
@@ -878,8 +889,10 @@ func (a *Adapter) convertMessage(tgMsg *tgbotapi.Message) *gateway.Message {
 		msg.Text = tgMsg.Caption
 	}
 
-	// v0.36.0: 提取多媒体附件
-	a.extractAttachments(tgMsg, msg)
+	if includeAttachments {
+		// v0.36.0: 提取多媒体附件
+		a.extractAttachments(tgMsg, msg)
+	}
 
 	// 如果没有文本但有附件，构造描述文本
 	if msg.Text == "" && len(msg.Attachments) > 0 {
@@ -908,7 +921,7 @@ func (a *Adapter) convertMessage(tgMsg *tgbotapi.Message) *gateway.Message {
 
 	// Parse reply
 	if tgMsg.ReplyToMessage != nil {
-		replyMsg := a.convertMessage(tgMsg.ReplyToMessage)
+		replyMsg := a.convertMessageWithAttachments(tgMsg.ReplyToMessage, false)
 		msg.ReplyTo = replyMsg
 	}
 
@@ -925,95 +938,124 @@ func (a *Adapter) extractAttachments(tgMsg *tgbotapi.Message, msg *gateway.Messa
 	if tgMsg.Photo != nil && len(tgMsg.Photo) > 0 {
 		// 取最大尺寸的图片
 		photo := tgMsg.Photo[len(tgMsg.Photo)-1]
-		att := gateway.Attachment{
+		a.appendTelegramAttachment(msg, gateway.Attachment{
 			Type:     gateway.AttachmentImage,
 			FileID:   photo.FileID,
 			FileName: "photo.jpg",
 			MimeType: "image/jpeg",
 			FileSize: int64(photo.FileSize),
-		}
-		// 尝试下载图片
-		if url, err := a.bot.GetFileDirectURL(photo.FileID); err == nil {
-			att.FileURL = url
-			a.populateAttachmentData(&att)
-		}
-		msg.Attachments = append(msg.Attachments, att)
+		})
 	}
 
 	// 语音消息
 	if tgMsg.Voice != nil {
-		att := gateway.Attachment{
+		a.appendTelegramAttachment(msg, gateway.Attachment{
 			Type:     gateway.AttachmentAudio,
 			FileID:   tgMsg.Voice.FileID,
 			FileName: "voice.ogg",
 			MimeType: tgMsg.Voice.MimeType,
 			FileSize: int64(tgMsg.Voice.FileSize),
-		}
-		if url, err := a.bot.GetFileDirectURL(tgMsg.Voice.FileID); err == nil {
-			att.FileURL = url
-			a.populateAttachmentData(&att)
-		}
-		msg.Attachments = append(msg.Attachments, att)
+		})
 	}
 
 	// 音频文件
 	if tgMsg.Audio != nil {
-		att := gateway.Attachment{
+		a.appendTelegramAttachment(msg, gateway.Attachment{
 			Type:     gateway.AttachmentAudio,
 			FileID:   tgMsg.Audio.FileID,
 			FileName: tgMsg.Audio.FileName,
 			MimeType: tgMsg.Audio.MimeType,
 			FileSize: int64(tgMsg.Audio.FileSize),
-		}
-		if url, err := a.bot.GetFileDirectURL(tgMsg.Audio.FileID); err == nil {
-			att.FileURL = url
-			a.populateAttachmentData(&att)
-		}
-		msg.Attachments = append(msg.Attachments, att)
+		})
 	}
 
 	// 视频
 	if tgMsg.Video != nil {
-		att := gateway.Attachment{
+		a.appendTelegramAttachment(msg, gateway.Attachment{
 			Type:     gateway.AttachmentVideo,
 			FileID:   tgMsg.Video.FileID,
 			FileName: tgMsg.Video.FileName,
 			MimeType: tgMsg.Video.MimeType,
 			FileSize: int64(tgMsg.Video.FileSize),
+		})
+	}
+
+	// GIF/animation
+	if tgMsg.Animation != nil {
+		a.appendTelegramAttachment(msg, gateway.Attachment{
+			Type:     gateway.AttachmentVideo,
+			FileID:   tgMsg.Animation.FileID,
+			FileName: tgMsg.Animation.FileName,
+			MimeType: tgMsg.Animation.MimeType,
+			FileSize: int64(tgMsg.Animation.FileSize),
+		})
+	}
+
+	// 圆形视频消息
+	if tgMsg.VideoNote != nil {
+		a.appendTelegramAttachment(msg, gateway.Attachment{
+			Type:     gateway.AttachmentVideo,
+			FileID:   tgMsg.VideoNote.FileID,
+			FileName: "video_note.mp4",
+			MimeType: "video/mp4",
+			FileSize: int64(tgMsg.VideoNote.FileSize),
+		})
+	}
+
+	// 贴纸：静态贴纸作为图片处理，动态贴纸保留为文档附件。
+	if tgMsg.Sticker != nil {
+		attType := gateway.AttachmentImage
+		mimeType := "image/webp"
+		fileName := "sticker.webp"
+		if tgMsg.Sticker.IsAnimated {
+			attType = gateway.AttachmentDocument
+			mimeType = "application/x-tgsticker"
+			fileName = "sticker.tgs"
 		}
-		if url, err := a.bot.GetFileDirectURL(tgMsg.Video.FileID); err == nil {
-			att.FileURL = url
-			a.populateAttachmentData(&att)
-		}
-		msg.Attachments = append(msg.Attachments, att)
+		a.appendTelegramAttachment(msg, gateway.Attachment{
+			Type:     attType,
+			FileID:   tgMsg.Sticker.FileID,
+			FileName: fileName,
+			MimeType: mimeType,
+			FileSize: int64(tgMsg.Sticker.FileSize),
+		})
 	}
 
 	// 文档
 	if tgMsg.Document != nil {
-		att := gateway.Attachment{
+		a.appendTelegramAttachment(msg, gateway.Attachment{
 			Type:     gateway.AttachmentDocument,
 			FileID:   tgMsg.Document.FileID,
 			FileName: tgMsg.Document.FileName,
 			MimeType: tgMsg.Document.MimeType,
 			FileSize: int64(tgMsg.Document.FileSize),
-		}
-		if url, err := a.bot.GetFileDirectURL(tgMsg.Document.FileID); err == nil {
-			att.FileURL = url
-			a.populateAttachmentData(&att)
-		}
-		msg.Attachments = append(msg.Attachments, att)
+		})
 	}
 }
 
-func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
-	if att == nil || strings.TrimSpace(att.FileURL) == "" {
+func (a *Adapter) appendTelegramAttachment(msg *gateway.Message, att gateway.Attachment) {
+	if msg == nil {
 		return
 	}
-	if att.FileSize > defaultAttachmentDownloadLimit {
+	if strings.TrimSpace(att.FileID) != "" {
+		if url, err := a.bot.GetFileDirectURL(att.FileID); err == nil {
+			att.FileURL = url
+			a.populateAttachmentData(&att)
+		}
+	}
+	msg.Attachments = append(msg.Attachments, att)
+}
+
+func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
+	if att == nil || strings.TrimSpace(att.FileURL) == "" || strings.TrimSpace(att.FilePath) != "" {
+		return
+	}
+	limit := a.attachmentDownloadLimit()
+	if att.FileSize > limit {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), a.attachmentDownloadTimeout())
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, att.FileURL, nil)
@@ -1036,6 +1078,12 @@ func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return
 	}
+	if resp.ContentLength > limit {
+		return
+	}
+	if ct := strings.TrimSpace(resp.Header.Get("Content-Type")); ct != "" && (att.MimeType == "" || strings.HasSuffix(att.MimeType, "/*")) {
+		att.MimeType = strings.Split(ct, ";")[0]
+	}
 
 	dir, err := telegramAttachmentStorageDir()
 	if err != nil {
@@ -1055,15 +1103,18 @@ func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
 		_ = tmpFile.Close()
 	}()
 
-	reader := io.LimitReader(resp.Body, defaultAttachmentDownloadLimit+1)
+	reader := io.LimitReader(resp.Body, limit+1)
 	written, err := io.Copy(tmpFile, reader)
 	if err != nil {
 		_ = os.Remove(tmpPath)
 		return
 	}
-	if written > defaultAttachmentDownloadLimit {
+	if written > limit {
 		_ = os.Remove(tmpPath)
 		return
+	}
+	if att.FileSize == 0 {
+		att.FileSize = written
 	}
 
 	finalPath := filepath.Join(dir, fileName)
@@ -1072,6 +1123,20 @@ func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
 		return
 	}
 	att.FilePath = finalPath
+}
+
+func (a *Adapter) attachmentDownloadLimit() int64 {
+	if a == nil || a.cfg.AttachmentDownloadLimit <= 0 {
+		return defaultAttachmentDownloadLimit
+	}
+	return a.cfg.AttachmentDownloadLimit
+}
+
+func (a *Adapter) attachmentDownloadTimeout() time.Duration {
+	if a == nil || a.cfg.AttachmentDownloadTimeout <= 0 {
+		return 30 * time.Second
+	}
+	return time.Duration(a.cfg.AttachmentDownloadTimeout) * time.Second
 }
 
 func telegramAttachmentStorageDir() (string, error) {
@@ -1109,6 +1174,11 @@ func telegramAttachmentFileName(att *gateway.Attachment) string {
 	if strings.TrimSpace(name) == "" {
 		name = "attachment"
 	}
+	if filepath.Ext(name) == "" {
+		if ext := telegramAttachmentExtension(att.MimeType); ext != "" {
+			name += ext
+		}
+	}
 
 	prefix := strings.TrimSpace(att.FileID)
 	if prefix == "" {
@@ -1129,6 +1199,36 @@ func telegramAttachmentFileName(att *gateway.Attachment) string {
 		}
 	}, prefix)
 	return prefix + "_" + name
+}
+
+func telegramAttachmentExtension(mimeType string) string {
+	switch strings.ToLower(strings.TrimSpace(strings.Split(mimeType, ";")[0])) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/png":
+		return ".png"
+	case "image/webp":
+		return ".webp"
+	case "image/gif":
+		return ".gif"
+	case "audio/ogg", "audio/opus":
+		return ".ogg"
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/mp4", "audio/x-m4a":
+		return ".m4a"
+	case "video/mp4":
+		return ".mp4"
+	case "application/pdf":
+		return ".pdf"
+	case "application/x-tgsticker":
+		return ".tgs"
+	}
+	exts, err := mime.ExtensionsByType(strings.TrimSpace(mimeType))
+	if err != nil || len(exts) == 0 {
+		return ""
+	}
+	return exts[0]
 }
 
 // isMentioned checks if the bot is mentioned in the message.

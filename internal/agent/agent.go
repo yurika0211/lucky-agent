@@ -1181,7 +1181,7 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 
 	// 自动记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
-	a.saveConversationMemory(routingText, response)
+	a.saveConversationMemoryFromTurn(input, response)
 
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
@@ -1298,7 +1298,7 @@ func (a *Agent) chatStreamSimpleInput(ctx context.Context, sess *session.Session
 
 	// 自动记忆：将对话存为短期记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
-	a.saveConversationMemory(routingText, response)
+	a.saveConversationMemoryFromTurn(input, response)
 
 	// 每 10 轮对话触发衰减 + 过期清理
 	if a.chatCount%10 == 0 {
@@ -2087,7 +2087,7 @@ func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *sessi
 	}
 
 	a.chatCount++
-	a.saveConversationMemory(routingText, response)
+	a.saveConversationMemoryFromTurn(turnInput, response)
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
 		a.memory.Expire()
@@ -2236,17 +2236,29 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 // turn in memory.Store duplicates session history and can make later recall
 // treat ordinary conversation as hard Working Memory.
 func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
+	a.saveConversationMemoryFromTurn(TextUserTurnInput(userInput), assistantResponse)
+}
+
+func (a *Agent) saveConversationMemoryFromTurn(turnInput UserTurnInput, assistantResponse string) {
+	turnInput = turnInput.Normalize()
+	userInput := turnInput.RoutingText
 	assistantResponse = utils.SanitizeToolProtocolOutput(assistantResponse)
 	// v0.43.0: 写入 ShortTermBuffer（滑动窗口 + 摘要压缩）
 	if a.shortTerm != nil {
 		a.shortTerm.Add("user", userInput)
-		a.shortTerm.Add("assistant", utils.Truncate(assistantResponse, 300))
+		a.shortTerm.Add("assistant", utils.TrimToRunes(assistantResponse, 300))
 	}
 
 	userCategory := inferCategory(userInput)
 	if shouldPersistUserTurnMemory(userCategory, userInput) {
 		userImportance := inferImportance(userInput)
-		a.memory.SaveWithTier(utils.Truncate(userInput, 180), userCategory, memory.TierShort, userImportance)
+		content := utils.TrimToRunes(userInput, 180)
+		tags := turnInput.Scope.MemoryTags()
+		if len(tags) > 0 {
+			_ = a.memory.SaveWithOptions(content, userCategory, memory.TierShort, userImportance, memory.SaveOptions{Tags: tags})
+		} else {
+			_ = a.memory.SaveWithTier(content, userCategory, memory.TierShort, userImportance)
+		}
 	}
 }
 
@@ -2351,7 +2363,7 @@ func (a *Agent) autoSummarize() {
 	// 简单拼接摘要（v0.4.0: 后续可接入 LLM 生成更智能摘要）
 	summary := strings.Join(toSummarize, " | ")
 	if len(summary) > 500 {
-		summary = summary[:500] + "..."
+		summary = utils.TrimToRunes(summary, 500)
 	}
 
 	a.memory.Summarize(ids, summary, "conversation")

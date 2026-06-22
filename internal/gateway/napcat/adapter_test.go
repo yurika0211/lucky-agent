@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
 

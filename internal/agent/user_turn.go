@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 
 	"github.com/yurika0211/luckyharness/internal/gateway"
@@ -15,6 +16,18 @@ type UserTurnInput struct {
 	Message     provider.Message
 	RoutingText string
 	Attachments []gateway.Attachment
+	Scope       TurnScope
+}
+
+// TurnScope identifies the messaging scope for a user turn. It is intentionally
+// stored as tags on memory entries so older memory notes remain compatible.
+type TurnScope struct {
+	Platform    string
+	ChatID      string
+	ChatType    string
+	SenderID    string
+	SenderName  string
+	DisplayName string
 }
 
 /**
@@ -43,6 +56,12 @@ func MultimodalUserTurnInput(text string, attachments []gateway.Attachment) User
 		RoutingText: text,
 		Attachments: append([]gateway.Attachment(nil), attachments...),
 	}
+}
+
+// WithScope returns a copy of the input bound to a messaging scope.
+func (in UserTurnInput) WithScope(scope TurnScope) UserTurnInput {
+	in.Scope = scope.Normalize()
+	return in.Normalize()
 }
 
 /**
@@ -86,7 +105,97 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 		Message:     msg,
 		RoutingText: routingText,
 		Attachments: append([]gateway.Attachment(nil), in.Attachments...),
+		Scope:       in.Scope.Normalize(),
 	}
+}
+
+// Normalize returns a stable, lowercase scope for matching memory tags.
+func (s TurnScope) Normalize() TurnScope {
+	s.Platform = strings.ToLower(strings.TrimSpace(s.Platform))
+	s.ChatID = strings.TrimSpace(s.ChatID)
+	s.ChatType = strings.ToLower(strings.TrimSpace(s.ChatType))
+	s.SenderID = strings.TrimSpace(s.SenderID)
+	s.SenderName = strings.TrimSpace(s.SenderName)
+	s.DisplayName = strings.TrimSpace(s.DisplayName)
+	return s
+}
+
+// HasSender reports whether this turn can be scoped to a concrete platform user.
+func (s TurnScope) HasSender() bool {
+	s = s.Normalize()
+	return s.Platform != "" && s.SenderID != ""
+}
+
+// IsGroup reports whether the turn came from a multi-user chat.
+func (s TurnScope) IsGroup() bool {
+	switch s.Normalize().ChatType {
+	case "group", "supergroup", "channel":
+		return true
+	default:
+		return false
+	}
+}
+
+// UserTag is the stable memory tag for this sender.
+func (s TurnScope) UserTag() string {
+	s = s.Normalize()
+	if !s.HasSender() {
+		return ""
+	}
+	return "scope:user:" + s.Platform + ":" + hashScopeValue(s.SenderID)
+}
+
+// PrivateTag is the tag used for personal memory in private chats.
+func (s TurnScope) PrivateTag() string {
+	s = s.Normalize()
+	if !s.HasSender() {
+		return ""
+	}
+	return "scope:private:" + s.Platform + ":" + hashScopeValue(s.SenderID)
+}
+
+// GroupTag is the tag used for shared group memory.
+func (s TurnScope) GroupTag() string {
+	s = s.Normalize()
+	if s.Platform == "" || s.ChatID == "" || !s.IsGroup() {
+		return ""
+	}
+	return "scope:group:" + s.Platform + ":" + hashScopeValue(s.ChatID)
+}
+
+// MemoryTags returns tags for new memories created from this turn.
+func (s TurnScope) MemoryTags() []string {
+	s = s.Normalize()
+	if !s.HasSender() {
+		return nil
+	}
+	tags := []string{"scope:personal", s.UserTag()}
+	if s.IsGroup() {
+		tags = append(tags, s.GroupTag())
+	} else {
+		tags = append(tags, s.PrivateTag())
+	}
+	return filterNonEmptyStrings(tags)
+}
+
+func hashScopeValue(value string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(value))
+	return fmt.Sprintf("%x", h.Sum64())
+}
+
+func filterNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 /**

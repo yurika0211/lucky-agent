@@ -243,6 +243,94 @@ func TestSaveWithMetadataPersistsAliasesAndLinks(t *testing.T) {
 	}
 }
 
+func TestSaveWithOptionsInfersObsidianConceptLinks(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithOptions("QQ official should not expose raw reasoning_content in gateway trace replies.", "rule", TierLong, 0.9, SaveOptions{}); err != nil {
+		t.Fatalf("SaveWithOptions: %v", err)
+	}
+
+	results := s.Search("QQ Official")
+	if len(results) == 0 {
+		t.Fatalf("expected concept-linked memories, got %#v", results)
+	}
+	var fact *Entry
+	for i := range results {
+		if strings.Contains(results[i].Content, "reasoning_content") {
+			fact = &results[i]
+			break
+		}
+	}
+	if fact == nil {
+		t.Fatalf("expected factual QQ official memory, got %#v", results)
+	}
+	for _, want := range []string{"QQ Official", "Reasoning Content", "Gateway Trace", "Message Gateway"} {
+		if !stringSliceContains(fact.Links, want) {
+			t.Fatalf("expected inferred link %q, got %#v", want, fact.Links)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "qq-official.md")); err != nil {
+		t.Fatalf("expected QQ Official concept note: %v", err)
+	}
+}
+
+func TestSaveWithOptionsSanitizesGeneratedTruncationMarkers(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	content := strings.Join([]string{
+		"Project fact: use Obsidian graph memory.",
+		"...[truncated]",
+		"... (truncated)",
+		"[... output truncated ...]",
+		"Keep ordinary ellipsis like wait... this is user text.",
+	}, "\n")
+	if err := s.SaveWithOptions(content, "project", TierMedium, 0.7, SaveOptions{}); err != nil {
+		t.Fatalf("SaveWithOptions: %v", err)
+	}
+
+	recent := s.Recent(1)
+	if len(recent) != 1 {
+		t.Fatalf("expected saved memory")
+	}
+	got := recent[0].Content
+	for _, dirty := range []string{"...[truncated]", "... (truncated)", "[... output truncated ...]"} {
+		if strings.Contains(got, dirty) {
+			t.Fatalf("generated truncation marker %q leaked into memory: %q", dirty, got)
+		}
+	}
+	if !strings.Contains(got, "wait... this is user text") {
+		t.Fatalf("ordinary ellipsis should be preserved: %q", got)
+	}
+}
+
+func TestSearchUsesInferredConceptAliasesForGraphMemory(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithOptions("QQ official channel must send summarized progress traces instead of raw reasoning_content.", "rule", TierLong, 0.9, SaveOptions{}); err != nil {
+		t.Fatalf("save rule: %v", err)
+	}
+
+	results := s.Search("官方渠道会输出思维链吗")
+	if len(results) == 0 {
+		t.Fatalf("expected concept alias query to recall QQ official rule")
+	}
+	if !strings.Contains(strings.ToLower(results[0].Content), "reasoning_content") {
+		t.Fatalf("expected reasoning rule first, got %#v", results)
+	}
+}
+
 func TestRouteDerivesToolAndHealthConstraints(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStore(dir)

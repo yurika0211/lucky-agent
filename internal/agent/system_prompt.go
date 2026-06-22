@@ -512,6 +512,8 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 	}
 	if cwd != "" {
 		candidates = append(candidates,
+			filepath.Join(cwd, "description", "AGENTS.md"),
+			filepath.Join(cwd, "description", "agents.md"),
 			filepath.Join(cwd, "LUCKYHARNESS_AGENT_MANUAL.md"),
 			filepath.Join(cwd, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
 		)
@@ -519,7 +521,11 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 	if a != nil && a.cfg != nil {
 		homeDir := strings.TrimSpace(a.cfg.HomeDir())
 		if homeDir != "" {
-			candidates = append(candidates, filepath.Join(homeDir, "description", "LUCKYHARNESS_AGENT_MANUAL.md"))
+			candidates = append(candidates,
+				filepath.Join(homeDir, "description", "AGENTS.md"),
+				filepath.Join(homeDir, "description", "agents.md"),
+				filepath.Join(homeDir, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
+			)
 		}
 	}
 
@@ -569,10 +575,12 @@ func findAgentsFile(cwd string) string {
 		promptPathCache.Delete(key)
 	}
 	for dir := cwd; dir != ""; dir = filepath.Dir(dir) {
-		candidate := filepath.Join(dir, "AGENTS.md")
-		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
-			promptPathCache.Store(key, candidate)
-			return candidate
+		for _, name := range []string{"AGENTS.md", "agents.md"} {
+			candidate := filepath.Join(dir, name)
+			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+				promptPathCache.Store(key, candidate)
+				return candidate
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {

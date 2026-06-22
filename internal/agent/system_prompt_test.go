@@ -115,7 +115,10 @@ func TestBuildSystemPromptIncludesNapCatPlainTextPlatformHint(t *testing.T) {
 
 func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
 	tmpDir := t.TempDir()
-	manualPath := filepath.Join(tmpDir, "LUCKYHARNESS_AGENT_MANUAL.md")
+	if err := os.MkdirAll(filepath.Join(tmpDir, "description"), 0755); err != nil {
+		t.Fatalf("mkdir description: %v", err)
+	}
+	manualPath := filepath.Join(tmpDir, "description", "AGENTS.md")
 	if err := os.WriteFile(manualPath, []byte("Convergence rule: stop once the success condition is satisfied."), 0644); err != nil {
 		t.Fatalf("write manual: %v", err)
 	}
@@ -134,11 +137,37 @@ func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
 	}
 
 	prompt := a.buildSystemPrompt(sess)
-	if !strings.Contains(prompt, "LuckyHarness manual (LUCKYHARNESS_AGENT_MANUAL.md):") {
+	if !strings.Contains(prompt, "LuckyHarness manual (AGENTS.md):") {
 		t.Fatalf("expected manual marker in prompt, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "Convergence rule: stop once the success condition is satisfied.") {
 		t.Fatalf("expected manual content in prompt, got %q", prompt)
+	}
+}
+
+func TestBuildSystemPromptIncludesLowercaseAgentsContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	agentsPath := filepath.Join(tmpDir, "agents.md")
+	if err := os.WriteFile(agentsPath, []byte("Lowercase project operating rules."), 0644); err != nil {
+		t.Fatalf("write agents.md: %v", err)
+	}
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	sess := session.NewSession("test", tmpDir)
+	sess.SetCwd(tmpDir)
+	a := &Agent{
+		cfg:  mgr,
+		soul: soul.Default(),
+	}
+
+	prompt := a.buildSystemPrompt(sess)
+	if !strings.Contains(prompt, "Context file (agents.md):") {
+		t.Fatalf("expected lowercase agents.md marker in prompt, got %q", prompt)
+	}
+	if !strings.Contains(prompt, "Lowercase project operating rules.") {
+		t.Fatalf("expected lowercase agents.md content in prompt, got %q", prompt)
 	}
 }
 
@@ -236,6 +265,16 @@ func TestMaterializedContextFallsBackWithoutSessionCwd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(oldWd)
+	})
 	a := &Agent{
 		cfg:  mgr,
 		soul: soul.Default(),

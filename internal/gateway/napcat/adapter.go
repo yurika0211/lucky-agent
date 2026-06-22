@@ -20,12 +20,13 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
 
-const defaultNapCatAttachmentDownloadLimit = 1 << 30
-const defaultNapCatAckEmojiID = "76" // QQ /赞
+const (
+	defaultNapCatAttachmentDownloadLimit = 1 << 30
+	defaultNapCatAckEmojiID              = "76" // QQ /赞
+)
 
 type oneBotEvent struct {
 	Time        int64           `json:"time"`
@@ -1269,5 +1270,7 @@ func (s *streamSender) sendMessage(message string) error {
 	return s.adapter.Send(sendCtx, s.chatID, message)
 }
 
-var _ gateway.StreamGateway = (*Adapter)(nil)
-var _ gateway.StreamSender = (*streamSender)(nil)
+var (
+	_ gateway.StreamGateway = (*Adapter)(nil)
+	_ gateway.StreamSender  = (*streamSender)(nil)
+)

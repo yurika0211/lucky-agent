@@ -222,10 +222,24 @@ func newRootCmd() *cobra.Command {
 		RunE:  runRAGStats,
 	}
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
+
+	memoryCmd := &cobra.Command{
+		Use:   "memory",
+		Short: "管理 LuckyHarness Markdown 记忆库",
+	}
+	memoryMigrateGraphCmd := &cobra.Command{
+		Use:   "migrate-graph",
+		Short: "将现有记忆迁移为 Obsidian-first graph memory",
+		RunE:  runMemoryMigrateGraph,
+	}
+	memoryMigrateGraphCmd.Flags().Bool("apply", false, "实际写入迁移结果；默认只 dry-run")
+	memoryMigrateGraphCmd.Flags().Bool("archive-dirty", true, "将 high/critical 脏记忆归档到 90_Archive/dirty")
+	memoryMigrateGraphCmd.Flags().Int("limit", 200, "最多审计/展示的脏记忆数量")
+	memoryCmd.AddCommand(memoryMigrateGraphCmd)
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)
 	addLearnCmd(rootCmd)
-	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd)
+	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd)
 
 	return rootCmd
 }
