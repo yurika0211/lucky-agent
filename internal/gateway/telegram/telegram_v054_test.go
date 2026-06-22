@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1150,6 +1151,47 @@ func TestV054ExtractAttachmentsAudioWithMockBot(t *testing.T) {
 	}
 }
 
+func TestV054ExtractAttachmentsAdditionalTelegramMedia(t *testing.T) {
+	adapter, server, err := newAdapterWithMockBot()
+	if err != nil {
+		t.Fatalf("failed to create adapter: %v", err)
+	}
+	defer server.Close()
+
+	tgMsg := &tgbotapi.Message{
+		Animation: &tgbotapi.Animation{
+			FileID:   "anim1",
+			FileName: "clip.gif",
+			FileSize: 4096,
+			MimeType: "image/gif",
+		},
+		VideoNote: &tgbotapi.VideoNote{
+			FileID:   "note1",
+			FileSize: 2048,
+		},
+		Sticker: &tgbotapi.Sticker{
+			FileID:   "sticker1",
+			FileSize: 1024,
+		},
+	}
+
+	gwMsg := &gateway.Message{}
+	adapter.extractAttachments(tgMsg, gwMsg)
+
+	if len(gwMsg.Attachments) != 3 {
+		t.Fatalf("expected 3 attachments, got %d", len(gwMsg.Attachments))
+	}
+	if gwMsg.Attachments[0].Type != gateway.AttachmentVideo || gwMsg.Attachments[0].FileName != "clip.gif" {
+		t.Fatalf("unexpected animation attachment: %+v", gwMsg.Attachments[0])
+	}
+	if gwMsg.Attachments[1].Type != gateway.AttachmentVideo || gwMsg.Attachments[1].FileName != "video_note.mp4" {
+		t.Fatalf("unexpected video note attachment: %+v", gwMsg.Attachments[1])
+	}
+	if gwMsg.Attachments[2].Type != gateway.AttachmentImage || gwMsg.Attachments[2].MimeType != "image/webp" {
+		t.Fatalf("unexpected sticker attachment: %+v", gwMsg.Attachments[2])
+	}
+}
+
 func TestV054ExtractAttachmentsNilBot(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Token = "test-token"
@@ -1166,6 +1208,68 @@ func TestV054ExtractAttachmentsNilBot(t *testing.T) {
 
 	if len(gwMsg.Attachments) != 0 {
 		t.Error("expected no attachments when bot is nil")
+	}
+}
+
+func TestV054PopulateAttachmentDataUsesResponseMetadata(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg; charset=binary")
+		_, _ = w.Write([]byte("abc"))
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.AttachmentDownloadLimit = 64
+	adapter := NewAdapter(cfg)
+	adapter.bot = &tgbotapi.BotAPI{Client: server.Client()}
+
+	att := gateway.Attachment{
+		Type:     gateway.AttachmentAudio,
+		FileID:   "audio-id",
+		FileURL:  server.URL + "/audio",
+		FileName: "voice",
+	}
+	adapter.populateAttachmentData(&att)
+
+	if att.FilePath == "" {
+		t.Fatal("expected downloaded file path")
+	}
+	if att.MimeType != "audio/mpeg" {
+		t.Fatalf("expected response MIME type, got %q", att.MimeType)
+	}
+	if att.FileSize != 3 {
+		t.Fatalf("expected file size 3, got %d", att.FileSize)
+	}
+	if filepath.Ext(att.FilePath) != ".mp3" {
+		t.Fatalf("expected .mp3 file path, got %q", att.FilePath)
+	}
+}
+
+func TestV054PopulateAttachmentDataRespectsDownloadLimit(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("abcd"))
+	}))
+	defer server.Close()
+
+	cfg := DefaultConfig()
+	cfg.AttachmentDownloadLimit = 2
+	adapter := NewAdapter(cfg)
+	adapter.bot = &tgbotapi.BotAPI{Client: server.Client()}
+
+	att := gateway.Attachment{
+		Type:     gateway.AttachmentDocument,
+		FileID:   "doc-id",
+		FileURL:  server.URL + "/doc",
+		FileName: "doc.txt",
+	}
+	adapter.populateAttachmentData(&att)
+
+	if att.FilePath != "" {
+		t.Fatalf("expected attachment over limit not to be cached, got %q", att.FilePath)
 	}
 }
 
@@ -1313,6 +1417,51 @@ func TestV054ConvertMessageWithReply(t *testing.T) {
 	}
 	if result.ReplyTo.ID != "1" {
 		t.Errorf("expected reply to ID '1', got '%s'", result.ReplyTo.ID)
+	}
+}
+
+func TestV054ConvertMessageSkipsReplyAttachments(t *testing.T) {
+	adapter, server, err := newAdapterWithMockBot()
+	if err != nil {
+		t.Fatalf("failed to create adapter: %v", err)
+	}
+	defer server.Close()
+
+	msg := &tgbotapi.Message{
+		MessageID: 2,
+		Chat: &tgbotapi.Chat{
+			ID:   12345,
+			Type: "private",
+		},
+		From: &tgbotapi.User{
+			ID:        12345,
+			UserName:  "testuser",
+			FirstName: "Test",
+		},
+		Text: "reply",
+		ReplyToMessage: &tgbotapi.Message{
+			MessageID: 1,
+			Chat: &tgbotapi.Chat{
+				ID:   12345,
+				Type: "private",
+			},
+			From: &tgbotapi.User{
+				ID:        999999,
+				UserName:  "otheruser",
+				FirstName: "Other",
+			},
+			Photo: []tgbotapi.PhotoSize{
+				{FileID: "reply-photo", FileSize: 1024},
+			},
+		},
+	}
+
+	result := adapter.convertMessage(msg)
+	if result.ReplyTo == nil {
+		t.Fatal("expected non-nil ReplyTo")
+	}
+	if len(result.ReplyTo.Attachments) != 0 {
+		t.Fatalf("expected reply attachments to be skipped, got %+v", result.ReplyTo.Attachments)
 	}
 }
 

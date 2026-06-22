@@ -166,6 +166,9 @@ func (s *Store) activateLocked(queryLower string, queryTerms []string, now time.
 		if !entryIsActive(e, now) {
 			continue
 		}
+		if isConceptEntry(e) {
+			continue
+		}
 		components := matchActivation(e, queryLower, queryTerms)
 		matchScore := components.MatchScore()
 		if matchScore <= 0 {
@@ -427,6 +430,9 @@ func (s *Store) addActivationBoostLocked(scores map[string]*ActivationScore, sou
 	}
 	target := s.entries[targetID]
 	if !entryIsActive(target, now) {
+		return
+	}
+	if isConceptEntry(target) {
 		return
 	}
 	boost := source.Score * coefficient * max(target.Weight(now), 0.05)

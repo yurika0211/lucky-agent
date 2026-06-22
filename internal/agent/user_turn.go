@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"hash/fnv"
 	"strings"
 
 	"github.com/yurika0211/luckyharness/internal/gateway"
@@ -15,6 +16,18 @@ type UserTurnInput struct {
 	Message     provider.Message
 	RoutingText string
 	Attachments []gateway.Attachment
+	Scope       TurnScope
+}
+
+// TurnScope identifies the messaging scope for a user turn. It is intentionally
+// stored as tags on memory entries so older memory notes remain compatible.
+type TurnScope struct {
+	Platform    string
+	ChatID      string
+	ChatType    string
+	SenderID    string
+	SenderName  string
+	DisplayName string
 }
 
 /**
@@ -45,6 +58,12 @@ func MultimodalUserTurnInput(text string, attachments []gateway.Attachment) User
 	}
 }
 
+// WithScope returns a copy of the input bound to a messaging scope.
+func (in UserTurnInput) WithScope(scope TurnScope) UserTurnInput {
+	in.Scope = scope.Normalize()
+	return in.Normalize()
+}
+
 /**
  * Normalize 填充 agent loop 和 provider 所需的最小字段
  */
@@ -68,13 +87,8 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 	}
 	msg.Content = routingText
 
-	parts := append([]provider.ContentPart(nil), msg.ContentParts...)
-	if len(parts) == 0 && routingText != "" {
-		parts = append(parts, provider.ContentPart{
-			Type: "text",
-			Text: routingText,
-		})
-	}
+	parts := contentPartsWithRoutingText(msg.ContentParts, routingText)
+	parts = filterAttachmentContentParts(parts, in.Attachments)
 	for _, att := range in.Attachments {
 		if part, ok := contentPartFromAttachment(att); ok {
 			parts = append(parts, part)
@@ -86,7 +100,97 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 		Message:     msg,
 		RoutingText: routingText,
 		Attachments: append([]gateway.Attachment(nil), in.Attachments...),
+		Scope:       in.Scope.Normalize(),
 	}
+}
+
+// Normalize returns a stable, lowercase scope for matching memory tags.
+func (s TurnScope) Normalize() TurnScope {
+	s.Platform = strings.ToLower(strings.TrimSpace(s.Platform))
+	s.ChatID = strings.TrimSpace(s.ChatID)
+	s.ChatType = strings.ToLower(strings.TrimSpace(s.ChatType))
+	s.SenderID = strings.TrimSpace(s.SenderID)
+	s.SenderName = strings.TrimSpace(s.SenderName)
+	s.DisplayName = strings.TrimSpace(s.DisplayName)
+	return s
+}
+
+// HasSender reports whether this turn can be scoped to a concrete platform user.
+func (s TurnScope) HasSender() bool {
+	s = s.Normalize()
+	return s.Platform != "" && s.SenderID != ""
+}
+
+// IsGroup reports whether the turn came from a multi-user chat.
+func (s TurnScope) IsGroup() bool {
+	switch s.Normalize().ChatType {
+	case "group", "supergroup", "channel":
+		return true
+	default:
+		return false
+	}
+}
+
+// UserTag is the stable memory tag for this sender.
+func (s TurnScope) UserTag() string {
+	s = s.Normalize()
+	if !s.HasSender() {
+		return ""
+	}
+	return "scope:user:" + s.Platform + ":" + hashScopeValue(s.SenderID)
+}
+
+// PrivateTag is the tag used for personal memory in private chats.
+func (s TurnScope) PrivateTag() string {
+	s = s.Normalize()
+	if !s.HasSender() {
+		return ""
+	}
+	return "scope:private:" + s.Platform + ":" + hashScopeValue(s.SenderID)
+}
+
+// GroupTag is the tag used for shared group memory.
+func (s TurnScope) GroupTag() string {
+	s = s.Normalize()
+	if s.Platform == "" || s.ChatID == "" || !s.IsGroup() {
+		return ""
+	}
+	return "scope:group:" + s.Platform + ":" + hashScopeValue(s.ChatID)
+}
+
+// MemoryTags returns tags for new memories created from this turn.
+func (s TurnScope) MemoryTags() []string {
+	s = s.Normalize()
+	if !s.HasSender() {
+		return nil
+	}
+	tags := []string{"scope:personal", s.UserTag()}
+	if s.IsGroup() {
+		tags = append(tags, s.GroupTag())
+	} else {
+		tags = append(tags, s.PrivateTag())
+	}
+	return filterNonEmptyStrings(tags)
+}
+
+func hashScopeValue(value string) string {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(value))
+	return fmt.Sprintf("%x", h.Sum64())
+}
+
+func filterNonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 /**
@@ -95,6 +199,71 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 func (in UserTurnInput) WithRoutingText(text string) UserTurnInput {
 	in.RoutingText = strings.TrimSpace(text)
 	return in.Normalize()
+}
+
+func contentPartsWithRoutingText(parts []provider.ContentPart, routingText string) []provider.ContentPart {
+	out := append([]provider.ContentPart(nil), parts...)
+	routingText = strings.TrimSpace(routingText)
+	if routingText == "" {
+		return out
+	}
+	for i := range out {
+		if out[i].Type == "text" {
+			out[i].Text = routingText
+			return out
+		}
+	}
+	return append([]provider.ContentPart{{
+		Type: "text",
+		Text: routingText,
+	}}, out...)
+}
+
+func filterAttachmentContentParts(parts []provider.ContentPart, attachments []gateway.Attachment) []provider.ContentPart {
+	if len(parts) == 0 || len(attachments) == 0 {
+		return parts
+	}
+	out := parts[:0]
+	for _, part := range parts {
+		if contentPartMatchesAttachment(part, attachments) {
+			continue
+		}
+		out = append(out, part)
+	}
+	return out
+}
+
+func contentPartMatchesAttachment(part provider.ContentPart, attachments []gateway.Attachment) bool {
+	for _, att := range attachments {
+		attPart, ok := contentPartFromAttachment(att)
+		if !ok {
+			continue
+		}
+		if sameContentPart(part, attPart) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameContentPart(a, b provider.ContentPart) bool {
+	if a.Type != b.Type {
+		return false
+	}
+	switch a.Type {
+	case "text":
+		return strings.TrimSpace(a.Text) == strings.TrimSpace(b.Text)
+	case "image":
+		if a.Image == nil || b.Image == nil {
+			return a.Image == nil && b.Image == nil
+		}
+		return strings.TrimSpace(a.Image.URL) == strings.TrimSpace(b.Image.URL) &&
+			strings.TrimSpace(a.Image.FilePath) == strings.TrimSpace(b.Image.FilePath) &&
+			strings.TrimSpace(a.Image.MimeType) == strings.TrimSpace(b.Image.MimeType) &&
+			strings.TrimSpace(a.Image.Detail) == strings.TrimSpace(b.Image.Detail)
+	default:
+		return a == b
+	}
 }
 
 func deriveRoutingTextFromMessage(msg provider.Message) string {

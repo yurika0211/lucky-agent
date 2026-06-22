@@ -1879,6 +1879,7 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 }
 
 func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
+	input = h.inputWithMessageScope(input, msg)
 	input = input.Normalize()
 	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
 		return nil
@@ -2036,6 +2037,47 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 		return agent.TextUserTurnInput(baseText)
 	}
 	return agent.MultimodalUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments), attachments)
+}
+
+func (h *Handler) inputWithMessageScope(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
+	if msg == nil {
+		return input
+	}
+	scope := agent.TurnScope{
+		Platform:    h.platform(),
+		ChatID:      msg.Chat.ID,
+		ChatType:    msg.Chat.Type.String(),
+		SenderID:    msg.Sender.ID,
+		SenderName:  msg.Sender.Username,
+		DisplayName: msg.Sender.DisplayName(),
+	}
+	input = input.WithScope(scope)
+	if h.platform() == "napcat" {
+		input = input.WithRoutingText(napcatSenderContextText(input.RoutingText, msg.Sender))
+	}
+	return input
+}
+
+func napcatSenderContextText(text string, sender gateway.User) string {
+	text = strings.TrimSpace(text)
+	qq := strings.TrimSpace(sender.ID)
+	if qq == "" {
+		return text
+	}
+
+	var b strings.Builder
+	b.WriteString("[NapCat message sender]\n")
+	b.WriteString("QQ: ")
+	b.WriteString(qq)
+	if name := strings.TrimSpace(sender.DisplayName()); name != "" && name != qq {
+		b.WriteString("\nName: ")
+		b.WriteString(name)
+	}
+	if text != "" {
+		b.WriteString("\n\n")
+		b.WriteString(text)
+	}
+	return b.String()
 }
 
 func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {

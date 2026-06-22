@@ -203,6 +203,16 @@ func (s *Store) SaveWithOptions(content, category string, tier Tier, importance 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	content = sanitizeDurableMemoryContent(content)
+	category = strings.TrimSpace(category)
+	if content == "" {
+		return nil
+	}
+	opts = enrichSaveOptionsWithConcepts(content, category, opts)
+	if !strings.EqualFold(strings.TrimSpace(category), "concept") {
+		s.ensureConceptEntriesLocked(opts.Links)
+	}
+
 	// 去重检查：同 category + 同 content（忽略前后空白）不重复写入
 	normalized := strings.TrimSpace(content)
 	for _, e := range s.entries {
@@ -327,6 +337,11 @@ func (s *Store) SaveShortTermTTL(content, category string, ttl time.Duration) er
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	content = sanitizeDurableMemoryContent(content)
+	category = strings.TrimSpace(category)
+	if content == "" {
+		return nil
+	}
 	// 去重检查
 	normalized := strings.TrimSpace(content)
 	for _, e := range s.entries {
@@ -659,7 +674,7 @@ func (s *Store) Recent(n int) []Entry {
 	now := time.Now()
 	all := make([]entryScore, 0, len(s.entries))
 	for _, e := range s.entries {
-		if !entryIsActive(e, now) {
+		if !entryIsActive(e, now) || isConceptEntry(e) {
 			continue
 		}
 		all = append(all, entryScore{entry: *e, score: e.Weight(now)})
@@ -688,7 +703,7 @@ func (s *Store) ByTier(tier Tier) []Entry {
 	var results []Entry
 	now := time.Now()
 	for _, e := range s.entries {
-		if e.Tier == tier && entryIsActive(e, now) {
+		if e.Tier == tier && entryIsActive(e, now) && !isConceptEntry(e) {
 			results = append(results, *e)
 		}
 	}
@@ -835,12 +850,16 @@ func (s *Store) Stats() map[Tier]int {
 	}
 	now := time.Now()
 	for _, e := range s.entries {
-		if !entryIsActive(e, now) {
+		if !entryIsActive(e, now) || isConceptEntry(e) {
 			continue
 		}
 		stats[e.Tier]++
 	}
 	return stats
+}
+
+func isConceptEntry(e *Entry) bool {
+	return e != nil && strings.EqualFold(strings.TrimSpace(e.Category), "concept")
 }
 
 // Dedup 去重：删除同 category + 同 content 的重复条目，保留权重最高的
@@ -1075,6 +1094,7 @@ func (s *Store) ensureVaultDirs() error {
 		"40_Decisions",
 		"50_Facts",
 		"60_Rules",
+		"70_Concepts",
 		"70_Trajectories",
 		"90_Archive",
 		".lh-index",
@@ -1155,6 +1175,9 @@ func blockIDForEntry(id string) string {
 }
 
 func notePathForEntry(e *Entry) string {
+	if strings.EqualFold(strings.TrimSpace(e.Category), "concept") {
+		return conceptNotePath(e.Content)
+	}
 	created := e.CreatedAt
 	if created.IsZero() {
 		created = time.Now()
@@ -1179,6 +1202,8 @@ func noteDirForEntry(e *Entry) string {
 		return "40_Decisions"
 	case "rule", "tool", "workflow":
 		return "60_Rules"
+	case "concept":
+		return "70_Concepts"
 	case "conversation", "task", "session":
 		return "30_Sessions"
 	case "archive":
@@ -1498,6 +1523,223 @@ var queryAliasRules = []queryAliasRule{
 	{Triggers: []string{"天气", "下雨", "气温", "温度", "forecast", "weather"}, Aliases: []string{"weather forecast", "weather"}},
 	{Triggers: []string{"空气质量", "空气", "雾霾", "aqi", "pm2.5"}, Aliases: []string{"air quality", "aqi"}},
 	{Triggers: []string{"上海", "shanghai"}, Aliases: []string{"shanghai"}},
+}
+
+type conceptRule struct {
+	Concept  string
+	Triggers []string
+	Aliases  []string
+	Tags     []string
+}
+
+var builtInConceptRules = []conceptRule{
+	{
+		Concept:  "LuckyHarness",
+		Triggers: []string{"luckyharness", "lh", "l h"},
+		Aliases:  []string{"lh"},
+		Tags:     []string{"concept/luckyharness"},
+	},
+	{
+		Concept:  "LuckyHarness Memory",
+		Triggers: []string{"luckyharness memory", "lh memory", "记忆库", "durable memory", "working memory", "memory vault", "obsidian-first", "graph memory", "双链记忆"},
+		Aliases:  []string{"记忆库", "graph memory", "working memory"},
+		Tags:     []string{"concept/memory"},
+	},
+	{
+		Concept:  "Obsidian",
+		Triggers: []string{"obsidian", "双链", "wikilink", "backlink", "vault"},
+		Aliases:  []string{"双链", "wikilink", "backlink"},
+		Tags:     []string{"concept/obsidian"},
+	},
+	{
+		Concept:  "Message Gateway",
+		Triggers: []string{"msg-gateway", "message gateway", "gateway", "网关", "消息网关", "渠道"},
+		Aliases:  []string{"网关", "消息网关", "gateway"},
+		Tags:     []string{"concept/gateway"},
+	},
+	{
+		Concept:  "QQ Official",
+		Triggers: []string{"qq official", "qqofficial", "qq 官方", "qq官方", "官方渠道", "官方频道"},
+		Aliases:  []string{"QQ官方", "官方渠道", "官方频道"},
+		Tags:     []string{"concept/gateway", "gateway/qqofficial"},
+	},
+	{
+		Concept:  "Reasoning Content",
+		Triggers: []string{"reasoning_content", "reasoning content", "chain-of-thought", "chain of thought", "cot", "思维链", "推理内容"},
+		Aliases:  []string{"思维链", "推理内容", "chain-of-thought"},
+		Tags:     []string{"concept/reasoning"},
+	},
+	{
+		Concept:  "Gateway Trace",
+		Triggers: []string{"trace", "progress trace", "tool trace", "reasoning trace", "轨迹", "进度卡片", "工具轨迹"},
+		Aliases:  []string{"trace", "进度轨迹", "工具轨迹"},
+		Tags:     []string{"concept/trace"},
+	},
+	{
+		Concept:  "Session Memory",
+		Triggers: []string{"session", "sessions", "会话", "历史会话", "session history"},
+		Aliases:  []string{"会话", "session history"},
+		Tags:     []string{"concept/session"},
+	},
+	{
+		Concept:  "RAG",
+		Triggers: []string{"rag", "retrieval augmented", "检索增强", "向量召回"},
+		Aliases:  []string{"检索增强", "向量召回"},
+		Tags:     []string{"concept/rag"},
+	},
+}
+
+func enrichSaveOptionsWithConcepts(content, category string, opts SaveOptions) SaveOptions {
+	links, aliases, tags := inferConceptMetadata(content, category)
+	if len(links) > 0 {
+		opts.Links = normalizeLinks(append(opts.Links, links...))
+	}
+	if len(aliases) > 0 {
+		opts.Aliases = dedupSlice(append(opts.Aliases, aliases...))
+	}
+	if len(tags) > 0 {
+		opts.Tags = mergeTags(opts.Tags, tags)
+	}
+	return opts
+}
+
+func inferConceptMetadata(content, category string) (links, aliases, tags []string) {
+	text := strings.ToLower(strings.Join([]string{category, content}, "\n"))
+	for _, rule := range builtInConceptRules {
+		if !conceptRuleMatches(text, rule.Triggers) {
+			continue
+		}
+		links = append(links, rule.Concept)
+		aliases = append(aliases, rule.Aliases...)
+		tags = append(tags, rule.Tags...)
+	}
+	return normalizeLinks(links), dedupSlice(aliases), dedupSlice(tags)
+}
+
+func conceptRuleMatches(text string, triggers []string) bool {
+	for _, trigger := range triggers {
+		trigger = strings.ToLower(strings.TrimSpace(trigger))
+		if trigger != "" && strings.Contains(text, trigger) {
+			return true
+		}
+	}
+	return false
+}
+
+func init() {
+	for _, rule := range builtInConceptRules {
+		queryAliasRules = append(queryAliasRules, queryAliasRule{
+			Triggers: append([]string{rule.Concept}, rule.Aliases...),
+			Aliases:  append([]string{rule.Concept}, rule.Aliases...),
+		})
+	}
+}
+
+func (s *Store) ensureConceptEntriesLocked(links []string) {
+	for _, link := range normalizeLinks(links) {
+		rule, ok := conceptRuleForName(link)
+		if !ok {
+			continue
+		}
+		if s.hasConceptEntryLocked(rule.Concept) {
+			continue
+		}
+		now := time.Now()
+		entry := &Entry{
+			ID:         conceptEntryID(rule.Concept),
+			Content:    rule.Concept,
+			Category:   "concept",
+			Tier:       TierLong,
+			Importance: 0.85,
+			CreatedAt:  now,
+			AccessedAt: now,
+			Tags:       mergeTags([]string{"concept"}, rule.Tags),
+			Aliases:    dedupSlice(rule.Aliases),
+			Status:     "active",
+			ValidFrom:  now,
+			BlockID:    blockIDForEntry(conceptEntryID(rule.Concept)),
+			Path:       conceptNotePath(rule.Concept),
+		}
+		entry.Links = normalizeLinks(conceptRelatedLinks(rule))
+		s.entries[entry.ID] = entry
+		s.paths[entry.ID] = entry.Path
+	}
+}
+
+func conceptRuleForName(name string) (conceptRule, bool) {
+	key := graphKey(name)
+	for _, rule := range builtInConceptRules {
+		if graphKey(rule.Concept) == key {
+			return rule, true
+		}
+		for _, alias := range rule.Aliases {
+			if graphKey(alias) == key {
+				return rule, true
+			}
+		}
+	}
+	return conceptRule{}, false
+}
+
+func (s *Store) hasConceptEntryLocked(concept string) bool {
+	id := conceptEntryID(concept)
+	if _, ok := s.entries[id]; ok {
+		return true
+	}
+	key := graphKey(concept)
+	for _, entry := range s.entries {
+		if entry == nil || !strings.EqualFold(strings.TrimSpace(entry.Category), "concept") {
+			continue
+		}
+		if graphKey(entry.Content) == key {
+			return true
+		}
+		for _, alias := range entry.Aliases {
+			if graphKey(alias) == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func conceptEntryID(concept string) string {
+	slug := slugify(concept)
+	if slug == "" {
+		slug = "concept"
+	}
+	return "concept_" + strings.ReplaceAll(slug, "-", "_")
+}
+
+func conceptNotePath(concept string) string {
+	slug := slugify(concept)
+	if slug == "" {
+		slug = "concept"
+	}
+	return filepath.ToSlash(filepath.Join("70_Concepts", slug+".md"))
+}
+
+func conceptRelatedLinks(rule conceptRule) []string {
+	switch rule.Concept {
+	case "QQ Official":
+		return []string{"Message Gateway", "Gateway Trace", "Reasoning Content"}
+	case "Reasoning Content":
+		return []string{"Gateway Trace", "QQ Official"}
+	case "Gateway Trace":
+		return []string{"Message Gateway", "Reasoning Content"}
+	case "LuckyHarness Memory":
+		return []string{"LuckyHarness", "Obsidian", "RAG"}
+	case "Obsidian":
+		return []string{"LuckyHarness Memory"}
+	case "Session Memory":
+		return []string{"LuckyHarness Memory"}
+	case "RAG":
+		return []string{"LuckyHarness Memory"}
+	case "Message Gateway":
+		return []string{"LuckyHarness"}
+	default:
+		return nil
+	}
 }
 
 func expandQueryTerms(queryLower string, terms []string) []string {

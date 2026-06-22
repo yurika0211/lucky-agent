@@ -71,10 +71,19 @@ func (s *MidTermStore) SaveSessionSummary(summary *SessionSummary) error {
 	if summary.SessionID == "" {
 		return fmt.Errorf("session_id is required")
 	}
+	normalizeSessionSummaryForSave(summary)
+	if strings.TrimSpace(summary.RawSummary) == "" &&
+		len(summary.Topics) == 0 &&
+		len(summary.KeyDecisions) == 0 &&
+		len(summary.OpenQuestions) == 0 &&
+		strings.TrimSpace(summary.CodeContext) == "" {
+		return nil
+	}
 
 	// 如果已存在同 ID，合并
 	if existing, ok := s.summaries[summary.SessionID]; ok {
 		s.mergeSummary(existing, summary)
+		normalizeSessionSummaryForSave(existing)
 	} else {
 		s.summaries[summary.SessionID] = summary
 	}
@@ -346,6 +355,7 @@ func (s *MidTermStore) persist() error {
 		return fmt.Errorf("create midterm dir: %w", err)
 	}
 	for _, sm := range s.summaries {
+		normalizeSessionSummaryForSave(sm)
 		if sm.CreatedAt.IsZero() {
 			sm.CreatedAt = time.Now()
 		}
@@ -363,6 +373,30 @@ func (s *MidTermStore) persist() error {
 		}
 	}
 	return nil
+}
+
+func normalizeSessionSummaryForSave(sm *SessionSummary) {
+	if sm == nil {
+		return
+	}
+	sm.SessionID = strings.TrimSpace(sm.SessionID)
+	sm.UserID = strings.TrimSpace(sm.UserID)
+	sm.Topics = sanitizeSummarySlice(sm.Topics)
+	sm.KeyDecisions = sanitizeSummarySlice(sm.KeyDecisions)
+	sm.OpenQuestions = sanitizeSummarySlice(sm.OpenQuestions)
+	sm.CodeContext = sanitizeDurableMemoryContent(sm.CodeContext)
+	sm.RawSummary = sanitizeDurableMemoryContent(sm.RawSummary)
+}
+
+func sanitizeSummarySlice(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = sanitizeDurableMemoryContent(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return dedupSlice(out)
 }
 
 func (s *MidTermStore) load() error {
@@ -662,10 +696,7 @@ func extractCodeContext(messages []ConversationTurn) string {
 	}
 
 	result := strings.Join(codeParts, " | ")
-	if len(result) > 500 {
-		result = result[:500] + "..."
-	}
-	return result
+	return truncateField(result, 500)
 }
 
 // generateRawSummary 生成自然语言摘要
@@ -720,8 +751,5 @@ func generateRawSummary(messages []ConversationTurn) string {
 	}
 
 	result := sb.String()
-	if len(result) > 800 {
-		result = result[:800] + "..."
-	}
-	return result
+	return truncateField(result, 800)
 }

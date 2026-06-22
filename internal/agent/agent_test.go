@@ -317,8 +317,9 @@ func TestContextPlannerInjectsMemoryGateForDaughterOutdoorPrompt(t *testing.T) {
 	joined := providerMessagesContent(messages)
 	for _, want := range []string{
 		"[Working Memory",
-		"Mandatory Memory Gate",
+		"Retrieved Evidence",
 		"LuckyHarness Obsidian-compatible Markdown memory vault",
+		"Prefer the latest user message",
 		"[Memory Router]",
 		"Required tools before final answer: current_time, web_search",
 		"child_health_outdoor_plan",
@@ -591,6 +592,24 @@ func TestSaveConversationMemory(t *testing.T) {
 	}
 }
 
+func TestSaveConversationMemoryDoesNotPersistTruncationEllipsis(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	userInput := "我喜欢Rust语言，" + strings.Repeat("这是一个很长的偏好描述", 40)
+
+	a.saveConversationMemory(userInput, "Rust确实很棒")
+
+	recent := a.memory.Recent(10)
+	for _, e := range recent {
+		if strings.Contains(e.Content, "Rust") {
+			if strings.HasSuffix(strings.TrimSpace(e.Content), "...") {
+				t.Fatalf("persisted memory should not end with generated ellipsis: %q", e.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("expected Rust-related memory to be saved")
+}
+
 func TestSaveConversationMemoryDoesNotStoreRawConversationInMemoryStore(t *testing.T) {
 	a := newTestAgentWithMemory(t)
 	a.shortTerm = memory.NewShortTermBuffer(10)
@@ -625,7 +644,7 @@ func TestContextPlannerFiltersRawConversationShortMemory(t *testing.T) {
 	a.memory.SaveWithTier("Project deploy constraint: run tests before release", "project", memory.TierShort, 0.9)
 
 	planner := newContextPlanner(a, defaultContextBuildOptions())
-	msg := planner.buildRelevantMemoryMessage("deploy")
+	msg := planner.buildRelevantMemoryMessage("deploy", TurnScope{})
 	if msg.Content == "" {
 		t.Fatal("expected filtered working memory to keep project fact")
 	}
@@ -637,6 +656,61 @@ func TestContextPlannerFiltersRawConversationShortMemory(t *testing.T) {
 	}
 }
 
+func TestSaveConversationMemoryFromTurnAddsScopeTags(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	scope := TurnScope{
+		Platform: "qqofficial",
+		ChatID:   "group:100",
+		ChatType: "group",
+		SenderID: "user-a",
+	}
+
+	a.saveConversationMemoryFromTurn(TextUserTurnInput("我喜欢Rust语言").WithScope(scope), "Rust确实很棒")
+
+	recent := a.memory.Recent(10)
+	var got *memory.Entry
+	for i := range recent {
+		if strings.Contains(recent[i].Content, "Rust") {
+			got = &recent[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatal("expected scoped Rust memory to be saved")
+	}
+	if !stringSliceContains(got.Tags, scope.UserTag()) || !stringSliceContains(got.Tags, scope.GroupTag()) || !stringSliceContains(got.Tags, "scope:personal") {
+		t.Fatalf("expected personal scope tags, got %#v", got.Tags)
+	}
+}
+
+func TestContextPlannerFiltersOtherUserScopedMemory(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	scopeA := TurnScope{Platform: "qqofficial", ChatID: "group:100", ChatType: "group", SenderID: "user-a"}
+	scopeB := TurnScope{Platform: "qqofficial", ChatID: "group:100", ChatType: "group", SenderID: "user-b"}
+	if err := a.memory.SaveWithOptions("Project deploy constraint for user A", "project", memory.TierLong, 0.95, memory.SaveOptions{Tags: scopeA.MemoryTags()}); err != nil {
+		t.Fatalf("save user A memory: %v", err)
+	}
+	if err := a.memory.SaveWithOptions("Project deploy constraint for user B", "project", memory.TierLong, 0.95, memory.SaveOptions{Tags: scopeB.MemoryTags()}); err != nil {
+		t.Fatalf("save user B memory: %v", err)
+	}
+
+	planner := newContextPlanner(a, defaultContextBuildOptions())
+	msg := planner.buildRelevantMemoryMessage("deploy constraint", scopeA)
+	if !strings.Contains(msg.Content, "user A") {
+		t.Fatalf("expected user A memory in scoped context:\n%s", msg.Content)
+	}
+	if strings.Contains(msg.Content, "user B") {
+		t.Fatalf("other user's scoped memory leaked into context:\n%s", msg.Content)
+	}
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 func TestContextMemoryHygieneHookQuarantinesDirtyMemoryBeforeRecall(t *testing.T) {
 	cfg, err := config.NewManagerWithDir(t.TempDir())
 	if err != nil {

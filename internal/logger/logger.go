@@ -61,7 +61,7 @@ func InitLogger(cfg Config) {
 	case "stderr", "":
 		writer = os.Stderr
 	default:
-		f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		f, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			slog.Warn("failed to open log file, falling back to stderr", "path", cfg.Output, "error", err)
 			writer = os.Stderr

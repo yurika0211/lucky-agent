@@ -1,6 +1,6 @@
 package config
 
-// DefaultAgentManual returns the default LUCKYHARNESS_AGENT_MANUAL.md content.
+// DefaultAgentManual returns the default AGENTS.md content.
 func DefaultAgentManual() string {
 	return `LuckyHarness Agent: Core Operating Manual
 

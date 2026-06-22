@@ -229,8 +229,8 @@ func TestTruncateField(t *testing.T) {
 	}
 
 	result = truncateField("this is a very long string that should be truncated", 10)
-	if len(result) != 13 { // 10 + "..."
-		t.Errorf("expected length 13, got %d", len(result))
+	if result != "this is a" {
+		t.Errorf("expected no-marker truncation, got %q", result)
 	}
 }
 

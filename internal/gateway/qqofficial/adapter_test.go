@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
@@ -208,6 +211,103 @@ func TestAccessTokenResponseUnmarshalExpiresInNumber(t *testing.T) {
 	}
 }
 
+func TestAdapterReconnectsAfterGatewayReconnectOp(t *testing.T) {
+	var connections atomic.Int32
+	messageReceived := make(chan *gateway.Message, 1)
+
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			http.Error(w, "unexpected token path "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(accessTokenResponse{AccessToken: "token", ExpiresIn: 3600})
+	}))
+	defer tokenServer.Close()
+
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	wsServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		n := connections.Add(1)
+		if err := conn.WriteJSON(gatewayFrame{Op: helloOp, D: mustJSON(helloPayload{HeartbeatInterval: 60_000})}); err != nil {
+			t.Errorf("write hello: %v", err)
+			return
+		}
+		var identify gatewayFrame
+		if err := conn.ReadJSON(&identify); err != nil {
+			t.Errorf("read identify: %v", err)
+			return
+		}
+		if identify.Op != identifyOp {
+			t.Errorf("expected identify op, got %d", identify.Op)
+			return
+		}
+		if n == 1 {
+			_ = conn.WriteJSON(gatewayFrame{Op: reconnectOp})
+			return
+		}
+		raw, _ := json.Marshal(incomingMessageEvent{
+			ID:      "msg-reconnected",
+			Content: "hello after reconnect",
+			Author:  messageAuthor{ID: "user-1", Username: "tester"},
+		})
+		_ = conn.WriteJSON(gatewayFrame{
+			Op: dispatchEventOp,
+			T:  "C2C_MESSAGE_CREATE",
+			D:  raw,
+		})
+		<-r.Context().Done()
+	}))
+	defer wsServer.Close()
+
+	a := NewAdapter(Config{
+		AppID:         "app-id",
+		AppSecret:     "secret",
+		GatewayURL:    wsToHTTPTestURL(t, wsServer.URL),
+		ReconnectWait: 1,
+	})
+	a.accessTokenURL = tokenServer.URL + "/token"
+	a.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+		messageReceived <- msg
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := a.Start(ctx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer a.Stop()
+
+	select {
+	case msg := <-messageReceived:
+		if msg.Text != "hello after reconnect" {
+			t.Fatalf("unexpected message after reconnect: %+v", msg)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for reconnected message; connections=%d", connections.Load())
+	}
+	if got := connections.Load(); got < 2 {
+		t.Fatalf("expected at least 2 websocket connections, got %d", got)
+	}
+	if !a.IsRunning() {
+		t.Fatal("adapter should remain running after reconnect")
+	}
+}
+
+func wsToHTTPTestURL(t *testing.T, raw string) string {
+	t.Helper()
+	addr := strings.TrimPrefix(raw, "http://")
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		t.Fatalf("unexpected test server URL %q: %v", raw, err)
+	}
+	return "ws://" + addr
+}
+
 func TestSendWithReplyUsesIncrementingMsgSeq(t *testing.T) {
 	var mu sync.Mutex
 	var payloads []outgoingMessagePayload
@@ -397,6 +497,83 @@ func TestBuildUserTurnInputPreservesAttachments(t *testing.T) {
 	}
 	if normalized.Message.ContentParts[1].Image == nil || normalized.Message.ContentParts[1].Image.FilePath != "/tmp/example.jpg" {
 		t.Fatalf("expected image content part to keep file path, got %#v", normalized.Message.ContentParts[1])
+	}
+}
+
+func TestNapcatSenderContextTextIncludesQQAndOriginalText(t *testing.T) {
+	got := napcatSenderContextText("hello", gateway.User{
+		ID:       "678",
+		Username: "tester",
+	})
+
+	for _, want := range []string{
+		"[NapCat message sender]",
+		"QQ: 678",
+		"Name: @tester",
+		"hello",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in sender context, got %q", want, got)
+		}
+	}
+}
+
+func TestInputWithMessageScopeInjectsNapcatSenderQQ(t *testing.T) {
+	h := NewHandlerWithOptions(&qqHandlerTestSender{}, nil, HandlerOptions{PlatformName: "napcat"})
+	input := agent.MultimodalUserTurnInput("看一下附件", []gateway.Attachment{
+		{
+			Type:     gateway.AttachmentImage,
+			FilePath: "/tmp/example.jpg",
+			MimeType: "image/jpeg",
+		},
+	})
+	got := h.inputWithMessageScope(input, &gateway.Message{
+		ID:   "msg-1",
+		Chat: gateway.Chat{ID: "group:123", Type: gateway.ChatGroup},
+		Sender: gateway.User{
+			ID:       "3256247459",
+			Username: "shiokou",
+		},
+	})
+
+	if got.Scope.Platform != "napcat" || got.Scope.SenderID != "3256247459" {
+		t.Fatalf("expected napcat scoped sender, got %#v", got.Scope)
+	}
+	for _, want := range []string{"QQ: 3256247459", "Name: @shiokou", "看一下附件"} {
+		if !strings.Contains(got.RoutingText, want) {
+			t.Fatalf("expected %q in routing text, got %q", want, got.RoutingText)
+		}
+		if !strings.Contains(got.Message.Content, want) {
+			t.Fatalf("expected %q in message content, got %q", want, got.Message.Content)
+		}
+	}
+	if len(got.Message.ContentParts) != 2 {
+		t.Fatalf("expected text plus one image part, got %#v", got.Message.ContentParts)
+	}
+	if got.Message.ContentParts[0].Type != "text" || !strings.Contains(got.Message.ContentParts[0].Text, "QQ: 3256247459") {
+		t.Fatalf("expected first content part to include sender context, got %#v", got.Message.ContentParts[0])
+	}
+	if got.Message.ContentParts[1].Image == nil || got.Message.ContentParts[1].Image.FilePath != "/tmp/example.jpg" {
+		t.Fatalf("expected image content part to be preserved once, got %#v", got.Message.ContentParts[1])
+	}
+}
+
+func TestInputWithMessageScopeDoesNotInjectQQOfficialSenderQQ(t *testing.T) {
+	h := NewHandlerWithOptions(&qqHandlerTestSender{}, nil, HandlerOptions{PlatformName: "qqofficial"})
+	got := h.inputWithMessageScope(agent.TextUserTurnInput("hello"), &gateway.Message{
+		ID:   "msg-1",
+		Chat: gateway.Chat{ID: "c2c:user-1", Type: gateway.ChatPrivate},
+		Sender: gateway.User{
+			ID:       "user-1",
+			Username: "tester",
+		},
+	})
+
+	if strings.Contains(got.RoutingText, "[NapCat message sender]") || strings.Contains(got.Message.Content, "[NapCat message sender]") {
+		t.Fatalf("qqofficial input should not include napcat sender context, got %#v", got)
+	}
+	if got.RoutingText != "hello" || got.Message.Content != "hello" {
+		t.Fatalf("expected original text to be unchanged, got routing=%q content=%q", got.RoutingText, got.Message.Content)
 	}
 }
 

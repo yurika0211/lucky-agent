@@ -1,5 +1,7 @@
 package utils
 
+import "strings"
+
 const ellipsis = "..."
 
 /*
@@ -31,4 +33,17 @@ func TruncateKeepLength(s string, maxLen int) string {
 		return ellipsis[:maxLen]
 	}
 	return s[:maxLen-len(ellipsis)] + ellipsis
+}
+
+// TrimToRunes trims text to at most maxLen runes without appending a display
+// marker. Use this for data that can be persisted or summarized later.
+func TrimToRunes(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return strings.TrimSpace(string(runes[:maxLen]))
 }

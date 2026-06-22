@@ -2,21 +2,25 @@ package telegram
 
 // Config holds Telegram-specific configuration.
 type Config struct {
-	Token         string   // Bot token
-	Proxy         string   // Optional proxy URL for Telegram API (http/https/socks5)
-	AllowedChats  []string // Chat ID whitelist (empty = allow all)
-	AdminIDs      []string // Admin user IDs
-	MaxMessageLen int      // Max message length before splitting (default 4000)
-	RateLimit     int      // Messages per second per chat (default 1)
-	PollTimeout   int      // Long polling timeout in seconds (default 30)
+	Token                     string   // Bot token
+	Proxy                     string   // Optional proxy URL for Telegram API (http/https/socks5)
+	AllowedChats              []string // Chat ID whitelist (empty = allow all)
+	AdminIDs                  []string // Admin user IDs
+	MaxMessageLen             int      // Max message length before splitting (default 4000)
+	RateLimit                 int      // Messages per second per chat (default 1)
+	PollTimeout               int      // Long polling timeout in seconds (default 30)
+	AttachmentDownloadLimit   int64    // Max inbound attachment bytes to cache locally (default 1 GiB)
+	AttachmentDownloadTimeout int      // Attachment download timeout in seconds (default 30)
 }
 
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		MaxMessageLen: 4000,
-		RateLimit:     1,
-		PollTimeout:   30,
+		MaxMessageLen:             4000,
+		RateLimit:                 1,
+		PollTimeout:               30,
+		AttachmentDownloadLimit:   defaultAttachmentDownloadLimit,
+		AttachmentDownloadTimeout: 30,
 	}
 }
 

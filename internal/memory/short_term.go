@@ -92,11 +92,11 @@ func (b *ShortTermBuffer) generateStructuredSummary(overflow []ConversationTurn)
 	for _, msg := range overflow {
 		switch msg.Role {
 		case "user":
-			userStatements = append(userStatements, utils.Truncate(msg.Content, 120))
+			userStatements = append(userStatements, utils.TrimToRunes(msg.Content, 120))
 			entities = append(entities, extractEntities(msg.Content)...)
 			decisions = append(decisions, extractDecisions(msg.Content)...)
 		case "assistant":
-			assistantStatements = append(assistantStatements, utils.Truncate(msg.Content, 120))
+			assistantStatements = append(assistantStatements, utils.TrimToRunes(msg.Content, 120))
 			decisions = append(decisions, extractDecisions(msg.Content)...)
 		}
 	}
@@ -137,11 +137,11 @@ func (b *ShortTermBuffer) mergeSummaries(oldSummary, newSummary string) string {
 	// 简单合并：旧摘要截断 + 新摘要追加
 	merged := oldSummary
 	if len(merged) > 800 {
-		merged = merged[:800] + "\n...[earlier summary truncated]"
+		merged = utils.TrimToRunes(merged, 800)
 	}
 	merged += "\n" + newSummary
 	if len(merged) > 2000 {
-		merged = merged[:2000] + "\n...[summary truncated]"
+		merged = utils.TrimToRunes(merged, 2000)
 	}
 	return merged
 }
@@ -269,7 +269,7 @@ func extractDecisions(text string) []string {
 				end = len(text)
 			}
 			fragment := text[start:end]
-			decisions = append(decisions, utils.Truncate(fragment, 100))
+			decisions = append(decisions, utils.TrimToRunes(fragment, 100))
 		}
 	}
 

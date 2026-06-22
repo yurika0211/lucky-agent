@@ -173,7 +173,7 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	}
 
 	// 拼接rag知识库的内容
-	messages = append(messages, p.buildMemoryMessages(routingText)...)
+	messages = append(messages, p.buildMemoryMessages(routingText, input.Scope)...)
 	if p.options.IncludeRAG {
 		if ragMsg := p.buildRAGMessage(ctx, routingText); ragMsg.Content != "" {
 			messages = append(messages, ragMsg)
@@ -487,13 +487,13 @@ func (p *contextPlanner) buildToolCatalog(disabled []string) string {
 /*
 buildMemoryMessages 构造与当前查询相关的记忆上下文消息。
 */
-func (p *contextPlanner) buildMemoryMessages(query string) []provider.Message {
+func (p *contextPlanner) buildMemoryMessages(query string, scope TurnScope) []provider.Message {
 	var messages []provider.Message
 
-	if core := p.buildCoreMemoryMessage(query); core.Content != "" {
+	if core := p.buildCoreMemoryMessage(query, scope); core.Content != "" {
 		messages = append(messages, core)
 	}
-	if relevant := p.buildRelevantMemoryMessage(query); relevant.Content != "" {
+	if relevant := p.buildRelevantMemoryMessage(query, scope); relevant.Content != "" {
 		messages = append(messages, relevant)
 	}
 	if midterm := p.buildMidtermSummaryMessage(query); midterm.Content != "" {
@@ -509,11 +509,12 @@ func (p *contextPlanner) buildMemoryMessages(query string) []provider.Message {
 /*
 buildCoreMemoryMessage 构造长期核心记忆消息。
 */
-func (p *contextPlanner) buildCoreMemoryMessage(query string) provider.Message {
+func (p *contextPlanner) buildCoreMemoryMessage(query string, scope TurnScope) provider.Message {
 	if p.agent == nil || p.agent.memory == nil {
 		return provider.Message{}
 	}
 	longs := p.agent.memory.ByTier(memory.TierLong)
+	longs = filterMemoryEntriesForScope(longs, scope)
 	if len(longs) == 0 {
 		return provider.Message{}
 	}
@@ -537,7 +538,7 @@ func (p *contextPlanner) buildCoreMemoryMessage(query string) provider.Message {
 /*
 buildRelevantMemoryMessage 构造与当前问题相关的普通记忆消息。
 */
-func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Message {
+func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScope) provider.Message {
 	if p.agent == nil || p.agent.memory == nil {
 		return provider.Message{}
 	}
@@ -550,16 +551,23 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 		return provider.Message{}
 	}
 	results = filterRecallContextEntries(results)
+	results = filterMemoryEntriesForScope(results, scope)
 	if len(results) == 0 {
 		return provider.Message{}
 	}
 	route.Entries = results
+	route.EvidenceRefs = evidenceRefsForContext(results, 6)
+	route.TemporalNotes = nil
+	route.SupersededRefs = nil
+	route.ConflictRefs = nil
+	route.ExpiredRefs = nil
+	route.FutureRefs = nil
 	results = prioritizeMemoryForContext(results)
-	header := "[Working Memory — Mandatory Memory Gate]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
+	header := "[Working Memory — Retrieved Evidence]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
 	if vault := p.agent.memoryVaultPath(); vault != "" {
 		header += " at " + vault
 	}
-	header += ". Treat them as hard constraints for this turn: do not answer or choose tools as if they were absent. If a memory says real-time data or external checks are needed, use available tools before the final answer or state exactly what could not be checked."
+	header += ". Treat them as prior evidence, not as the current task itself. Prefer the latest user message and explicit session history when they conflict with retrieved memory. If a memory says real-time data or external checks are needed and it still matches the current user request, use available tools before the final answer or state exactly what could not be checked."
 	bodyBudget := utils.MaxInt(768, p.budget.Memory*3-p.est.Estimate(header)-16)
 	body := p.buildTypedMemoryBody(route, results, bodyBudget)
 	content := header
@@ -631,6 +639,63 @@ func filterRecallContextEntries(entries []memory.Entry) []memory.Entry {
 	return out
 }
 
+func filterMemoryEntriesForScope(entries []memory.Entry, scope TurnScope) []memory.Entry {
+	if len(entries) == 0 {
+		return nil
+	}
+	scope = scope.Normalize()
+	if !scope.HasSender() {
+		return entries
+	}
+	out := make([]memory.Entry, 0, len(entries))
+	for _, e := range entries {
+		if memoryEntryVisibleInScope(e, scope) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func memoryEntryVisibleInScope(e memory.Entry, scope TurnScope) bool {
+	tags := normalizedTagSet(e.Tags)
+	if len(tags) == 0 || !hasScopedMemoryTag(tags) {
+		return true
+	}
+	if tags["scope:shared"] {
+		if groupTag := scope.GroupTag(); groupTag != "" {
+			return tags[groupTag]
+		}
+		return true
+	}
+	if tags[scope.UserTag()] || tags[scope.PrivateTag()] {
+		return true
+	}
+	if groupTag := scope.GroupTag(); groupTag != "" && tags[groupTag] && !tags["scope:personal"] {
+		return true
+	}
+	return false
+}
+
+func normalizedTagSet(tags []string) map[string]bool {
+	out := make(map[string]bool, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimPrefix(strings.ToLower(strings.TrimSpace(tag)), "#")
+		if tag != "" {
+			out[tag] = true
+		}
+	}
+	return out
+}
+
+func hasScopedMemoryTag(tags map[string]bool) bool {
+	for tag := range tags {
+		if strings.HasPrefix(tag, "scope:") {
+			return true
+		}
+	}
+	return false
+}
+
 func isRawConversationShortMemory(e memory.Entry) bool {
 	if e.Tier != memory.TierShort {
 		return false
@@ -651,6 +716,44 @@ func memoryRefHint(e memory.Entry) string {
 		ref += "#" + e.BlockID
 	}
 	return " (ref=" + ref + ")"
+}
+
+func evidenceRefsForContext(entries []memory.Entry, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	refs := make([]string, 0, utils.MinInt(limit, len(entries)))
+	for _, e := range entries {
+		ref := e.Path
+		if ref == "" {
+			ref = e.ID
+		}
+		if ref == "" {
+			continue
+		}
+		if e.BlockID != "" {
+			ref += "#" + e.BlockID
+		}
+		refs = append(refs, ref)
+		if len(refs) >= limit {
+			break
+		}
+	}
+	return dedupStrings(refs)
+}
+
+func dedupStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func memoryRouteLines(route memory.RouteAnalysis) []string {
@@ -891,11 +994,13 @@ func (p *contextPlanner) selectIntentAwareRecentHistory(messages []provider.Mess
 	if len(messages) <= 2 {
 		return filterIntentAwareHistory(messages, terms)
 	}
+	latestUserIdx := latestUserMessageIndex(messages)
 	selected := make([]provider.Message, 0, len(messages))
 	for i, msg := range messages {
 		content := strings.ToLower(msg.Content)
 		tailCandidate := i >= len(messages)-2 && !historyExplicitlyIrrelevant(content)
-		if historyMessageRelevant(msg, terms) || tailCandidate {
+		latestUserTurn := latestUserIdx >= 0 && i >= latestUserIdx && !historyExplicitlyIrrelevant(content)
+		if historyMessageRelevant(msg, terms) || tailCandidate || latestUserTurn {
 			selected = append(selected, msg)
 		}
 	}
@@ -904,6 +1009,15 @@ func (p *contextPlanner) selectIntentAwareRecentHistory(messages []provider.Mess
 		return filterHistoryWithoutExplicitIrrelevance(tail)
 	}
 	return selected
+}
+
+func latestUserMessageIndex(messages []provider.Message) int {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" && strings.TrimSpace(messages[i].Content) != "" {
+			return i
+		}
+	}
+	return -1
 }
 
 func filterHistoryWithoutExplicitIrrelevance(messages []provider.Message) []provider.Message {

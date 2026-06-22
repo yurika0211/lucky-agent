@@ -1590,10 +1590,10 @@ func (m *Manager) InitHome() error {
 		}
 	}
 
-	manualPath := filepath.Join(m.homeDir, "description", "LUCKYHARNESS_AGENT_MANUAL.md")
+	manualPath := filepath.Join(m.homeDir, "description", "AGENTS.md")
 	if _, err := os.Stat(manualPath); os.IsNotExist(err) {
 		if err := os.WriteFile(manualPath, []byte(DefaultAgentManual()), 0o644); err != nil {
-			return fmt.Errorf("write LUCKYHARNESS_AGENT_MANUAL.md: %w", err)
+			return fmt.Errorf("write AGENTS.md: %w", err)
 		}
 	}
 

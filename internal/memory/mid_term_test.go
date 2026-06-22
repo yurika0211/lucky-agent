@@ -3,6 +3,7 @@ package memory
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -15,14 +16,14 @@ func TestMidTermStoreSave(t *testing.T) {
 	}
 
 	summary := &SessionSummary{
-		SessionID:    "sess-001",
-		UserID:       "user-1",
-		CreatedAt:    time.Now(),
-		Topics:       []string{"debugging", "performance"},
-		KeyDecisions: []string{"decided to use Redis for caching"},
+		SessionID:     "sess-001",
+		UserID:        "user-1",
+		CreatedAt:     time.Now(),
+		Topics:        []string{"debugging", "performance"},
+		KeyDecisions:  []string{"decided to use Redis for caching"},
 		OpenQuestions: []string{"how to handle connection pooling?"},
 		CodeContext:   "internal/cache/redis.go",
-		RawSummary:   "User discussed Redis caching strategy",
+		RawSummary:    "User discussed Redis caching strategy",
 	}
 
 	if err := store.SaveSessionSummary(summary); err != nil {
@@ -34,6 +35,42 @@ func TestMidTermStoreSave(t *testing.T) {
 	}
 }
 
+func TestSaveSessionSummarySanitizesGeneratedTruncationMarkers(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewMidTermStore(dir, 100)
+	if err != nil {
+		t.Fatalf("NewMidTermStore: %v", err)
+	}
+
+	summary := &SessionSummary{
+		SessionID:     "sess-truncated",
+		UserID:        "user-1",
+		CreatedAt:     time.Now(),
+		Topics:        []string{"debugging", "...[truncated]"},
+		KeyDecisions:  []string{"Use graph memory", "... (truncated for context)"},
+		OpenQuestions: []string{"Can ordinary ellipsis wait... stay?"},
+		CodeContext:   "internal/memory\n[... output truncated ...]",
+		RawSummary:    "Compressed context\n...[truncated]\nKeep wait... as prose.",
+	}
+	if err := store.SaveSessionSummary(summary); err != nil {
+		t.Fatalf("SaveSessionSummary: %v", err)
+	}
+
+	got, ok := store.Get("sess-truncated")
+	if !ok {
+		t.Fatal("expected saved summary")
+	}
+	joined := strings.Join(append(append(append([]string{got.RawSummary, got.CodeContext}, got.Topics...), got.KeyDecisions...), got.OpenQuestions...), "\n")
+	for _, dirty := range []string{"...[truncated]", "... (truncated for context)", "[... output truncated ...]"} {
+		if strings.Contains(joined, dirty) {
+			t.Fatalf("generated truncation marker %q leaked into summary: %q", dirty, joined)
+		}
+	}
+	if !strings.Contains(joined, "wait...") {
+		t.Fatalf("ordinary ellipsis should be preserved: %q", joined)
+	}
+}
+
 func TestMidTermStoreGet(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewMidTermStore(dir, 100)
@@ -42,11 +79,11 @@ func TestMidTermStoreGet(t *testing.T) {
 	}
 
 	summary := &SessionSummary{
-		SessionID:    "sess-001",
-		UserID:       "user-1",
-		CreatedAt:    time.Now(),
-		Topics:       []string{"debugging"},
-		RawSummary:   "Debug session",
+		SessionID:  "sess-001",
+		UserID:     "user-1",
+		CreatedAt:  time.Now(),
+		Topics:     []string{"debugging"},
+		RawSummary: "Debug session",
 	}
 	store.SaveSessionSummary(summary)
 

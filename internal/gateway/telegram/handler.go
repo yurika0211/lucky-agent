@@ -1023,6 +1023,7 @@ func formatAmbiguousSessionSwitchMessage(query string, matches []session.Session
 }
 
 func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
+	input = h.inputWithMessageScope(input, msg)
 	msgCopy := *msg
 	position, startWorker := h.enqueueChatRequest(msg.Chat.ID, &queuedChatRequest{
 		ctx:   ctx,
@@ -1279,6 +1280,21 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 	}
 
 	return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
+}
+
+func (h *Handler) inputWithMessageScope(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
+	if msg == nil {
+		return input
+	}
+	scope := agent.TurnScope{
+		Platform:    "telegram",
+		ChatID:      msg.Chat.ID,
+		ChatType:    msg.Chat.Type.String(),
+		SenderID:    msg.Sender.ID,
+		SenderName:  msg.Sender.Username,
+		DisplayName: msg.Sender.DisplayName(),
+	}
+	return input.WithScope(scope)
 }
 
 func (h *Handler) withReplyAnchorContext(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
