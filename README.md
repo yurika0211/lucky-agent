@@ -164,7 +164,7 @@ go run ./cmd/lh init
 ├── data/
 │   └── telegram/
 └── description/
-    └── LUCKYHARNESS_AGENT_MANUAL.md
+    └── AGENTS.md
 ```
 
 接下来，优先检查并修改这些字段。它们决定模型从哪里来、服务监听在哪里，以及消息网关能不能连上外部平台：
