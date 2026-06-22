@@ -194,9 +194,13 @@ type RateLimitConfig struct {
 
 // ContextConfig 上下文配置
 type ContextConfig struct {
-	MaxHistoryTurns      int     `json:"max_history_turns"`
-	MaxContextTokens     int     `json:"max_context_tokens"`
-	CompressionThreshold float64 `json:"compression_threshold"`
+	MaxHistoryTurns            int     `json:"max_history_turns"`
+	MaxContextTokens           int     `json:"max_context_tokens"`
+	CompressionThreshold       float64 `json:"compression_threshold"`
+	MemoryHygieneBeforeContext bool    `json:"memory_hygiene_before_context,omitempty"`
+	MemoryHygieneAction        string  `json:"memory_hygiene_action,omitempty"`
+	MemoryHygieneMinSeverity   string  `json:"memory_hygiene_min_severity,omitempty"`
+	MemoryHygieneMaxFindings   int     `json:"memory_hygiene_max_findings,omitempty"`
 }
 
 // AgentLoopConfig Agent Loop 配置
@@ -564,9 +568,13 @@ func DefaultConfig() *Config {
 			BurstSize:         10,
 		},
 		Context: ContextConfig{
-			MaxHistoryTurns:      50,
-			MaxContextTokens:     8000,
-			CompressionThreshold: 0.8,
+			MaxHistoryTurns:            50,
+			MaxContextTokens:           8000,
+			CompressionThreshold:       0.8,
+			MemoryHygieneBeforeContext: false,
+			MemoryHygieneAction:        "quarantine",
+			MemoryHygieneMinSeverity:   "high",
+			MemoryHygieneMaxFindings:   25,
 		},
 		Agent: AgentLoopConfig{
 			MaxIterations:          10,
@@ -828,6 +836,15 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Context.CompressionThreshold <= 0 {
 		cfg.Context.CompressionThreshold = def.Context.CompressionThreshold
+	}
+	if strings.TrimSpace(cfg.Context.MemoryHygieneAction) == "" {
+		cfg.Context.MemoryHygieneAction = def.Context.MemoryHygieneAction
+	}
+	if strings.TrimSpace(cfg.Context.MemoryHygieneMinSeverity) == "" {
+		cfg.Context.MemoryHygieneMinSeverity = def.Context.MemoryHygieneMinSeverity
+	}
+	if cfg.Context.MemoryHygieneMaxFindings <= 0 {
+		cfg.Context.MemoryHygieneMaxFindings = def.Context.MemoryHygieneMaxFindings
 	}
 
 	if cfg.Agent.MaxIterations <= 0 {
@@ -1475,6 +1492,16 @@ func (m *Manager) Set(key, value string) error {
 		var f float64
 		fmt.Sscanf(value, "%f", &f)
 		m.config.Context.CompressionThreshold = f
+	case "context.memory_hygiene_before_context":
+		m.config.Context.MemoryHygieneBeforeContext = parseBool(value)
+	case "context.memory_hygiene_action":
+		m.config.Context.MemoryHygieneAction = value
+	case "context.memory_hygiene_min_severity":
+		m.config.Context.MemoryHygieneMinSeverity = value
+	case "context.memory_hygiene_max_findings":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.MemoryHygieneMaxFindings = n
 	default:
 		if strings.HasPrefix(key, "extra_headers.") {
 			headerKey := strings.TrimPrefix(key, "extra_headers.")

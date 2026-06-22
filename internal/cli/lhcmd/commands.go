@@ -164,6 +164,14 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MaxTokens)
 	case "temperature":
 		fmt.Println(cfg.Temperature)
+	case "context.memory_hygiene_before_context":
+		fmt.Println(cfg.Context.MemoryHygieneBeforeContext)
+	case "context.memory_hygiene_action":
+		fmt.Println(cfg.Context.MemoryHygieneAction)
+	case "context.memory_hygiene_min_severity":
+		fmt.Println(cfg.Context.MemoryHygieneMinSeverity)
+	case "context.memory_hygiene_max_findings":
+		fmt.Println(cfg.Context.MemoryHygieneMaxFindings)
 	case "msg_gateway.platform":
 		fmt.Println(cfg.MsgGateway.Platform)
 	case "msg_gateway.api_addr":

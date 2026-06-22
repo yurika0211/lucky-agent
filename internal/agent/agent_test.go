@@ -711,6 +711,47 @@ func stringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+func TestContextMemoryHygieneHookQuarantinesDirtyMemoryBeforeRecall(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	if err := cfg.Set("context.memory_hygiene_before_context", "true"); err != nil {
+		t.Fatalf("set hygiene enabled: %v", err)
+	}
+	if err := cfg.Set("context.memory_hygiene_action", "quarantine"); err != nil {
+		t.Fatalf("set hygiene action: %v", err)
+	}
+	if err := cfg.Set("context.memory_hygiene_min_severity", "high"); err != nil {
+		t.Fatalf("set hygiene severity: %v", err)
+	}
+
+	a := newTestAgentWithMemory(t)
+	a.cfg = cfg
+	a.memory.SaveWithTier("User: stale deploy instruction", "conversation", memory.TierShort, 0.9)
+	a.memory.SaveWithTier("Project deploy constraint: run tests before release", "project", memory.TierShort, 0.9)
+
+	planner := newContextPlanner(a, defaultContextBuildOptions())
+	_ = planner.BuildInput(context.Background(), nil, TextUserTurnInput("deploy"))
+
+	for _, e := range a.memory.Search("deploy") {
+		if strings.Contains(e.Content, "User: stale deploy") {
+			t.Fatalf("dirty raw conversation should be quarantined before recall: %#v", e)
+		}
+	}
+}
+
+func TestPersistCompressedSummaryDoesNotWriteDurableMemory(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	planner := newContextPlanner(a, defaultContextBuildOptions())
+
+	planner.persistCompressedSummary(nil, nil, "[Conversation Summary]\nTool evidence: checked config")
+
+	for _, e := range a.memory.Recent(10) {
+		if e.Category == "context_compression" || strings.Contains(e.Content, "Tool evidence: checked config") {
+			t.Fatalf("compressed LLM summary should not be persisted to durable memory: %#v", e)
+		}
+	}
 }
 
 // --- autoSummarize ---

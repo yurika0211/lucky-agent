@@ -122,7 +122,11 @@
   "context": {
     "max_history_turns": 50,
     "max_context_tokens": 8000,
-    "compression_threshold": 0.8
+    "compression_threshold": 0.8,
+    "memory_hygiene_before_context": false,
+    "memory_hygiene_action": "quarantine",
+    "memory_hygiene_min_severity": "high",
+    "memory_hygiene_max_findings": 25
   },
   "agent": {
     "max_iterations": 10,
