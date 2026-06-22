@@ -921,7 +921,7 @@ func (a *Adapter) convertMessageWithAttachments(tgMsg *tgbotapi.Message, include
 
 	// Parse reply
 	if tgMsg.ReplyToMessage != nil {
-		replyMsg := a.convertMessageWithAttachments(tgMsg.ReplyToMessage, false)
+		replyMsg := a.convertMessageWithAttachments(tgMsg.ReplyToMessage, true)
 		msg.ReplyTo = replyMsg
 	}
 

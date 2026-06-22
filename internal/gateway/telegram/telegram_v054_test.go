@@ -1420,7 +1420,7 @@ func TestV054ConvertMessageWithReply(t *testing.T) {
 	}
 }
 
-func TestV054ConvertMessageSkipsReplyAttachments(t *testing.T) {
+func TestV054ConvertMessageIncludesReplyAttachments(t *testing.T) {
 	adapter, server, err := newAdapterWithMockBot()
 	if err != nil {
 		t.Fatalf("failed to create adapter: %v", err)
@@ -1460,8 +1460,11 @@ func TestV054ConvertMessageSkipsReplyAttachments(t *testing.T) {
 	if result.ReplyTo == nil {
 		t.Fatal("expected non-nil ReplyTo")
 	}
-	if len(result.ReplyTo.Attachments) != 0 {
-		t.Fatalf("expected reply attachments to be skipped, got %+v", result.ReplyTo.Attachments)
+	if len(result.ReplyTo.Attachments) != 1 {
+		t.Fatalf("expected reply attachments to be preserved, got %+v", result.ReplyTo.Attachments)
+	}
+	if result.ReplyTo.Attachments[0].FileID != "reply-photo" {
+		t.Fatalf("unexpected reply attachment: %+v", result.ReplyTo.Attachments[0])
 	}
 }
 
@@ -4324,6 +4327,99 @@ func TestV054HandleMessageReplyWithoutAnchorStillIncludesRepliedText(t *testing.
 	}
 	if gotTurn.messageContent != gotTurn.routingText {
 		t.Fatalf("expected message content to match reply-aware routing text\ncontent=%s\nrouting=%s", gotTurn.messageContent, gotTurn.routingText)
+	}
+}
+
+func TestV054HandleMessageReplyToImagePreservesReplyAttachment(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	sessions := handler.agent.(*mockAgentProvider).sessions
+	currentSess := sessions.NewWithTitle("current chat")
+	handler.setSessionID("12345", currentSess.ID)
+	handler.agent.(*mockAgentProvider).analyzeFn = func(ctx context.Context, attachments []gateway.Attachment) (string, error) {
+		if len(attachments) != 1 {
+			t.Fatalf("expected one attachment for analysis, got %+v", attachments)
+		}
+		if attachments[0].FileName != "face.jpg" {
+			t.Fatalf("unexpected attachment for analysis: %+v", attachments[0])
+		}
+		return "[Multimodal Analysis]\nImage: face.jpg\n- extracted: face visible", nil
+	}
+
+	type capturedTurn struct {
+		routingText    string
+		messageContent string
+		attachments    []gateway.Attachment
+		contentParts   []provider.ContentPart
+	}
+	captured := make(chan capturedTurn, 1)
+	handler.agent.(*mockAgentProvider).chatStreamIn = func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+		captured <- capturedTurn{
+			routingText:    input.RoutingText,
+			messageContent: input.Message.Content,
+			attachments:    append([]gateway.Attachment(nil), input.Attachments...),
+			contentParts:   append([]provider.ContentPart(nil), input.Message.ContentParts...),
+		}
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "remembered"}
+		close(ch)
+		return ch, nil
+	}
+
+	err := handler.HandleMessage(context.Background(), &gateway.Message{
+		ID: "4",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{ID: "user-1"},
+		Text:   "记住她的长相",
+		ReplyTo: &gateway.Message{
+			ID:   "9003",
+			Chat: gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
+			Attachments: []gateway.Attachment{{
+				Type:     gateway.AttachmentImage,
+				FileName: "face.jpg",
+				MimeType: "image/jpeg",
+				FilePath: "/tmp/face.jpg",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error = %v", err)
+	}
+
+	var gotTurn capturedTurn
+	select {
+	case gotTurn = <-captured:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reply image chat turn")
+	}
+	for _, want := range []string{
+		"[Replied Telegram attachments]",
+		"image: face.jpg",
+		"记住她的长相",
+		"face visible",
+	} {
+		if !strings.Contains(gotTurn.routingText, want) {
+			t.Fatalf("expected routing text to include %q, got:\n%s", want, gotTurn.routingText)
+		}
+	}
+	if gotTurn.messageContent != gotTurn.routingText {
+		t.Fatalf("expected message content to match routing text\ncontent=%s\nrouting=%s", gotTurn.messageContent, gotTurn.routingText)
+	}
+	if len(gotTurn.attachments) != 1 {
+		t.Fatalf("expected one attachment to reach agent input, got %+v", gotTurn.attachments)
+	}
+	if gotTurn.attachments[0].FileName != "face.jpg" {
+		t.Fatalf("unexpected attachment reaching agent input: %+v", gotTurn.attachments[0])
+	}
+	if len(gotTurn.contentParts) != 2 {
+		t.Fatalf("expected text plus image content parts, got %+v", gotTurn.contentParts)
+	}
+	if gotTurn.contentParts[1].Image == nil || gotTurn.contentParts[1].Image.FilePath != "/tmp/face.jpg" {
+		t.Fatalf("expected reply image content part to be preserved, got %+v", gotTurn.contentParts)
 	}
 }
 

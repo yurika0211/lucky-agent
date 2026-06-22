@@ -1233,6 +1233,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 		return h.handleCommand(ctx, msg)
 	}
 
+	msg.Attachments = telegramTurnAttachments(msg)
 	if collected, err := h.collectLuckyMessageIfActive(ctx, msg); collected || err != nil {
 		return err
 	}
@@ -1279,7 +1280,7 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 		return agent.TextUserTurnInput(baseText)
 	}
 
-	return agent.TextUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments))
+	return agent.MultimodalUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments), attachments)
 }
 
 func (h *Handler) inputWithMessageScope(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
@@ -1303,6 +1304,9 @@ func (h *Handler) withReplyAnchorContext(input agent.UserTurnInput, msg *gateway
 	}
 	repliedText := strings.TrimSpace(msg.ReplyTo.Text)
 	if repliedText == "" {
+		repliedText = telegramAttachmentSummary(msg.ReplyTo.Attachments)
+	}
+	if repliedText == "" {
 		return input
 	}
 
@@ -1322,8 +1326,82 @@ func (h *Handler) withReplyAnchorContext(input agent.UserTurnInput, msg *gateway
 
 Use the replied message as the primary context for this turn. If the user asks "看看", "看一眼摘要", "摘要", "总结", or "summary", summarize the replied message directly. Do not consult unrelated runtime, cron, or session state unless the user explicitly asks for a fresh status check.`, repliedText, userRequest)
 
-	input.Message.ContentParts = nil
 	return input.WithRoutingText(replyAwareText)
+}
+
+func telegramTurnAttachments(msg *gateway.Message) []gateway.Attachment {
+	if msg == nil {
+		return nil
+	}
+	out := append([]gateway.Attachment(nil), msg.Attachments...)
+	if msg.ReplyTo == nil || len(msg.ReplyTo.Attachments) == 0 {
+		return out
+	}
+	seen := make(map[string]bool, len(out)+len(msg.ReplyTo.Attachments))
+	for _, att := range out {
+		if key := telegramAttachmentKey(att); key != "" {
+			seen[key] = true
+		}
+	}
+	for _, att := range msg.ReplyTo.Attachments {
+		key := telegramAttachmentKey(att)
+		if key != "" && seen[key] {
+			continue
+		}
+		if key != "" {
+			seen[key] = true
+		}
+		out = append(out, att)
+	}
+	return out
+}
+
+func telegramAttachmentKey(att gateway.Attachment) string {
+	parts := []string{
+		string(att.Type),
+		strings.TrimSpace(att.FileID),
+		strings.TrimSpace(att.FilePath),
+		strings.TrimSpace(att.FileURL),
+		strings.TrimSpace(att.FileName),
+		fmt.Sprintf("%d", att.FileSize),
+	}
+	return strings.Join(parts, "|")
+}
+
+func telegramAttachmentSummary(attachments []gateway.Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(attachments))
+	for _, att := range attachments {
+		name := strings.TrimSpace(att.FileName)
+		switch att.Type {
+		case gateway.AttachmentImage:
+			if name == "" {
+				name = "image"
+			}
+			parts = append(parts, "image: "+name)
+		case gateway.AttachmentAudio:
+			if name == "" {
+				name = "audio"
+			}
+			parts = append(parts, "audio: "+name)
+		case gateway.AttachmentVideo:
+			if name == "" {
+				name = "video"
+			}
+			parts = append(parts, "video: "+name)
+		case gateway.AttachmentDocument:
+			if name == "" {
+				name = "document"
+			}
+			parts = append(parts, "document: "+name)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "[Replied Telegram attachments]\n" + strings.Join(parts, "\n")
 }
 
 func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {

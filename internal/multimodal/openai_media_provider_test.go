@@ -3,6 +3,7 @@ package multimodal
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -111,6 +112,77 @@ func TestOpenAIMediaProviderAnalyzeImageFallsBackToChatCompletions(t *testing.T)
 	}
 	if result.Metadata["fallback_from"] != "openai-responses" {
 		t.Fatalf("fallback_from = %q, want openai-responses", result.Metadata["fallback_from"])
+	}
+}
+
+func TestOpenAIMediaProviderAnalyzeDocumentUsesResponsesDataURL(t *testing.T) {
+	provider, err := NewOpenAIMediaProvider(OpenAIMediaConfig{
+		APIKey:         "sk-test",
+		ResponsesModel: "vision-model",
+	})
+	if err != nil {
+		t.Fatalf("NewOpenAIMediaProvider returned error: %v", err)
+	}
+
+	var gotPath string
+	var gotBody struct {
+		Input []struct {
+			Content []map[string]any `json:"content"`
+		} `json:"input"`
+	}
+	provider.client = &http.Client{
+		Transport: transportFunc(func(req *http.Request) (*http.Response, error) {
+			gotPath = req.URL.Path
+			body, _ := io.ReadAll(req.Body)
+			if err := json.Unmarshal(body, &gotBody); err != nil {
+				t.Fatalf("decode request body: %v\n%s", err, body)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"output_text":"document summary"}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	result, err := provider.Analyze(context.Background(), &Input{
+		ID:       "doc-1",
+		Modality: ModalityDocument,
+		MimeType: "application/pdf",
+		Data:     []byte("%PDF-1.4"),
+		Metadata: map[string]string{
+			"filename": "report.pdf",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Analyze returned error: %v", err)
+	}
+
+	if gotPath != "/v1/responses" {
+		t.Fatalf("path = %q, want /v1/responses", gotPath)
+	}
+	if result.Text != "document summary" {
+		t.Fatalf("text = %q, want document summary", result.Text)
+	}
+	if len(gotBody.Input) != 1 || len(gotBody.Input[0].Content) != 2 {
+		t.Fatalf("unexpected request body: %+v", gotBody)
+	}
+	filePart := gotBody.Input[0].Content[1]
+	if filePart["type"] != "input_file" || filePart["filename"] != "report.pdf" {
+		t.Fatalf("unexpected file part metadata: %+v", filePart)
+	}
+	wantPrefix := "data:application/pdf;base64,"
+	fileData, _ := filePart["file_data"].(string)
+	if !strings.HasPrefix(fileData, wantPrefix) {
+		t.Fatalf("file_data = %q, want prefix %q", fileData, wantPrefix)
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(fileData, wantPrefix))
+	if err != nil {
+		t.Fatalf("decode file_data payload: %v", err)
+	}
+	if string(raw) != "%PDF-1.4" {
+		t.Fatalf("decoded file_data = %q", raw)
 	}
 }
 
