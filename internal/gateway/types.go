@@ -83,14 +83,15 @@ type Message struct {
 
 // Attachment represents a media attachment in a message.
 type Attachment struct {
-	Type     AttachmentType `json:"type,omitempty"`      // image, audio, video, document
-	FileID   string         `json:"file_id,omitempty"`   // platform-specific file ID
-	FileURL  string         `json:"file_url,omitempty"`  // download URL (if available)
-	FilePath string         `json:"file_path,omitempty"` // downloaded local file path (if available)
-	FileName string         `json:"file_name,omitempty"` // original filename
-	MimeType string         `json:"mime_type,omitempty"` // MIME type
-	FileSize int64          `json:"file_size,omitempty"` // file size in bytes
-	Data     []byte         `json:"data,omitempty"`      // downloaded file data (populated on demand)
+	Type     AttachmentType    `json:"type,omitempty"`      // image, audio, video, document
+	FileID   string            `json:"file_id,omitempty"`   // platform-specific file ID
+	FileURL  string            `json:"file_url,omitempty"`  // download URL (if available)
+	FilePath string            `json:"file_path,omitempty"` // downloaded local file path (if available)
+	FileName string            `json:"file_name,omitempty"` // original filename
+	MimeType string            `json:"mime_type,omitempty"` // MIME type
+	FileSize int64             `json:"file_size,omitempty"` // file size in bytes
+	Data     []byte            `json:"data,omitempty"`      // downloaded file data (populated on demand)
+	Metadata map[string]string `json:"metadata,omitempty"`  // platform-specific attachment metadata
 }
 
 // ForwardedMediaItem represents one media node in a platform forwarded-message envelope.

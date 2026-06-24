@@ -272,6 +272,7 @@ func TestBuildUserTurnInputRoutesImagesThroughAttachmentAnalysisPath(t *testing.
 
 	require.Equal(t, "user", input.Message.Role)
 	require.Empty(t, input.Message.ContentParts)
+	require.Len(t, input.Attachments, 1)
 	assert.Contains(t, input.RoutingText, "看这张图")
 	assert.Contains(t, input.RoutingText, "[Multimedia Attachments]")
 	assert.Contains(t, input.RoutingText, "example.jpg")

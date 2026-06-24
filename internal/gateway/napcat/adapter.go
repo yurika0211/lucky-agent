@@ -67,21 +67,31 @@ type actionRequest struct {
 	Echo   string         `json:"echo,omitempty"`
 }
 
+type actionResponse struct {
+	Status  string          `json:"status"`
+	RetCode int             `json:"retcode"`
+	Data    json.RawMessage `json:"data"`
+	Message string          `json:"message"`
+	Wording string          `json:"wording"`
+	Echo    string          `json:"echo"`
+}
+
 // Adapter implements gateway.Gateway for NapCat's OneBot v11 reverse WebSocket.
 type Adapter struct {
 	cfg Config
 
-	mu        sync.RWMutex
-	writeMu   sync.Mutex
-	handler   gateway.MessageHandler
-	running   bool
-	connected bool
-	cancel    context.CancelFunc
-	server    *http.Server
-	listener  net.Listener
-	conn      *websocket.Conn
-	selfID    string
-	echoSeq   atomic.Uint64
+	mu              sync.RWMutex
+	writeMu         sync.Mutex
+	handler         gateway.MessageHandler
+	running         bool
+	connected       bool
+	cancel          context.CancelFunc
+	server          *http.Server
+	listener        net.Listener
+	conn            *websocket.Conn
+	selfID          string
+	echoSeq         atomic.Uint64
+	actionResponses map[string]chan actionResponse
 }
 
 func NewAdapter(cfg Config) *Adapter {
@@ -96,7 +106,7 @@ func NewAdapter(cfg Config) *Adapter {
 		cfg.GroupTriggerMode = def.GroupTriggerMode
 	}
 	cfg.RemoveAt = cfg.RemoveAt || def.RemoveAt
-	return &Adapter{cfg: cfg}
+	return &Adapter{cfg: cfg, actionResponses: make(map[string]chan actionResponse)}
 }
 
 func (a *Adapter) Name() string { return "napcat" }
@@ -501,17 +511,48 @@ func (a *Adapter) handleWebSocket(ctx context.Context, w http.ResponseWriter, r 
 		if err != nil {
 			return
 		}
+		if a.handleActionResponse(data) {
+			continue
+		}
 		a.mu.RLock()
 		handler := a.handler
 		a.mu.RUnlock()
-		msg := a.convertEvent(data)
-		if msg == nil || handler == nil {
+		if handler == nil {
 			continue
 		}
-		if err := handler(ctx, msg); err != nil {
-			fmt.Printf("[napcat] handler error: %v\n", err)
-		}
+		payload := append([]byte(nil), data...)
+		go func() {
+			msg := a.convertEvent(payload)
+			if msg == nil {
+				return
+			}
+			if err := handler(ctx, msg); err != nil {
+				fmt.Printf("[napcat] handler error: %v\n", err)
+			}
+		}()
 	}
+}
+
+func (a *Adapter) handleActionResponse(data []byte) bool {
+	var resp actionResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return false
+	}
+	echo := strings.TrimSpace(resp.Echo)
+	if echo == "" {
+		return false
+	}
+	a.mu.RLock()
+	ch := a.actionResponses[echo]
+	a.mu.RUnlock()
+	if ch == nil {
+		return true
+	}
+	select {
+	case ch <- resp:
+	default:
+	}
+	return true
 }
 
 func (a *Adapter) authorized(r *http.Request) bool {
@@ -596,6 +637,10 @@ func (a *Adapter) convertEvent(data []byte) *gateway.Message {
 	}
 
 	if len(parsed.Attachments) > 0 {
+		for i := range parsed.Attachments {
+			setAttachmentMetadata(&parsed.Attachments[i], "napcat_group_id", rawIDString(evt.GroupID))
+			setAttachmentMetadata(&parsed.Attachments[i], "napcat_message_type", strings.ToLower(strings.TrimSpace(evt.MessageType)))
+		}
 		a.populateAttachments(parsed.Attachments)
 		msg.Attachments = parsed.Attachments
 	}
@@ -659,28 +704,62 @@ func (a *Adapter) sendRawMessage(ctx context.Context, chatID string, replyToMsgI
 }
 
 func (a *Adapter) sendAction(ctx context.Context, action string, params map[string]any) error {
+	_, err := a.sendActionWithResponse(ctx, action, params, false)
+	return err
+}
+
+func (a *Adapter) sendActionWithResponse(ctx context.Context, action string, params map[string]any, wait bool) (actionResponse, error) {
 	a.mu.RLock()
 	conn := a.conn
 	connected := a.connected
 	a.mu.RUnlock()
 	if conn == nil || !connected {
-		return fmt.Errorf("napcat: reverse websocket is not connected")
+		return actionResponse{}, fmt.Errorf("napcat: reverse websocket is not connected")
 	}
 
 	echo := "lh-" + strconv.FormatUint(a.echoSeq.Add(1), 10)
 	req := actionRequest{Action: action, Params: params, Echo: echo}
+	var respCh chan actionResponse
+	if wait {
+		respCh = make(chan actionResponse, 1)
+		a.mu.Lock()
+		if a.actionResponses == nil {
+			a.actionResponses = make(map[string]chan actionResponse)
+		}
+		a.actionResponses[echo] = respCh
+		a.mu.Unlock()
+		defer func() {
+			a.mu.Lock()
+			delete(a.actionResponses, echo)
+			a.mu.Unlock()
+		}()
+	}
 
 	a.writeMu.Lock()
-	defer a.writeMu.Unlock()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetWriteDeadline(deadline)
 	} else {
 		_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
 	}
 	if err := conn.WriteJSON(req); err != nil {
-		return fmt.Errorf("napcat: send action %s: %w", action, err)
+		a.writeMu.Unlock()
+		return actionResponse{}, fmt.Errorf("napcat: send action %s: %w", action, err)
 	}
-	return nil
+	a.writeMu.Unlock()
+
+	if !wait {
+		return actionResponse{}, nil
+	}
+	select {
+	case resp := <-respCh:
+		if resp.RetCode != 0 || strings.EqualFold(strings.TrimSpace(resp.Status), "failed") {
+			msg := firstNonEmpty(resp.Message, resp.Wording, fmt.Sprintf("retcode %d", resp.RetCode))
+			return resp, fmt.Errorf("napcat: action %s failed: %s", action, msg)
+		}
+		return resp, nil
+	case <-ctx.Done():
+		return actionResponse{}, fmt.Errorf("napcat: action %s response timeout: %w", action, ctx.Err())
+	}
 }
 
 func parseOneBotMessage(raw json.RawMessage, fallback string) parsedMessage {
@@ -777,12 +856,18 @@ func parseCQCode(code string) (string, map[string]string) {
 }
 
 func attachmentFromSegment(kind gateway.AttachmentType, data map[string]any) gateway.Attachment {
-	fileID := firstNonEmpty(dataString(data, "file_id"), dataString(data, "file"))
-	fileURL := dataString(data, "url")
-	filePath := firstNonEmpty(dataString(data, "path"), dataString(data, "file_path"))
-	name := firstNonEmpty(dataString(data, "name"), dataString(data, "file_name"), filepath.Base(fileID), filepath.Base(filePath))
+	fileID := firstNonEmpty(dataString(data, "file_id"), dataString(data, "id"), dataString(data, "file"))
+	fileURL := firstNonEmpty(dataString(data, "url"), dataString(data, "file_url"), dataString(data, "download_url"))
+	filePath := firstNonEmpty(dataString(data, "path"), dataString(data, "file_path"), dataString(data, "local_path"))
+	if filePath == "" {
+		filePath = localPathCandidate(firstNonEmpty(dataString(data, "file"), fileURL))
+	}
+	if fileURL == "" && isHTTPURL(dataString(data, "file")) {
+		fileURL = dataString(data, "file")
+	}
+	name := firstNonEmpty(dataString(data, "name"), dataString(data, "file_name"), dataString(data, "filename"), filepath.Base(fileID), filepath.Base(filePath), filepath.Base(fileURL))
 	mimeType := firstNonEmpty(dataString(data, "mime"), dataString(data, "mime_type"), mimeForAttachment(kind, name, fileURL))
-	return gateway.Attachment{
+	att := gateway.Attachment{
 		Type:     kind,
 		FileID:   fileID,
 		FileURL:  fileURL,
@@ -791,15 +876,25 @@ func attachmentFromSegment(kind gateway.AttachmentType, data map[string]any) gat
 		MimeType: mimeType,
 		FileSize: attachmentSizeFromMap(data),
 	}
+	for _, key := range []string{"busid", "fid", "file_uuid", "folder_id"} {
+		setAttachmentMetadata(&att, "napcat_"+key, dataString(data, key))
+	}
+	return att
 }
 
 func attachmentFromCQ(kind gateway.AttachmentType, params map[string]string) gateway.Attachment {
-	fileID := firstNonEmpty(params["file_id"], params["file"])
-	fileURL := params["url"]
-	filePath := firstNonEmpty(params["path"], params["file_path"])
-	name := firstNonEmpty(params["name"], params["file_name"], filepath.Base(fileID), filepath.Base(filePath))
+	fileID := firstNonEmpty(params["file_id"], params["id"], params["file"])
+	fileURL := firstNonEmpty(params["url"], params["file_url"], params["download_url"])
+	filePath := firstNonEmpty(params["path"], params["file_path"], params["local_path"])
+	if filePath == "" {
+		filePath = localPathCandidate(firstNonEmpty(params["file"], fileURL))
+	}
+	if fileURL == "" && isHTTPURL(params["file"]) {
+		fileURL = params["file"]
+	}
+	name := firstNonEmpty(params["name"], params["file_name"], params["filename"], filepath.Base(fileID), filepath.Base(filePath), filepath.Base(fileURL))
 	mimeType := firstNonEmpty(params["mime"], params["mime_type"], mimeForAttachment(kind, name, fileURL))
-	return gateway.Attachment{
+	att := gateway.Attachment{
 		Type:     kind,
 		FileID:   fileID,
 		FileURL:  fileURL,
@@ -808,6 +903,10 @@ func attachmentFromCQ(kind gateway.AttachmentType, params map[string]string) gat
 		MimeType: mimeType,
 		FileSize: attachmentSizeFromParams(params),
 	}
+	for _, key := range []string{"busid", "fid", "file_uuid", "folder_id"} {
+		setAttachmentMetadata(&att, "napcat_"+key, params[key])
+	}
+	return att
 }
 
 func (a *Adapter) populateAttachments(attachments []gateway.Attachment) {
@@ -817,10 +916,27 @@ func (a *Adapter) populateAttachments(attachments []gateway.Attachment) {
 }
 
 func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
-	if att == nil || strings.TrimSpace(att.FileURL) == "" || strings.TrimSpace(att.FilePath) != "" {
+	if att == nil {
 		return
 	}
+	if path := strings.TrimSpace(att.FilePath); path != "" {
+		if attachmentFileAvailable(path) {
+			att.FilePath = normalizeMediaSource(path)
+			return
+		}
+		fmt.Printf("[napcat] attachment local path is not accessible, trying alternate source: %s\n", path)
+		att.FilePath = ""
+	}
 	if att.FileSize > defaultNapCatAttachmentDownloadLimit {
+		return
+	}
+	if strings.TrimSpace(att.FileURL) == "" && strings.TrimSpace(att.FileID) != "" {
+		a.populateAttachmentFromGetFile(att)
+		if strings.TrimSpace(att.FilePath) != "" || len(att.Data) > 0 {
+			return
+		}
+	}
+	if strings.TrimSpace(att.FileURL) == "" {
 		return
 	}
 
@@ -881,6 +997,167 @@ func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
 		return
 	}
 	att.FilePath = finalPath
+}
+
+func (a *Adapter) populateAttachmentFromGetFile(att *gateway.Attachment) {
+	if a == nil || att == nil || strings.TrimSpace(att.FileID) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	resp, err := a.sendActionWithResponse(ctx, "get_file", map[string]any{"file_id": strings.TrimSpace(att.FileID)}, true)
+	if err != nil {
+		fmt.Printf("[napcat] get_file failed for attachment %s: %v\n", attachmentDebugName(att), err)
+		a.populateAttachmentFromGroupFileURL(ctx, att)
+		return
+	}
+	var data map[string]any
+	if len(resp.Data) == 0 || string(resp.Data) == "null" {
+		a.populateAttachmentFromGroupFileURL(ctx, att)
+		return
+	}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		fmt.Printf("[napcat] decode get_file response failed for attachment %s: %v\n", attachmentDebugName(att), err)
+		a.populateAttachmentFromGroupFileURL(ctx, att)
+		return
+	}
+	if strings.TrimSpace(att.FileName) == "" {
+		att.FileName = firstNonEmpty(dataString(data, "file_name"), dataString(data, "name"), filepath.Base(dataString(data, "file")))
+	}
+	if att.FileSize == 0 {
+		att.FileSize = attachmentSizeFromMap(data)
+	}
+	if strings.TrimSpace(att.MimeType) == "" || strings.HasSuffix(att.MimeType, "/*") || att.MimeType == "application/octet-stream" {
+		att.MimeType = firstNonEmpty(dataString(data, "mime"), dataString(data, "mime_type"), mimeForAttachment(att.Type, att.FileName, dataString(data, "url"), dataString(data, "path"), dataString(data, "file")))
+	}
+	if local := localPathCandidate(firstNonEmpty(dataString(data, "path"), dataString(data, "file_path"), dataString(data, "local_path"), dataString(data, "file"))); local != "" {
+		if attachmentFileAvailable(local) {
+			att.FilePath = normalizeMediaSource(local)
+			return
+		}
+		fmt.Printf("[napcat] get_file returned inaccessible local path, trying alternate source: %s\n", local)
+	}
+	if u := firstNonEmpty(dataString(data, "url"), dataString(data, "file_url"), dataString(data, "download_url")); isHTTPURL(u) {
+		att.FileURL = u
+		return
+	}
+	if b64 := strings.TrimSpace(firstNonEmpty(dataString(data, "base64"), dataString(data, "file_data"))); b64 != "" {
+		b64 = strings.TrimPrefix(b64, "base64://")
+		if decoded, err := base64.StdEncoding.DecodeString(b64); err == nil {
+			att.Data = decoded
+			if att.FileSize == 0 {
+				att.FileSize = int64(len(decoded))
+			}
+			if path, err := writeNapCatAttachmentBytes(att, decoded); err == nil {
+				att.FilePath = path
+			} else {
+				fmt.Printf("[napcat] cache get_file base64 attachment failed: %v\n", err)
+			}
+		}
+	}
+	if strings.TrimSpace(att.FilePath) == "" && strings.TrimSpace(att.FileURL) == "" && len(att.Data) == 0 {
+		a.populateAttachmentFromGroupFileURL(ctx, att)
+	}
+}
+
+func (a *Adapter) populateAttachmentFromGroupFileURL(ctx context.Context, att *gateway.Attachment) {
+	if a == nil || att == nil || strings.TrimSpace(att.FileID) == "" {
+		return
+	}
+	groupID := attachmentMetadata(att, "napcat_group_id")
+	if strings.TrimSpace(groupID) == "" {
+		return
+	}
+	params := map[string]any{
+		"group_id": oneBotIDValue(groupID),
+		"file_id":  strings.TrimSpace(att.FileID),
+	}
+	if busid := attachmentMetadata(att, "napcat_busid"); strings.TrimSpace(busid) != "" {
+		params["busid"] = oneBotIDValue(busid)
+	}
+	resp, err := a.sendActionWithResponse(ctx, "get_group_file_url", params, true)
+	if err != nil {
+		fmt.Printf("[napcat] get_group_file_url failed for attachment %s: %v\n", attachmentDebugName(att), err)
+		return
+	}
+	if len(resp.Data) == 0 || string(resp.Data) == "null" {
+		return
+	}
+	var data map[string]any
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		fmt.Printf("[napcat] decode get_group_file_url response failed for attachment %s: %v\n", attachmentDebugName(att), err)
+		return
+	}
+	if u := firstNonEmpty(dataString(data, "url"), dataString(data, "file_url"), dataString(data, "download_url")); isHTTPURL(u) {
+		att.FileURL = u
+	}
+}
+
+func setAttachmentMetadata(att *gateway.Attachment, key, value string) {
+	if att == nil || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	if att.Metadata == nil {
+		att.Metadata = make(map[string]string)
+	}
+	att.Metadata[strings.TrimSpace(key)] = strings.TrimSpace(value)
+}
+
+func attachmentMetadata(att *gateway.Attachment, key string) string {
+	if att == nil || att.Metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(att.Metadata[key])
+}
+
+func attachmentDebugName(att *gateway.Attachment) string {
+	if att == nil {
+		return "<nil>"
+	}
+	return firstNonEmpty(att.FileName, att.FileID, string(att.Type), "attachment")
+}
+
+func attachmentFileAvailable(path string) bool {
+	path = normalizeMediaSource(path)
+	if strings.TrimSpace(path) == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func writeNapCatAttachmentBytes(att *gateway.Attachment, data []byte) (string, error) {
+	if len(data) == 0 {
+		return "", fmt.Errorf("empty attachment data")
+	}
+	dir, err := napcatAttachmentStorageDir()
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	fileName := napcatAttachmentFileName(att)
+	tmpFile, err := os.CreateTemp(dir, fileName+".*.part")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.Write(data); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	finalPath := filepath.Join(dir, fileName)
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", err
+	}
+	return finalPath, nil
 }
 
 func napcatAttachmentStorageDir() (string, error) {
@@ -1096,6 +1373,22 @@ func mimeForAttachment(kind gateway.AttachmentType, values ...string) string {
 	default:
 		return ""
 	}
+}
+
+func isHTTPURL(value string) bool {
+	lower := strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://")
+}
+
+func localPathCandidate(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || isHTTPURL(value) || strings.HasPrefix(strings.ToLower(value), "base64://") {
+		return ""
+	}
+	if filepath.IsAbs(value) || strings.HasPrefix(value, "~/") || strings.HasPrefix(strings.ToLower(value), "file://") {
+		return normalizeMediaSource(value)
+	}
+	return ""
 }
 
 func attachmentSizeFromMap(data map[string]any) int64 {

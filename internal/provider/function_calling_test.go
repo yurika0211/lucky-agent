@@ -20,6 +20,7 @@ func TestFunctionCallingProviderInterface(t *testing.T) {
 	var _ FunctionCallingProvider = (*OpenAIProvider)(nil)
 	var _ FunctionCallingProvider = (*OpenAICompatibleProvider)(nil)
 	var _ FunctionCallingProvider = (*OpenRouterProvider)(nil)
+	var _ FunctionCallingProvider = (*AnthropicProvider)(nil)
 }
 
 func TestMessageWithToolCallID(t *testing.T) {

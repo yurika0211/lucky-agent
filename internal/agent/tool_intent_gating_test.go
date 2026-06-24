@@ -102,6 +102,20 @@ func TestApplyIntentToolGatingReadOnlyKeepsInspectionTools(t *testing.T) {
 	)
 }
 
+func TestApplyIntentToolGatingDocumentReadForOfficeAndPDF(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	prompt := "帮我读一下 report.pdf 和 slides.pptx 的内容。"
+	a.applyIntentToolGating(&loopCfg, prompt)
+	opts := a.buildLoopCallOptions(prompt, loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "file_read", "file_list", "document_read")
+	assertDisabledTools(t, loopCfg.DisabledTools, "file_write", "file_patch", "file_delete")
+}
+
 func TestApplyIntentToolGatingToolSystemQuestionDoesNotCollapseToImageTool(t *testing.T) {
 	a := agentWithIntentGateTools(t)
 	loopCfg := DefaultLoopConfig()
@@ -350,7 +364,7 @@ func agentWithIntentGateTools(t *testing.T) *Agent {
 	t.Setenv(toolIntentGatingEnv, "on")
 	reg := tool.NewRegistry()
 	for _, name := range []string{
-		"terminal", "file_read", "file_list", "file_write", "file_mkdir", "file_move",
+		"terminal", "file_read", "document_read", "file_list", "file_write", "file_mkdir", "file_move",
 		"file_patch", "file_delete", "web_search", "web_fetch", "opencli", "http_request",
 		"current_time", "calculate", "remember", "recall", "memory_hygiene", "rag_search", "rag_index",
 		"log_grep", "log_tail", "json_query", "yaml_query", "csv_query", "sql_query",

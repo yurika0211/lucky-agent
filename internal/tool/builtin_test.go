@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"archive/zip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -87,7 +88,7 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"terminal", "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "opencli", "current_time", "calculate", "image_analyze", "image_generate", "text_to_speech", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
+	expected := []string{"terminal", "file_read", "document_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "web_search", "web_fetch", "opencli", "current_time", "calculate", "image_analyze", "image_generate", "text_to_speech", "log_tail", "log_grep", "http_request", "json_query", "yaml_query", "csv_query", "sql_query", "db_schema", "remember", "recall", "rag_search", "rag_index"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {
@@ -670,6 +671,63 @@ func TestFileReadWriteTool(t *testing.T) {
 	}
 }
 
+func TestDocumentReadToolReadsDocx(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "sample.docx")
+	writeZipTestFile(t, path, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p><w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := r.Call("document_read", map[string]any{"path": path})
+	if err != nil {
+		t.Fatalf("document_read docx: %v", err)
+	}
+	if !strings.Contains(result, "Format: docx") || !strings.Contains(result, "Hello DOCX") || !strings.Contains(result, "Second paragraph") {
+		t.Fatalf("unexpected docx extraction:\n%s", result)
+	}
+}
+
+func TestDocumentReadToolReadsPptxWithLimit(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "slides.pptx")
+	writeZipTestFile(t, path, map[string]string{
+		"ppt/slides/slide2.xml": `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Second slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+		"ppt/slides/slide1.xml": `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>First slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+	})
+
+	result, err := r.Call("document_read", map[string]any{"path": path, "limit": 3})
+	if err != nil {
+		t.Fatalf("document_read pptx: %v", err)
+	}
+	if !strings.Contains(result, "Format: pptx") || !strings.Contains(result, "[Slide 1]") || !strings.Contains(result, "First slide") {
+		t.Fatalf("unexpected pptx extraction:\n%s", result)
+	}
+	if strings.Contains(result, "Second slide") {
+		t.Fatalf("limit should hide later slide content:\n%s", result)
+	}
+	if !strings.Contains(result, "use offset=") {
+		t.Fatalf("expected continuation hint for limited output:\n%s", result)
+	}
+}
+
+func TestDocumentReadToolRejectsLegacyOffice(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "legacy.doc")
+	if err := os.WriteFile(path, []byte("legacy"), 0o600); err != nil {
+		t.Fatalf("write legacy doc: %v", err)
+	}
+	_, err := r.Call("document_read", map[string]any{"path": path})
+	if err == nil || !strings.Contains(err.Error(), "convert to .docx") {
+		t.Fatalf("expected legacy doc conversion error, got %v", err)
+	}
+}
+
 func TestFileMkdirMoveDeleteTools(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -1143,6 +1201,10 @@ func TestToolPermissions(t *testing.T) {
 	if readPerm != PermAuto {
 		t.Errorf("file_read should be auto, got %s", readPerm)
 	}
+	docPerm, _ := r.CheckPermission("document_read")
+	if docPerm != PermAuto {
+		t.Errorf("document_read should be auto, got %s", docPerm)
+	}
 
 	// 写操作应该是 approve
 	writePerm, _ := r.CheckPermission("file_write")
@@ -1321,5 +1383,28 @@ func TestDeepSearchOrderPrefersExa(t *testing.T) {
 	order := deepSearchOrder("searxng", &WebSearchConfig{BaseURL: "https://search.shiokou.asia"})
 	if len(order) == 0 || order[0] != "exa" {
 		t.Fatalf("expected exa first, got %v", order)
+	}
+}
+
+func writeZipTestFile(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create zip test file: %v", err)
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create zip member %s: %v", name, err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip member %s: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip test file: %v", err)
 	}
 }

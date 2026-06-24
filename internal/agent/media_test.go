@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"archive/zip"
 	"context"
 	"os"
 	"path/filepath"
@@ -80,6 +81,29 @@ func TestAnalyzeAttachmentsUsesMediaProcessor(t *testing.T) {
 	}
 }
 
+func TestAttachmentEvidenceManifestMarksUnavailableAttachment(t *testing.T) {
+	attachments := []gateway.Attachment{{
+		Type:     gateway.AttachmentDocument,
+		FileID:   "file-123",
+		FileName: "report.pdf",
+		MimeType: "application/pdf",
+	}}
+
+	out := attachmentEvidenceManifest(attachments)
+	if !strings.Contains(out, "[Current Turn Attachments]") {
+		t.Fatalf("expected manifest header, got %q", out)
+	}
+	if !strings.Contains(out, "status=unavailable") {
+		t.Fatalf("expected unavailable marker, got %q", out)
+	}
+	if strings.Contains(out, "workspace/document.pdf") {
+		t.Fatalf("manifest must not invent stale workspace paths: %q", out)
+	}
+	if !strings.Contains(out, "Do not substitute files from chat history") {
+		t.Fatalf("expected anti-substitution instruction, got %q", out)
+	}
+}
+
 func TestAnalyzeAttachmentsUsesDownloadedFilePath(t *testing.T) {
 	processor := multimodal.NewProcessor()
 	if err := processor.RegisterProvider(multimodal.NewLocalProvider(
@@ -89,8 +113,8 @@ func TestAnalyzeAttachmentsUsesDownloadedFilePath(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "report.pdf")
-	if err := os.WriteFile(filePath, []byte("%PDF-1.4 file on disk"), 0o600); err != nil {
+	filePath := filepath.Join(tmpDir, "report.bin")
+	if err := os.WriteFile(filePath, []byte("file on disk"), 0o600); err != nil {
 		t.Fatalf("write file: %v", err)
 	}
 
@@ -98,9 +122,9 @@ func TestAnalyzeAttachmentsUsesDownloadedFilePath(t *testing.T) {
 	attachments := []gateway.Attachment{
 		{
 			Type:     gateway.AttachmentDocument,
-			FileName: "report.pdf",
+			FileName: "report.bin",
 			FilePath: filePath,
-			MimeType: "application/pdf",
+			MimeType: "application/octet-stream",
 		},
 	}
 
@@ -108,11 +132,35 @@ func TestAnalyzeAttachmentsUsesDownloadedFilePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AnalyzeAttachments error: %v", err)
 	}
-	if !strings.Contains(out, "Document: report.pdf") {
+	if !strings.Contains(out, "Document: report.bin") {
 		t.Fatalf("expected document section, got %q", out)
 	}
-	if !strings.Contains(out, "Document file (application/pdf") {
+	if !strings.Contains(out, "Document file (application/octet-stream") {
 		t.Fatalf("expected local provider output from file path, got %q", out)
+	}
+}
+
+func TestAnalyzeAttachmentsExtractsDownloadedDocxText(t *testing.T) {
+	tmpDir := t.TempDir()
+	filePath := filepath.Join(tmpDir, "report.docx")
+	writeAgentTestZipFile(t, filePath, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>NapCat document body</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	a := &Agent{mediaProcessor: multimodal.NewProcessor()}
+	attachments := []gateway.Attachment{{
+		Type:     gateway.AttachmentDocument,
+		FileName: "report.docx",
+		FilePath: filePath,
+		MimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+	}}
+
+	out, err := a.AnalyzeAttachments(context.Background(), attachments)
+	if err != nil {
+		t.Fatalf("AnalyzeAttachments error: %v", err)
+	}
+	if !strings.Contains(out, "Document: report.docx") || !strings.Contains(out, "NapCat document body") {
+		t.Fatalf("expected extracted docx text, got %q", out)
 	}
 }
 
@@ -255,4 +303,27 @@ func messagesContainImagePart(messages []provider.Message) bool {
 		}
 	}
 	return false
+}
+
+func writeAgentTestZipFile(t *testing.T, path string, files map[string]string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create zip test file: %v", err)
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create zip member %s: %v", name, err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatalf("write zip member %s: %v", name, err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip test file: %v", err)
+	}
 }

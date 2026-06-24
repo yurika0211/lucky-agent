@@ -9,6 +9,7 @@ import (
 	"unicode"
 
 	"github.com/yurika0211/luckyharness/internal/contextx"
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
@@ -230,6 +231,12 @@ func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input User
 	}
 
 	messages := make([]provider.Message, 0, 2)
+	if manifest := attachmentEvidenceManifest(input.Attachments); manifest != "" {
+		messages = append(messages, provider.Message{
+			Role:    "system",
+			Content: manifest,
+		})
+	}
 	if p.agent != nil {
 		if summary, err := p.agent.AnalyzeAttachments(ctx, input.Attachments); err == nil && strings.TrimSpace(summary) != "" {
 			messages = append(messages, provider.Message{
@@ -246,6 +253,49 @@ func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input User
 		})
 	}
 	return messages
+}
+
+func attachmentEvidenceManifest(attachments []gateway.Attachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[Current Turn Attachments]\n")
+	b.WriteString("Use only the attachments listed in this block for the current user request. Do not substitute files from chat history, memory, or the workspace when an attachment is missing or unreadable.\n")
+	for i, att := range attachments {
+		label := strings.TrimSpace(string(att.Type))
+		if label == "" {
+			label = "attachment"
+		}
+		name := strings.TrimSpace(att.FileName)
+		if name == "" {
+			name = strings.TrimSpace(att.FileID)
+		}
+		if name == "" {
+			name = "unnamed"
+		}
+		fmt.Fprintf(&b, "%d. type=%s name=%s", i+1, label, name)
+		if strings.TrimSpace(att.FilePath) != "" {
+			fmt.Fprintf(&b, " file_path=%s", strings.TrimSpace(att.FilePath))
+		}
+		if strings.TrimSpace(att.FileURL) != "" {
+			fmt.Fprintf(&b, " url=%s", strings.TrimSpace(att.FileURL))
+		}
+		if strings.TrimSpace(att.FileID) != "" {
+			fmt.Fprintf(&b, " file_id=%s", strings.TrimSpace(att.FileID))
+		}
+		if strings.TrimSpace(att.MimeType) != "" {
+			fmt.Fprintf(&b, " mime=%s", strings.TrimSpace(att.MimeType))
+		}
+		if att.FileSize > 0 {
+			fmt.Fprintf(&b, " size=%d", att.FileSize)
+		}
+		if strings.TrimSpace(att.FilePath) == "" && strings.TrimSpace(att.FileURL) == "" && len(att.Data) == 0 {
+			b.WriteString(" status=unavailable")
+		}
+		b.WriteByte('\n')
+	}
+	return strings.TrimSpace(b.String())
 }
 
 /**

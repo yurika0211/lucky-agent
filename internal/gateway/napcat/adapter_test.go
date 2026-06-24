@@ -215,6 +215,505 @@ func TestAdapterDownloadsIncomingAttachment(t *testing.T) {
 	}
 }
 
+func TestAdapterDownloadsIncomingDocumentFileSegment(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF fake"))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	got := make(chan *gateway.Message, 1)
+	adapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+		got <- msg
+		return nil
+	})
+
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"time":         time.Now().Unix(),
+		"self_id":      10001,
+		"post_type":    "message",
+		"message_type": "group",
+		"message_id":   12,
+		"group_id":     345,
+		"user_id":      678,
+		"message": []map[string]any{
+			{"type": "at", "data": map[string]any{"qq": "10001"}},
+			{"type": "text", "data": map[string]any{"text": " 看文档"}},
+			{"type": "file", "data": map[string]any{"file_id": "file-1", "name": "document.pdf", "url": server.URL + "/document.pdf", "size": 9}},
+		},
+		"sender": map[string]any{
+			"user_id":  678,
+			"nickname": "tester",
+		},
+	}); err != nil {
+		t.Fatalf("write event: %v", err)
+	}
+
+	select {
+	case msg := <-got:
+		if len(msg.Attachments) != 1 {
+			t.Fatalf("expected one attachment, got %#v", msg.Attachments)
+		}
+		att := msg.Attachments[0]
+		if att.Type != gateway.AttachmentDocument || att.FileName != "document.pdf" || att.FilePath == "" {
+			t.Fatalf("expected downloaded document attachment, got %#v", att)
+		}
+		data, err := os.ReadFile(att.FilePath)
+		if err != nil {
+			t.Fatalf("read downloaded document: %v", err)
+		}
+		if string(data) != "%PDF fake" {
+			t.Fatalf("unexpected downloaded data: %q", string(data))
+		}
+		if att.MimeType != "application/pdf" {
+			t.Fatalf("expected application/pdf mime, got %q", att.MimeType)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for message")
+	}
+}
+
+func TestAdapterDownloadsWhenIncomingLocalPathIsInaccessible(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF remote"))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(Config{})
+	parsed := parseOneBotMessage(mustRawMessage(t, []map[string]any{
+		{"type": "file", "data": map[string]any{
+			"file_id":   "file-1",
+			"path":      filepath.Join(t.TempDir(), "missing.pdf"),
+			"name":      "document.pdf",
+			"url":       server.URL + "/document.pdf",
+			"mime_type": "application/pdf",
+		}},
+	}), "")
+
+	if len(parsed.Attachments) != 1 {
+		t.Fatalf("expected one attachment, got %#v", parsed.Attachments)
+	}
+	adapter.populateAttachments(parsed.Attachments)
+	att := parsed.Attachments[0]
+	if att.FilePath == "" || strings.Contains(att.FilePath, "missing.pdf") {
+		t.Fatalf("expected downloaded replacement path, got %#v", att)
+	}
+	data, err := os.ReadFile(att.FilePath)
+	if err != nil {
+		t.Fatalf("read downloaded replacement: %v", err)
+	}
+	if string(data) != "%PDF remote" {
+		t.Fatalf("unexpected downloaded data: %q", string(data))
+	}
+}
+
+func TestParseOneBotFileSegmentWithLocalPath(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "document.pdf")
+	if err := os.WriteFile(tmp, []byte("pdf"), 0o600); err != nil {
+		t.Fatalf("write local document: %v", err)
+	}
+
+	parsed := parseOneBotMessage(mustRawMessage(t, []map[string]any{
+		{"type": "file", "data": map[string]any{"file": tmp, "file_name": "document.pdf"}},
+	}), "")
+
+	if len(parsed.Attachments) != 1 {
+		t.Fatalf("expected one attachment, got %#v", parsed.Attachments)
+	}
+	att := parsed.Attachments[0]
+	if att.Type != gateway.AttachmentDocument || att.FilePath != tmp || att.FileName != "document.pdf" {
+		t.Fatalf("unexpected document attachment: %#v", att)
+	}
+}
+
+func TestAdapterResolvesIncomingFileSegmentWithGetFile(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "document.pdf")
+	if err := os.WriteFile(tmp, []byte("pdf"), 0o600); err != nil {
+		t.Fatalf("write local document: %v", err)
+	}
+
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	got := make(chan *gateway.Message, 1)
+	adapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+		got <- msg
+		return nil
+	})
+
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"time":         time.Now().Unix(),
+		"self_id":      10001,
+		"post_type":    "message",
+		"message_type": "group",
+		"message_id":   12,
+		"group_id":     345,
+		"user_id":      678,
+		"message": []map[string]any{
+			{"type": "at", "data": map[string]any{"qq": "10001"}},
+			{"type": "text", "data": map[string]any{"text": " 看文档"}},
+			{"type": "file", "data": map[string]any{"file_id": "file-1", "name": "document.pdf", "size": 3}},
+		},
+		"sender": map[string]any{
+			"user_id":  678,
+			"nickname": "tester",
+		},
+	}); err != nil {
+		t.Fatalf("write event: %v", err)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read get_file action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode get_file action: %v", err)
+	}
+	if req.Action != "get_file" {
+		t.Fatalf("expected get_file action, got %s", req.Action)
+	}
+	if req.Params["file_id"] != "file-1" {
+		t.Fatalf("unexpected file id: %#v", req.Params["file_id"])
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "ok",
+		"retcode": 0,
+		"echo":    req.Echo,
+		"data": map[string]any{
+			"file":      tmp,
+			"file_name": "document.pdf",
+		},
+	}); err != nil {
+		t.Fatalf("write get_file response: %v", err)
+	}
+
+	select {
+	case msg := <-got:
+		if len(msg.Attachments) != 1 {
+			t.Fatalf("expected one attachment, got %#v", msg.Attachments)
+		}
+		att := msg.Attachments[0]
+		if att.Type != gateway.AttachmentDocument || att.FilePath != tmp {
+			t.Fatalf("expected resolved document path, got %#v", att)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for message")
+	}
+}
+
+func TestAdapterFallsBackToGetFileURLWhenLocalPathIsInaccessible(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF remote from get_file"))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	got := make(chan *gateway.Message, 1)
+	adapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+		got <- msg
+		return nil
+	})
+
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"time":         time.Now().Unix(),
+		"self_id":      10001,
+		"post_type":    "message",
+		"message_type": "group",
+		"message_id":   12,
+		"group_id":     345,
+		"user_id":      678,
+		"message": []map[string]any{
+			{"type": "at", "data": map[string]any{"qq": "10001"}},
+			{"type": "text", "data": map[string]any{"text": " 看文档"}},
+			{"type": "file", "data": map[string]any{"file_id": "file-1", "name": "document.pdf", "size": 25}},
+		},
+		"sender": map[string]any{
+			"user_id":  678,
+			"nickname": "tester",
+		},
+	}); err != nil {
+		t.Fatalf("write event: %v", err)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read get_file action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode get_file action: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "ok",
+		"retcode": 0,
+		"echo":    req.Echo,
+		"data": map[string]any{
+			"file":      filepath.Join(t.TempDir(), "missing.pdf"),
+			"file_name": "document.pdf",
+			"url":       server.URL + "/document.pdf",
+		},
+	}); err != nil {
+		t.Fatalf("write get_file response: %v", err)
+	}
+
+	select {
+	case msg := <-got:
+		if len(msg.Attachments) != 1 {
+			t.Fatalf("expected one attachment, got %#v", msg.Attachments)
+		}
+		att := msg.Attachments[0]
+		if att.Type != gateway.AttachmentDocument || att.FilePath == "" {
+			t.Fatalf("expected downloaded document path, got %#v", att)
+		}
+		data, err := os.ReadFile(att.FilePath)
+		if err != nil {
+			t.Fatalf("read downloaded document: %v", err)
+		}
+		if string(data) != "%PDF remote from get_file" {
+			t.Fatalf("unexpected downloaded data: %q", string(data))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for message")
+	}
+}
+
+func TestAdapterResolvesGroupFileURLWhenGetFileFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF remote from group file url"))
+	}))
+	defer server.Close()
+
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	got := make(chan *gateway.Message, 1)
+	adapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+		got <- msg
+		return nil
+	})
+
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"time":         time.Now().Unix(),
+		"self_id":      10001,
+		"post_type":    "message",
+		"message_type": "group",
+		"message_id":   12,
+		"group_id":     345,
+		"user_id":      678,
+		"message": []map[string]any{
+			{"type": "at", "data": map[string]any{"qq": "10001"}},
+			{"type": "file", "data": map[string]any{
+				"file_id": "file-1",
+				"name":    "document.pdf",
+				"busid":   102,
+				"size":    31,
+			}},
+		},
+		"sender": map[string]any{
+			"user_id":  678,
+			"nickname": "tester",
+		},
+	}); err != nil {
+		t.Fatalf("write event: %v", err)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read get_file action: %v", err)
+	}
+	var getFileReq actionRequest
+	if err := json.Unmarshal(data, &getFileReq); err != nil {
+		t.Fatalf("decode get_file action: %v", err)
+	}
+	if getFileReq.Action != "get_file" {
+		t.Fatalf("expected get_file action, got %s", getFileReq.Action)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "failed",
+		"retcode": 100,
+		"echo":    getFileReq.Echo,
+		"message": "file not found by get_file",
+	}); err != nil {
+		t.Fatalf("write get_file failure: %v", err)
+	}
+
+	_, data, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read get_group_file_url action: %v", err)
+	}
+	var groupFileReq actionRequest
+	if err := json.Unmarshal(data, &groupFileReq); err != nil {
+		t.Fatalf("decode get_group_file_url action: %v", err)
+	}
+	if groupFileReq.Action != "get_group_file_url" {
+		t.Fatalf("expected get_group_file_url action, got %s", groupFileReq.Action)
+	}
+	if groupFileReq.Params["file_id"] != "file-1" {
+		t.Fatalf("unexpected file id: %#v", groupFileReq.Params["file_id"])
+	}
+	if groupFileReq.Params["group_id"] != float64(345) && groupFileReq.Params["group_id"] != int64(345) {
+		t.Fatalf("unexpected group id: %#v", groupFileReq.Params["group_id"])
+	}
+	if groupFileReq.Params["busid"] != float64(102) && groupFileReq.Params["busid"] != int64(102) {
+		t.Fatalf("unexpected busid: %#v", groupFileReq.Params["busid"])
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "ok",
+		"retcode": 0,
+		"echo":    groupFileReq.Echo,
+		"data": map[string]any{
+			"url": server.URL + "/document.pdf",
+		},
+	}); err != nil {
+		t.Fatalf("write get_group_file_url response: %v", err)
+	}
+
+	select {
+	case msg := <-got:
+		if len(msg.Attachments) != 1 {
+			t.Fatalf("expected one attachment, got %#v", msg.Attachments)
+		}
+		att := msg.Attachments[0]
+		if att.FilePath == "" {
+			t.Fatalf("expected downloaded group file path, got %#v", att)
+		}
+		data, err := os.ReadFile(att.FilePath)
+		if err != nil {
+			t.Fatalf("read downloaded group file: %v", err)
+		}
+		if string(data) != "%PDF remote from group file url" {
+			t.Fatalf("unexpected downloaded data: %q", string(data))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for message")
+	}
+}
+
+func TestAdapterCachesGetFileBase64Attachment(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	got := make(chan *gateway.Message, 1)
+	adapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+		got <- msg
+		return nil
+	})
+
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	if err := conn.WriteJSON(map[string]any{
+		"time":         time.Now().Unix(),
+		"self_id":      10001,
+		"post_type":    "message",
+		"message_type": "group",
+		"message_id":   12,
+		"group_id":     345,
+		"user_id":      678,
+		"message": []map[string]any{
+			{"type": "at", "data": map[string]any{"qq": "10001"}},
+			{"type": "file", "data": map[string]any{"file_id": "file-1", "name": "document.pdf"}},
+		},
+		"sender": map[string]any{
+			"user_id":  678,
+			"nickname": "tester",
+		},
+	}); err != nil {
+		t.Fatalf("write event: %v", err)
+	}
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read get_file action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode get_file action: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "ok",
+		"retcode": 0,
+		"echo":    req.Echo,
+		"data": map[string]any{
+			"file_name": "document.pdf",
+			"base64":    base64.StdEncoding.EncodeToString([]byte("%PDF from base64")),
+		},
+	}); err != nil {
+		t.Fatalf("write get_file response: %v", err)
+	}
+
+	select {
+	case msg := <-got:
+		if len(msg.Attachments) != 1 {
+			t.Fatalf("expected one attachment, got %#v", msg.Attachments)
+		}
+		att := msg.Attachments[0]
+		if att.FilePath == "" || len(att.Data) == 0 {
+			t.Fatalf("expected cached base64 attachment, got %#v", att)
+		}
+		data, err := os.ReadFile(att.FilePath)
+		if err != nil {
+			t.Fatalf("read cached base64 document: %v", err)
+		}
+		if string(data) != "%PDF from base64" {
+			t.Fatalf("unexpected cached data: %q", string(data))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for message")
+	}
+}
+
 func TestAdapterSendWithReplyWritesOneBotAction(t *testing.T) {
 	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
 	if err := adapter.Start(context.Background()); err != nil {
@@ -552,4 +1051,13 @@ func TestAdapterSendDocumentLocalFileUsesBase64UploadSource(t *testing.T) {
 	if req.Params["name"] != "report.txt" {
 		t.Fatalf("unexpected upload name: %#v", req.Params["name"])
 	}
+}
+
+func mustRawMessage(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal raw message: %v", err)
+	}
+	return data
 }

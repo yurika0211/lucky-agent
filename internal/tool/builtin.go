@@ -16,6 +16,7 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, ope
 
 	r.Register(TerminalTool())
 	r.Register(FileReadTool())
+	r.Register(DocumentReadTool())
 	r.Register(FileWriteTool())
 	r.Register(FileMkdirTool())
 	r.Register(FileMoveTool())

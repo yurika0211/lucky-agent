@@ -552,7 +552,7 @@ func (o *OpenAIMediaProvider) buildResponsesContentItem(input *Input) (map[strin
 		}
 		return map[string]any{
 			"type":      "input_image",
-			"image_url": fmt.Sprintf("data:%s;base64,%s", input.MimeType, base64.StdEncoding.EncodeToString(data)),
+			"image_url": encodedDataURL(input.MimeType, data),
 		}, nil
 
 	case ModalityDocument:
@@ -576,7 +576,7 @@ func (o *OpenAIMediaProvider) buildResponsesContentItem(input *Input) (map[strin
 		}
 		return map[string]any{
 			"type":      "input_file",
-			"file_data": base64.StdEncoding.EncodeToString(data),
+			"file_data": encodedDataURL(input.MimeType, data),
 			"filename":  filename,
 		}, nil
 	}
@@ -599,7 +599,7 @@ func (o *OpenAIMediaProvider) buildChatCompletionContentItem(input *Input) (map[
 			if mimeType == "" {
 				mimeType = http.DetectContentType(data)
 			}
-			imageURL = fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
+			imageURL = encodedDataURL(mimeType, data)
 		}
 		return map[string]any{
 			"type": "image_url",
@@ -626,6 +626,14 @@ func (o *OpenAIMediaProvider) resolveInputData(input *Input) ([]byte, error) {
 		return nil, fmt.Errorf("read input file %q: %w", input.FilePath, err)
 	}
 	return data, nil
+}
+
+func encodedDataURL(mimeType string, data []byte) string {
+	mimeType = strings.TrimSpace(mimeType)
+	if mimeType == "" {
+		mimeType = http.DetectContentType(data)
+	}
+	return fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(data))
 }
 
 func extractResponsesOutputText(body []byte) string {
