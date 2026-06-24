@@ -58,6 +58,37 @@ func TestToAnthropicMessagesMapsOpenAIToolRound(t *testing.T) {
 	}
 }
 
+func TestToAnthropicMessagesGroupsMultipleToolResults(t *testing.T) {
+	_, messages, err := toAnthropicMessages([]Message{
+		{Role: "user", Content: "use tools"},
+		{Role: "assistant", ToolCalls: []ToolCall{
+			{ID: "toolu_1", Name: "read_file", Arguments: `{"path":"a"}`},
+			{ID: "toolu_2", Name: "read_file", Arguments: `{"path":"b"}`},
+		}},
+		{Role: "tool", Content: "a-content", ToolCallID: "toolu_1", Name: "read_file"},
+		{Role: "tool", Content: "b-content", ToolCallID: "toolu_2", Name: "read_file"},
+	})
+	if err != nil {
+		t.Fatalf("toAnthropicMessages: %v", err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("expected user, assistant, grouped tool result messages, got %d: %#v", len(messages), messages)
+	}
+	if messages[2].Role != "user" {
+		t.Fatalf("expected grouped tool results to be sent as user message, got %#v", messages[2])
+	}
+	blocks, ok := messages[2].Content.([]anthropicContentBlock)
+	if !ok {
+		t.Fatalf("tool result content type = %T", messages[2].Content)
+	}
+	if len(blocks) != 2 {
+		t.Fatalf("expected two tool_result blocks in one message, got %#v", blocks)
+	}
+	if blocks[0].ToolUseID != "toolu_1" || blocks[1].ToolUseID != "toolu_2" {
+		t.Fatalf("unexpected grouped tool ids: %#v", blocks)
+	}
+}
+
 func TestAnthropicChatWithOptionsSendsToolsAndParsesToolUse(t *testing.T) {
 	var captured anthropicRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

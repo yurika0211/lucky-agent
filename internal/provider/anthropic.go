@@ -345,7 +345,8 @@ func toAnthropicMessages(messages []Message) (string, []anthropicMessage, error)
 	var systemPrompt strings.Builder
 	result := make([]anthropicMessage, 0, len(messages))
 
-	for _, m := range messages {
+	for i := 0; i < len(messages); i++ {
+		m := messages[i]
 		switch strings.TrimSpace(m.Role) {
 		case "system":
 			content := strings.TrimSpace(m.Content)
@@ -362,18 +363,15 @@ func toAnthropicMessages(messages []Message) (string, []anthropicMessage, error)
 			}
 			result = append(result, anthropicMessage{Role: "assistant", Content: content})
 		case "tool":
-			toolUseID := strings.TrimSpace(m.ToolCallID)
-			if toolUseID == "" {
+			blocks, next := collectAnthropicToolResultBlocks(messages, i)
+			if len(blocks) == 0 {
 				continue
 			}
 			result = append(result, anthropicMessage{
-				Role: "user",
-				Content: []anthropicContentBlock{{
-					Type:      "tool_result",
-					ToolUseID: toolUseID,
-					Content:   m.Content,
-				}},
+				Role:    "user",
+				Content: blocks,
 			})
+			i = next - 1
 		case "user":
 			content, err := toAnthropicUserContent(m)
 			if err != nil {
@@ -390,6 +388,27 @@ func toAnthropicMessages(messages []Message) (string, []anthropicMessage, error)
 	}
 
 	return strings.TrimSpace(systemPrompt.String()), result, nil
+}
+
+func collectAnthropicToolResultBlocks(messages []Message, start int) ([]anthropicContentBlock, int) {
+	blocks := make([]anthropicContentBlock, 0)
+	i := start
+	for ; i < len(messages); i++ {
+		m := messages[i]
+		if strings.TrimSpace(m.Role) != "tool" {
+			break
+		}
+		toolUseID := strings.TrimSpace(m.ToolCallID)
+		if toolUseID == "" {
+			continue
+		}
+		blocks = append(blocks, anthropicContentBlock{
+			Type:      "tool_result",
+			ToolUseID: toolUseID,
+			Content:   m.Content,
+		})
+	}
+	return blocks, i
 }
 
 func toAnthropicAssistantContent(m Message) (any, error) {
