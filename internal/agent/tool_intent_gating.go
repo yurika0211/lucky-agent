@@ -130,6 +130,9 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 		if intentTextContainsAny(intentText, ".csv", "csv") {
 			addIntentTools(allowed, "csv_query")
 		}
+		if intentTextContainsAny(intentText, ".pdf", ".docx", ".pptx", "pdf", "docx", "pptx", "word", "powerpoint", "文档", "幻灯片") {
+			addIntentTools(allowed, "document_read")
+		}
 		if toolSystemIntent {
 			addIntentTools(allowed, "json_query", "yaml_query")
 		}

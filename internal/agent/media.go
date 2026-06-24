@@ -8,6 +8,7 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/multimodal"
+	"github.com/yurika0211/luckyharness/internal/tool"
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
@@ -21,6 +22,10 @@ func (a *Agent) AnalyzeAttachments(ctx context.Context, attachments []gateway.At
 
 	var sections []string
 	for i, att := range attachments {
+		if section, ok := analyzeDocumentAttachment(att, i); ok {
+			sections = append(sections, section)
+			continue
+		}
 		input, title, err := buildMultimodalInput(att)
 		if err != nil {
 			sections = append(sections, fmt.Sprintf("%s\n- error: %s", attachmentTitle(att, i), err.Error()))
@@ -41,6 +46,31 @@ func (a *Agent) AnalyzeAttachments(ctx context.Context, attachments []gateway.At
 	}
 
 	return "[Multimodal Analysis]\n" + strings.Join(sections, "\n\n"), nil
+}
+
+func analyzeDocumentAttachment(att gateway.Attachment, idx int) (string, bool) {
+	if att.Type != gateway.AttachmentDocument || strings.TrimSpace(att.FilePath) == "" {
+		return "", false
+	}
+	ext := strings.ToLower(filepath.Ext(att.FilePath))
+	if ext == "" {
+		ext = strings.ToLower(filepath.Ext(att.FileName))
+	}
+	switch ext {
+	case ".pdf", ".docx", ".pptx":
+	default:
+		return "", false
+	}
+	text, format, err := tool.ExtractDocumentText(att.FilePath)
+	title := attachmentTitle(att, idx)
+	if err != nil {
+		return fmt.Sprintf("%s\n- error: %s", title, err.Error()), true
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return fmt.Sprintf("%s\n- format: %s\n- extracted: no text found", title, format), true
+	}
+	return fmt.Sprintf("%s\n- format: %s\n- extracted:\n%s", title, format, utils.Truncate(text, 4000)), true
 }
 
 func (a *Agent) analyzeMultimodalInput(ctx context.Context, input *multimodal.Input) (*multimodal.AnalysisResult, error) {
