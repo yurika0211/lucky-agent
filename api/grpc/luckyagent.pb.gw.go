@@ -6,7 +6,7 @@ Package luckyharness is a reverse proxy.
 
 It translates gRPC into RESTful JSON APIs.
 */
-package luckyharness
+package luckyagent
 
 import (
 	"context"
