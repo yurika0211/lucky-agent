@@ -4652,7 +4652,7 @@ func TestV054HandleLearnCommandFlow(t *testing.T) {
 		combined.WriteString("\n")
 	}
 	got := combined.String()
-	if !strings.Contains(got, "LuckyHarness Learning Mode") {
+	if !strings.Contains(got, "LuckyAgent Learning Mode") {
 		t.Fatalf("expected learn help output, got %q", got)
 	}
 	if !strings.Contains(got, "Learning Started") {

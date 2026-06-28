@@ -160,7 +160,7 @@ func TestHandleSPA(t *testing.T) {
 		t.Error("SPA response too short")
 	}
 	// 应该包含标题
-	if !contains(body, "LuckyHarness Dashboard") {
+	if !contains(body, "LuckyAgent Dashboard") {
 		t.Error("SPA missing title")
 	}
 }

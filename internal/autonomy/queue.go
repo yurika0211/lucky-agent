@@ -1,4 +1,4 @@
-// Package autonomy provides a native Agent Autonomy Kit for LuckyHarness.
+// Package autonomy provides a native Agent Autonomy Kit for LuckyAgent.
 // It enables proactive, self-directed agent work through:
 //   - WorkerPool: goroutine-based concurrent agent execution
 //   - TaskQueue: persistent priority task queue (Ready/InProgress/Blocked/Done)

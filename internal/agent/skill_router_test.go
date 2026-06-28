@@ -64,7 +64,7 @@ func TestBuildSkillRouteSystemHint_HonorsDisabledSkillTools(t *testing.T) {
 	}
 }
 
-func TestBuildSkillRouteSystemHint_LuckyHarnessMemoryDoesNotRouteToExternalObsidianVault(t *testing.T) {
+func TestBuildSkillRouteSystemHint_LuckyAgentMemoryDoesNotRouteToExternalObsidianVault(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
 	reg.Register(&tool.Tool{Name: "skill_obsidian_run", Enabled: true})
@@ -81,8 +81,8 @@ func TestBuildSkillRouteSystemHint_LuckyHarnessMemoryDoesNotRouteToExternalObsid
 	}
 
 	hint := a.buildSkillRouteSystemHint("这个双链记忆系统现在是否生效，记忆库在哪")
-	if !strings.Contains(hint, "LuckyHarness memory backend") {
-		t.Fatalf("expected LuckyHarness memory backend guardrail, got %q", hint)
+	if !strings.Contains(hint, "LuckyAgent memory backend") {
+		t.Fatalf("expected LuckyAgent memory backend guardrail, got %q", hint)
 	}
 	if strings.Contains(hint, `skill_read(name="obsidian")`) || strings.Contains(hint, "skill_obsidian_run") {
 		t.Fatalf("expected no external obsidian skill routing, got %q", hint)
@@ -196,7 +196,7 @@ func TestBuildFunctionCallOptionsForInput_ExplicitSkillForcesSkillRead(t *testin
 	}
 }
 
-func TestBuildFunctionCallOptionsForInput_LuckyHarnessMemoryKeepsAutoTools(t *testing.T) {
+func TestBuildFunctionCallOptionsForInput_LuckyAgentMemoryKeepsAutoTools(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
 	reg.Register(&tool.Tool{Name: "skill_obsidian_run", Enabled: true})
@@ -216,7 +216,7 @@ func TestBuildFunctionCallOptionsForInput_LuckyHarnessMemoryKeepsAutoTools(t *te
 	tools := function.NewManager(reg).BuildTools()
 	opts := a.buildFunctionCallOptionsForInput("双链记忆系统是不是已经生效了", tools)
 	if opts.ToolChoice != "auto" {
-		t.Fatalf("expected auto tool choice for LuckyHarness memory backend question, got %#v", opts.ToolChoice)
+		t.Fatalf("expected auto tool choice for LuckyAgent memory backend question, got %#v", opts.ToolChoice)
 	}
 }
 

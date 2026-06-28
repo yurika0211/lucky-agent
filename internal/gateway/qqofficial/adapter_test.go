@@ -388,7 +388,7 @@ func TestSendForwardedTextSendsChunksSequentially(t *testing.T) {
 	a.accessToken = "token"
 	a.tokenExpiry = time.Now().Add(time.Hour)
 
-	if err := a.SendForwardedText(context.Background(), "group:group-1", "LuckyHarness", []string{"first", "second"}); err != nil {
+	if err := a.SendForwardedText(context.Background(), "group:group-1", "LuckyAgent", []string{"first", "second"}); err != nil {
 		t.Fatalf("SendForwardedText error = %v", err)
 	}
 

@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-// Config 代表 LuckyHarness 的运行时配置
+// Config 代表 LuckyAgent 的运行时配置
 type Config struct {
 	LlmProvider  LlmProviderConfig `json:"llm_provider,omitempty"`
 	Provider     string            `json:"-"`
@@ -22,6 +22,9 @@ type Config struct {
 	Temperature  float64           `json:"temperature"`
 	Extra        map[string]string `json:"extra,omitempty"`
 	ExtraHeaders map[string]string `json:"extra_headers,omitempty"`
+
+	// 自定义模型目录
+	CustomModels []CustomModelInfo `json:"custom_models,omitempty"`
 
 	// 降级链配置
 	Fallbacks []FallbackEntry `json:"fallbacks,omitempty"`
@@ -111,6 +114,18 @@ type LlmProviderConfig struct {
 	APIKey  string `json:"api_key,omitempty"`
 	BaseURL string `json:"base_url,omitempty"`
 	Model   string `json:"model,omitempty"`
+	Vision  bool   `json:"vision,omitempty"` // 模型是否支持视觉能力
+}
+
+// CustomModelInfo 自定义模型信息配置
+type CustomModelInfo struct {
+	ID            string   `json:"id"`                        // 模型ID，必填
+	Provider      string   `json:"provider,omitempty"`        // 提供商
+	DisplayName   string   `json:"display_name,omitempty"`    // 显示名称
+	Capabilities  []string `json:"capabilities,omitempty"`    // 能力: "chat", "streaming", "tools", "vision"
+	ContextWindow int      `json:"context_window,omitempty"`  // 上下文窗口大小
+	CostPer1kIn   float64  `json:"cost_per_1k_in,omitempty"`  // 输入价格
+	CostPer1kOut  float64  `json:"cost_per_1k_out,omitempty"` // 输出价格
 }
 
 type EmbeddingConfig struct {
@@ -1550,7 +1565,7 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// HomeDir 返回 LuckyHarness 主目录
+// HomeDir 返回 LuckyAgent 主目录
 func (m *Manager) HomeDir() string {
 	return m.homeDir
 }

@@ -156,7 +156,7 @@ func (p *AnthropicProvider) ChatWithOptions(ctx context.Context, messages []Mess
 		Usage:        convertAnthropicUsage(&chatResp.Usage),
 	}
 
-	// 提取文本内容和 Anthropic tool_use，转回 LuckyHarness 的 OpenAI-style ToolCall。
+	// 提取文本内容和 Anthropic tool_use，转回 LuckyAgent 的 OpenAI-style ToolCall。
 	for _, block := range chatResp.Content {
 		switch block.Type {
 		case "text":

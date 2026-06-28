@@ -222,7 +222,7 @@ func (a *Adapter) SendForwardedText(ctx context.Context, chatID string, title st
 	}
 	title = strings.TrimSpace(title)
 	if title == "" {
-		title = "LuckyHarness"
+		title = "LuckyAgent"
 	}
 
 	a.mu.RLock()
@@ -278,7 +278,7 @@ func (a *Adapter) SendForwardedMedia(ctx context.Context, chatID string, title s
 	}
 	title = strings.TrimSpace(title)
 	if title == "" {
-		title = "LuckyHarness"
+		title = "LuckyAgent"
 	}
 
 	a.mu.RLock()

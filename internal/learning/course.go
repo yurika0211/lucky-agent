@@ -36,7 +36,7 @@ type Lab struct {
 	Deliverable string   `json:"deliverable" yaml:"deliverable"`
 }
 
-// BuiltinCourses returns the bundled LuckyHarness learning packs.
+// BuiltinCourses returns the bundled LuckyAgent learning packs.
 func BuiltinCourses() []Course {
 	return []Course{agentSystemsCourse()}
 }
@@ -106,7 +106,7 @@ func (c Course) Validate() error {
 func agentSystemsCourse() Course {
 	return Course{
 		ID:          "lh-agent-systems",
-		Title:       "LuckyHarness Agent Systems",
+		Title:       "LuckyAgent Agent Systems",
 		Mode:        "project_course",
 		Capstone:    "reproduce-hermes-agent-lite",
 		Description: "A project-course learning pack for agent engineering: trace visibility, context packing, multi-agent orchestration, and a Hermes-lite capstone.",
@@ -198,7 +198,7 @@ func agentSystemsCourse() Course {
 				Concepts:  []string{"planner", "executor", "debugger", "acceptor", "agent trace"},
 				Lab: Lab{
 					ID:     "lab-hermes-lite",
-					Prompt: "Build a Hermes-lite workflow spec for LuckyHarness, including roles, commands, trace output, acceptance checks, and a rollback plan.",
+					Prompt: "Build a Hermes-lite workflow spec for LuckyAgent, including roles, commands, trace output, acceptance checks, and a rollback plan.",
 					Commands: []string{
 						"go test ./cmd/lh-multiagent-bench",
 						"go test ./internal/gateway/telegram",

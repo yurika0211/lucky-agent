@@ -650,7 +650,7 @@ func TestFileReadWriteTool(t *testing.T) {
 	// 写文件
 	writeResult, err := r.Call("file_write", map[string]any{
 		"path":    testFile,
-		"content": "Hello, LuckyHarness!",
+		"content": "Hello, LuckyAgent!",
 	})
 	if err != nil {
 		t.Fatalf("file_write: %v", err)
@@ -1094,7 +1094,7 @@ func TestMemoryToolServiceRememberAndRecall(t *testing.T) {
 	if !strings.Contains(recall, "Python") {
 		t.Fatalf("unexpected recall result: %q", recall)
 	}
-	if !strings.Contains(recall, "LuckyHarness Obsidian-compatible Markdown vault") || !strings.Contains(recall, "RAG SQLite") {
+	if !strings.Contains(recall, "LuckyAgent Obsidian-compatible Markdown vault") || !strings.Contains(recall, "RAG SQLite") {
 		t.Fatalf("expected recall result to identify authoritative memory source, got %q", recall)
 	}
 }

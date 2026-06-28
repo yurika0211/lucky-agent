@@ -12,7 +12,7 @@ var generatedTruncationMarkerPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?im)^\s*\[Output may be truncated after multiple continuation attempts\.\]\s*$`),
 }
 
-// sanitizeDurableMemoryContent removes LuckyHarness-generated truncation
+// sanitizeDurableMemoryContent removes LuckyAgent-generated truncation
 // markers before Markdown notes become durable memory. It intentionally keeps
 // ordinary prose ellipses because users may type them as meaningful content.
 func sanitizeDurableMemoryContent(content string) string {

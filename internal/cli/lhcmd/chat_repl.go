@@ -79,7 +79,7 @@ func startREPL(mgr *config.Manager) error {
 	loopCfg := agent.DefaultLoopConfig()
 	agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 
-	fmt.Println("🍀 LuckyHarness Chat v0.15.0")
+	fmt.Println("🍀 LuckyAgent Chat v0.15.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
 	fmt.Printf("   会话: %s\n", currentSession.ID[:8])
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")

@@ -306,7 +306,7 @@ func (d *Dashboard) serveEmbeddedSPA(w http.ResponseWriter, r *http.Request) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LuckyHarness Dashboard</title>
+  <title>LuckyAgent Dashboard</title>
   <style>
     :root {
       --bg: #eef4ea;
@@ -731,7 +731,7 @@ func (d *Dashboard) serveEmbeddedSPA(w http.ResponseWriter, r *http.Request) {
         <div class="brand-row">
           <div class="brand">
             <div class="clover"><span></span><span></span><span></span></div>
-            LuckyHarness
+            LuckyAgent
           </div>
           <div class="chip"><span class="dot" id="runtimeDot"></span><span id="runtimeSummary">Loading</span></div>
         </div>
@@ -780,7 +780,7 @@ func (d *Dashboard) serveEmbeddedSPA(w http.ResponseWriter, r *http.Request) {
       <main class="workspace">
         <div class="top-row">
           <div class="top-copy">
-            <div class="eyebrow">LuckyHarness Dashboard</div>
+            <div class="eyebrow">LuckyAgent Dashboard</div>
             <h2>Chat UI</h2>
             <p>页面重点就是对话区，其他信息降噪处理。</p>
           </div>
@@ -806,7 +806,7 @@ func (d *Dashboard) serveEmbeddedSPA(w http.ResponseWriter, r *http.Request) {
             <div class="card-body" style="min-height:0;">
               <div class="empty" id="heroEmpty">
                 <div class="eyebrow">Chat Workspace</div>
-                <h4>Talk to LuckyHarness</h4>
+                <h4>Talk to LuckyAgent</h4>
                 <p>像 ChatGPT 一样开始对话。四叶草只负责风格，消息流、状态和工具输出都在同一个工作区里。</p>
                 <div class="chip-row">
                   <div class="chip">Chat-first</div>

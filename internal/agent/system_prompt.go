@@ -54,7 +54,7 @@ func (a *Agent) buildSystemPrompt(sess *session.Session) string {
 func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemPromptOptions) string {
 	parts := make([]string, 0, 16)
 	toolNames := a.enabledToolNamesExcept(opts.DisabledTools)
-	manualBlock := a.buildLuckyHarnessManualPrompt(sess)
+	manualBlock := a.buildLuckyAgentManualPrompt(sess)
 	contextBlock := a.buildContextFilesPrompt(sess)
 
 	if core := a.buildCorePromptBlock(); core != "" {
@@ -432,13 +432,13 @@ func routeFriendlySkillSummary(s *tool.SkillInfo) string {
 }
 
 /*
-buildLuckyHarnessManualPrompt 读取并构造 LuckyHarness 手册提示块。
+buildLuckyAgentManualPrompt 读取并构造 LuckyAgent 手册提示块。
 
 该函数会先定位手册文件，再读取内容并做注入风险过滤与长度裁剪，
 最后将其包装成可直接拼入 system prompt 的文本块。
 */
-func (a *Agent) buildLuckyHarnessManualPrompt(sess *session.Session) string {
-	manualPath := a.findLuckyHarnessManualPath(sess)
+func (a *Agent) buildLuckyAgentManualPrompt(sess *session.Session) string {
+	manualPath := a.findLuckyAgentManualPath(sess)
 	if manualPath == "" {
 		return ""
 	}
@@ -523,16 +523,18 @@ func cachedPromptBlock(path string, kind string, build func(base string, raw str
 }
 
 /*
-findLuckyHarnessManualPath 查找 LuckyHarness 手册文件路径。
+findLuckyAgentManualPath 查找 LuckyAgent 手册文件路径。
 
-当前实现仅从环境变量 LUCKYHARNESS_MANUAL_FILE 指定的位置查找；
-如果变量未设置或文件不存在，则返回空字符串。
+优先从 LUCKYAGENT_MANUAL_FILE 指定的位置查找；
+保留 LUCKYHARNESS_MANUAL_FILE 作为旧配置兼容。
 */
-func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
+func (a *Agent) findLuckyAgentManualPath(sess *session.Session) string {
 	candidates := make([]string, 0, 6)
 
-	if raw := strings.TrimSpace(os.Getenv("LUCKYHARNESS_MANUAL_FILE")); raw != "" {
-		candidates = append(candidates, raw)
+	for _, envName := range []string{"LUCKYAGENT_MANUAL_FILE", "LUCKYHARNESS_MANUAL_FILE"} {
+		if raw := strings.TrimSpace(os.Getenv(envName)); raw != "" {
+			candidates = append(candidates, raw)
+		}
 	}
 
 	cwd := ""
@@ -549,6 +551,8 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 			filepath.Join(cwd, "memory", "prompts", "AGENTS.md"),
 			filepath.Join(cwd, "description", "AGENTS.md"),
 			filepath.Join(cwd, "description", "agents.md"),
+			filepath.Join(cwd, "LUCKYAGENT_AGENT_MANUAL.md"),
+			filepath.Join(cwd, "description", "LUCKYAGENT_AGENT_MANUAL.md"),
 			filepath.Join(cwd, "LUCKYHARNESS_AGENT_MANUAL.md"),
 			filepath.Join(cwd, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
 		)
@@ -560,6 +564,7 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 				filepath.Join(homeDir, "memory", "prompts", "AGENTS.md"),
 				filepath.Join(homeDir, "description", "AGENTS.md"),
 				filepath.Join(homeDir, "description", "agents.md"),
+				filepath.Join(homeDir, "description", "LUCKYAGENT_AGENT_MANUAL.md"),
 				filepath.Join(homeDir, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
 			)
 		}
@@ -596,8 +601,10 @@ findAgentsFile 从环境变量直接验证
 存在文件，就返回其绝对路径；若一直到根目录都未找到，则返回空字符串。
 */
 func findAgentsFile(cwd string) string {
-	if soulPath := strings.TrimSpace(os.Getenv("LUCKYHARNESS_AGENTS_FILE")); soulPath != "" {
-		return soulPath
+	for _, envName := range []string{"LUCKYAGENT_AGENTS_FILE", "LUCKYHARNESS_AGENTS_FILE"} {
+		if soulPath := strings.TrimSpace(os.Getenv(envName)); soulPath != "" {
+			return soulPath
+		}
 	}
 	if strings.TrimSpace(cwd) == "" {
 		return ""

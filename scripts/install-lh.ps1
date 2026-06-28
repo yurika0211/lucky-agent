@@ -17,7 +17,7 @@ if ($Version -eq "latest") {
   $apiUrl = "https://api.github.com/repos/$Repo/releases/tags/$Version"
 }
 
-$release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = "LuckyHarnessInstaller" }
+$release = Invoke-RestMethod -Uri $apiUrl -Headers @{ "User-Agent" = "LuckyAgentInstaller" }
 $asset = $release.assets | Where-Object { $_.name -eq $archiveName } | Select-Object -First 1
 
 if (-not $asset) {

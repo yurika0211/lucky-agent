@@ -22,9 +22,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// Server implements LuckyHarnessService gRPC server.
+// Server implements LuckyAgentService gRPC server.
 type Server struct {
-	UnimplementedLuckyHarnessServiceServer
+	UnimplementedLuckyAgentServiceServer
 
 	agent          *agent.Agent
 	memoryStore    *memory.Store
@@ -68,7 +68,7 @@ func (s *Server) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, err
 }
 
 // ChatStream handles streaming chat request.
-func (s *Server) ChatStream(req *ChatRequest, stream LuckyHarnessService_ChatStreamServer) error {
+func (s *Server) ChatStream(req *ChatRequest, stream LuckyAgentService_ChatStreamServer) error {
 	resp, err := s.agent.Chat(stream.Context(), req.Message)
 	if err != nil {
 		return status.Errorf(codes.Internal, "chat failed: %v", err)
@@ -83,9 +83,9 @@ func (s *Server) ChatStream(req *ChatRequest, stream LuckyHarnessService_ChatStr
 		}
 
 		chunk := &ChatChunk{
-			Content:  resp[i:end],
+			Content:   resp[i:end],
 			SessionId: req.SessionId,
-			Done:     end >= len(resp),
+			Done:      end >= len(resp),
 		}
 
 		if err := stream.Send(chunk); err != nil {
@@ -417,7 +417,7 @@ func (s *Server) workflowToProto(wf *workflow.Workflow) *Workflow {
 func (s *Server) instanceToProto(instance *workflow.WorkflowInstance) *WorkflowInstance {
 	// Use Snapshot() for thread-safe access
 	snap := instance.Snapshot()
-	
+
 	results := make(map[string]*TaskResult)
 	for k, r := range snap.Results {
 		results[k] = &TaskResult{
@@ -454,7 +454,7 @@ func NewGRPCServer(addr string, serviceServer *Server) *GRPCServer {
 	server := grpc.NewServer()
 
 	// Register service
-	RegisterLuckyHarnessServiceServer(server, serviceServer)
+	RegisterLuckyAgentServiceServer(server, serviceServer)
 
 	// Register health service
 	healthServer := health.NewServer()

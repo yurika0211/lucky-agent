@@ -1,4 +1,4 @@
-// Package telemetry provides OpenTelemetry tracing integration for LuckyHarness.
+// Package telemetry provides OpenTelemetry tracing integration for LuckyAgent.
 package telemetry
 
 import (

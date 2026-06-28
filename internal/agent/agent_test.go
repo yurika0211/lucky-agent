@@ -318,7 +318,7 @@ func TestContextPlannerInjectsMemoryGateForDaughterOutdoorPrompt(t *testing.T) {
 	for _, want := range []string{
 		"[Working Memory",
 		"Retrieved Evidence",
-		"LuckyHarness Obsidian-compatible Markdown memory vault",
+		"LuckyAgent Obsidian-compatible Markdown memory vault",
 		"Prefer the latest user message",
 		"[Memory Router]",
 		"Required tools before final answer: current_time, web_search",
@@ -3019,7 +3019,7 @@ func TestCronNotificationUsesForwardedTextForLongGatewayMessages(t *testing.T) {
 	if len(forwards) != 1 {
 		t.Fatalf("expected one forwarded cron notification, got %#v", forwards)
 	}
-	if forwards[0].chatID != "group:123" || forwards[0].title != "LuckyHarness" {
+	if forwards[0].chatID != "group:123" || forwards[0].title != "LuckyAgent" {
 		t.Fatalf("unexpected forward metadata: %#v", forwards[0])
 	}
 	joined := strings.Join(forwards[0].chunks, "\n")

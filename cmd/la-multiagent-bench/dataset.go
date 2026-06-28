@@ -233,11 +233,11 @@ func defaultTasks() []benchTask {
 			RiskBudget: 0.2, Difficulty: 0.35,
 		},
 		{
-			ID: "H6-001", Scenario: "heavy", TaskType: "hermes_reproduction", Prompt: "复现一个 Hermes agent：先逆向分析 Hermes Agent 的 planner、execute、debugger、verifier 行为，再在 LuckyHarness 中设计兼容入口，接着实现最小可运行链路，跑 GUI 与 CLI 验收，最后生成迁移报告。",
+			ID: "H6-001", Scenario: "heavy", TaskType: "hermes_reproduction", Prompt: "复现一个 Hermes agent：先逆向分析 Hermes Agent 的 planner、execute、debugger、verifier 行为，再在 LuckyAgent 中设计兼容入口，接着实现最小可运行链路，跑 GUI 与 CLI 验收，最后生成迁移报告。",
 			GoldMode: "pipeline", IntentTerms: []string{"hermes", "agent", "planner", "execute", "debugger", "verifier", "gui", "cli", "reproduction"},
 			Subtasks: []subtaskSpec{
 				{ID: "research-hermes", Role: "research", Title: "Reverse engineer Hermes agent behavior", Capabilities: []string{"research", "source", "synthesis"}, WorkMS: 3200, Tokens: 1260, Risk: 0.6},
-				{ID: "design-entry", Role: "integrator", Title: "Design LuckyHarness-compatible orchestration entry", Capabilities: []string{"integration", "planning", "orchestration"}, DependsOn: []string{"research-hermes"}, WorkMS: 2800, Tokens: 1180, Risk: 0.8},
+				{ID: "design-entry", Role: "integrator", Title: "Design LuckyAgent-compatible orchestration entry", Capabilities: []string{"integration", "planning", "orchestration"}, DependsOn: []string{"research-hermes"}, WorkMS: 2800, Tokens: 1180, Risk: 0.8},
 				{ID: "backend-runtime", Role: "backend", Title: "Implement planner-executor runtime bridge", Capabilities: []string{"backend", "go", "api", "service"}, DependsOn: []string{"design-entry"}, WorkMS: 4200, Tokens: 1680, Risk: 1.0},
 				{ID: "frontend-console", Role: "frontend", Title: "Expose Hermes-like console workflow", Capabilities: []string{"frontend", "ui", "typescript", "react"}, DependsOn: []string{"design-entry"}, WorkMS: 3600, Tokens: 1420, Risk: 0.8},
 				{ID: "debugger-chain", Role: "test", Title: "Wire debugger and verifier gates", Capabilities: []string{"test", "benchmark", "validation"}, DependsOn: []string{"backend-runtime", "frontend-console"}, WorkMS: 3400, Tokens: 1320, Risk: 0.9},
@@ -248,7 +248,7 @@ func defaultTasks() []benchTask {
 			NeedsCritic: true, RiskBudget: 2.7, Difficulty: 0.98,
 		},
 		{
-			ID: "H6-002", Scenario: "heavy", TaskType: "hermes_parity_audit", Prompt: "多个子代理并行审计 LuckyHarness 的 backend、frontend、Telegram、dashboard、docs、tests 六条线，找出和 Hermes Agent 操作台的差距，并由集成者汇总优先级。",
+			ID: "H6-002", Scenario: "heavy", TaskType: "hermes_parity_audit", Prompt: "多个子代理并行审计 LuckyAgent 的 backend、frontend、Telegram、dashboard、docs、tests 六条线，找出和 Hermes Agent 操作台的差距，并由集成者汇总优先级。",
 			GoldMode: "parallel", IntentTerms: []string{"hermes", "parity", "backend", "frontend", "telegram", "dashboard", "docs", "tests"},
 			Subtasks: []subtaskSpec{
 				{ID: "backend-audit", Role: "backend", Title: "Audit backend orchestration APIs", Capabilities: []string{"backend", "go", "api", "service"}, WorkMS: 2600, Tokens: 1040, Risk: 0.6},

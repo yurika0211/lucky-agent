@@ -100,8 +100,8 @@ func telegramCommandNames() []string {
 
 func telegramWelcomeMessage() string {
 	var sb strings.Builder
-	sb.WriteString("🍀 *LuckyHarness Bot*\n\n")
-	sb.WriteString("I'm an AI assistant powered by LuckyHarness.\n\n")
+	sb.WriteString("🍀 *LuckyAgent Bot*\n\n")
+	sb.WriteString("I'm an AI assistant powered by LuckyAgent.\n\n")
 	sb.WriteString("*Available commands:*\n")
 	for _, spec := range telegramCommandSpecs() {
 		if spec.Command == "start" {

@@ -270,7 +270,7 @@ func (s *Session) Save() error {
 
 	var b strings.Builder
 	b.Grow(len(jsonData) + 72)
-	b.WriteString("# LuckyHarness Session\n\n")
+	b.WriteString("# LuckyAgent Session\n\n")
 	b.WriteString("自动生成，请勿手动编辑 JSON 块。\n\n")
 	b.WriteString("```json\n")
 	b.Write(jsonData)

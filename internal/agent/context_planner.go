@@ -302,9 +302,23 @@ func attachmentEvidenceManifest(attachments []gateway.Attachment) string {
  * 支持图片内容的部分，查看模型是否支持图片内容
  */
 func (p *contextPlanner) supportsImageContentParts() bool {
-	if p == nil || p.agent == nil || p.agent.catalog == nil {
+	if p == nil || p.agent == nil {
 		return false
 	}
+
+	// 优先检查配置中的 vision 字段
+	if p.agent.cfg != nil {
+		cfg := p.agent.cfg.Get()
+		if cfg.LlmProvider.Vision {
+			return true
+		}
+	}
+
+	// 回退到 catalog 精确匹配
+	if p.agent.catalog == nil {
+		return false
+	}
+
 	model := strings.TrimSpace(p.agent.activeModel)
 	if model == "" && p.agent.cfg != nil {
 		model = strings.TrimSpace(p.agent.cfg.Get().Model)
@@ -312,15 +326,16 @@ func (p *contextPlanner) supportsImageContentParts() bool {
 	if model == "" {
 		return false
 	}
+
 	info, err := p.agent.catalog.Get(model)
-	if err != nil || info == nil {
-		return false
-	}
-	for _, capability := range info.Capabilities {
-		if strings.EqualFold(strings.TrimSpace(capability), "vision") {
-			return true
+	if err == nil && info != nil {
+		for _, capability := range info.Capabilities {
+			if strings.EqualFold(strings.TrimSpace(capability), "vision") {
+				return true
+			}
 		}
 	}
+
 	return false
 }
 
@@ -613,7 +628,7 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScop
 	route.ExpiredRefs = nil
 	route.FutureRefs = nil
 	results = prioritizeMemoryForContext(results)
-	header := "[Working Memory — Retrieved Evidence]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
+	header := "[Working Memory — Retrieved Evidence]\nThese active memories were retrieved from the LuckyAgent Obsidian-compatible Markdown memory vault"
 	if vault := p.agent.memoryVaultPath(); vault != "" {
 		header += " at " + vault
 	}

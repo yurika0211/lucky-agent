@@ -41,8 +41,8 @@ func TestDoChatSyncHelp(t *testing.T) {
 		t.Fatalf("decode response failed: %v", err)
 	}
 
-	if !strings.Contains(chatResp.Response, "LuckyHarness") {
-		t.Errorf("doChatSync /help: expected response to contain 'LuckyHarness', got '%s'", chatResp.Response)
+	if !strings.Contains(chatResp.Response, "LuckyAgent") {
+		t.Errorf("doChatSync /help: expected response to contain 'LuckyAgent', got '%s'", chatResp.Response)
 	}
 }
 

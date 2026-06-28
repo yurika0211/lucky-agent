@@ -48,7 +48,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Println("LuckyHarness 初始化完成")
+	fmt.Println("LuckyAgent 初始化完成")
 	fmt.Printf("主目录: %s\n", mgr.HomeDir())
 	fmt.Println("下一步:")
 	fmt.Println("  la config set api_key sk-xxx")
@@ -594,7 +594,7 @@ func runMsgGatewayWeixinLoginWithOpenClaw(opts weixinLoginOptions) error {
 	_ = opts
 	fmt.Println("Using OpenClaw Weixin installer for QR login.")
 	fmt.Println("This flow installs the OpenClaw Weixin plugin, performs QR login, and restarts OpenClaw Gateway.")
-	fmt.Println("LuckyHarness built-in weixin gateway still uses iLink token/account_id mode.")
+	fmt.Println("LuckyAgent built-in weixin gateway still uses iLink token/account_id mode.")
 
 	cmd := exec.Command("npx", "-y", "@tencent-weixin/openclaw-weixin-cli@latest", "install")
 	cmd.Stdout = os.Stdout

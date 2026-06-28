@@ -38,7 +38,7 @@ const (
 	maxSessionsLimit     = 200
 )
 
-// Server 是 LuckyHarness 的 HTTP API Server
+// Server 是 LuckyAgent 的 HTTP API Server
 type Server struct {
 	mu      sync.RWMutex
 	server  *http.Server
@@ -408,7 +408,7 @@ func (s *Server) Start() error {
 		"api_keys", len(s.config.APIKeys),
 		"rate_limit", s.config.RateLimit,
 	)
-	fmt.Printf("🚀 LuckyHarness API Server running at http://localhost%s\n", s.config.Addr)
+	fmt.Printf("🚀 LuckyAgent API Server running at http://localhost%s\n", s.config.Addr)
 	fmt.Printf("   API: /api/v1/chat | /api/v1/health/live | /api/v1/stats\n")
 	return nil
 }
@@ -685,7 +685,7 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 		switch cmd {
 		case "help":
 			s.sendJSON(w, http.StatusOK, ChatResponse{
-				Response: `🐾 *LuckyHarness 命令*
+				Response: `🐾 *LuckyAgent 命令*
 
 /new — 开启新对话
 /stop — 停止当前任务
@@ -719,7 +719,7 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			cfg := s.agent.Config().Get()
 			uptime := time.Since(s.agent.Metrics().StartTime)
 			s.sendJSON(w, http.StatusOK, ChatResponse{
-				Response: fmt.Sprintf("📊 *LuckyHarness Status*\n\n• Version: v0.55.0\n• Model: %s\n• Uptime: %s\n• Total requests: %d",
+				Response: fmt.Sprintf("📊 *LuckyAgent Status*\n\n• Version: v0.55.0\n• Model: %s\n• Uptime: %s\n• Total requests: %d",
 					cfg.Model, formatDuration(uptime), s.agent.Metrics().TotalRequests.Load()),
 			})
 			return
@@ -1166,7 +1166,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"name":    "LuckyHarness API",
+		"name":    "LuckyAgent API",
 		"version": "v0.21.0",
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",

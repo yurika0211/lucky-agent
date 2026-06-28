@@ -12,7 +12,7 @@ import (
 
 const progressFileName = "progress.json"
 
-// ProgressStore persists learning progress under the LuckyHarness home.
+// ProgressStore persists learning progress under the LuckyAgent home.
 type ProgressStore struct {
 	dir  string
 	path string

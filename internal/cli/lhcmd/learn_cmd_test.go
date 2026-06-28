@@ -18,7 +18,7 @@ func TestLearnCommandFlow(t *testing.T) {
 	}
 
 	out = runLearnTestCommand(t, "learn", "start", "lh-agent-systems")
-	if !strings.Contains(out, "Started: LuckyHarness Agent Systems") {
+	if !strings.Contains(out, "Started: LuckyAgent Agent Systems") {
 		t.Fatalf("expected start output, got %q", out)
 	}
 

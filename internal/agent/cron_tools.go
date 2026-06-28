@@ -251,7 +251,7 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if forwarder, ok := gw.(gateway.ForwardedTextSender); ok && cronNotificationShouldForward(message) {
-		if err := forwarder.SendForwardedText(sendCtx, chatID, "LuckyHarness", splitCronNotificationChunks(message, cronNotificationForwardChunkLimit)); err == nil {
+		if err := forwarder.SendForwardedText(sendCtx, chatID, "LuckyAgent", splitCronNotificationChunks(message, cronNotificationForwardChunkLimit)); err == nil {
 			return
 		}
 	}

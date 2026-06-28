@@ -840,7 +840,7 @@ func TestAdapterSendForwardedTextWritesForwardAction(t *testing.T) {
 	}
 	defer conn.Close()
 
-	if err := adapter.SendForwardedText(context.Background(), "group:345", "LuckyHarness", []string{"hello [qq]", "world"}); err != nil {
+	if err := adapter.SendForwardedText(context.Background(), "group:345", "LuckyAgent", []string{"hello [qq]", "world"}); err != nil {
 		t.Fatalf("send forwarded text: %v", err)
 	}
 
@@ -870,7 +870,7 @@ func TestAdapterSendForwardedTextWritesForwardAction(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected node data: %#v", node["data"])
 	}
-	if nodeData["name"] != "LuckyHarness" || nodeData["uin"] != "10001" {
+	if nodeData["name"] != "LuckyAgent" || nodeData["uin"] != "10001" {
 		t.Fatalf("unexpected node identity: %#v", nodeData)
 	}
 	content, ok := nodeData["content"].([]any)
@@ -911,7 +911,7 @@ func TestAdapterSendForwardedMediaWritesForwardAction(t *testing.T) {
 		t.Fatalf("write second image: %v", err)
 	}
 
-	if err := adapter.SendForwardedMedia(context.Background(), "group:345", "LuckyHarness", []gateway.ForwardedMediaItem{
+	if err := adapter.SendForwardedMedia(context.Background(), "group:345", "LuckyAgent", []gateway.ForwardedMediaItem{
 		{Type: gateway.AttachmentImage, Source: img1, Caption: "one"},
 		{Type: gateway.AttachmentImage, Source: img2, Caption: "two"},
 	}); err != nil {
@@ -944,7 +944,7 @@ func TestAdapterSendForwardedMediaWritesForwardAction(t *testing.T) {
 	if !ok {
 		t.Fatalf("unexpected node data: %#v", node["data"])
 	}
-	if nodeData["name"] != "LuckyHarness" || nodeData["uin"] != "10001" {
+	if nodeData["name"] != "LuckyAgent" || nodeData["uin"] != "10001" {
 		t.Fatalf("unexpected node identity: %#v", nodeData)
 	}
 	content, ok := nodeData["content"].([]any)
