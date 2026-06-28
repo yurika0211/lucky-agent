@@ -497,7 +497,7 @@ func TestInitHome(t *testing.T) {
 	}
 
 	// Check SOUL.md
-	soulPath := filepath.Join(tmpDir, "SOUL.md")
+	soulPath := filepath.Join(tmpDir, "memory", "prompts", "SOUL.md")
 	if _, err := os.Stat(soulPath); os.IsNotExist(err) {
 		t.Error("SOUL.md not created")
 	}
