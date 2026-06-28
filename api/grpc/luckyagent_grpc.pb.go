@@ -4,7 +4,7 @@
 // - protoc             v3.21.12
 // source: luckyharness.proto
 
-package luckyharness
+package luckyagent
 
 import (
 	context "context"
