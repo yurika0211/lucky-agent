@@ -943,7 +943,7 @@ func (s *Store) Count() int {
 	return len(s.entries)
 }
 
-// Dir returns the root directory of the LuckyHarness memory vault.
+// Dir returns the root directory of the LuckyAgent memory vault.
 func (s *Store) Dir() string {
 	if s == nil {
 		return ""
@@ -1114,19 +1114,19 @@ func (s *Store) ensureVaultDirs() error {
 }
 
 func (s *Store) ensureVaultReadme() error {
-	path := filepath.Join(s.dir, "00_Index", "LuckyHarness Memory Vault.md")
+	path := filepath.Join(s.dir, "00_Index", "LuckyAgent Memory Vault.md")
 	if st, err := os.Stat(path); err == nil && !st.IsDir() {
 		return nil
 	}
-	body := strings.TrimSpace(`# LuckyHarness Memory Vault
+	body := strings.TrimSpace(`# LuckyAgent Memory Vault
 
-This directory is the LuckyHarness durable memory source of truth.
+This directory is the LuckyAgent durable memory source of truth.
 
 - Memory notes are Obsidian-compatible Markdown files under the category folders.
 - Authoritative memory notes use YAML frontmatter with type: memory.
 - Wikilinks, tags, aliases, temporal state fields, and block IDs are part of the memory graph.
 - The RAG SQLite database is for indexed documents, not durable user memory.
-- An external Obsidian app vault, .obsidian directory, or OBSIDIAN_VAULT_PATH is not required for LuckyHarness memory.
+- An external Obsidian app vault, .obsidian directory, or OBSIDIAN_VAULT_PATH is not required for LuckyAgent memory.
 `) + "\n"
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		return fmt.Errorf("write memory vault readme: %w", err)
@@ -1534,13 +1534,13 @@ type conceptRule struct {
 
 var builtInConceptRules = []conceptRule{
 	{
-		Concept:  "LuckyHarness",
+		Concept:  "LuckyAgent",
 		Triggers: []string{"luckyagent", "lh", "l h"},
 		Aliases:  []string{"lh"},
 		Tags:     []string{"concept/luckyagent"},
 	},
 	{
-		Concept:  "LuckyHarness Memory",
+		Concept:  "LuckyAgent Memory",
 		Triggers: []string{"luckyagent memory", "lh memory", "记忆库", "durable memory", "working memory", "memory vault", "obsidian-first", "graph memory", "双链记忆"},
 		Aliases:  []string{"记忆库", "graph memory", "working memory"},
 		Tags:     []string{"concept/memory"},
@@ -1727,16 +1727,16 @@ func conceptRelatedLinks(rule conceptRule) []string {
 		return []string{"Gateway Trace", "QQ Official"}
 	case "Gateway Trace":
 		return []string{"Message Gateway", "Reasoning Content"}
-	case "LuckyHarness Memory":
-		return []string{"LuckyHarness", "Obsidian", "RAG"}
+	case "LuckyAgent Memory":
+		return []string{"LuckyAgent", "Obsidian", "RAG"}
 	case "Obsidian":
-		return []string{"LuckyHarness Memory"}
+		return []string{"LuckyAgent Memory"}
 	case "Session Memory":
-		return []string{"LuckyHarness Memory"}
+		return []string{"LuckyAgent Memory"}
 	case "RAG":
-		return []string{"LuckyHarness Memory"}
+		return []string{"LuckyAgent Memory"}
 	case "Message Gateway":
-		return []string{"LuckyHarness"}
+		return []string{"LuckyAgent"}
 	default:
 		return nil
 	}

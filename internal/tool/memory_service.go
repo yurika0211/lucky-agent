@@ -77,7 +77,7 @@ func (s *MemoryToolService) HandleRemember(args map[string]any) (string, error) 
 	if err := s.store.SaveWithOptions(content, category, tier, importance, opts); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("✅ 已保存为%s记忆 [%s] 到 LuckyHarness Markdown 记忆库 %s: %s", memoryTierLabel(tier), category, memoryVaultPathForTool(s.store), utils.Truncate(content, 80)), nil
+	return fmt.Sprintf("✅ 已保存为%s记忆 [%s] 到 LuckyAgent Markdown 记忆库 %s: %s", memoryTierLabel(tier), category, memoryVaultPathForTool(s.store), utils.Truncate(content, 80)), nil
 }
 
 func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {
@@ -169,7 +169,7 @@ func (s *MemoryToolService) HandleHygiene(args map[string]any) (string, error) {
 }
 
 func memorySourceNotice(store *memory.Store) string {
-	return fmt.Sprintf("记忆源：LuckyHarness Obsidian-compatible Markdown vault at %s。RAG SQLite 不是当前 durable memory 事实源。\n", memoryVaultPathForTool(store))
+	return fmt.Sprintf("记忆源：LuckyAgent Obsidian-compatible Markdown vault at %s。RAG SQLite 不是当前 durable memory 事实源。\n", memoryVaultPathForTool(store))
 }
 
 func memoryVaultPathForTool(store *memory.Store) string {

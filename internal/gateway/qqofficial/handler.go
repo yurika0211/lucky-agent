@@ -349,7 +349,7 @@ func (h *Handler) saveChatSessions() {
 }
 
 func (h *Handler) handleStart(ctx context.Context, msg *gateway.Message) error {
-	return h.reply(ctx, msg, "已连接 LuckyHarness QQ 机器人。\n可直接发送消息开始对话，或使用 /help 查看命令。")
+	return h.reply(ctx, msg, "已连接 LuckyAgent QQ 机器人。\n可直接发送消息开始对话，或使用 /help 查看命令。")
 }
 
 func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
@@ -459,7 +459,7 @@ func (h *Handler) handleInit(ctx context.Context, msg *gateway.Message) error {
 	mgr := h.agent.Config()
 	cfg := mgr.Get()
 	var sb strings.Builder
-	sb.WriteString("LuckyHarness 初始化状态：\n")
+	sb.WriteString("LuckyAgent 初始化状态：\n")
 	sb.WriteString(fmt.Sprintf("home: %s\n", valueOrUnset(mgr.HomeDir())))
 	sb.WriteString(fmt.Sprintf("config: %s\n", valueOrUnset(mgr.ConfigFile())))
 	sb.WriteString(fmt.Sprintf("provider: %s\n", valueOrUnset(cfg.Provider)))
@@ -570,7 +570,7 @@ func (h *Handler) configValue(key string) (string, bool) {
 
 func (h *Handler) handleVersion(ctx context.Context, msg *gateway.Message) error {
 	version, commit, date := buildInfo()
-	info := fmt.Sprintf("LuckyHarness 版本：\nversion: %s\ncommit: %s\ndate: %s\ngo: %s\nos/arch: %s/%s",
+	info := fmt.Sprintf("LuckyAgent 版本：\nversion: %s\ncommit: %s\ndate: %s\ngo: %s\nos/arch: %s/%s",
 		version,
 		commit,
 		date,
@@ -1286,7 +1286,7 @@ func (h *Handler) sendRAGStore(ctx context.Context, msg *gateway.Message, ragMgr
 
 func (h *Handler) handleLearn(ctx context.Context, msg *gateway.Message) error {
 	var sb strings.Builder
-	sb.WriteString("LuckyHarness Learning Mode\n\n")
+	sb.WriteString("LuckyAgent Learning Mode\n\n")
 	sb.WriteString("命令：\n")
 	sb.WriteString("/learn_start lh-agent-systems : start or resume the built-in project course\n")
 	sb.WriteString("/learn_current : show the current module\n")
@@ -1808,7 +1808,7 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	sessionID := h.getSessionID(msg.Chat.ID)
 
 	var sb strings.Builder
-	sb.WriteString("LuckyHarness 状态：\n")
+	sb.WriteString("LuckyAgent 状态：\n")
 
 	cfg := h.agent.Config().Get()
 	sb.WriteString(fmt.Sprintf("Model：%s\n", cfg.Model))
@@ -2239,7 +2239,7 @@ func (h *Handler) sendAssistantText(ctx context.Context, msg *gateway.Message, t
 func (h *Handler) forwardedTextTitle() string {
 	name := strings.TrimSpace(h.displayName)
 	if name == "" {
-		name = "LuckyHarness"
+		name = "LuckyAgent"
 	}
 	return name
 }

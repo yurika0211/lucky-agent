@@ -181,7 +181,7 @@ func parseFlags() benchConfig {
 	flag.IntVar(&cfg.Rounds, "rounds", 3, "rounds per scenario")
 	flag.DurationVar(&cfg.Delay, "delay", 0, "delay between rounds")
 	flag.IntVar(&cfg.MaxTokens, "max-tokens", 4096, "context window used by the isolated benchmark agent")
-	flag.BoolVar(&cfg.KeepHome, "keep-home", false, "keep isolated LuckyHarness home on disk")
+	flag.BoolVar(&cfg.KeepHome, "keep-home", false, "keep isolated LuckyAgent home on disk")
 	flag.Float64Var(&cfg.MinQuality, "min-quality", 0.75, "minimum accepted average quality score")
 	flag.Float64Var(&cfg.MaxNoise, "max-noise", 0.25, "maximum accepted average context noise")
 	flag.Float64Var(&cfg.MaxP95MS, "max-p95-ms", 10, "maximum accepted p95 context build latency in milliseconds")
@@ -409,7 +409,7 @@ func seedBenchmarkMemory(store *memory.Store) error {
 			},
 		},
 		{
-			content:    "For LuckyHarness coding tasks, prefer targeted Go tests before broad test suites.",
+			content:    "For LuckyAgent coding tasks, prefer targeted Go tests before broad test suites.",
 			category:   "project",
 			tier:       memory.TierLong,
 			importance: 0.82,
@@ -653,7 +653,7 @@ func buildCases(mgr *session.Manager) []benchCase {
 		{
 			ID:       "long-history-relevant-tail",
 			Scenario: "long_history",
-			Query:    "继续刚才 LuckyHarness context packer benchmark 的实验，别丢掉验收指标。",
+			Query:    "继续刚才 LuckyAgent context packer benchmark 的实验，别丢掉验收指标。",
 			Session:  buildLongHistorySession(mgr),
 			Memory: []string{
 				"targeted Go tests",
@@ -675,13 +675,13 @@ func buildCases(mgr *session.Manager) []benchCase {
 		{
 			ID:       "project-switch-luckyagent",
 			Scenario: "project_switch",
-			Query:    "继续 LuckyHarness context packer benchmark，别混进别的项目问题。",
+			Query:    "继续 LuckyAgent context packer benchmark，别混进别的项目问题。",
 			Session:  buildProjectSwitchSession(mgr),
 			Memory: []string{
 				"targeted Go tests",
 			},
 			Constraints: []string{
-				"LuckyHarness-only context packer scope",
+				"LuckyAgent-only context packer scope",
 				"write results under docs/reports",
 				"context-packer-hardcases",
 			},
@@ -762,7 +762,7 @@ func buildSession(mgr *session.Manager, title string, fillerTurns int, fillers [
 		sess.AddMessage("user", fmt.Sprintf("unrelated %s question %02d", filler, i+1))
 		sess.AddMessage("assistant", fmt.Sprintf("unrelated %s answer %02d", filler, i+1))
 	}
-	sess.AddMessage("user", "我们在讨论 LuckyHarness 的 context packer benchmark。")
+	sess.AddMessage("user", "我们在讨论 LuckyAgent 的 context packer benchmark。")
 	sess.AddMessage("assistant", "已记录：需要评估 CMR、CR、TWR、ToolRecall、ContextNoise 和 P95PackerMS。")
 	return sess
 }
@@ -797,7 +797,7 @@ func buildProjectSwitchSession(mgr *session.Manager) *session.Session {
 			sess.AddMessage("assistant", fmt.Sprintf("alipay-callback-filler assistant note %02d unrelated project state", i+1))
 		}
 	}
-	sess.AddMessage("user", "LuckyHarness-only context packer scope: stay in cmd/lh-context-packer-bench and internal/agent.")
+	sess.AddMessage("user", "LuckyAgent-only context packer scope: stay in cmd/lh-context-packer-bench and internal/agent.")
 	sess.AddMessage("assistant", "write results under docs/reports/context-packer-hardcases-20260607.jsonl.")
 	sess.AddMessage("assistant", "Evidence path for this task includes cmd/lh-context-packer-bench.")
 	return sess

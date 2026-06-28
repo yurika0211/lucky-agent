@@ -1316,7 +1316,7 @@ func (h *Handler) withReplyAnchorContext(input agent.UserTurnInput, msg *gateway
 		userRequest = "(no additional text)"
 	}
 
-	replyAwareText := fmt.Sprintf(`You are answering a Telegram reply to a previous LuckyHarness or cron message.
+	replyAwareText := fmt.Sprintf(`You are answering a Telegram reply to a previous LuckyAgent or cron message.
 
 [Replied Telegram message]
 %s
@@ -2701,7 +2701,7 @@ func readGitSnippet(args ...string) string {
 func (h *Handler) handleInit(ctx context.Context, msg *gateway.Message) error {
 	cfg := h.configSnapshot()
 	var sb strings.Builder
-	sb.WriteString("🍀 *LuckyHarness Init Status:*\n\n")
+	sb.WriteString("🍀 *LuckyAgent Init Status:*\n\n")
 	sb.WriteString(fmt.Sprintf("• Home: `%s`\n", valueOrUnset(cfg.HomeDir)))
 	sb.WriteString(fmt.Sprintf("• Config: `%s`\n", valueOrUnset(cfg.ConfigFile)))
 	sb.WriteString(fmt.Sprintf("• Provider: %s\n", valueOrUnset(cfg.Provider)))
@@ -2799,7 +2799,7 @@ func configSnapshotValue(cfg agentConfigSnapshot, key string) (string, bool) {
 
 func (h *Handler) handleVersion(ctx context.Context, msg *gateway.Message) error {
 	version, commit, date := buildInfo()
-	info := fmt.Sprintf("🍀 *LuckyHarness Version:*\n\n• Version: %s\n• Commit: %s\n• Date: %s\n• Go: %s\n• OS/Arch: %s/%s",
+	info := fmt.Sprintf("🍀 *LuckyAgent Version:*\n\n• Version: %s\n• Commit: %s\n• Date: %s\n• Go: %s\n• OS/Arch: %s/%s",
 		version,
 		commit,
 		date,
@@ -3632,7 +3632,7 @@ func (h *Handler) handleHealth(ctx context.Context, msg *gateway.Message) error 
 
 func (h *Handler) handleLearn(ctx context.Context, msg *gateway.Message) error {
 	var sb strings.Builder
-	sb.WriteString("🎓 *LuckyHarness Learning Mode*\n\n")
+	sb.WriteString("🎓 *LuckyAgent Learning Mode*\n\n")
 	sb.WriteString("*Commands:*\n")
 	sb.WriteString("• `/learn_start lh-agent-systems` — start or resume the built-in project course\n")
 	sb.WriteString("• `/learn_current` — show the current module\n")
@@ -4126,7 +4126,7 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	sessionID := h.getSessionID(chatID)
 
 	var sb strings.Builder
-	sb.WriteString("📊 *LuckyHarness Status*\n\n")
+	sb.WriteString("📊 *LuckyAgent Status*\n\n")
 
 	// 版本
 	sb.WriteString(fmt.Sprintf("• Version: v%s\n", "0.55.0"))

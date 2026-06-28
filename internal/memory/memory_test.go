@@ -509,7 +509,7 @@ func TestThreeTierSave(t *testing.T) {
 	}
 
 	// 长期记忆
-	if err := s.SaveLongTerm("project name: LuckyHarness", "identity"); err != nil {
+	if err := s.SaveLongTerm("project name: LuckyAgent", "identity"); err != nil {
 		t.Fatalf("SaveLongTerm: %v", err)
 	}
 

@@ -216,7 +216,7 @@ func TestManagerNewGeneratesUniqueIDs(t *testing.T) {
 
 func TestLoadMarkdownSessionWithEmbeddedCodeFenceText(t *testing.T) {
 	dir := t.TempDir()
-	content := "# LuckyHarness Session\n\n" +
+	content := "# LuckyAgent Session\n\n" +
 		"自动生成，请勿手动编辑 JSON 块。\n\n" +
 		"```json\n" +
 		"{\n" +

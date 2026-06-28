@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-const delegateWorkspaceMarker = "LuckyHarness delegate workspace:"
+const delegateWorkspaceMarker = "LuckyAgent delegate workspace:"
 
 var delegateWorkspacePathRe = regexp.MustCompile(`(?:/tmp/[^\s"'<>，。；；,，)）\]}]+|~[/\\]\.luckyagent[/\\]?[^\s"'<>，。；；,，)）\]}]*)`)
 

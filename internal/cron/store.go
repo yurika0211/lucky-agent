@@ -257,7 +257,7 @@ func (s *Store) writeJSON(state PersistedState) error {
 
 func (s *Store) writeMarkdown(state PersistedState) error {
 	var b strings.Builder
-	b.WriteString("# LuckyHarness Mission Store\n\n")
+	b.WriteString("# LuckyAgent Mission Store\n\n")
 	b.WriteString(fmt.Sprintf("engine_running: %t\n\n", state.EngineRunning))
 
 	for _, job := range state.Jobs {

@@ -10,7 +10,7 @@ import (
 	"sync"
 )
 
-// Config 代表 LuckyHarness 的运行时配置
+// Config 代表 LuckyAgent 的运行时配置
 type Config struct {
 	LlmProvider  LlmProviderConfig `json:"llm_provider,omitempty"`
 	Provider     string            `json:"-"`
@@ -1565,7 +1565,7 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// HomeDir 返回 LuckyHarness 主目录
+// HomeDir 返回 LuckyAgent 主目录
 func (m *Manager) HomeDir() string {
 	return m.homeDir
 }

@@ -293,7 +293,7 @@ func syntheticNotes(cfg benchConfig) []diskMemoryNote {
 		tags     []string
 		content  string
 	}{
-		{"project", "medium", []string{"project", "code"}, "Project note %04d records a routine LuckyHarness implementation detail about module boundaries."},
+		{"project", "medium", []string{"project", "code"}, "Project note %04d records a routine LuckyAgent implementation detail about module boundaries."},
 		{"preference", "long", []string{"preference"}, "Preference note %04d captures a harmless UI or workflow preference unrelated to family health."},
 		{"tool", "medium", []string{"tool"}, "Tool note %04d explains a command-line helper and expected output shape."},
 		{"session", "short", []string{"session"}, "Session note %04d summarizes an old conversation turn without benchmark relevance."},

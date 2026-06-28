@@ -100,7 +100,7 @@ type supportRuntime struct {
 	autonomyKit    *autonomy.AutonomyKit
 }
 
-// Agent 是 LuckyHarness 的核心 Agent
+// Agent 是 LuckyAgent 的核心 Agent
 type Agent struct {
 	cfg                   *config.Manager
 	soul                  *soul.Soul

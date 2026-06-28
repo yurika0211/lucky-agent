@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PreToolUse hook: keep filesystem mutations inside allowed LuckyHarness roots.
+"""PreToolUse hook: keep filesystem mutations inside allowed LuckyAgent roots.
 
 Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
 Match this on: file_write, file_patch, file_delete, file_move, file_mkdir,
@@ -18,20 +18,20 @@ import sys
 
 
 DEFAULT_WORKSPACE = os.path.join(os.path.expanduser("~"), ".luckyagent", "workspace")
-DEFAULT_LUCKYHARNESS = os.path.join(os.path.expanduser("~"), ".luckyagent")
-DEFAULT_ALLOWED_ROOTS = (DEFAULT_LUCKYHARNESS,)
+DEFAULT_LUCKYAGENT = os.path.join(os.path.expanduser("~"), ".luckyagent")
+DEFAULT_ALLOWED_ROOTS = (DEFAULT_LUCKYAGENT,)
 DEFAULT_PROTECTED_ROOTS = (
-    os.path.join(DEFAULT_LUCKYHARNESS, "sessions"),
-    os.path.join(DEFAULT_LUCKYHARNESS, "logs"),
-    os.path.join(DEFAULT_LUCKYHARNESS, "tokens"),
-    os.path.join(DEFAULT_LUCKYHARNESS, "profiles"),
+    os.path.join(DEFAULT_LUCKYAGENT, "sessions"),
+    os.path.join(DEFAULT_LUCKYAGENT, "logs"),
+    os.path.join(DEFAULT_LUCKYAGENT, "tokens"),
+    os.path.join(DEFAULT_LUCKYAGENT, "profiles"),
 )
 DEFAULT_PROTECTED_FILES = (
-    os.path.join(DEFAULT_LUCKYHARNESS, "config.json"),
-    os.path.join(DEFAULT_LUCKYHARNESS, "config.prod.json"),
-    os.path.join(DEFAULT_LUCKYHARNESS, "SOUL.md"),
-    os.path.join(DEFAULT_LUCKYHARNESS, "hook-audit.jsonl"),
-    os.path.join(DEFAULT_LUCKYHARNESS, "luckyagent.db"),
+    os.path.join(DEFAULT_LUCKYAGENT, "config.json"),
+    os.path.join(DEFAULT_LUCKYAGENT, "config.prod.json"),
+    os.path.join(DEFAULT_LUCKYAGENT, "SOUL.md"),
+    os.path.join(DEFAULT_LUCKYAGENT, "hook-audit.jsonl"),
+    os.path.join(DEFAULT_LUCKYAGENT, "luckyagent.db"),
 )
 
 FILE_TOOLS = {"file_write", "file_patch", "file_delete", "file_move", "file_mkdir"}
@@ -132,7 +132,7 @@ def check_path(raw: str, base: str, roots: list[str], private_roots: list[str], 
     if not path:
         return
     if is_inside(path, private_roots) or is_protected_file(path, private_files):
-        decision_block(f"filesystem mutation of protected LuckyHarness private data is blocked: {path}")
+        decision_block(f"filesystem mutation of protected LuckyAgent private data is blocked: {path}")
     if not is_inside(path, roots):
         decision_block(f"filesystem mutation outside allowed roots is blocked: {path}")
 

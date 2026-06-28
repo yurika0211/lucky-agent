@@ -466,7 +466,7 @@ func TestReplayLabelExportRoundTrips(t *testing.T) {
 
 func TestLoadReplayTasksFromSessionMarkdown(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.md")
-	data := `# LuckyHarness Session
+	data := `# LuckyAgent Session
 
 ` + "```json" + `
 {
@@ -513,7 +513,7 @@ func TestLoadReplayTasksFromSessionMarkdownWithNestedFenceText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data := "# LuckyHarness Session\n\n```json\n" + string(body) + "\n```\n"
+	data := "# LuckyAgent Session\n\n```json\n" + string(body) + "\n```\n"
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatal(err)
 	}

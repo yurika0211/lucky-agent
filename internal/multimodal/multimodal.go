@@ -1,4 +1,4 @@
-// Package multimodal provides multi-modal input processing for LuckyHarness,
+// Package multimodal provides multi-modal input processing for LuckyAgent,
 // supporting image, audio, and video understanding through pluggable providers.
 package multimodal
 

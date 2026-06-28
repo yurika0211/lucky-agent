@@ -1,4 +1,4 @@
-// Package workflow provides DAG-based workflow orchestration for LuckyHarness.
+// Package workflow provides DAG-based workflow orchestration for LuckyAgent.
 // It supports task dependencies, parallel execution, and state management.
 package workflow
 
@@ -38,38 +38,38 @@ type Task struct {
 
 // TaskResult contains the result of a task execution.
 type TaskResult struct {
-	TaskID    string      `json:"taskId"`
-	Status    TaskStatus  `json:"status"`
-	Output    interface{} `json:"output,omitempty"`
-	Error     string      `json:"error,omitempty"`
-	StartTime time.Time   `json:"startTime"`
-	EndTime   time.Time   `json:"endTime"`
+	TaskID    string        `json:"taskId"`
+	Status    TaskStatus    `json:"status"`
+	Output    interface{}   `json:"output,omitempty"`
+	Error     string        `json:"error,omitempty"`
+	StartTime time.Time     `json:"startTime"`
+	EndTime   time.Time     `json:"endTime"`
 	Duration  time.Duration `json:"duration"`
 }
 
 // Workflow represents a DAG-based workflow definition.
 type Workflow struct {
-	ID          string  `json:"id" yaml:"id"`
-	Name        string  `json:"name" yaml:"name"`
-	Description string  `json:"description,omitempty" yaml:"description,omitempty"`
-	Tasks       []*Task `json:"tasks" yaml:"tasks"`
-	Version     string  `json:"version,omitempty" yaml:"version,omitempty"`
+	ID          string    `json:"id" yaml:"id"`
+	Name        string    `json:"name" yaml:"name"`
+	Description string    `json:"description,omitempty" yaml:"description,omitempty"`
+	Tasks       []*Task   `json:"tasks" yaml:"tasks"`
+	Version     string    `json:"version,omitempty" yaml:"version,omitempty"`
 	CreatedAt   time.Time `json:"createdAt" yaml:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt" yaml:"updatedAt"`
 }
 
 // WorkflowInstance represents a running instance of a workflow.
 type WorkflowInstance struct {
-	ID          string                 `json:"id"`
-	WorkflowID  string                 `json:"workflowId"`
-	Status      TaskStatus             `json:"status"`
-	Results     map[string]*TaskResult `json:"results"`
-	StartTime   time.Time              `json:"startTime"`
-	EndTime     time.Time              `json:"endTime,omitempty"`
-	Context     context.Context        `json:"-"`
-	CancelFunc  context.CancelFunc     `json:"-"`
-	readyCh     chan<- struct{}        `json:"-"`
-	mu          sync.RWMutex
+	ID         string                 `json:"id"`
+	WorkflowID string                 `json:"workflowId"`
+	Status     TaskStatus             `json:"status"`
+	Results    map[string]*TaskResult `json:"results"`
+	StartTime  time.Time              `json:"startTime"`
+	EndTime    time.Time              `json:"endTime,omitempty"`
+	Context    context.Context        `json:"-"`
+	CancelFunc context.CancelFunc     `json:"-"`
+	readyCh    chan<- struct{}        `json:"-"`
+	mu         sync.RWMutex
 }
 
 // NewWorkflow creates a new workflow with the given tasks.

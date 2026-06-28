@@ -247,7 +247,7 @@ func TestToolCallSignatureCanonicalizesArguments(t *testing.T) {
 
 func TestBuildFinalAnswerRAGDocument(t *testing.T) {
 	source, title, content, ok := buildFinalAnswerRAGDocument(
-		"请总结一下 LuckyHarness 的 RAG 设计",
+		"请总结一下 LuckyAgent 的 RAG 设计",
 		"结论：当前已经有 SQLite 持久化，但资料沉淀链路还不统一。",
 	)
 	if !ok {
@@ -256,13 +256,13 @@ func TestBuildFinalAnswerRAGDocument(t *testing.T) {
 	if !strings.HasPrefix(source, "conversation/final/") {
 		t.Fatalf("expected conversation final source, got %q", source)
 	}
-	if title != "请总结一下 LuckyHarness 的 RAG 设计" {
+	if title != "请总结一下 LuckyAgent 的 RAG 设计" {
 		t.Fatalf("unexpected title: %q", title)
 	}
 	if !strings.Contains(content, "Final Answer:\n结论：当前已经有 SQLite 持久化") {
 		t.Fatalf("expected final answer content, got %q", content)
 	}
-	if !strings.Contains(content, "User Request:\n请总结一下 LuckyHarness 的 RAG 设计") {
+	if !strings.Contains(content, "User Request:\n请总结一下 LuckyAgent 的 RAG 设计") {
 		t.Fatalf("expected user request context, got %q", content)
 	}
 }

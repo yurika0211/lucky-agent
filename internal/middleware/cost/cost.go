@@ -1,4 +1,4 @@
-// Package cost provides API cost tracking and budget management for LuckyHarness.
+// Package cost provides API cost tracking and budget management for LuckyAgent.
 // It records per-call token usage and cost, aggregates by provider/model/session,
 // and supports budget thresholds with alert callbacks.
 package cost

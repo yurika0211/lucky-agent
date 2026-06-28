@@ -82,7 +82,7 @@ function bigText(text: string): string[] {
   return rows.map((row) => row.replace(/\s+$/, ''));
 }
 
-const WORDMARK_ART = bigText('LUCKY HARNESS');
+const WORDMARK_ART = bigText('LUCKY AGENT');
 const WORDMARK_COLORS = [THEME.accentBright, THEME.accentBright, THEME.accent, THEME.accent, THEME.accentDim] as const;
 
 const COMMANDS: CommandSpec[] = [

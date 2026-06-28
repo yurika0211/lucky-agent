@@ -26,7 +26,7 @@ func addTUICmd(root *cobra.Command) {
 		},
 	}
 	tuiCmd.Flags().StringVar(&uiDir, "ui-dir", "", "UI workspace path; defaults to LH_TUI_DIR/LH_UI_DIR or auto-detection")
-	tuiCmd.Flags().String("api-base", "http://127.0.0.1:9090", "LuckyHarness API base URL")
+	tuiCmd.Flags().String("api-base", "http://127.0.0.1:9090", "LuckyAgent API base URL")
 	tuiCmd.Flags().String("session", "dashboard-main", "TUI session id")
 	tuiCmd.Flags().String("model", "", "model label override")
 	root.AddCommand(tuiCmd)
@@ -76,7 +76,7 @@ func resolveUIWorkspace(explicit string) (string, error) {
 			return filepath.Join(resolved, "UI"), nil
 		}
 	}
-	return "", fmt.Errorf("could not locate LuckyHarness UI workspace; pass --ui-dir or set LH_TUI_DIR to the repo UI directory")
+	return "", fmt.Errorf("could not locate LuckyAgent UI workspace; pass --ui-dir or set LH_TUI_DIR to the repo UI directory")
 }
 
 func tuiDirCandidates(explicit string) []string {

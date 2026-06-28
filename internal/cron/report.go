@@ -30,7 +30,7 @@ func (r *ReportGenerator) DailyReport() func() error {
 		path := filepath.Join(r.outputDir, filename)
 
 		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("# LuckyHarness 每日报告\n\n"))
+		sb.WriteString(fmt.Sprintf("# LuckyAgent 每日报告\n\n"))
 		sb.WriteString(fmt.Sprintf("**日期**: %s\n\n", now.Format("2006年01月02日 15:04:05")))
 
 		// 任务统计

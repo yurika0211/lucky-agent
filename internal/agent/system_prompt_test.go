@@ -119,7 +119,7 @@ func TestBuildSystemPromptIncludesNapCatPlainTextPlatformHint(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
+func TestBuildSystemPromptIncludesLuckyAgentManual(t *testing.T) {
 	tmpDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(tmpDir, "description"), 0755); err != nil {
 		t.Fatalf("mkdir description: %v", err)
@@ -148,6 +148,30 @@ func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Convergence rule: stop once the success condition is satisfied.") {
 		t.Fatalf("expected manual content in prompt, got %q", prompt)
+	}
+}
+
+func TestBuildSystemPromptPrefersLuckyAgentManualEnv(t *testing.T) {
+	tmpDir := t.TempDir()
+	newManual := filepath.Join(tmpDir, "new-manual.md")
+	legacyManual := filepath.Join(tmpDir, "legacy-manual.md")
+	if err := os.WriteFile(newManual, []byte("New manual marker."), 0644); err != nil {
+		t.Fatalf("write new manual: %v", err)
+	}
+	if err := os.WriteFile(legacyManual, []byte("Legacy manual marker."), 0644); err != nil {
+		t.Fatalf("write legacy manual: %v", err)
+	}
+	t.Setenv("LUCKYAGENT_MANUAL_FILE", newManual)
+	t.Setenv("LUCKYHARNESS_MANUAL_FILE", legacyManual)
+
+	a := &Agent{soul: soul.Default()}
+
+	prompt := a.buildSystemPrompt(nil)
+	if !strings.Contains(prompt, "New manual marker.") {
+		t.Fatalf("expected new manual content in prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "Legacy manual marker.") {
+		t.Fatalf("did not expect legacy manual content when new env is set, got %q", prompt)
 	}
 }
 
@@ -220,7 +244,7 @@ func TestBuildSystemPromptOmitsDisabledToolGuidance(t *testing.T) {
 	}
 }
 
-func TestBuildSystemPromptPinsLuckyHarnessMarkdownMemoryVault(t *testing.T) {
+func TestBuildSystemPromptPinsLuckyAgentMarkdownMemoryVault(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))
 	if err != nil {

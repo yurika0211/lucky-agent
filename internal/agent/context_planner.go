@@ -628,7 +628,7 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScop
 	route.ExpiredRefs = nil
 	route.FutureRefs = nil
 	results = prioritizeMemoryForContext(results)
-	header := "[Working Memory — Retrieved Evidence]\nThese active memories were retrieved from the LuckyHarness Obsidian-compatible Markdown memory vault"
+	header := "[Working Memory — Retrieved Evidence]\nThese active memories were retrieved from the LuckyAgent Obsidian-compatible Markdown memory vault"
 	if vault := p.agent.memoryVaultPath(); vault != "" {
 		header += " at " + vault
 	}

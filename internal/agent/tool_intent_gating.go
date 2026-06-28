@@ -288,7 +288,7 @@ func hasLocalToolIntent(text string) bool {
 		"readme", "system_prompt", "tool router", "代码", "源码", "仓库", "repo",
 		"文件", "目录", "路径", "benchmark", "单测", "测试", "跑测试", "日志", ".log", "logs", "log file",
 		"git status", "git diff", "脏文件", "暂存", "分支", "commit", "push",
-		"luckyagent", "lucky harness", "记忆系统", "工具系统", "上下文打包器",
+		"luckyagent", "lucky agent", "记忆系统", "工具系统", "上下文打包器",
 	) {
 		return true
 	}

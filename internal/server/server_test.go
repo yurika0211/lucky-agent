@@ -109,8 +109,8 @@ func TestHandleRoot(t *testing.T) {
 
 	var resp map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["name"] != "LuckyHarness API" {
-		t.Errorf("expected LuckyHarness API, got %v", resp["name"])
+	if resp["name"] != "LuckyAgent API" {
+		t.Errorf("expected LuckyAgent API, got %v", resp["name"])
 	}
 }
 

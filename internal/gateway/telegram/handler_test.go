@@ -394,9 +394,9 @@ func TestCommandRouting(t *testing.T) {
 
 // TestWelcomeMessage verifies the welcome message content.
 func TestWelcomeMessage(t *testing.T) {
-	welcome := `🍀 *LuckyHarness Bot*
+	welcome := `🍀 *LuckyAgent Bot*
 
-I'm an AI assistant powered by LuckyHarness.
+I'm an AI assistant powered by LuckyAgent.
 
 *Available commands:*
 /chat _message_ — Send a message to the AI
@@ -410,7 +410,7 @@ I'm an AI assistant powered by LuckyHarness.
 
 You can also just type a message directly!`
 
-	assert.Contains(t, welcome, "LuckyHarness")
+	assert.Contains(t, welcome, "LuckyAgent")
 	assert.Contains(t, welcome, "/chat")
 	assert.Contains(t, welcome, "/help")
 	assert.Contains(t, welcome, "/model")

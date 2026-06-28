@@ -72,11 +72,11 @@ func (a *Agent) buildSkillRouteSystemHintWithOptions(userInput string, opts skil
 	if match == nil || match.skill == nil {
 		return ""
 	}
-	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyHarnessMemoryBackendQuestion(userInput) {
+	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyAgentMemoryBackendQuestion(userInput) {
 		return `Skill routing note:
-- This request is about the LuckyHarness memory backend, not an external Obsidian app vault.
-- Do not use the Obsidian skill or OBSIDIAN_VAULT_PATH to decide whether LuckyHarness memory exists unless the user explicitly asks to operate an external Obsidian vault.
-- Use recall, local LuckyHarness memory vault files, or runtime inspection as direct evidence.`
+- This request is about the LuckyAgent memory backend, not an external Obsidian app vault.
+- Do not use the Obsidian skill or OBSIDIAN_VAULT_PATH to decide whether LuckyAgent memory exists unless the user explicitly asks to operate an external Obsidian vault.
+- Use recall, local LuckyAgent memory vault files, or runtime inspection as direct evidence.`
 	}
 
 	var lines []string
@@ -99,7 +99,7 @@ func (a *Agent) buildSkillRouteSystemHintWithOptions(userInput string, opts skil
 	return strings.Join(lines, "\n")
 }
 
-func isLuckyHarnessMemoryBackendQuestion(input string) bool {
+func isLuckyAgentMemoryBackendQuestion(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
 	if lower == "" {
 		return false
@@ -405,7 +405,7 @@ func (a *Agent) buildFunctionCallOptionsForInput(userInput string, tools []map[s
 	if match == nil {
 		return callOpts
 	}
-	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyHarnessMemoryBackendQuestion(userInput) {
+	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyAgentMemoryBackendQuestion(userInput) {
 		return callOpts
 	}
 

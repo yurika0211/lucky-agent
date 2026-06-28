@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Profile 代表一个独立的 LuckyHarness 实例配置
+// Profile 代表一个独立的 LuckyAgent 实例配置
 type Profile struct {
 	Name        string            `yaml:"name"`
 	Description string            `yaml:"description,omitempty"`
@@ -38,7 +38,7 @@ type FallbackEntry struct {
 func DefaultProfile(name string) *Profile {
 	return &Profile{
 		Name:        name,
-		Description: "Default LuckyHarness profile",
+		Description: "Default LuckyAgent profile",
 		Provider:    "openai",
 		Model:       "gpt-5.4-mini",
 		MaxTokens:   40960,
