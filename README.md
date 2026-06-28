@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="public/brand.png" alt="Lucky Agent Brand" width="600">
+</div>
+
 # LuckyHarness
 
 LuckyHarness 不是一个只把聊天窗口包装起来的 Agent 演示项目。它用 Go 写成，把 API 服务、TUI、GUI 网关和多种社交软件入口放在同一个运行时里，让一个 Agent 可以从本地命令行一路走到长期在线的消息服务。
