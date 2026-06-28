@@ -8,7 +8,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 // ── isMentioned / isReplyToBot ────────────────────────────────────────────────

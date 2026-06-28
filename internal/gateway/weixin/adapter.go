@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 const (
@@ -203,7 +203,7 @@ func (a *Adapter) sendChunk(ctx context.Context, chatID string, content string) 
 		Msg: outgoingMessage{
 			FromUserID:   "",
 			ToUserID:     chatID,
-			ClientID:     "luckyharness-weixin-" + strconv.FormatInt(time.Now().UnixNano(), 10),
+			ClientID:     "luckyagent-weixin-" + strconv.FormatInt(time.Now().UnixNano(), 10),
 			MessageType:  2,
 			MessageState: 2,
 			ItemList:     []outgoingItem{{Type: 1, TextItem: textOut{Text: content}}},

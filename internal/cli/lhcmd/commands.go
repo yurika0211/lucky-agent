@@ -14,19 +14,19 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/cron"
-	"github.com/yurika0211/luckyharness/internal/gateway"
-	luckycollector "github.com/yurika0211/luckyharness/internal/gateway/collector"
-	"github.com/yurika0211/luckyharness/internal/gateway/napcat"
-	"github.com/yurika0211/luckyharness/internal/gateway/openclawweixin"
-	"github.com/yurika0211/luckyharness/internal/gateway/qqofficial"
-	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
-	"github.com/yurika0211/luckyharness/internal/gateway/weixin"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/server"
-	"github.com/yurika0211/luckyharness/internal/soul"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/cron"
+	"github.com/yurika0211/luckyagent/internal/gateway"
+	luckycollector "github.com/yurika0211/luckyagent/internal/gateway/collector"
+	"github.com/yurika0211/luckyagent/internal/gateway/napcat"
+	"github.com/yurika0211/luckyagent/internal/gateway/openclawweixin"
+	"github.com/yurika0211/luckyagent/internal/gateway/qqofficial"
+	"github.com/yurika0211/luckyagent/internal/gateway/telegram"
+	"github.com/yurika0211/luckyagent/internal/gateway/weixin"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/server"
+	"github.com/yurika0211/luckyagent/internal/soul"
 )
 
 var (
@@ -51,9 +51,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("LuckyHarness 初始化完成")
 	fmt.Printf("主目录: %s\n", mgr.HomeDir())
 	fmt.Println("下一步:")
-	fmt.Println("  lh config set api_key sk-xxx")
-	fmt.Println("  lh config set provider openai")
-	fmt.Println("  lh chat")
+	fmt.Println("  la config set api_key sk-xxx")
+	fmt.Println("  la config set provider openai")
+	fmt.Println("  la chat")
 	return nil
 }
 
@@ -238,7 +238,7 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := mgr.Get()
-	fmt.Println("LuckyHarness 配置:")
+	fmt.Println("LuckyAgent 配置:")
 	fmt.Printf("  provider: %s\n", cfg.Provider)
 	fmt.Printf("  api_key: %s\n", maskKey(cfg.APIKey))
 	fmt.Printf("  api_base: %s\n", cfg.APIBase)

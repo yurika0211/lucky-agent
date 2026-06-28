@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 type replayFile struct {

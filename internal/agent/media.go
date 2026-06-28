@@ -6,10 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
-	"github.com/yurika0211/luckyharness/internal/multimodal"
-	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/multimodal"
+	"github.com/yurika0211/luckyagent/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 /*

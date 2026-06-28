@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/workflow"
+	"github.com/yurika0211/luckyagent/internal/workflow"
 )
 
 // ===== Health Handlers =====

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/session"
 )
 
 type chatStreamResult struct {

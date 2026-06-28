@@ -5,7 +5,7 @@ Reads the hook Payload as JSON on stdin, records it, and always allows.
 Match this on: [] (all tools). Put it FIRST in pre_tool_use so attempts are
 logged even when a later hook blocks them.
 
-Audit file path: $LH_HOOK_AUDIT, else ~/.luckyharness/hook-audit.jsonl
+Audit file path: $LH_HOOK_AUDIT, else ~/.luckyagent/hook-audit.jsonl
 """
 import sys
 import json
@@ -26,7 +26,7 @@ def main() -> None:
 
     path = os.environ.get(
         "LH_HOOK_AUDIT",
-        os.path.join(os.path.expanduser("~"), ".luckyharness", "hook-audit.jsonl"),
+        os.path.join(os.path.expanduser("~"), ".luckyagent", "hook-audit.jsonl"),
     )
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)

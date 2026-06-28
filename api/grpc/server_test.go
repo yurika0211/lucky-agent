@@ -1,14 +1,14 @@
-package luckyharness
+package luckyagent
 
 import (
 	"context"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/embedder"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/rag"
-	"github.com/yurika0211/luckyharness/internal/workflow"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/embedder"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/workflow"
 )
 
 // mockExecutor is a simple test executor

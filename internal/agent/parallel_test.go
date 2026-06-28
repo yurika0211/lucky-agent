@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 func TestParallelToolExecution(t *testing.T) {

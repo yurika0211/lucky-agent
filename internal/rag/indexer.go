@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	embedderpkg "github.com/yurika0211/luckyharness/internal/embedder"
+	embedderpkg "github.com/yurika0211/luckyagent/internal/embedder"
 )
 
 const defaultEmbeddingBatchSize = 16

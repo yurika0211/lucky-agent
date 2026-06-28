@@ -98,7 +98,7 @@ func defaultTasks() []benchTask {
 			RiskBudget: 0.2, Difficulty: 0.45,
 		},
 		{
-			ID: "P2-001", Scenario: "parallel", TaskType: "repo_change", Prompt: "分别检查 backend、frontend、docs 三块，然后汇总 luckyharness 多 agent 入口。",
+			ID: "P2-001", Scenario: "parallel", TaskType: "repo_change", Prompt: "分别检查 backend、frontend、docs 三块，然后汇总 luckyagent 多 agent 入口。",
 			GoldMode: "parallel", IntentTerms: []string{"repo", "frontend", "backend", "docs", "summary"},
 			Subtasks: []subtaskSpec{
 				{ID: "backend", Role: "backend", Title: "Inspect backend agent entry", Capabilities: []string{"backend", "go", "api"}, WorkMS: 1900, Tokens: 720, Risk: 0.5},

@@ -13,11 +13,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/session"
 )
 
 type benchConfig struct {
@@ -673,7 +673,7 @@ func buildCases(mgr *session.Manager) []benchCase {
 			},
 		},
 		{
-			ID:       "project-switch-luckyharness",
+			ID:       "project-switch-luckyagent",
 			Scenario: "project_switch",
 			Query:    "继续 LuckyHarness context packer benchmark，别混进别的项目问题。",
 			Session:  buildProjectSwitchSession(mgr),
@@ -824,7 +824,7 @@ func buildToolEvidenceSession(mgr *session.Manager) *session.Session {
 		sess.AddMessage("assistant", fmt.Sprintf("invoice-filing-filler response note %02d", i+1))
 		sess.AddMessage("assistant", fmt.Sprintf("desk-lamp-filler response note %02d", i+1))
 	}
-	sess.AddMessage("tool", "[Tool: shell] /usr/local/go/bin/go test ./cmd/lh-context-packer-bench ./internal/agent ./internal/memory\nok github.com/yurika0211/luckyharness/cmd/lh-context-packer-bench\nok github.com/yurika0211/luckyharness/internal/agent\nok github.com/yurika0211/luckyharness/internal/memory")
+	sess.AddMessage("tool", "[Tool: shell] /usr/local/go/bin/go test ./cmd/lh-context-packer-bench ./internal/agent ./internal/memory\nok github.com/yurika0211/luckyagent/cmd/lh-context-packer-bench\nok github.com/yurika0211/luckyagent/internal/agent\nok github.com/yurika0211/luckyagent/internal/memory")
 	sess.AddMessage("tool", "[Tool: shell] summary scenario=all records=12 avg_tokens=1334 avg_quality=1.000 noise=0.000 p95=3.35ms clean=true")
 	sess.AddMessage("assistant", "Benchmark evidence file: docs/reports/context-packer-intent-history-v3c-20260607.jsonl.")
 	return sess

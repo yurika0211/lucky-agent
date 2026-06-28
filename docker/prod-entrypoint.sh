@@ -1,17 +1,17 @@
 #!/bin/sh
 set -eu
 
-export HOME="${HOME:-/var/lib/luckyharness}"
+export HOME="${HOME:-/var/lib/luckyagent}"
 
 mkdir -p "$HOME"
 
-luckyharness init >/tmp/luckyharness-init.log 2>&1 || true
+luckyagent init >/tmp/luckyagent-init.log 2>&1 || true
 
 set_config() {
   key="$1"
   value="$2"
   if [ -n "$value" ]; then
-    luckyharness config set "$key" "$value" >/tmp/luckyharness-config.log 2>&1
+    luckyagent config set "$key" "$value" >/tmp/luckyagent-config.log 2>&1
   fi
 }
 
@@ -65,4 +65,4 @@ set_config "msg_gateway.weixin.split_multiline_messages" "${LH_WEIXIN_SPLIT_MULT
 set_config "msg_gateway.weixin.poll_timeout_ms" "${LH_WEIXIN_POLL_TIMEOUT_MS:-}"
 set_config "msg_gateway.weixin.send_chunk_delay_ms" "${LH_WEIXIN_SEND_CHUNK_DELAY_MS:-}"
 
-exec luckyharness "$@"
+exec luckyagent "$@"

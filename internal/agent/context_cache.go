@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/logger"
-	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/logger"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 /*

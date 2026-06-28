@@ -8,14 +8,14 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/yurika0211/luckyharness/internal/contextx"
-	"github.com/yurika0211/luckyharness/internal/gateway"
-	"github.com/yurika0211/luckyharness/internal/logger"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/session"
-	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/contextx"
+	"github.com/yurika0211/luckyagent/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/logger"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/session"
+	"github.com/yurika0211/luckyagent/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 /*

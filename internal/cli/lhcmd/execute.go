@@ -1,6 +1,6 @@
 package lhcmd
 
-import "github.com/yurika0211/luckyharness/internal/logger"
+import "github.com/yurika0211/luckyagent/internal/logger"
 
 var (
 	buildVersion = "dev"

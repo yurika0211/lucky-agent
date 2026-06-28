@@ -1,5 +1,5 @@
 {
-  "name": "@luckyharness/gui",
+  "name": "@luckyagent/gui",
   "private": true,
   "scripts": {
     "dev": "vite",

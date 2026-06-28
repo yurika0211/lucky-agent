@@ -1,9 +1,9 @@
 package tool
 
 import (
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/multimodal"
-	"github.com/yurika0211/luckyharness/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/multimodal"
+	"github.com/yurika0211/luckyagent/internal/rag"
 )
 
 // Services groups tool-layer business services and owns their registration wiring.

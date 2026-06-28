@@ -1,57 +1,54 @@
-x-luckyharness-env: &luckyharness-env
-  HOME: /var/lib/luckyharness
+x-luckyagent-env: &luckyagent-env
+  HOME: /var/lib/luckyagent
   TZ: ${TZ:-Asia/Shanghai}
 
 services:
-  luckyharness:
-    image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyharness:latest}
-    container_name: luckyharness
-    entrypoint: ["luckyharness"]
+  luckyagent:
+    image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyagent:latest}
+    container_name: luckyagent
+    entrypoint: ["luckyagent"]
     restart: unless-stopped
-    environment: *luckyharness-env
+    environment: *luckyagent-env
     command: ["serve"]
     ports:
       - "${LH_PORT:-9090}:9090"
     volumes:
-      - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
+      - lh-home:/var/lib/luckyagent
+      - ~/.luckyagent/config.json:/var/lib/luckyagent/.luckyagent/config.json:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/api/v1/health >/dev/null 2>&1 || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/api/v1/health/live >/dev/null 2>&1 || exit 1"]
+      interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 10s
 
-  luckyharness-telegram:
-    image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyharness:latest}
-    container_name: luckyharness-telegram
-    entrypoint: ["luckyharness"]
+  luckyagent-telegram:
+    image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyagent:latest}
+    container_name: luckyagent-telegram
+    entrypoint: ["luckyagent"]
     restart: unless-stopped
     profiles: ["telegram"]
-    environment: *luckyharness-env
+    environment: *luckyagent-env
     command: ["msg-gateway", "start", "--platform", "telegram"]
     volumes:
-      - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
-    depends_on:
-      luckyharness:
-        condition: service_healthy
+      - lh-home:/var/lib/luckyagent
+      - ~/.luckyagent/config.json:/var/lib/luckyagent/.luckyagent/config.json:ro
 
-  luckyharness-napcat:
-    image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyharness:latest}
-    container_name: luckyharness-napcat
-    entrypoint: ["luckyharness"]
+  luckyagent-napcat:
+    image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyagent:latest}
+    container_name: luckyagent-napcat
+    entrypoint: ["luckyagent"]
     restart: unless-stopped
     profiles: ["napcat"]
-    environment: *luckyharness-env
+    environment: *luckyagent-env
     command: ["msg-gateway", "start", "--platform", "napcat", "--napcat-listen", "0.0.0.0:6701"]
     ports:
       - "${LH_NAPCAT_PORT:-6701}:6701"
     volumes:
-      - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
+      - lh-home:/var/lib/luckyagent
+      - ~/.luckyagent/config.json:/var/lib/luckyagent/.luckyagent/config.json:ro
     depends_on:
-      luckyharness:
+      luckyagent:
         condition: service_healthy
 
 volumes:

@@ -1985,7 +1985,7 @@ const file_luckyharness_proto_rawDesc = "" +
 	"\x0eWorkflowDelete\x12#.luckyharness.WorkflowDeleteRequest\x1a\x16.google.protobuf.Empty\"#\x82\xd3\xe4\x93\x02\x1d*\x1b/api/v1/grpc/workflows/{id}\x12\x7f\n" +
 	"\rWorkflowStart\x12\".luckyharness.WorkflowStartRequest\x1a\x1e.luckyharness.WorkflowInstance\"*\x82\xd3\xe4\x93\x02$:\x01*\"\x1f/api/v1/grpc/workflow-instances\x12\x8d\x01\n" +
 	"\x13WorkflowInstanceGet\x12(.luckyharness.WorkflowInstanceGetRequest\x1a\x1e.luckyharness.WorkflowInstance\",\x82\xd3\xe4\x93\x02&\x12$/api/v1/grpc/workflow-instances/{id}\x12e\n" +
-	"\vHealthCheck\x12\x16.google.protobuf.Empty\x1a!.luckyharness.HealthCheckResponse\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/api/v1/grpc/healthB:Z8github.com/yurika0211/luckyharness/api/grpc;luckyharnessb\x06proto3"
+	"\vHealthCheck\x12\x16.google.protobuf.Empty\x1a!.luckyharness.HealthCheckResponse\"\x1b\x82\xd3\xe4\x93\x02\x15\x12\x13/api/v1/grpc/healthB:Z8github.com/yurika0211/luckyagent/api/grpc;luckyharnessb\x06proto3"
 
 var (
 	file_luckyharness_proto_rawDescOnce sync.Once

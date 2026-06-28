@@ -9,10 +9,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/session"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/session"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 // v0.72.0: websocket 包测试补全 - 覆盖 syncChat 和 streamChat
@@ -250,7 +250,7 @@ func TestStreamChatEmitsStructuredAgentEvents(t *testing.T) {
 		chatStreamSess: func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
 			ch := make(chan agent.ChatEvent, 6)
 			ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "Thinking... (round 1)"}
-			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"luckyharness"}`}
+			ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"luckyagent"}`}
 			ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "web_search", Result: "Found 3 results"}
 			ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "Final answer"}
 			ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "Final answer"}

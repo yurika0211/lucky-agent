@@ -9,15 +9,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/cli/profile"
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/contextx"
-	"github.com/yurika0211/luckyharness/internal/cron"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/server"
-	"github.com/yurika0211/luckyharness/internal/session"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/cli/profile"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/contextx"
+	"github.com/yurika0211/luckyagent/internal/cron"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/server"
+	"github.com/yurika0211/luckyagent/internal/session"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 type cronTaskMode string
@@ -969,7 +969,7 @@ func handleProfileCommand(arg string) bool {
 	}
 
 	home, _ := os.UserHomeDir()
-	mgr, err := profile.NewManager(filepath.Join(home, ".luckyharness"))
+	mgr, err := profile.NewManager(filepath.Join(home, ".luckyagent"))
 	if err != nil {
 		fmt.Printf("❌ %v\n", err)
 		return true

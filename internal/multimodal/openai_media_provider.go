@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const defaultOpenAIUserAgent = "luckyharness"
+const defaultOpenAIUserAgent = "luckyagent"
 const defaultOpenAIImageGenerationModel = "gpt-image-1.5"
 
 type OpenAIMediaConfig struct {

@@ -1,6 +1,6 @@
-# LuckyHarness Wiki
+# LuckyAgent Wiki
 
-LuckyHarness 是一个面向长期运行的 Agent runtime。它把 CLI、HTTP API、TUI、GUI Dashboard、Telegram、QQ、NapCat、微信网关、记忆、RAG、工具调用和部署流程放在同一套运行时里管理。
+LuckyAgent 是一个面向长期运行的 Agent runtime。它把 CLI、HTTP API、TUI、GUI Dashboard、Telegram、QQ、NapCat、微信网关、记忆、RAG、工具调用和部署流程放在同一套运行时里管理。
 
 如果你是第一次使用，可以按下面顺序阅读：
 
@@ -34,27 +34,27 @@ LuckyHarness 是一个面向长期运行的 Agent runtime。它把 CLI、HTTP AP
 ## 快速入口
 
 ```bash
-go run ./cmd/lh init
-go run ./cmd/lh config set provider openai
-go run ./cmd/lh config set api_key sk-your-api-key
-go run ./cmd/lh config set model gpt-5.4-mini
-go run ./cmd/lh chat
+go run ./cmd/la init
+go run ./cmd/la config set provider openai
+go run ./cmd/la config set api_key sk-your-api-key
+go run ./cmd/la config set model gpt-5.4-mini
+go run ./cmd/la chat
 ```
 
 启动 HTTP API：
 
 ```bash
-go run ./cmd/lh serve --addr 127.0.0.1:9090
+go run ./cmd/la serve --addr 127.0.0.1:9090
 ```
 
 启动 Telegram 网关：
 
 ```bash
-go run ./cmd/lh msg-gateway start --platform telegram
+go run ./cmd/la msg-gateway start --platform telegram
 ```
 
 ## 核心心智模型
 
-LuckyHarness 的关键不是“多几个入口”，而是所有入口都共享同一个 Agent 核心、同一份配置、同一套运行目录和同一组能力。
+LuckyAgent 的关键不是“多几个入口”，而是所有入口都共享同一个 Agent 核心、同一份配置、同一套运行目录和同一组能力。
 
 这意味着你可以先在本地用 `lh chat` 调试，再用 `lh serve` 接入内部系统，最后把同一套配置挂到 Docker 或消息网关上长期运行。

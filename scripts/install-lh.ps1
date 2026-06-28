@@ -1,7 +1,7 @@
 param(
   [string]$Version = "latest",
   [string]$Prefix = "$HOME\.local\bin",
-  [string]$Repo = "yurika0211/luckyharness",
+  [string]$Repo = "yurika0211/luckyagent",
   [string]$RepoRef = ""
 )
 
@@ -70,7 +70,7 @@ if (Test-Path $uiSource) {
   if ($env:LH_UI_INSTALL_DIR) {
     $uiDir = $env:LH_UI_INSTALL_DIR
   } else {
-    $uiDir = Join-Path $HOME ".local\share\luckyharness\UI"
+    $uiDir = Join-Path $HOME ".local\share\luckyagent\UI"
   }
 
   $uiParent = Split-Path -Parent $uiDir
@@ -92,7 +92,7 @@ if (Test-Path $uiSource) {
     Write-Warning "npm was not found; install Node.js/npm before running lh tui"
   }
 
-  $runtimeDir = Join-Path $HOME ".luckyharness\runtime"
+  $runtimeDir = Join-Path $HOME ".luckyagent\runtime"
   New-Item -ItemType Directory -Force -Path $runtimeDir | Out-Null
   Set-Content -Path (Join-Path $runtimeDir "tui-ui-dir") -Value $uiDir
   Write-Host "installed TUI files to $uiDir"

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 func TestLuckyCollectsSegmentsIntoUserTurn(t *testing.T) {

@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyagent/internal/config"
 )
 
 func addTUICmd(root *cobra.Command) {
@@ -17,7 +17,7 @@ func addTUICmd(root *cobra.Command) {
 
 	tuiCmd := &cobra.Command{
 		Use:   "tui",
-		Short: "启动 LuckyHarness 终端 UI",
+		Short: "启动 LuckyAgent 终端 UI",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			apiBase, _ := cmd.Flags().GetString("api-base")
 			session, _ := cmd.Flags().GetString("session")
@@ -106,8 +106,8 @@ func tuiDirCandidates(explicit string) []string {
 		for _, parent := range walkParents(exeDir, 8) {
 			add(parent)
 			add(filepath.Join(parent, "UI"))
-			add(filepath.Join(parent, "luckyharness"))
-			add(filepath.Join(parent, "luckyharness", "UI"))
+			add(filepath.Join(parent, "luckyagent"))
+			add(filepath.Join(parent, "luckyagent", "UI"))
 		}
 	}
 

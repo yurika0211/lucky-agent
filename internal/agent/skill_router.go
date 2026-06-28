@@ -6,9 +6,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 var skillRouteTokenRe = regexp.MustCompile(`[a-zA-Z0-9_+\-]+|[\p{Han}]{2,}`)
@@ -109,7 +109,7 @@ func isLuckyHarnessMemoryBackendQuestion(input string) bool {
 		strings.Contains(lower, "回忆") ||
 		strings.Contains(lower, "recall") ||
 		strings.Contains(lower, "remember")
-	hasBackend := strings.Contains(lower, "luckyharness") ||
+	hasBackend := strings.Contains(lower, "luckyagent") ||
 		strings.Contains(lower, "记忆系统") ||
 		strings.Contains(lower, "记忆库") ||
 		strings.Contains(lower, "存储") ||

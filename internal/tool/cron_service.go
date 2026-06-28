@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	cronpkg "github.com/yurika0211/luckyharness/internal/cron"
+	cronpkg "github.com/yurika0211/luckyagent/internal/cron"
 )
 
 // CronTaskFactory builds a runnable task for a cron job.

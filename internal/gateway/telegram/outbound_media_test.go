@@ -2,7 +2,7 @@ package telegram
 
 import (
 	"context"
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 	"math/rand"
 	"net/http"
 	"os"

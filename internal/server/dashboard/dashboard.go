@@ -292,7 +292,7 @@ func dashboardStaticDir() string {
 	}
 
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".luckyharness", "dashboard")
+	return filepath.Join(home, ".luckyagent", "dashboard")
 }
 
 func (d *Dashboard) serveEmbeddedSPA(w http.ResponseWriter, r *http.Request) {

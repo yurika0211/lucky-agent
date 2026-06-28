@@ -82,7 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" -o "dist/${{ matrix.binary_name }}" ./cmd/lh
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" -o "dist/${{ matrix.binary_name }}" ./cmd/la
 
       - name: Build binary
         if: runner.os == 'Windows'
@@ -97,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p dist
-          go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" -o "dist/${{ matrix.binary_name }}" ./cmd/lh
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" -o "dist/${{ matrix.binary_name }}" ./cmd/la
 
       - name: Package release archive
         if: runner.os != 'Windows'

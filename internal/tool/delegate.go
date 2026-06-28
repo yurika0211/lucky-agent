@@ -14,7 +14,7 @@ import (
 
 const delegateWorkspaceMarker = "LuckyHarness delegate workspace:"
 
-var delegateWorkspacePathRe = regexp.MustCompile(`(?:/tmp/[^\s"'<>，。；；,，)）\]}]+|~[/\\]\.luckyharness[/\\]?[^\s"'<>，。；；,，)）\]}]*)`)
+var delegateWorkspacePathRe = regexp.MustCompile(`(?:/tmp/[^\s"'<>，。；；,，)）\]}]+|~[/\\]\.luckyagent[/\\]?[^\s"'<>，。；；,，)）\]}]*)`)
 
 // DelegateConfig 子代理委派配置
 type DelegateConfig struct {
@@ -67,7 +67,7 @@ func findDelegateWorkspace(parts ...string) string {
 }
 
 func defaultDelegateWorkspace(taskID string) string {
-	return filepath.Join(os.TempDir(), "luckyharness-delegate", sanitizeDelegateTaskID(taskID))
+	return filepath.Join(os.TempDir(), "luckyagent-delegate", sanitizeDelegateTaskID(taskID))
 }
 
 func sanitizeDelegateTaskID(taskID string) string {
@@ -115,7 +115,7 @@ func normalizeDelegateWorkspace(path string) string {
 func appendDelegateWorkspaceContext(contextStr, workspace string) string {
 	block := fmt.Sprintf(`%s
 Current working directory: %s
-Allowed file roots: /tmp/ and ~/.luckyharness/.
+Allowed file roots: /tmp/ and ~/.luckyagent/.
 Use relative file paths under the current working directory, or explicit paths under the allowed roots. Do not use /home or bare ~, and do not assume "." is the repository root; "." refers to the current working directory above.`, delegateWorkspaceMarker, workspace)
 	contextStr = strings.TrimSpace(contextStr)
 	if contextStr == "" {

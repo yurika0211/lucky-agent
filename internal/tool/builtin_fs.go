@@ -803,7 +803,7 @@ func validateSandbox(cleanPath string) error {
 	home := sandboxHomeDir()
 	tempDir := normalizeSandboxPath(os.TempDir())
 	allowedPrefixes := []string{
-		normalizeSandboxPath(filepath.Join(home, ".luckyharness")),
+		normalizeSandboxPath(filepath.Join(home, ".luckyagent")),
 		tempDir,
 		normalizeSandboxPath(os.DevNull),
 	}
@@ -830,7 +830,7 @@ func validateSandbox(cleanPath string) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("access denied: path is outside sandbox (allowed: ~/.luckyharness/, /tmp/). Requested: %s", cleanPath)
+	return fmt.Errorf("access denied: path is outside sandbox (allowed: ~/.luckyagent/, /tmp/). Requested: %s", cleanPath)
 }
 
 func sandboxHomeDir() string {

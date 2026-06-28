@@ -1,5 +1,5 @@
 {
-  "name": "luckyharness-ui",
+  "name": "luckyagent-ui",
   "private": true,
   "workspaces": [
     "GUI",

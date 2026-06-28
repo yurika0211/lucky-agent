@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/yurika0211/luckyharness/internal/logger"
+	"github.com/yurika0211/luckyagent/internal/logger"
 )
 
 // Client represents a single websocket connection.

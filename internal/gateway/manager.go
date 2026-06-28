@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/yurika0211/luckyharness/internal/logger"
+	"github.com/yurika0211/luckyagent/internal/logger"
 )
 
 // GatewayStats tracks per-gateway statistics.

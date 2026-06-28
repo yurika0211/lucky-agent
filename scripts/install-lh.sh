@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-repo="${LH_REPO:-yurika0211/luckyharness}"
+repo="${LH_REPO:-yurika0211/luckyagent}"
 repo_ref="${LH_REPO_REF:-}"
 version="${1:-latest}"
 prefix="${2:-$HOME/.local/bin}"
@@ -32,7 +32,7 @@ else
   api_url="https://api.github.com/repos/${repo}/releases/tags/${version}"
 fi
 
-archive_name="lh-${os}-${arch}.tar.gz"
+archive_name="la-${os}-${arch}.tar.gz"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -68,9 +68,9 @@ mkdir -p "$tmp_dir"
 curl -fsSL -o "$tmp_dir/$archive_name" "$download_url"
 tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
 mkdir -p "$prefix"
-install -m 0755 "$tmp_dir/lh" "$prefix/lh"
+install -m 0755 "$tmp_dir/la" "$prefix/la"
 
-echo "installed lh to $prefix/lh"
+echo "installed la to $prefix/la"
 
 if [ ! -d "$tmp_dir/UI" ]; then
   source_ref="${repo_ref:-$release_tag}"
@@ -92,7 +92,7 @@ if [ ! -d "$tmp_dir/UI" ]; then
 fi
 
 if [ -d "$tmp_dir/UI" ]; then
-  ui_dir="${LH_UI_INSTALL_DIR:-$HOME/.local/share/luckyharness/UI}"
+  ui_dir="${LH_UI_INSTALL_DIR:-$HOME/.local/share/luckyagent/UI}"
   mkdir -p "$(dirname "$ui_dir")"
   rm -rf "$ui_dir"
   cp -R "$tmp_dir/UI" "$ui_dir"
@@ -103,10 +103,10 @@ if [ -d "$tmp_dir/UI" ]; then
       npm ci --silent --omit=optional
     )
   else
-    echo "warning: npm was not found; install Node.js/npm before running lh tui" >&2
+    echo "warning: npm was not found; install Node.js/npm before running la tui" >&2
   fi
 
-  mkdir -p "$HOME/.luckyharness/runtime"
-  printf '%s\n' "$ui_dir" > "$HOME/.luckyharness/runtime/tui-ui-dir"
+  mkdir -p "$HOME/.luckyagent/runtime"
+  printf '%s\n' "$ui_dir" > "$HOME/.luckyagent/runtime/tui-ui-dir"
   echo "installed TUI files to $ui_dir"
 fi

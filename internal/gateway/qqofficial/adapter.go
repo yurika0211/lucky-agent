@@ -17,7 +17,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 const (
@@ -422,8 +422,8 @@ func (a *Adapter) connectGateway(ctx context.Context) error {
 			Shard:   [2]int{0, 1},
 			Properties: map[string]any{
 				"$os":      "linux",
-				"$browser": "luckyharness",
-				"$device":  "luckyharness",
+				"$browser": "luckyagent",
+				"$device":  "luckyagent",
 			},
 		}),
 	}

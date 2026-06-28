@@ -8,8 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/logger"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/logger"
 )
 
 type commandStartTimeKey struct{}
@@ -39,9 +39,9 @@ func initCommandLogger() {
 
 func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "lh",
-		Short: "LuckyHarness bot-first CLI",
-		Long:  "LuckyHarness 精简版命令行入口，面向聊天与消息网关工作流。",
+		Use:   "la",
+		Short: "LuckyAgent bot-first CLI",
+		Long:  "LuckyAgent 精简版命令行入口，面向聊天与消息网关工作流。",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !isInteractiveTerminal() {
 				return cmd.Help()
@@ -80,7 +80,7 @@ func newRootCmd() *cobra.Command {
 
 	initCmd := &cobra.Command{
 		Use:   "init",
-		Short: "初始化 LuckyHarness 主目录",
+		Short: "初始化 LuckyAgent 主目录",
 		RunE:  runInit,
 	}
 
@@ -145,7 +145,7 @@ func newRootCmd() *cobra.Command {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("LuckyHarness %s\n", buildVersion)
+			fmt.Printf("LuckyAgent %s\n", buildVersion)
 			fmt.Printf("   commit: %s\n", buildCommit)
 			fmt.Printf("   date:   %s\n", buildDate)
 		},
@@ -225,7 +225,7 @@ func newRootCmd() *cobra.Command {
 
 	memoryCmd := &cobra.Command{
 		Use:   "memory",
-		Short: "管理 LuckyHarness Markdown 记忆库",
+		Short: "管理 LuckyAgent Markdown 记忆库",
 	}
 	memoryMigrateGraphCmd := &cobra.Command{
 		Use:   "migrate-graph",

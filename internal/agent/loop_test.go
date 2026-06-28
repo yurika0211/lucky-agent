@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/session"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/session"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 func TestLoopStateString(t *testing.T) {

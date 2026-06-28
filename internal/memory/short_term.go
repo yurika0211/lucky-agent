@@ -5,8 +5,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 // --- 短期记忆：滑动窗口 + 摘要压缩 ---

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/session"
 )
 
 func TestNewContextMessageCacheDefaults(t *testing.T) {

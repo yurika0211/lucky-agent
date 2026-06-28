@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 // FunctionDefinition 代表一个 OpenAI function calling 的函数定义

@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/function"
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/function"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 func TestBuildSkillRouteSystemHint_ExplicitSkillMention(t *testing.T) {

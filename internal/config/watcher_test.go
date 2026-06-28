@@ -9,7 +9,7 @@ import (
 
 func TestConfigWatcherNoChange(t *testing.T) {
 	tmpDir := t.TempDir()
-	homeDir := filepath.Join(tmpDir, ".luckyharness")
+	homeDir := filepath.Join(tmpDir, ".luckyagent")
 	cfgPath := filepath.Join(homeDir, "config.yaml")
 
 	mgr, err := NewManager()
@@ -48,7 +48,7 @@ func TestConfigWatcherNoChange(t *testing.T) {
 
 func TestConfigWatcherDetectsChange(t *testing.T) {
 	tmpDir := t.TempDir()
-	homeDir := filepath.Join(tmpDir, ".luckyharness")
+	homeDir := filepath.Join(tmpDir, ".luckyagent")
 	cfgPath := filepath.Join(homeDir, "config.yaml")
 
 	mgr, err := NewManager()
@@ -107,7 +107,7 @@ func TestConfigWatcherDetectsChange(t *testing.T) {
 
 func TestConfigWatcherForceReload(t *testing.T) {
 	tmpDir := t.TempDir()
-	homeDir := filepath.Join(tmpDir, ".luckyharness")
+	homeDir := filepath.Join(tmpDir, ".luckyagent")
 	cfgPath := filepath.Join(homeDir, "config.yaml")
 
 	mgr, err := NewManager()
@@ -205,7 +205,7 @@ func TestDiffConfigNoChange(t *testing.T) {
 
 func TestManagerReload(t *testing.T) {
 	tmpDir := t.TempDir()
-	homeDir := filepath.Join(tmpDir, ".luckyharness")
+	homeDir := filepath.Join(tmpDir, ".luckyagent")
 	cfgPath := filepath.Join(homeDir, "config.json")
 
 	mgr, err := NewManager()

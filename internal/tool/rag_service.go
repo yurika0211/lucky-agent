@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/rag"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 // RAGToolService implements rag_search/rag_index handlers in the tool layer.

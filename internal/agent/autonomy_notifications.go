@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/autonomy"
+	"github.com/yurika0211/luckyagent/internal/autonomy"
 )
 
 func (a *Agent) startAutonomyResultReporter() {

@@ -1,5 +1,5 @@
-// Package luckyharness provides gRPC server implementation for LuckyHarness.
-package luckyharness
+// Package luckyagent provides gRPC server implementation for LuckyAgent.
+package luckyagent
 
 import (
 	"context"
@@ -8,10 +8,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/rag"
-	"github.com/yurika0211/luckyharness/internal/workflow"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/workflow"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/health"
@@ -459,7 +459,7 @@ func NewGRPCServer(addr string, serviceServer *Server) *GRPCServer {
 	// Register health service
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
-	healthServer.SetServingStatus("luckyharness", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("luckyagent", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	// Register reflection
 	reflection.Register(server)
@@ -488,7 +488,7 @@ func (s *GRPCServer) Start() error {
 
 // Stop stops the gRPC server gracefully.
 func (s *GRPCServer) Stop() {
-	s.health.SetServingStatus("luckyharness", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+	s.health.SetServingStatus("luckyagent", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	s.server.GracefulStop()
 }
 

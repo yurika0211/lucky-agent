@@ -279,7 +279,7 @@ func hasToolSystemIntent(text string) bool {
 	}
 	return intentTextContainsAny(text, "只有", "只剩", "only") &&
 		intentTextContainsAny(text, "图片分析工具", "图片工具", "image_analyze", "image analysis tool", "image tool") &&
-		intentTextContainsAny(text, "lh", "luckyharness", "agent", "模型", "说", "显示", "报")
+		intentTextContainsAny(text, "lh", "luckyagent", "agent", "模型", "说", "显示", "报")
 }
 
 func hasLocalToolIntent(text string) bool {
@@ -288,7 +288,7 @@ func hasLocalToolIntent(text string) bool {
 		"readme", "system_prompt", "tool router", "代码", "源码", "仓库", "repo",
 		"文件", "目录", "路径", "benchmark", "单测", "测试", "跑测试", "日志", ".log", "logs", "log file",
 		"git status", "git diff", "脏文件", "暂存", "分支", "commit", "push",
-		"luckyharness", "lucky harness", "记忆系统", "工具系统", "上下文打包器",
+		"luckyagent", "lucky harness", "记忆系统", "工具系统", "上下文打包器",
 	) {
 		return true
 	}

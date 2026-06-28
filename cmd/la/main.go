@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/yurika0211/luckyharness/internal/cli/lhcmd"
+	"github.com/yurika0211/luckyagent/internal/cli/lhcmd"
 )
 
 var (

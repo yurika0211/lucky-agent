@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/memory"
 	"gopkg.in/yaml.v3"
 )
 

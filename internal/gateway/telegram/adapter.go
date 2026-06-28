@@ -19,7 +19,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	xproxy "golang.org/x/net/proxy"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 const defaultAttachmentDownloadLimit = 1 << 30
@@ -1142,9 +1142,9 @@ func (a *Adapter) attachmentDownloadTimeout() time.Duration {
 func telegramAttachmentStorageDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".luckyharness", "data", "telegram", "attachments"), nil
+		return filepath.Join(home, ".luckyagent", "data", "telegram", "attachments"), nil
 	}
-	return filepath.Join(os.TempDir(), "luckyharness", "telegram", "attachments"), nil
+	return filepath.Join(os.TempDir(), "luckyagent", "telegram", "attachments"), nil
 }
 
 func telegramAttachmentFileName(att *gateway.Attachment) string {

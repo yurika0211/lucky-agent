@@ -11,7 +11,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ghcr.io/yurika0211/luckyharness
+  IMAGE_NAME: ghcr.io/yurika0211/luckyagent
 
 jobs:
   test:
@@ -42,7 +42,7 @@ jobs:
       - name: Run tests
         run: go test ./... -race -count=1 -timeout 10m
       - name: Build
-        run: go build -o lh ./cmd/lh
+        run: go build -o lh ./cmd/la
       - name: Verify binary
         run: ./lh version
       - name: Smoke release archive layout

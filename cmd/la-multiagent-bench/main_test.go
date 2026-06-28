@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 func testFixture() (map[string]agentSpec, []benchTask) {

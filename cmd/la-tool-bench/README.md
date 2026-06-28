@@ -1,6 +1,6 @@
 # lh-tool-bench
 
-`lh-tool-bench` measures LuckyHarness tool strategy quality without calling an
+`lh-tool-bench` measures LuckyAgent tool strategy quality without calling an
 LLM or executing real tools. It uses golden synthetic tasks plus deterministic
 strategy simulation so tool-routing changes can be compared cheaply and
 reproducibly.
@@ -16,7 +16,7 @@ The benchmark answers:
 ## Run
 
 ```bash
-go run ./cmd/lh-tool-bench \
+go run ./cmd/la-tool-bench \
   -variant baseline \
   -scenario all \
   -rounds 1 \
@@ -26,7 +26,7 @@ go run ./cmd/lh-tool-bench \
 Compare existing runs:
 
 ```bash
-go run ./cmd/lh-tool-bench \
+go run ./cmd/la-tool-bench \
   -compare docs/reports/tool-bench-refined-baseline-20260607.jsonl,docs/reports/tool-bench-refined-risk-aware-20260607.jsonl,docs/reports/tool-bench-refined-packed-results-20260607.jsonl
 ```
 

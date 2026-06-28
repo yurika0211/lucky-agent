@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyagent/internal/metrics"
 )
 
 // v0.69.0: server 包测试补全 - 覆盖 handleChat 0% 函数

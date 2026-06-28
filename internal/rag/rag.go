@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	embedderpkg "github.com/yurika0211/luckyharness/internal/embedder"
+	embedderpkg "github.com/yurika0211/luckyagent/internal/embedder"
 )
 
 // VectorStoreBackend is the interface that both in-memory and persistent

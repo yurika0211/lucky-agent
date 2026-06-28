@@ -5,12 +5,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/cron"
-	"github.com/yurika0211/luckyharness/internal/gateway"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/server/dashboard"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/cron"
+	"github.com/yurika0211/luckyagent/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/server/dashboard"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 var (

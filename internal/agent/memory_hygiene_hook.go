@@ -3,8 +3,8 @@ package agent
 import (
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/logger"
-	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/logger"
+	"github.com/yurika0211/luckyagent/internal/memory"
 )
 
 func (a *Agent) runContextMemoryHygieneHook() {

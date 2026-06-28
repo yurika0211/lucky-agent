@@ -14,19 +14,35 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/logger"
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/session"
-	"github.com/yurika0211/luckyharness/internal/telemetry"
-	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/logger"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/session"
+	"github.com/yurika0211/luckyagent/internal/telemetry"
+	"github.com/yurika0211/luckyagent/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/utils"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
 var shellCommandSeparator = regexp.MustCompile(`\s*(?:;|&&|\|\|)\s*`)
+
+func getConversationSummaryPrompt() string {
+	loader := getPromptLoader()
+	defaultPrompt := `You are a helpful assistant that summarizes conversations.
+
+Summarize the key points, decisions, and outcomes from the conversation segment provided.
+Focus on:
+- Main topics discussed
+- Important decisions made
+- Action items or next steps
+- Key information exchanged
+
+Keep the summary concise but comprehensive.`
+
+	return loader.LoadOrDefault("functions/conversation_summary.md", defaultPrompt)
+}
 
 // LoopState 代表 Agent Loop 的状态
 type LoopState int
@@ -54,6 +70,35 @@ func (s LoopState) String() string {
 	default:
 		return "Unknown"
 	}
+}
+
+func providerNameForLog(p provider.Provider) string {
+	if p == nil {
+		return ""
+	}
+	return p.Name()
+}
+
+func toolCallNamesForLog(calls []provider.ToolCall) []string {
+	names := make([]string, 0, len(calls))
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func formatToolCallsForLog(calls []provider.ToolCall) string {
+	if len(calls) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(calls)
+	if err != nil {
+		return fmt.Sprint(calls)
+	}
+	return string(data)
 }
 
 // LoopConfig 是 Agent Loop 的配置
@@ -263,9 +308,23 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	defer span.End()
 	logger.Info("agent loop started",
 		"session_id", sessionID,
+		"provider", providerNameForLog(a.provider),
+		"model", a.activeModel,
 		"max_iterations", loopCfg.MaxIterations,
 		"timeout_ms", loopCfg.Timeout.Milliseconds(),
 		"auto_approve", loopCfg.AutoApprove,
+		"stream_mode", a.getStreamMode(),
+		"input_len", len(routingText),
+	)
+	logger.Debug("agent loop input",
+		"session_id", sessionID,
+		"input", routingText,
+		"scope_platform", turnInput.Scope.Platform,
+		"scope_chat_id", turnInput.Scope.ChatID,
+		"scope_chat_type", turnInput.Scope.ChatType,
+		"scope_sender_id", turnInput.Scope.SenderID,
+		"attachments", len(turnInput.Attachments),
+		"disabled_tools", strings.Join(loopCfg.DisabledTools, ","),
 	)
 	defer func() {
 		state := StateDone.String()
@@ -347,6 +406,13 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	}
 
 	callOpts := a.buildLoopCallOptions(routingText, loopCfg)
+	logger.Debug("agent loop context prepared",
+		"session_id", sessionID,
+		"messages", len(messages),
+		"tools", len(callOpts.Tools),
+		"tool_choice", fmt.Sprint(callOpts.ToolChoice),
+		"force_search_synthesis", loopState.forceSearchSynthesis,
+	)
 
 	for i := 0; i < loopCfg.MaxIterations; i++ {
 		result.Iterations = i + 1
@@ -355,6 +421,10 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 			"session_id", sessionID,
 			"iteration", i+1,
 			"messages", len(messages),
+			"tools", len(callOpts.Tools),
+			"tool_choice", fmt.Sprint(callOpts.ToolChoice),
+			"force_search_synthesis", loopState.forceSearchSynthesis,
+			"consecutive_tool_only_iterations", loopState.consecutiveToolOnlyIters,
 		)
 
 		// Reason: 调用 LLM（带 function calling 支持）
@@ -368,6 +438,17 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 
 		result.TokensUsed += resp.TokensUsed
 		applyTextToolCallsToResponse(resp, loopCfg.DisabledTools)
+		logger.Debug("agent loop provider response",
+			"session_id", sessionID,
+			"iteration", i+1,
+			"model", resp.Model,
+			"finish_reason", resp.FinishReason,
+			"tokens_used", resp.TokensUsed,
+			"content_bytes", len(resp.Content),
+			"reasoning_bytes", len(resp.ReasoningContent),
+			"tool_calls", len(resp.ToolCalls),
+			"tool_names", strings.Join(toolCallNamesForLog(resp.ToolCalls), ","),
+		)
 
 		// 检查是否有工具调用
 		if len(resp.ToolCalls) > 0 {
@@ -581,6 +662,16 @@ func (a *Agent) processToolCallBatch(
 			return ""
 		}(),
 		"count", len(resp.ToolCalls),
+		"tool_names", strings.Join(toolCallNamesForLog(resp.ToolCalls), ","),
+	)
+	logger.Debug("agent loop tool call batch detail",
+		"session_id", func() string {
+			if sess != nil {
+				return sess.ID
+			}
+			return ""
+		}(),
+		"tool_calls", formatToolCallsForLog(resp.ToolCalls),
 	)
 	loopState.emptyResponseRetries = 0
 	loopState.lengthRecoveryCount = 0
@@ -683,6 +774,18 @@ func (a *Agent) processToolCallBatch(
 		if sess != nil {
 			sess.AddProviderMessage(contextToolMsg)
 		}
+		logger.Debug("agent loop tool result appended",
+			"session_id", func() string {
+				if sess != nil {
+					return sess.ID
+				}
+				return ""
+			}(),
+			"tool", execResult.ToolCall.Name,
+			"tool_call_id", execResult.ToolCall.ID,
+			"result_bytes", len(execResult.Result),
+			"duration_ms", execResult.Duration.Milliseconds(),
+		)
 	}
 
 	messages = a.fitContextWindow(messages)
@@ -1076,6 +1179,8 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 		"session_id", sessionID,
 		"tool", name,
 		"auto_approve", autoApprove,
+		"arguments", arguments,
+		"argument_bytes", len(arguments),
 	)
 	defer func() {
 		fields := []any{
@@ -1084,12 +1189,23 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 			"duration_ms", time.Since(startAt).Milliseconds(),
 		}
 		if err != nil {
-			fields = append(fields, "error", err)
+			fields = append(fields,
+				"error", err,
+				"arguments", arguments,
+				"output", output,
+				"output_bytes", len(output),
+			)
 			logger.Warn("tool execution failed", fields...)
 			return
 		}
 		fields = append(fields, "output_bytes", len(output))
 		logger.Info("tool execution completed", fields...)
+		logger.Debug("tool execution output",
+			"session_id", sessionID,
+			"tool", name,
+			"output", output,
+			"output_bytes", len(output),
+		)
 	}()
 
 	// 解析参数
@@ -1314,7 +1430,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 	go func() {
 		prompt := summarizePrompt(firstHalf, "(first part)")
 		messages := []provider.Message{
-			{Role: "system", Content: "You are a helpful assistant that summarizes conversations."},
+			{Role: "system", Content: getConversationSummaryPrompt()},
 			{Role: "user", Content: prompt},
 		}
 
@@ -1330,7 +1446,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 	go func() {
 		prompt := summarizePrompt(secondHalf, "(second part)")
 		messages := []provider.Message{
-			{Role: "system", Content: "You are a helpful assistant that summarizes conversations."},
+			{Role: "system", Content: getConversationSummaryPrompt()},
 			{Role: "user", Content: prompt},
 		}
 

@@ -3,8 +3,8 @@ package agent
 import (
 	"context"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/session"
 )
 
 // ContextPackerSnapshot captures the messages and token distribution produced

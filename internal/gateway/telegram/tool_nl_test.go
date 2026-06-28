@@ -103,7 +103,7 @@ func TestTelegramProgressCards(t *testing.T) {
 
 	t.Run("tool trace card", func(t *testing.T) {
 		got := renderTelegramToolTraceCard([]telegramToolTraceStep{
-			{Name: "web_search", Args: `{"query":"luckyharness telegram"}`, Result: "Results for: luckyharness telegram", Success: true},
+			{Name: "web_search", Args: `{"query":"luckyagent telegram"}`, Result: "Results for: luckyagent telegram", Success: true},
 			{Name: "file_read", Args: `{"path":"internal/gateway/telegram/handler.go"}`, Result: "package telegram", Success: true},
 		})
 		assert.Contains(t, got, "<b>🛠 Tool Trace</b>")

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyagent/internal/config"
 )
 
 type ContentPart struct {

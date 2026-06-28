@@ -1,6 +1,6 @@
 # Memory Activation Benchmark
 
-`lh-memory-bench` measures LuckyHarness memory retrieval quality and latency.
+`lh-memory-bench` measures LuckyAgent memory retrieval quality and latency.
 It follows the same experiment shape as `lh-cache-bench`: each run writes JSONL
 round records plus per-scenario summary records, so different branches or
 activation variants can be compared with the same command.
@@ -8,11 +8,11 @@ activation variants can be compared with the same command.
 ## Build
 
 ```bash
-go run ./cmd/lh-memory-bench --help
+go run ./cmd/la-memory-bench --help
 ```
 
 The default dataset is synthetic and isolated in a temporary memory vault. The
-synthetic vault uses LuckyHarness Markdown memory notes with YAML frontmatter,
+synthetic vault uses LuckyAgent Markdown memory notes with YAML frontmatter,
 wikilinks, aliases, tags, and temporal-state fields.
 
 ## Recommended A/B Run
@@ -20,7 +20,7 @@ wikilinks, aliases, tags, and temporal-state fields.
 Run the same command on the baseline branch and on the changed branch:
 
 ```bash
-go run ./cmd/lh-memory-bench \
+go run ./cmd/la-memory-bench \
   --variant baseline \
   --scenario all \
   --dataset synthetic \
@@ -31,7 +31,7 @@ go run ./cmd/lh-memory-bench \
 ```
 
 ```bash
-go run ./cmd/lh-memory-bench \
+go run ./cmd/la-memory-bench \
   --variant activation-v1 \
   --scenario all \
   --dataset synthetic \
@@ -80,15 +80,15 @@ jq -s '
 Synthetic dataset:
 
 ```bash
-go run ./cmd/lh-memory-bench --dataset synthetic --size 1000 --scenario graph
+go run ./cmd/la-memory-bench --dataset synthetic --size 1000 --scenario graph
 ```
 
 Real memory vault:
 
 ```bash
-go run ./cmd/lh-memory-bench \
+go run ./cmd/la-memory-bench \
   --dataset real \
-  --memory-dir ~/.luckyharness/memory \
+  --memory-dir ~/.luckyagent/memory \
   --scenario scale \
   --query "女儿户外活动"
 ```

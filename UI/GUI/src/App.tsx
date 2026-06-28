@@ -79,7 +79,7 @@ function sessionAge(value?: string): string {
 
 function roleTitle(role: Bubble['role'], name?: string): string {
   if (role === 'user') return 'You';
-  if (role === 'assistant') return 'LuckyHarness';
+  if (role === 'assistant') return 'LuckyAgent';
   if (role === 'tool') return name ? `Tool: ${name}` : 'Tool';
   if (role === 'error') return 'Runtime Error';
   return 'System';
@@ -328,7 +328,7 @@ export function App() {
 
   function ensureAssistantBubble() {
     if (assistantBubbleRef.current) return assistantBubbleRef.current;
-    const id = pushBubble('assistant', 'LuckyHarness', '', 'streaming');
+    const id = pushBubble('assistant', 'LuckyAgent', '', 'streaming');
     assistantBubbleRef.current = id;
     return id;
   }
@@ -404,7 +404,7 @@ export function App() {
     pushBubble('user', 'You', text);
     setComposer('');
     assistantDraftRef.current = '';
-    assistantBubbleRef.current = pushBubble('assistant', 'LuckyHarness', '', 'streaming');
+    assistantBubbleRef.current = pushBubble('assistant', 'LuckyAgent', '', 'streaming');
     setSocketState('running');
     pushFeed('sent');
     wsRef.current.send(JSON.stringify({ type: 'chat', data: { message: text, stream: true, max_iterations: 8 } }));
@@ -493,7 +493,7 @@ export function App() {
       <main className="workspace">
         <section className="topbar panel">
           <div className="topbar-title">
-            <span className="eyebrow">LuckyHarness GUI</span>
+            <span className="eyebrow">LuckyAgent GUI</span>
             <h1>{view === 'gateways' ? 'Messaging gateways' : 'Agent runtime workspace'}</h1>
           </div>
           <div className="topbar-actions">

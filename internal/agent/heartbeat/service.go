@@ -10,8 +10,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/prompt"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
+
+func getHeartbeatAgentPrompt() string {
+	homeDir, _ := os.UserHomeDir()
+	promptsDir := filepath.Join(homeDir, ".luckyagent", "memory", "prompts")
+	loader := prompt.NewLoader(promptsDir)
+
+	defaultPrompt := "You are a heartbeat agent. Review HEARTBEAT.md and decide whether there are active tasks. Use the heartbeat tool when available."
+	return loader.LoadOrDefault("functions/heartbeat.md", defaultPrompt)
+}
 
 var heartbeatDecisionTool = []map[string]any{
 	{
@@ -202,7 +212,7 @@ func (s *Service) readHeartbeatFile() (string, bool, error) {
 func (s *Service) decide(ctx context.Context, content string) (string, string, error) {
 	nowText := time.Now().Format("2006-01-02 15:04:05 -0700 MST")
 	messages := []provider.Message{
-		{Role: "system", Content: "You are a heartbeat agent. Review HEARTBEAT.md and decide whether there are active tasks. Use the heartbeat tool when available."},
+		{Role: "system", Content: getHeartbeatAgentPrompt()},
 		{Role: "user", Content: fmt.Sprintf("Current Time: %s\n\nReview the following HEARTBEAT.md and decide whether there are active tasks.\n\n%s", nowText, content)},
 	}
 

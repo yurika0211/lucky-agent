@@ -1,6 +1,6 @@
 package tool
 
-import "github.com/yurika0211/luckyharness/internal/utils"
+import "github.com/yurika0211/luckyagent/internal/utils"
 
 func truncateStr(s string, maxLen int) string {
 	return utils.Truncate(s, maxLen)

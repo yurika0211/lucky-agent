@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"bytes"
 	"log/slog"
 	"os"
 	"strings"
@@ -143,5 +144,30 @@ func TestInitLoggerStdout(t *testing.T) {
 	logger := GetLogger()
 	if logger == nil {
 		t.Fatal("expected non-nil logger")
+	}
+}
+
+func TestPrettyTextHandlerDoesNotTruncateStringAttrs(t *testing.T) {
+	var buf bytes.Buffer
+	h := &prettyTextHandler{
+		writer: &buf,
+		opts: &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		},
+	}
+	l := slog.New(h)
+
+	longValue := strings.Repeat("x", 200) + "\nsecond line"
+	l.Info("full log", "query", longValue)
+
+	out := buf.String()
+	if strings.Contains(out, "...") {
+		t.Fatalf("expected no ellipsis truncation, got %q", out)
+	}
+	if !strings.Contains(out, strings.Repeat("x", 200)) {
+		t.Fatalf("expected full long value in log, got %q", out)
+	}
+	if !strings.Contains(out, `\nsecond line`) {
+		t.Fatalf("expected newline to be escaped in quoted attr, got %q", out)
 	}
 }

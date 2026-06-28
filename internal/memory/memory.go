@@ -1535,13 +1535,13 @@ type conceptRule struct {
 var builtInConceptRules = []conceptRule{
 	{
 		Concept:  "LuckyHarness",
-		Triggers: []string{"luckyharness", "lh", "l h"},
+		Triggers: []string{"luckyagent", "lh", "l h"},
 		Aliases:  []string{"lh"},
-		Tags:     []string{"concept/luckyharness"},
+		Tags:     []string{"concept/luckyagent"},
 	},
 	{
 		Concept:  "LuckyHarness Memory",
-		Triggers: []string{"luckyharness memory", "lh memory", "记忆库", "durable memory", "working memory", "memory vault", "obsidian-first", "graph memory", "双链记忆"},
+		Triggers: []string{"luckyagent memory", "lh memory", "记忆库", "durable memory", "working memory", "memory vault", "obsidian-first", "graph memory", "双链记忆"},
 		Aliases:  []string{"记忆库", "graph memory", "working memory"},
 		Tags:     []string{"concept/memory"},
 	},

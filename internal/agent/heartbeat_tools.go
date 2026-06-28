@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	appheartbeat "github.com/yurika0211/luckyharness/internal/agent/heartbeat"
-	"github.com/yurika0211/luckyharness/internal/session"
+	appheartbeat "github.com/yurika0211/luckyagent/internal/agent/heartbeat"
+	"github.com/yurika0211/luckyagent/internal/session"
 )
 
 /*
@@ -55,7 +55,7 @@ func (a *Agent) initHeartbeatService() error {
 	}
 
 	svc := appheartbeat.New(appheartbeat.Config{
-		Workspace: filepath.Join(a.cfg.HomeDir(), "workspace"),
+		Workspace: filepath.Join(a.cfg.HomeDir(), "memory", "prompts"),
 		Provider:  a.provider,
 		Model:     a.activeModel,
 		Enabled:   enabled,

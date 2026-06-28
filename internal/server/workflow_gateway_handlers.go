@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
-	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
-	"github.com/yurika0211/luckyharness/internal/utils"
-	"github.com/yurika0211/luckyharness/internal/workflow"
+	"github.com/yurika0211/luckyagent/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway/telegram"
+	"github.com/yurika0211/luckyagent/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/workflow"
 )
 
 // ============================================================================

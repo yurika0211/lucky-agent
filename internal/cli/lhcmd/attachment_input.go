@@ -6,7 +6,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 var localPathPattern = regexp.MustCompile(`(?m)(?:^|\s)([A-Za-z]:\\[^\s]+|/[^\s]+|\./[^\s]+|\.\\[^\s]+|~/[^\s]+)`)

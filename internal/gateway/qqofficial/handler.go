@@ -15,18 +15,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/cli/profile"
-	"github.com/yurika0211/luckyharness/internal/cron"
-	"github.com/yurika0211/luckyharness/internal/gateway"
-	luckycollector "github.com/yurika0211/luckyharness/internal/gateway/collector"
-	"github.com/yurika0211/luckyharness/internal/learning"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/metrics"
-	"github.com/yurika0211/luckyharness/internal/rag"
-	"github.com/yurika0211/luckyharness/internal/session"
-	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/cli/profile"
+	"github.com/yurika0211/luckyagent/internal/cron"
+	"github.com/yurika0211/luckyagent/internal/gateway"
+	luckycollector "github.com/yurika0211/luckyagent/internal/gateway/collector"
+	"github.com/yurika0211/luckyagent/internal/learning"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/metrics"
+	"github.com/yurika0211/luckyagent/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/session"
+	"github.com/yurika0211/luckyagent/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 type commandHandler func(ctx context.Context, msg *gateway.Message) error
@@ -1406,7 +1406,7 @@ func (h *Handler) learningStore() (*learning.ProgressStore, error) {
 		if err != nil {
 			return nil, fmt.Errorf("locate home dir: %w", err)
 		}
-		home = filepath.Join(userHome, ".luckyharness")
+		home = filepath.Join(userHome, ".luckyagent")
 	}
 	return learning.NewProgressStore(home), nil
 }
@@ -1564,7 +1564,7 @@ func (h *Handler) handleProfile(ctx context.Context, msg *gateway.Message) error
 		if err != nil {
 			return h.reply(ctx, msg, fmt.Sprintf("定位 home dir 失败：%s", err.Error()))
 		}
-		home = filepath.Join(userHome, ".luckyharness")
+		home = filepath.Join(userHome, ".luckyagent")
 	}
 	mgr, err := profile.NewManager(home)
 	if err != nil {

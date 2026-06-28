@@ -1,6 +1,6 @@
 package tool
 
-import "github.com/yurika0211/luckyharness/internal/multimodal"
+import "github.com/yurika0211/luckyagent/internal/multimodal"
 
 // BuiltinToolService wraps the generic builtin tool registrations.
 type BuiltinToolService struct {

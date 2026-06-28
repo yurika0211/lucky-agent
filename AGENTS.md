@@ -1,18 +1,18 @@
 # AGENTS.md
 
 This file gives project-specific operating guidance for agents working in the
-LuckyHarness repository. Keep it factual, compact, and aligned with the current
+LuckyAgent repository. Keep it factual, compact, and aligned with the current
 codebase.
 
 ## Project Shape
 
-LuckyHarness is a Go agent runtime, not only a chat wrapper. The main binary is
-`cmd/lh`, with most runtime code under `internal/`.
+LuckyAgent is a Go agent runtime, not only a chat wrapper. The main binary is
+`cmd/la`, with most runtime code under `internal/`.
 
 Primary entry points:
 
 - `lh`: starts the TUI when run in an interactive terminal.
-- `lh init`: initializes `${HOME}/.luckyharness`.
+- `lh init`: initializes `${HOME}/.luckyagent`.
 - `lh chat [message]`: local one-shot chat or REPL debugging.
 - `lh serve`: HTTP API server.
 - `lh msg-gateway start`: external chat gateways.
@@ -20,7 +20,7 @@ Primary entry points:
 - `lh config`, `lh soul`, `lh dashboard`, `lh tui`, and `lh learn`: runtime
   management surfaces.
 
-The runtime home defaults to `${HOME}/.luckyharness`. Source checkouts may also
+The runtime home defaults to `${HOME}/.luckyagent`. Source checkouts may also
 contain a local `config.json`, but deployed runtime state belongs under the
 configured home directory.
 
@@ -106,8 +106,8 @@ attachments.
 
 ## Memory, RAG, And Context
 
-Memory is stored in the LuckyHarness Markdown vault under
-`${HOME}/.luckyharness/memory`. It is the durable memory source of truth. RAG is
+Memory is stored in the LuckyAgent Markdown vault under
+`${HOME}/.luckyagent/memory`. It is the durable memory source of truth. RAG is
 separate retrieved evidence and may use SQLite persistence under the runtime
 home.
 
@@ -127,7 +127,7 @@ When debugging context contamination, inspect:
 
 ## Config Notes
 
-Core config lives in `${HOME}/.luckyharness/config.json`.
+Core config lives in `${HOME}/.luckyagent/config.json`.
 
 High-impact keys:
 

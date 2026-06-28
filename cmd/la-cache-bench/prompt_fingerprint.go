@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/contextx"
+	"github.com/yurika0211/luckyagent/internal/contextx"
 )
 
 type promptFingerprint struct {
