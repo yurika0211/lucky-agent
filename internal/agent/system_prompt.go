@@ -459,7 +459,7 @@ func (a *Agent) buildLuckyHarnessManualPrompt(sess *session.Session) string {
 			content = strings.TrimSpace(content[:head] + "\n\n[... omitted ...]\n\n" + content[len(content)-tail:])
 		}
 
-		return fmt.Sprintf("LuckyHarness manual (%s):\n%s", base, content)
+		return fmt.Sprintf("LuckyAgent manual (%s):\n%s", base, content)
 	})
 }
 
@@ -547,6 +547,7 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 	if cwd != "" {
 		candidates = append(candidates,
 			filepath.Join(cwd, "memory", "prompts", "AGENTS.md"),
+			filepath.Join(cwd, "description", "AGENTS.md"),
 			filepath.Join(cwd, "description", "agents.md"),
 			filepath.Join(cwd, "LUCKYHARNESS_AGENT_MANUAL.md"),
 			filepath.Join(cwd, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
@@ -557,6 +558,7 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 		if homeDir != "" {
 			candidates = append(candidates,
 				filepath.Join(homeDir, "memory", "prompts", "AGENTS.md"),
+				filepath.Join(homeDir, "description", "AGENTS.md"),
 				filepath.Join(homeDir, "description", "agents.md"),
 				filepath.Join(homeDir, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
 			)
@@ -654,8 +656,10 @@ func platformHint(platform string) string {
 	switch platformLower {
 	case "telegram":
 		filename = "platform/telegram.md"
-	case "qqofficial", "napcat", "onebot":
+	case "qqofficial":
 		filename = "platform/qqofficial.md"
+	case "napcat", "onebot":
+		filename = "platform/napcat.md"
 	case "cli":
 		filename = "platform/cli.md"
 	default:

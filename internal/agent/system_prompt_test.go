@@ -82,8 +82,17 @@ func TestBuildSystemPromptIncludesNapCatPlainTextPlatformHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
+	if err := mgr.InitHome(); err != nil {
+		t.Fatalf("init home: %v", err)
+	}
 	if err := mgr.Set("msg_gateway.platform", "napcat"); err != nil {
 		t.Fatalf("set platform: %v", err)
+	}
+	if err := mgr.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+	if err := mgr.Load(); err != nil {
+		t.Fatalf("load config: %v", err)
 	}
 
 	a := &Agent{
@@ -98,11 +107,8 @@ func TestBuildSystemPromptIncludesNapCatPlainTextPlatformHint(t *testing.T) {
 
 	prompt := a.buildSystemPrompt(nil)
 	for _, want := range []string{
-		"delivered through QQ",
-		"plain chat text only",
-		"Do not use Markdown syntax",
-		"inline code backticks",
-		"Markdown link syntax",
+		"NapCat",
+		"QQ",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected NapCat platform hint to contain %q:\n%s", want, prompt)
@@ -137,7 +143,7 @@ func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
 	}
 
 	prompt := a.buildSystemPrompt(sess)
-	if !strings.Contains(prompt, "LuckyHarness manual (AGENTS.md):") {
+	if !strings.Contains(prompt, "LuckyAgent manual (AGENTS.md):") {
 		t.Fatalf("expected manual marker in prompt, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "Convergence rule: stop once the success condition is satisfied.") {
