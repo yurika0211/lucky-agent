@@ -96,15 +96,17 @@ func TestNewBenchmarkConfigManagerCanUseIsolatedHome(t *testing.T) {
 	if home == "" || !strings.Contains(filepath.Base(home), "lh-cache-bench-home-") {
 		t.Fatalf("expected isolated benchmark home, got %q", home)
 	}
-	if _, err := os.Stat(filepath.Join(home, "SOUL.md")); err != nil {
+	soulPath := filepath.Join(home, "memory", "prompts", "SOUL.md")
+	if _, err := os.Stat(soulPath); err != nil {
 		t.Fatalf("expected isolated SOUL.md: %v", err)
 	}
 	cfg := mgr.Get()
 	if cfg.Provider == "" || cfg.Model == "" {
 		t.Fatalf("expected copied/default provider config, got provider=%q model=%q", cfg.Provider, cfg.Model)
 	}
-	if cfg.SoulPath != filepath.Join(home, "SOUL.md") {
-		t.Fatalf("expected isolated soul path, got %q", cfg.SoulPath)
+	expectedSoulPath := filepath.Join(home, "memory", "prompts", "SOUL.md")
+	if cfg.SoulPath != expectedSoulPath {
+		t.Fatalf("expected isolated soul path %q, got %q", expectedSoulPath, cfg.SoulPath)
 	}
 	if _, err := os.Stat(filepath.Join(home, "cron_jobs.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected no cron store in isolated home, stat err=%v", err)

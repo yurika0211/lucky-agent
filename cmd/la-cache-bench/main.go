@@ -256,7 +256,7 @@ func newBenchmarkConfigManager(cfg benchConfig) (*config.Manager, func(), error)
 		cleanup()
 		return nil, nil, fmt.Errorf("load isolated config: %w", err)
 	}
-	_ = isolated.Set("soul_path", filepath.Join(tmpDir, "SOUL.md"))
+	_ = isolated.Set("soul_path", filepath.Join(tmpDir, "memory", "prompts", "SOUL.md"))
 	if err := isolated.Save(); err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("save isolated config: %w", err)
