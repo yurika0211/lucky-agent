@@ -31,6 +31,13 @@ type fakeSpeechSynthesizer struct {
 	result  *multimodal.SpeechSynthesisResult
 }
 
+func testLuckyAgentWorkspace(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	return filepath.Join(home, ".luckyagent", "workspace")
+}
+
 func (g *fakeImageGenerator) Name() string { return "fake-image-generator" }
 func (g *fakeImageGenerator) GenerateImage(ctx context.Context, req multimodal.ImageGenerationRequest) (*multimodal.ImageGenerationResult, error) {
 	g.lastReq = req
@@ -393,6 +400,7 @@ func TestImageGenerateToolSavesOutputAndSupportsImageToImage(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
+	outputDir := filepath.Join(testLuckyAgentWorkspace(t), "generated-images-test")
 	inputPath := filepath.Join(tmpDir, "input.png")
 	if err := os.WriteFile(inputPath, []byte("input-image-bytes"), 0o644); err != nil {
 		t.Fatalf("write input image: %v", err)
@@ -404,7 +412,7 @@ func TestImageGenerateToolSavesOutputAndSupportsImageToImage(t *testing.T) {
 	result, err := r.CallWithShellContext("image_generate", map[string]any{
 		"prompt":        "turn this into a watercolor postcard",
 		"input_path":    inputPath,
-		"output_dir":    tmpDir,
+		"output_dir":    outputDir,
 		"count":         1,
 		"output_format": "png",
 	}, &ShellContext{Cwd: tmpDir})
@@ -456,9 +464,10 @@ func TestImageGenerateToolUsesConfiguredDefaults(t *testing.T) {
 	}))
 
 	tmpDir := t.TempDir()
+	outputDir := filepath.Join(testLuckyAgentWorkspace(t), "default-images")
 	_, err := r.CallWithShellContext("image_generate", map[string]any{
 		"prompt":     "a minimal poster",
-		"output_dir": tmpDir,
+		"output_dir": outputDir,
 	}, &ShellContext{Cwd: tmpDir})
 	if err != nil {
 		t.Fatalf("image_generate call: %v", err)
@@ -481,6 +490,41 @@ func TestImageGenerateToolUsesConfiguredDefaults(t *testing.T) {
 	}
 }
 
+func TestImageGenerateToolDefaultsOutputToWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider: "fake-image-generator",
+			Model:    "gpt-image-1.5",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("generated-image-bytes"), MimeType: "image/png"},
+			},
+		},
+	}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	result, err := r.Call("image_generate", map[string]any{"prompt": "a workspace image"})
+	if err != nil {
+		t.Fatalf("image_generate call: %v", err)
+	}
+
+	var payload struct {
+		Paths []string `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal tool output: %v", err)
+	}
+	if len(payload.Paths) != 1 {
+		t.Fatalf("expected 1 saved path, got %d", len(payload.Paths))
+	}
+	wantPrefix := filepath.Join(home, ".luckyagent", "workspace", "generated-images")
+	if !strings.HasPrefix(payload.Paths[0], wantPrefix+string(os.PathSeparator)) {
+		t.Fatalf("expected generated image under %q, got %q", wantPrefix, payload.Paths[0])
+	}
+}
+
 func TestImageGenerateToolSupportsMultipleInputPaths(t *testing.T) {
 	gen := &fakeImageGenerator{
 		result: &multimodal.ImageGenerationResult{
@@ -493,6 +537,7 @@ func TestImageGenerateToolSupportsMultipleInputPaths(t *testing.T) {
 	}
 
 	tmpDir := t.TempDir()
+	outputDir := filepath.Join(testLuckyAgentWorkspace(t), "multi-input-images")
 	inputPath1 := filepath.Join(tmpDir, "input-1.png")
 	inputPath2 := filepath.Join(tmpDir, "input-2.png")
 	if err := os.WriteFile(inputPath1, []byte("image-one"), 0o644); err != nil {
@@ -508,7 +553,7 @@ func TestImageGenerateToolSupportsMultipleInputPaths(t *testing.T) {
 	_, err := r.CallWithShellContext("image_generate", map[string]any{
 		"prompt":      "blend these two references",
 		"input_paths": []any{inputPath1, inputPath2},
-		"output_dir":  tmpDir,
+		"output_dir":  outputDir,
 	}, &ShellContext{Cwd: tmpDir})
 	if err != nil {
 		t.Fatalf("image_generate call: %v", err)
@@ -518,6 +563,101 @@ func TestImageGenerateToolSupportsMultipleInputPaths(t *testing.T) {
 	}
 	if string(gen.lastReq.InputImages[0].Data) != "image-one" || string(gen.lastReq.InputImages[1].Data) != "image-two" {
 		t.Fatalf("unexpected input bytes: %#v", gen.lastReq.InputImages)
+	}
+}
+
+func TestImageGenerateToolRejectsOutputOutsideWorkspace(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider: "fake-image-generator",
+			Model:    "gpt-image-1.5",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("generated-image-bytes"), MimeType: "image/png"},
+			},
+		},
+	}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	_, err := r.Call("image_generate", map[string]any{
+		"prompt":     "outside workspace",
+		"output_dir": filepath.Join(filepath.Dir(workspace), "data", "images"),
+	})
+	if err == nil {
+		t.Fatal("expected output_dir outside workspace to be rejected")
+	}
+	if !strings.Contains(err.Error(), "outside workspace") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageGenerateToolRejectsFilenamePrefixEscapingWorkspace(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider: "fake-image-generator",
+			Model:    "gpt-image-1.5",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("generated-image-bytes"), MimeType: "image/png"},
+			},
+		},
+	}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	_, err := r.Call("image_generate", map[string]any{
+		"prompt":          "escape workspace",
+		"output_dir":      filepath.Join(workspace, "generated-images"),
+		"filename_prefix": "../../outside",
+	})
+	if err == nil {
+		t.Fatal("expected escaping filename_prefix to be rejected")
+	}
+	if !strings.Contains(err.Error(), "outside workspace") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTextToSpeechToolDefaultsOutputToWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	synth := &fakeSpeechSynthesizer{
+		result: &multimodal.SpeechSynthesisResult{
+			Provider: "fake-speech-synthesizer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Audio:    []byte("speech-bytes"),
+			MimeType: "audio/mpeg",
+		},
+	}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	result, err := r.Call("text_to_speech", map[string]any{"text": "hello workspace"})
+	if err != nil {
+		t.Fatalf("text_to_speech call: %v", err)
+	}
+
+	var payload struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal tool output: %v", err)
+	}
+	wantPrefix := filepath.Join(home, ".luckyagent", "workspace", "generated-audio")
+	if !strings.HasPrefix(payload.Path, wantPrefix+string(os.PathSeparator)) {
+		t.Fatalf("expected generated audio under %q, got %q", wantPrefix, payload.Path)
+	}
+}
+
+func TestDownloadImageInputRejectsPrivateURL(t *testing.T) {
+	_, _, err := downloadImageInput("http://127.0.0.1/image.png")
+	if err == nil {
+		t.Fatal("expected private input_url to be rejected")
+	}
+	if !strings.Contains(err.Error(), "input_url validation failed") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -532,13 +672,14 @@ func TestTextToSpeechToolSavesOutput(t *testing.T) {
 		},
 	}
 	tmpDir := t.TempDir()
+	outputDir := filepath.Join(testLuckyAgentWorkspace(t), "tts-output")
 
 	r := NewRegistry()
 	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
 
 	result, err := r.CallWithShellContext("text_to_speech", map[string]any{
 		"text":       "hello from luckyagent",
-		"output_dir": tmpDir,
+		"output_dir": outputDir,
 	}, &ShellContext{Cwd: tmpDir})
 	if err != nil {
 		t.Fatalf("text_to_speech call: %v", err)
@@ -579,9 +720,10 @@ func TestTextToSpeechToolUsesConfiguredDefaults(t *testing.T) {
 	}))
 
 	tmpDir := t.TempDir()
+	outputDir := filepath.Join(testLuckyAgentWorkspace(t), "tts-defaults")
 	_, err := r.CallWithShellContext("text_to_speech", map[string]any{
 		"text":       "test defaults",
-		"output_dir": tmpDir,
+		"output_dir": outputDir,
 	}, &ShellContext{Cwd: tmpDir})
 	if err != nil {
 		t.Fatalf("text_to_speech call: %v", err)
@@ -615,10 +757,11 @@ func TestTextToSpeechToolGeneratesUniqueDefaultPaths(t *testing.T) {
 	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
 
 	tmpDir := t.TempDir()
+	outputDir := filepath.Join(testLuckyAgentWorkspace(t), "tts-unique")
 	call := func(text string) string {
 		out, err := r.CallWithShellContext("text_to_speech", map[string]any{
 			"text":       text,
-			"output_dir": tmpDir,
+			"output_dir": outputDir,
 		}, &ShellContext{Cwd: tmpDir})
 		if err != nil {
 			t.Fatalf("text_to_speech call: %v", err)
@@ -636,6 +779,32 @@ func TestTextToSpeechToolGeneratesUniqueDefaultPaths(t *testing.T) {
 	path2 := call("second audio")
 	if path1 == path2 {
 		t.Fatalf("expected unique output paths, got %q and %q", path1, path2)
+	}
+}
+
+func TestTextToSpeechToolRejectsOutputPathOutsideWorkspace(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	synth := &fakeSpeechSynthesizer{
+		result: &multimodal.SpeechSynthesisResult{
+			Provider: "fake-speech-synthesizer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Audio:    []byte("speech-bytes"),
+			MimeType: "audio/mpeg",
+		},
+	}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text":        "outside workspace",
+		"output_path": filepath.Join(filepath.Dir(workspace), "data", "audio.mp3"),
+	})
+	if err == nil {
+		t.Fatal("expected output_path outside workspace to be rejected")
+	}
+	if !strings.Contains(err.Error(), "outside workspace") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

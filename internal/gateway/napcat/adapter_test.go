@@ -146,6 +146,9 @@ func TestAdapterReceivesBareGroupReply(t *testing.T) {
 }
 
 func TestAdapterDownloadsIncomingAttachment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write([]byte("fake png data"))
@@ -199,6 +202,10 @@ func TestAdapterDownloadsIncomingAttachment(t *testing.T) {
 		att := msg.Attachments[0]
 		if att.Type != gateway.AttachmentImage || att.FilePath == "" {
 			t.Fatalf("expected downloaded image attachment, got %#v", att)
+		}
+		wantPrefix := filepath.Join(home, ".luckyagent", "workspace", "downloads", "napcat", "attachments")
+		if !strings.HasPrefix(att.FilePath, wantPrefix+string(os.PathSeparator)) {
+			t.Fatalf("expected attachment under %q, got %q", wantPrefix, att.FilePath)
 		}
 		data, err := os.ReadFile(att.FilePath)
 		if err != nil {

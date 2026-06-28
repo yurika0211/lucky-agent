@@ -1212,7 +1212,8 @@ func TestV054ExtractAttachmentsNilBot(t *testing.T) {
 }
 
 func TestV054PopulateAttachmentDataUsesResponseMetadata(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "audio/mpeg; charset=binary")
@@ -1235,6 +1236,10 @@ func TestV054PopulateAttachmentDataUsesResponseMetadata(t *testing.T) {
 
 	if att.FilePath == "" {
 		t.Fatal("expected downloaded file path")
+	}
+	wantPrefix := filepath.Join(home, ".luckyagent", "workspace", "downloads", "telegram", "attachments")
+	if !strings.HasPrefix(att.FilePath, wantPrefix+string(os.PathSeparator)) {
+		t.Fatalf("expected attachment under %q, got %q", wantPrefix, att.FilePath)
 	}
 	if att.MimeType != "audio/mpeg" {
 		t.Fatalf("expected response MIME type, got %q", att.MimeType)
