@@ -16,7 +16,7 @@ The benchmark answers:
 ## Run
 
 ```bash
-go run ./cmd/lh-tool-bench \
+go run ./cmd/la-tool-bench \
   -variant baseline \
   -scenario all \
   -rounds 1 \
@@ -26,7 +26,7 @@ go run ./cmd/lh-tool-bench \
 Compare existing runs:
 
 ```bash
-go run ./cmd/lh-tool-bench \
+go run ./cmd/la-tool-bench \
   -compare docs/reports/tool-bench-refined-baseline-20260607.jsonl,docs/reports/tool-bench-refined-risk-aware-20260607.jsonl,docs/reports/tool-bench-refined-packed-results-20260607.jsonl
 ```
 

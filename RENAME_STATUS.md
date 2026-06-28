@@ -65,7 +65,7 @@ grep -r "luckyharness\|LuckyHarness" \
 # 应该返回 0
 
 # 编译测试
-go build ./cmd/lh
+go build ./cmd/la
 
 # 运行测试
 go test ./...

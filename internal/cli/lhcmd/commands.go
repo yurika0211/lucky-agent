@@ -51,9 +51,9 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("LuckyHarness 初始化完成")
 	fmt.Printf("主目录: %s\n", mgr.HomeDir())
 	fmt.Println("下一步:")
-	fmt.Println("  lh config set api_key sk-xxx")
-	fmt.Println("  lh config set provider openai")
-	fmt.Println("  lh chat")
+	fmt.Println("  la config set api_key sk-xxx")
+	fmt.Println("  la config set provider openai")
+	fmt.Println("  la chat")
 	return nil
 }
 
@@ -238,7 +238,7 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := mgr.Get()
-	fmt.Println("LuckyHarness 配置:")
+	fmt.Println("LuckyAgent 配置:")
 	fmt.Printf("  provider: %s\n", cfg.Provider)
 	fmt.Printf("  api_key: %s\n", maskKey(cfg.APIKey))
 	fmt.Printf("  api_base: %s\n", cfg.APIBase)

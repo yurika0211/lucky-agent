@@ -16,7 +16,7 @@ ARG DATE=unknown
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
-    -o luckyagent ./cmd/lh
+    -o luckyagent ./cmd/la
 
 # Runtime stage
 FROM alpine:3.21

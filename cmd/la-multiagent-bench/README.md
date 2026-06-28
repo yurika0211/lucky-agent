@@ -150,7 +150,7 @@ PathRegret
 ## Usage
 
 ```bash
-go run ./cmd/lh-multiagent-bench \
+go run ./cmd/la-multiagent-bench \
   -variant baseline \
   -scenario all \
   -rounds 1 \
@@ -160,7 +160,7 @@ go run ./cmd/lh-multiagent-bench \
 Run only the super-heavy orchestration cases:
 
 ```bash
-go run ./cmd/lh-multiagent-bench \
+go run ./cmd/la-multiagent-bench \
   -variant baseline \
   -scenario heavy \
   -rounds 1 \
@@ -170,7 +170,7 @@ go run ./cmd/lh-multiagent-bench \
 Run the full mathematical planner on heavy cases:
 
 ```bash
-go run ./cmd/lh-multiagent-bench \
+go run ./cmd/la-multiagent-bench \
   -variant math-full-v1 \
   -scenario heavy \
   -rounds 1 \
@@ -180,14 +180,14 @@ go run ./cmd/lh-multiagent-bench \
 Compare result files:
 
 ```bash
-go run ./cmd/lh-multiagent-bench \
+go run ./cmd/la-multiagent-bench \
   -compare docs/reports/multiagent-bench-baseline.jsonl,docs/reports/multiagent-bench-dependency-aware.jsonl
 ```
 
 Run historical session replay cases:
 
 ```bash
-go run ./cmd/lh-multiagent-bench \
+go run ./cmd/la-multiagent-bench \
   -replay ~/.luckyagent/sessions \
   -replay-label-out docs/reports/multiagent-replay-labels.jsonl
 ```
@@ -195,7 +195,7 @@ go run ./cmd/lh-multiagent-bench \
 Review and edit the generated labels, then run the replay:
 
 ```bash
-go run ./cmd/lh-multiagent-bench \
+go run ./cmd/la-multiagent-bench \
   -variant math-full-v1 \
   -replay docs/reports/multiagent-replay-labels.jsonl \
   -replay-only \

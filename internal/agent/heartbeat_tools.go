@@ -55,7 +55,7 @@ func (a *Agent) initHeartbeatService() error {
 	}
 
 	svc := appheartbeat.New(appheartbeat.Config{
-		Workspace: filepath.Join(a.cfg.HomeDir(), "workspace"),
+		Workspace: filepath.Join(a.cfg.HomeDir(), "memory", "prompts"),
 		Provider:  a.provider,
 		Model:     a.activeModel,
 		Enabled:   enabled,

@@ -546,7 +546,7 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 	}
 	if cwd != "" {
 		candidates = append(candidates,
-			filepath.Join(cwd, "description", "AGENTS.md"),
+			filepath.Join(cwd, "memory", "prompts", "AGENTS.md"),
 			filepath.Join(cwd, "description", "agents.md"),
 			filepath.Join(cwd, "LUCKYHARNESS_AGENT_MANUAL.md"),
 			filepath.Join(cwd, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
@@ -556,7 +556,7 @@ func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
 		homeDir := strings.TrimSpace(a.cfg.HomeDir())
 		if homeDir != "" {
 			candidates = append(candidates,
-				filepath.Join(homeDir, "description", "AGENTS.md"),
+				filepath.Join(homeDir, "memory", "prompts", "AGENTS.md"),
 				filepath.Join(homeDir, "description", "agents.md"),
 				filepath.Join(homeDir, "description", "LUCKYHARNESS_AGENT_MANUAL.md"),
 			)

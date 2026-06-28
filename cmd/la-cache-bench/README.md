@@ -7,7 +7,7 @@ dynamic metadata from `buildSystemPrompt`.
 ## Build
 
 ```bash
-go run ./cmd/lh-cache-bench --help
+go run ./cmd/la-cache-bench --help
 ```
 
 The tool uses the normal LuckyAgent config and writes upstream captures through
@@ -23,7 +23,7 @@ and other local runtime state from polluting captures. Pass
 Run the same command on the baseline branch and on the fixed branch:
 
 ```bash
-go run ./cmd/lh-cache-bench \
+go run ./cmd/la-cache-bench \
   --variant baseline \
   --scenario same-session \
   --rounds 20 \
@@ -35,7 +35,7 @@ go run ./cmd/lh-cache-bench \
 ```
 
 ```bash
-go run ./cmd/lh-cache-bench \
+go run ./cmd/la-cache-bench \
   --variant fixed \
   --scenario same-session \
   --rounds 20 \

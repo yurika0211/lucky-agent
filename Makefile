@@ -7,23 +7,23 @@ LH_BIN := .\lh.exe
 ifeq ($(wildcard lh.exe),lh.exe)
 LH_CMD := $(LH_BIN)
 else
-LH_CMD := go run ./cmd/lh
+LH_CMD := go run ./cmd/la
 endif
 RUN_WITH_HOME = set "HOME=$(HOME_DIR)" &&
 REMOVE_LH = if exist lh del /q lh & if exist lh.exe del /q lh.exe
 else
-LH_CMD := go run ./cmd/lh
+LH_CMD := go run ./cmd/la
 RUN_WITH_HOME = HOME="$(HOME_DIR)"
 REMOVE_LH = rm -f lh lh.exe
 endif
 
 build:
-	go build -o lh ./cmd/lh
+	go build -o lh ./cmd/la
 
 install: build
 	mkdir -p "$$HOME/.luckyagent/runtime"
 	printf '%s\n' "$(CURDIR)/UI" > "$$HOME/.luckyagent/runtime/tui-ui-dir"
-	go install ./cmd/lh
+	go install ./cmd/la
 
 test:
 	go test ./...

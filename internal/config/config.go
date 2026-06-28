@@ -489,7 +489,7 @@ func DefaultConfig() *Config {
 		},
 		Provider:     "openai",
 		Model:        "gpt-5.4-mini",
-		SoulPath:     filepath.Join(home, ".luckyagent", "SOUL.md"),
+		SoulPath:     filepath.Join(home, ".luckyagent", "memory", "prompts", "SOUL.md"),
 		MaxTokens:    4096,
 		Temperature:  0.7,
 		Extra:        make(map[string]string),
@@ -1562,6 +1562,9 @@ func (m *Manager) InitHome() error {
 		filepath.Join(m.homeDir, "sessions"),
 		filepath.Join(m.homeDir, "memory"),
 		filepath.Join(m.homeDir, "memory", "midterm"),
+		filepath.Join(m.homeDir, "memory", "prompts"),
+		filepath.Join(m.homeDir, "memory", "prompts", "platform"),
+		filepath.Join(m.homeDir, "memory", "prompts", "functions"),
 		filepath.Join(m.homeDir, "logs"),
 		filepath.Join(m.homeDir, "skills"),
 		filepath.Join(m.homeDir, "tokens"),
@@ -1582,7 +1585,7 @@ func (m *Manager) InitHome() error {
 	}
 
 	// 写入默认 SOUL.md
-	soulPath := filepath.Join(m.homeDir, "SOUL.md")
+	soulPath := filepath.Join(m.homeDir, "memory", "prompts", "SOUL.md")
 	if _, err := os.Stat(soulPath); os.IsNotExist(err) {
 		defaultSoul := DefaultSoul()
 		if err := os.WriteFile(soulPath, []byte(defaultSoul), 0o644); err != nil {
@@ -1590,24 +1593,56 @@ func (m *Manager) InitHome() error {
 		}
 	}
 
-	manualPath := filepath.Join(m.homeDir, "description", "AGENTS.md")
+	manualPath := filepath.Join(m.homeDir, "memory", "prompts", "AGENTS.md")
 	if _, err := os.Stat(manualPath); os.IsNotExist(err) {
 		if err := os.WriteFile(manualPath, []byte(DefaultAgentManual()), 0o644); err != nil {
 			return fmt.Errorf("write AGENTS.md: %w", err)
 		}
 	}
 
-	missionPath := filepath.Join(m.homeDir, "mission.md")
+	missionPath := filepath.Join(m.homeDir, "memory", "prompts", "mission.md")
 	if _, err := os.Stat(missionPath); os.IsNotExist(err) {
 		if err := os.WriteFile(missionPath, []byte(DefaultMission()), 0o644); err != nil {
 			return fmt.Errorf("write mission.md: %w", err)
 		}
 	}
 
-	heartbeatPath := filepath.Join(m.homeDir, "workspace", "HEARTBEAT.md")
+	heartbeatPath := filepath.Join(m.homeDir, "memory", "prompts", "HEARTBEAT.md")
 	if _, err := os.Stat(heartbeatPath); os.IsNotExist(err) {
 		if err := os.WriteFile(heartbeatPath, []byte(DefaultHeartbeat()), 0o600); err != nil {
 			return fmt.Errorf("write HEARTBEAT.md: %w", err)
+		}
+	}
+
+	// 创建默认 prompts README
+	promptsReadmePath := filepath.Join(m.homeDir, "memory", "prompts", "README.md")
+	if _, err := os.Stat(promptsReadmePath); os.IsNotExist(err) {
+		readmeContent := `# LuckyAgent Prompts
+
+这个目录包含了 LuckyAgent 的所有系统级 prompt 配置。
+
+Prompts 目录位于 memory 文件夹内，与记忆系统放在一起，便于统一管理 Agent 的知识和行为配置。
+
+## 使用方法
+
+1. 直接编辑 .md 文件来自定义 Agent 行为
+2. 修改后立即生效，无需重启
+3. 如果删除文件，系统会自动使用内置默认值
+
+## 目录结构
+
+- core.md - 核心身份和行为原则
+- tool_policy.md - 工具使用策略
+- skill_policy.md - 技能路由策略
+- memory_policy.md - 记忆和RAG策略
+- supplementary_context.md - 补充上下文策略
+- platform/ - 平台特定策略
+- functions/ - 功能性prompts
+
+更多信息请访问：https://github.com/yurika0211/luckyagent
+`
+		if err := os.WriteFile(promptsReadmePath, []byte(readmeContent), 0o644); err != nil {
+			return fmt.Errorf("write prompts README.md: %w", err)
 		}
 	}
 

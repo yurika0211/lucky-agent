@@ -7,7 +7,7 @@ codebase.
 ## Project Shape
 
 LuckyAgent is a Go agent runtime, not only a chat wrapper. The main binary is
-`cmd/lh`, with most runtime code under `internal/`.
+`cmd/la`, with most runtime code under `internal/`.
 
 Primary entry points:
 

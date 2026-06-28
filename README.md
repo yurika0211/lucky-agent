@@ -976,7 +976,7 @@ lh rag search "deployment"
 ## 项目结构
 
 ```text
-cmd/lh                  CLI 入口
+cmd/la                  CLI 入口
 internal/cli/lhcmd      命令注册与执行
 internal/server         HTTP API 服务
 internal/gateway        消息网关体系

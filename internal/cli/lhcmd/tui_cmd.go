@@ -17,7 +17,7 @@ func addTUICmd(root *cobra.Command) {
 
 	tuiCmd := &cobra.Command{
 		Use:   "tui",
-		Short: "启动 LuckyHarness 终端 UI",
+		Short: "启动 LuckyAgent 终端 UI",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			apiBase, _ := cmd.Flags().GetString("api-base")
 			session, _ := cmd.Flags().GetString("session")

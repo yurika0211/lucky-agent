@@ -939,7 +939,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		collabMgr:      nil,
 		metrics:        supportRT.metrics,
 		cronEngine:     supportRT.cronEngine,
-		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "mission.md")),
+		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
 		autonomy:       supportRT.autonomyKit,
 		contextCache:   newContextMessageCache(64),
 		mediaProcessor: supportRT.mediaProcessor,
