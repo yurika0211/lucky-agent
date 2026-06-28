@@ -75,7 +75,7 @@ ${HOME}/.luckyagent/config.json
 go run ./cmd/la init
 ```
 
-这条命令会初始化 `~/.luckyagent` 运行目录，写入默认的 `config.json`、`SOUL.md`，并准备运行期会用到的目录骨架。
+这条命令会初始化 `~/.luckyagent` 运行目录，写入默认的 `config.json`，创建 `memory/prompts/` 配置目录，并准备运行期会用到的目录骨架。
 
 最小配置示例：
 
@@ -143,32 +143,41 @@ go run ./cmd/la init
 ```text
 ~/.luckyagent/
 ├── config.json
-├── SOUL.md
-├── mission.md
 ├── sessions/
 ├── memory/
-│   ├── 00_Index/
-│   ├── 10_Profile/
-│   ├── 20_Projects/
-│   ├── 30_Sessions/
-│   ├── 40_Decisions/
-│   ├── 50_Facts/
-│   ├── 60_Rules/
-│   ├── 70_Trajectories/
-│   └── 90_Archive/
+│   ├── prompts/              # ⭐ 配置文件统一位置
+│   │   ├── README.md         # Prompts使用说明
+│   │   ├── SOUL.md           # Agent人格定义
+│   │   ├── AGENTS.md         # Agent操作手册
+│   │   ├── mission.md        # Cron任务存储
+│   │   ├── HEARTBEAT.md      # 心跳任务定义
+│   │   ├── core.md           # 核心身份策略（可自定义）
+│   │   ├── tool_policy.md    # 工具策略（可自定义）
+│   │   ├── skill_policy.md   # 技能策略（可自定义）
+│   │   ├── memory_policy.md  # 记忆策略（可自定义）
+│   │   ├── platform/         # 平台特定配置
+│   │   └── functions/        # 功能性prompts
+│   ├── midterm/              # 中期记忆
+│   ├── 00_Index/             # 记忆索引
+│   ├── 10_Profile/           # 用户画像
+│   ├── 20_Projects/          # 项目记忆
+│   ├── 30_Sessions/          # 会话记录
+│   ├── 40_Decisions/         # 决策记录
+│   ├── 50_Facts/             # 事实记录
+│   ├── 60_Rules/             # 规则记录
+│   ├── 70_Trajectories/      # 轨迹记录
+│   └── 90_Archive/           # 归档
 ├── logs/
 ├── skills/
 ├── tokens/
 ├── rag/
 ├── workspace/
-│   └── HEARTBEAT.md
 ├── knowledge/
 │   └── final_answers/
 ├── runtime/
 ├── data/
 │   └── telegram/
 └── description/
-    └── AGENTS.md
 ```
 
 接下来，优先检查并修改这些字段。它们决定模型从哪里来、服务监听在哪里，以及消息网关能不能连上外部平台：
@@ -972,6 +981,54 @@ lh rag index ./docs
 # 查询 RAG
 lh rag search "deployment"
 ```
+
+## Prompt 自定义
+
+LuckyAgent 支持完全自定义的系统 prompt 和配置文件。所有配置统一存放在 `~/.luckyagent/memory/prompts/` 目录。
+
+### 为什么在 memory/prompts 目录下？
+
+Prompts 定义了 Agent 的行为策略，本质上是一种"行为记忆"。将其与用户记忆放在一起：
+- 便于统一管理 Agent 的所有知识
+- 备份 memory 目录即可包含所有配置
+- 符合"prompt 也是知识"的设计理念
+
+### 配置文件类型
+
+#### 核心配置文件
+
+这些文件在 `la init` 时自动创建：
+
+- **SOUL.md** - Agent 人格定义
+- **AGENTS.md** - Agent 操作手册
+- **mission.md** - Cron 定时任务存储
+- **HEARTBEAT.md** - 心跳任务定义
+
+#### 可选策略文件
+
+这些文件如果存在会被加载，否则使用内置默认值：
+
+- **core.md** - 核心身份策略
+- **tool_policy.md** - 工具使用策略
+- **skill_policy.md** - 技能路由策略  
+- **memory_policy.md** - 记忆策略
+- **platform/*.md** - 平台特定策略
+- **functions/*.md** - 功能性 prompts
+
+### 快速开始
+
+```bash
+# 查看现有配置
+cat ~/.luckyagent/memory/prompts/SOUL.md
+
+# 自定义 Agent 人格
+vim ~/.luckyagent/memory/prompts/SOUL.md
+
+# 修改后立即生效，无需重启
+```
+
+详细文档请参考：`~/.luckyagent/memory/prompts/README.md`
+
 
 ## 项目结构
 
