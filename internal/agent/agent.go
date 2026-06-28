@@ -352,6 +352,23 @@ func initSoulRuntime(c *config.Config) soulRuntime {
 func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime, error) {
 	registry := provider.NewRegistry()
 	catalog := provider.NewModelCatalog()
+
+	// 加载自定义模型
+	for _, custom := range c.CustomModels {
+		if custom.ID == "" {
+			continue // 跳过没有ID的模型
+		}
+		catalog.Register(provider.ModelInfo{
+			ID:            custom.ID,
+			Provider:      custom.Provider,
+			DisplayName:   custom.DisplayName,
+			Capabilities:  custom.Capabilities,
+			ContextWindow: custom.ContextWindow,
+			CostPer1kIn:   custom.CostPer1kIn,
+			CostPer1kOut:  custom.CostPer1kOut,
+		})
+	}
+
 	tokenStore, err := provider.NewTokenStore(cfg.HomeDir() + "/tokens")
 	if err != nil {
 		tokenStore = nil
