@@ -85,7 +85,7 @@ func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult
 	if err != nil {
 		durationMs := time.Since(start).Milliseconds()
 		logger.Warn("rag retrieval failed",
-			"query_preview", summarizeQueryForLog(query),
+			"query", query,
 			"query_len", len(query),
 			"top_k", r.config.TopK,
 			"min_score", r.config.MinScore,
@@ -96,7 +96,7 @@ func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult
 		)
 		appendRAGRetrievalFileLog(map[string]any{
 			"status":        "failed",
-			"query_preview": summarizeQueryForLog(query),
+			"query":         query,
 			"query_len":     len(query),
 			"top_k":         r.config.TopK,
 			"min_score":     r.config.MinScore,
@@ -176,7 +176,7 @@ func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult
 
 	durationMs := time.Since(start).Milliseconds()
 	logger.Info("rag retrieval completed",
-		"query_preview", summarizeQueryForLog(query),
+		"query", query,
 		"query_len", len(query),
 		"candidates", len(results),
 		"matched", len(filtered),
@@ -189,7 +189,7 @@ func (r *Retriever) Search(ctx context.Context, query string) ([]RetrievalResult
 	)
 	appendRAGRetrievalFileLog(map[string]any{
 		"status":        "completed",
-		"query_preview": summarizeQueryForLog(query),
+		"query":         query,
 		"query_len":     len(query),
 		"candidates":    len(results),
 		"matched":       len(filtered),
@@ -223,14 +223,6 @@ func includeGeneratedRAGSources() bool {
 	default:
 		return false
 	}
-}
-
-func summarizeQueryForLog(query string) string {
-	const maxLen = 120
-	if len(query) <= maxLen {
-		return query
-	}
-	return query[:maxLen] + "..."
 }
 
 func appendRAGRetrievalFileLog(fields map[string]any) {

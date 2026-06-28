@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -250,7 +251,7 @@ func formatAttr(groups []string, attr slog.Attr) []string {
 func attrValueString(v slog.Value) string {
 	switch v.Kind() {
 	case slog.KindString:
-		return v.String()
+		return strconv.Quote(v.String())
 	case slog.KindBool:
 		if v.Bool() {
 			return "true"

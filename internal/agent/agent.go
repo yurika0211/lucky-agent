@@ -1590,6 +1590,26 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 
 		sanitizeLoopConfig(&loopCfg)
 		a.applyIntentToolGating(&loopCfg, routingText)
+		logger.Info("agent stream loop started",
+			"session_id", sessionID,
+			"provider", providerNameForLog(a.provider),
+			"model", a.activeModel,
+			"stream_mode", a.getStreamMode(),
+			"max_iterations", loopCfg.MaxIterations,
+			"timeout_ms", loopCfg.Timeout.Milliseconds(),
+			"auto_approve", loopCfg.AutoApprove,
+			"input_len", len(routingText),
+		)
+		logger.Debug("agent stream loop input",
+			"session_id", sessionID,
+			"input", routingText,
+			"scope_platform", input.Scope.Platform,
+			"scope_chat_id", input.Scope.ChatID,
+			"scope_chat_type", input.Scope.ChatType,
+			"scope_sender_id", input.Scope.SenderID,
+			"attachments", len(input.Attachments),
+			"disabled_tools", strings.Join(loopCfg.DisabledTools, ","),
+		)
 
 		buildOpts := defaultContextBuildOptions()
 		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
@@ -1605,6 +1625,12 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			memoryGate:             a.buildMemoryToolGate(routingText, loopCfg.DisabledTools),
 			toolExecutionGuard:     newToolExecutionGuard(routingText),
 		}
+		logger.Debug("agent stream context prepared",
+			"session_id", sessionID,
+			"messages", len(messages),
+			"tools", len(callOpts.Tools),
+			"tool_choice", fmt.Sprint(callOpts.ToolChoice),
+		)
 
 		// 🧠 思考阶段（第一轮）
 		events <- ChatEvent{Type: ChatEventThinking, Content: "Thinking... (round 1)"}
@@ -1632,6 +1658,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	if state == nil {
 		state = &streamConvergenceState{}
 	}
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.ID
+	}
 	if remaining <= 0 {
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
 			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
@@ -1645,8 +1675,22 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		return
 	}
 
+	logger.Debug("agent stream native iteration started",
+		"session_id", sessionID,
+		"round", round,
+		"remaining", remaining,
+		"messages", len(messages),
+		"tools", len(callOpts.Tools),
+		"tool_choice", fmt.Sprint(callOpts.ToolChoice),
+		"force_search_synthesis", state.forceSearchSynthesis,
+	)
 	ch, err := a.streamLoopIteration(ctx, messages, callOpts, state.forceSearchSynthesis)
 	if err != nil {
+		logger.Warn("agent stream native iteration failed",
+			"session_id", sessionID,
+			"round", round,
+			"error", err,
+		)
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
@@ -1708,6 +1752,15 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	assistantContent, textToolCalls := extractTextToolCalls(response)
 	hadTextToolCalls := len(textToolCalls) > 0
 	textToolCalls = filterProviderToolCalls(textToolCalls, state.disabledTools)
+	logger.Debug("agent stream native provider response",
+		"session_id", sessionID,
+		"round", round,
+		"finish_reason", streamFinishReason,
+		"content_bytes", len(response),
+		"reasoning_bytes", reasoning.Len(),
+		"stream_tool_call_deltas", len(toolCallsAcc),
+		"text_tool_calls", len(textToolCalls),
+	)
 
 	// 如果有累积的 tool_calls，处理它们
 	if len(toolCallsAcc) > 0 || len(textToolCalls) > 0 {
@@ -1731,6 +1784,12 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		toolCalls = append(toolCalls, textToolCalls...)
 
 		if len(toolCalls) > 0 {
+			logger.Debug("agent stream native tool calls assembled",
+				"session_id", sessionID,
+				"round", round,
+				"tool_calls", formatToolCallsForLog(toolCalls),
+				"tool_names", strings.Join(toolCallNamesForLog(toolCalls), ","),
+			)
 			if shouldStop, repeatedSigs := state.trackToolCallPattern(toolCalls, assistantContent); shouldStop {
 				if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
 					return
@@ -1891,6 +1950,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	if state == nil {
 		state = &streamConvergenceState{}
 	}
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.ID
+	}
 	if remaining <= 0 {
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
 			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
@@ -1904,12 +1967,37 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		return
 	}
 
+	logger.Debug("agent stream simulated iteration started",
+		"session_id", sessionID,
+		"round", round,
+		"remaining", remaining,
+		"messages", len(messages),
+		"tools", len(callOpts.Tools),
+		"tool_choice", fmt.Sprint(callOpts.ToolChoice),
+		"force_search_synthesis", state.forceSearchSynthesis,
+	)
 	resp, err := a.chatLoopIteration(ctx, messages, callOpts, state.forceSearchSynthesis)
 	if err != nil {
+		logger.Warn("agent stream simulated iteration failed",
+			"session_id", sessionID,
+			"round", round,
+			"error", err,
+		)
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
 	applyTextToolCallsToResponse(resp, state.disabledTools)
+	logger.Debug("agent stream simulated provider response",
+		"session_id", sessionID,
+		"round", round,
+		"model", resp.Model,
+		"finish_reason", resp.FinishReason,
+		"tokens_used", resp.TokensUsed,
+		"content_bytes", len(resp.Content),
+		"reasoning_bytes", len(resp.ReasoningContent),
+		"tool_calls", len(resp.ToolCalls),
+		"tool_names", strings.Join(toolCallNamesForLog(resp.ToolCalls), ","),
+	)
 
 	// 有工具调用 → 展示过程 → 执行 → 继续循环
 	if len(resp.ToolCalls) > 0 {

@@ -14,13 +14,13 @@ services:
       - "${LH_PORT:-9090}:9090"
     volumes:
       - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
+      - ~/.luckyharness/config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/api/v1/health >/dev/null 2>&1 || exit 1"]
-      interval: 30s
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/api/v1/health/live >/dev/null 2>&1 || exit 1"]
+      interval: 10s
       timeout: 5s
       retries: 3
-      start_period: 15s
+      start_period: 10s
 
   luckyharness-telegram:
     image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyharness:latest}
@@ -32,10 +32,7 @@ services:
     command: ["msg-gateway", "start", "--platform", "telegram"]
     volumes:
       - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
-    depends_on:
-      luckyharness:
-        condition: service_healthy
+      - ~/.luckyharness/config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
 
   luckyharness-napcat:
     image: ${LH_IMAGE:-ghcr.io/yurika0211/luckyharness:latest}
@@ -49,7 +46,7 @@ services:
       - "${LH_NAPCAT_PORT:-6701}:6701"
     volumes:
       - lh-home:/var/lib/luckyharness
-      - ./config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
+      - ~/.luckyharness/config.json:/var/lib/luckyharness/.luckyharness/config.json:ro
     depends_on:
       luckyharness:
         condition: service_healthy
