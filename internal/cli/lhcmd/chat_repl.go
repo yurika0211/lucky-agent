@@ -969,7 +969,7 @@ func handleProfileCommand(arg string) bool {
 	}
 
 	home, _ := os.UserHomeDir()
-	mgr, err := profile.NewManager(filepath.Join(home, ".luckyharness"))
+	mgr, err := profile.NewManager(filepath.Join(home, ".luckyagent"))
 	if err != nil {
 		fmt.Printf("❌ %v\n", err)
 		return true

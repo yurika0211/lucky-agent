@@ -422,8 +422,8 @@ func (a *Adapter) connectGateway(ctx context.Context) error {
 			Shard:   [2]int{0, 1},
 			Properties: map[string]any{
 				"$os":      "linux",
-				"$browser": "luckyharness",
-				"$device":  "luckyharness",
+				"$browser": "luckyagent",
+				"$device":  "luckyagent",
 			},
 		}),
 	}

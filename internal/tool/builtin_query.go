@@ -193,7 +193,7 @@ func handleHTTPRequest(args map[string]any) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "luckyharness-http-request")
+	req.Header.Set("User-Agent", "luckyagent-http-request")
 
 	if rawHeaders, ok := args["headers_json"].(string); ok && strings.TrimSpace(rawHeaders) != "" {
 		var headers map[string]string

@@ -436,7 +436,7 @@ func TestManagerSetEmbeddingConfig(t *testing.T) {
 
 func TestManagerSaveAndLoad(t *testing.T) {
 	tmpDir := t.TempDir()
-	homeDir := filepath.Join(tmpDir, ".luckyharness")
+	homeDir := filepath.Join(tmpDir, ".luckyagent")
 
 	mgr, err := NewManager()
 	if err != nil {

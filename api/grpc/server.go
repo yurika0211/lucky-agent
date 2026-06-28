@@ -1,5 +1,5 @@
-// Package luckyharness provides gRPC server implementation for LuckyHarness.
-package luckyharness
+// Package luckyagent provides gRPC server implementation for LuckyAgent.
+package luckyagent
 
 import (
 	"context"
@@ -459,7 +459,7 @@ func NewGRPCServer(addr string, serviceServer *Server) *GRPCServer {
 	// Register health service
 	healthServer := health.NewServer()
 	grpc_health_v1.RegisterHealthServer(server, healthServer)
-	healthServer.SetServingStatus("luckyharness", grpc_health_v1.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("luckyagent", grpc_health_v1.HealthCheckResponse_SERVING)
 
 	// Register reflection
 	reflection.Register(server)
@@ -488,7 +488,7 @@ func (s *GRPCServer) Start() error {
 
 // Stop stops the gRPC server gracefully.
 func (s *GRPCServer) Stop() {
-	s.health.SetServingStatus("luckyharness", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
+	s.health.SetServingStatus("luckyagent", grpc_health_v1.HealthCheckResponse_NOT_SERVING)
 	s.server.GracefulStop()
 }
 

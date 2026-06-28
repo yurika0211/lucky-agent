@@ -6,9 +6,9 @@ Match this on: file_write, file_patch, file_delete, file_move, file_mkdir,
 shell, terminal.
 
 Allowed roots can be customized with LH_HOOK_ALLOWED_ROOTS using os.pathsep
-separation. By default ~/.luckyharness is allowed, except private credential,
+separation. By default ~/.luckyagent is allowed, except private credential,
 session, log, and database paths. Relative paths without an explicit workdir
-are resolved under ~/.luckyharness/workspace.
+are resolved under ~/.luckyagent/workspace.
 """
 import json
 import os
@@ -17,8 +17,8 @@ import shlex
 import sys
 
 
-DEFAULT_WORKSPACE = os.path.join(os.path.expanduser("~"), ".luckyharness", "workspace")
-DEFAULT_LUCKYHARNESS = os.path.join(os.path.expanduser("~"), ".luckyharness")
+DEFAULT_WORKSPACE = os.path.join(os.path.expanduser("~"), ".luckyagent", "workspace")
+DEFAULT_LUCKYHARNESS = os.path.join(os.path.expanduser("~"), ".luckyagent")
 DEFAULT_ALLOWED_ROOTS = (DEFAULT_LUCKYHARNESS,)
 DEFAULT_PROTECTED_ROOTS = (
     os.path.join(DEFAULT_LUCKYHARNESS, "sessions"),
@@ -31,7 +31,7 @@ DEFAULT_PROTECTED_FILES = (
     os.path.join(DEFAULT_LUCKYHARNESS, "config.prod.json"),
     os.path.join(DEFAULT_LUCKYHARNESS, "SOUL.md"),
     os.path.join(DEFAULT_LUCKYHARNESS, "hook-audit.jsonl"),
-    os.path.join(DEFAULT_LUCKYHARNESS, "luckyharness.db"),
+    os.path.join(DEFAULT_LUCKYHARNESS, "luckyagent.db"),
 )
 
 FILE_TOOLS = {"file_write", "file_patch", "file_delete", "file_move", "file_mkdir"}
@@ -148,7 +148,7 @@ def check_file_tool(args: dict, roots: list[str]) -> None:
             if not explicit_workdir and is_relative_path(value):
                 decision_block(
                     "relative filesystem mutation without explicit workdir is blocked; "
-                    "use an absolute path under ~/.luckyharness or set workdir to an allowed root"
+                    "use an absolute path under ~/.luckyagent or set workdir to an allowed root"
                 )
             check_path(value, base, roots, private_roots, private_files)
 
@@ -194,7 +194,7 @@ def check_shell(args: dict, roots: list[str]) -> None:
         if not explicit_workdir and is_relative_path(token):
             decision_block(
                 "relative shell filesystem mutation without explicit workdir is blocked; "
-                "use an absolute path under ~/.luckyharness or set workdir to an allowed root"
+                "use an absolute path under ~/.luckyagent or set workdir to an allowed root"
             )
         check_path(token, base, roots, private_roots, private_files)
 

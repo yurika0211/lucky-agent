@@ -1,15 +1,15 @@
 syntax = "proto3";
 
-package luckyharness;
+package luckyagent;
 
-option go_package = "github.com/yurika0211/luckyharness/api/grpc;luckyharness";
+option go_package = "github.com/yurika0211/luckyagent/api/grpc;luckyagent";
 
 import "google/api/annotations.proto";
 import "google/protobuf/empty.proto";
 import "google/protobuf/timestamp.proto";
 
-// LuckyHarness gRPC Service
-service LuckyHarnessService {
+// LuckyAgent gRPC Service
+service LuckyAgentService {
   // Chat
   rpc Chat(ChatRequest) returns (ChatResponse) {
     option (google.api.http) = {

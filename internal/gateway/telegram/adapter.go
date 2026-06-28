@@ -1142,9 +1142,9 @@ func (a *Adapter) attachmentDownloadTimeout() time.Duration {
 func telegramAttachmentStorageDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".luckyharness", "data", "telegram", "attachments"), nil
+		return filepath.Join(home, ".luckyagent", "data", "telegram", "attachments"), nil
 	}
-	return filepath.Join(os.TempDir(), "luckyharness", "telegram", "attachments"), nil
+	return filepath.Join(os.TempDir(), "luckyagent", "telegram", "attachments"), nil
 }
 
 func telegramAttachmentFileName(att *gateway.Attachment) string {

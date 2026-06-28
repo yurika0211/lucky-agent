@@ -1,4 +1,4 @@
-package luckyharness
+package luckyagent
 
 import (
 	"context"

@@ -37,7 +37,7 @@ func TestLearnCommandFlow(t *testing.T) {
 		t.Fatalf("expected progress output, got %q", out)
 	}
 
-	progressPath := filepath.Join(home, ".luckyharness", "learning", "progress.json")
+	progressPath := filepath.Join(home, ".luckyagent", "learning", "progress.json")
 	if _, err := os.Stat(progressPath); err != nil {
 		t.Fatalf("expected progress file at %s: %v", progressPath, err)
 	}

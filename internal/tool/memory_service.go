@@ -174,7 +174,7 @@ func memorySourceNotice(store *memory.Store) string {
 
 func memoryVaultPathForTool(store *memory.Store) string {
 	if store == nil || strings.TrimSpace(store.Dir()) == "" {
-		return "~/.luckyharness/memory"
+		return "~/.luckyagent/memory"
 	}
 	return store.Dir()
 }

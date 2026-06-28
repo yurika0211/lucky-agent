@@ -96,7 +96,7 @@ const COMMANDS: CommandSpec[] = [
   { name: '/help', help: '列出 TUI 与 lh CLI 命令', aliases: ['help'] },
   { name: '/jobs', help: '查看/停止 TUI 托管的后台任务', aliases: ['jobs'] },
   { name: '/lh', help: '执行短时 lh CLI 命令，例如 /lh config list', aliases: ['lh'] },
-  { name: '/init', help: 'lh init 初始化 LuckyHarness 主目录', aliases: ['init'] },
+  { name: '/init', help: 'lh init 初始化 LuckyAgent 主目录', aliases: ['init'] },
   { name: '/chat', help: 'lh chat [message] 单次本地调试对话', aliases: ['chat'] },
   { name: '/config', help: 'lh config get/set/list 管理配置', aliases: ['config'] },
   { name: '/soul', help: 'lh soul show/list/switch 管理 SOUL', aliases: ['soul'] },
@@ -227,7 +227,7 @@ function sessionMessageToItem(message: Record<string, unknown>, index: number): 
   return {
     id: makeId(`history-${index}`),
     kind,
-    title: kind === 'user' ? 'You' : kind === 'assistant' ? 'LuckyHarness' : 'Tool',
+    title: kind === 'user' ? 'You' : kind === 'assistant' ? 'LuckyAgent' : 'Tool',
     body,
     createdAt: safeDate(String(message.created_at || message.createdAt || message.timestamp || '')) || undefined,
   };
@@ -1630,7 +1630,7 @@ export function App({ apiBase, session, model }: AppProps) {
       const item: StreamItem = {
         id,
         kind: 'assistant',
-        title: 'LuckyHarness',
+        title: 'LuckyAgent',
         body: clean,
         createdAt: Date.now(),
       };
@@ -1696,7 +1696,7 @@ export function App({ apiBase, session, model }: AppProps) {
       case 'stream_end': {
         const finalText = sanitize(String(data.full_response || draftRef.current || ''));
         if (draftIdRef.current) upsertAssistantDraft(draftIdRef.current, finalText);
-        else if (finalText) pushItem('assistant', 'LuckyHarness', finalText);
+        else if (finalText) pushItem('assistant', 'LuckyAgent', finalText);
         streamingRef.current = false;
         draftRef.current = '';
         draftIdRef.current = null;

@@ -489,7 +489,7 @@ func DefaultConfig() *Config {
 		},
 		Provider:     "openai",
 		Model:        "gpt-5.4-mini",
-		SoulPath:     filepath.Join(home, ".luckyharness", "SOUL.md"),
+		SoulPath:     filepath.Join(home, ".luckyagent", "SOUL.md"),
 		MaxTokens:    4096,
 		Temperature:  0.7,
 		Extra:        make(map[string]string),
@@ -1011,7 +1011,7 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("get home dir: %w", err)
 	}
 
-	return NewManagerWithDir(filepath.Join(home, ".luckyharness"))
+	return NewManagerWithDir(filepath.Join(home, ".luckyagent"))
 }
 
 // NewManagerWithDir 创建指定目录的配置管理器（用于测试隔离）

@@ -1,5 +1,5 @@
 # LuckyHarness local state
-.luckyharness/
+.luckyagent/
 .lh-home*
 config.json
 config.prod.json

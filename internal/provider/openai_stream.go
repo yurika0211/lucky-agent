@@ -22,7 +22,7 @@ import (
 
 var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
-const defaultOpenAIUserAgent = "luckyharness"
+const defaultOpenAIUserAgent = "luckyagent"
 
 const missingReasoningContentPlaceholder = "Reasoning content was unavailable in local history."
 

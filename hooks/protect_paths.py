@@ -21,7 +21,7 @@ PROTECTED = (
     "/.ssh/",
     "/etc/",
     "/tokens/",
-    ".luckyharness/",
+    ".luckyagent/",
 )
 
 # Shell tokens that indicate the command mutates the filesystem.

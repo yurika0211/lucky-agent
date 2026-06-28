@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-repo="${LH_REPO:-yurika0211/luckyharness}"
+repo="${LH_REPO:-yurika0211/luckyagent}"
 repo_ref="${LH_REPO_REF:-}"
 version="${1:-latest}"
 prefix="${2:-$HOME/.local/bin}"
@@ -92,7 +92,7 @@ if [ ! -d "$tmp_dir/UI" ]; then
 fi
 
 if [ -d "$tmp_dir/UI" ]; then
-  ui_dir="${LH_UI_INSTALL_DIR:-$HOME/.local/share/luckyharness/UI}"
+  ui_dir="${LH_UI_INSTALL_DIR:-$HOME/.local/share/luckyagent/UI}"
   mkdir -p "$(dirname "$ui_dir")"
   rm -rf "$ui_dir"
   cp -R "$tmp_dir/UI" "$ui_dir"
@@ -106,7 +106,7 @@ if [ -d "$tmp_dir/UI" ]; then
     echo "warning: npm was not found; install Node.js/npm before running la tui" >&2
   fi
 
-  mkdir -p "$HOME/.luckyharness/runtime"
-  printf '%s\n' "$ui_dir" > "$HOME/.luckyharness/runtime/tui-ui-dir"
+  mkdir -p "$HOME/.luckyagent/runtime"
+  printf '%s\n' "$ui_dir" > "$HOME/.luckyagent/runtime/tui-ui-dir"
   echo "installed TUI files to $ui_dir"
 fi

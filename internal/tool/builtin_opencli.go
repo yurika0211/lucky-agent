@@ -43,7 +43,7 @@ func OpenCLITool(cfg *OpenCLIConfig, fallbackCfg *WebSearchConfig) *Tool {
 			"format":          {Type: "string", Description: "OpenCLI output format for site/browser-aware commands when no -f/--format is already present. Common values: md, json, yaml, table, csv.", Required: false, Default: "md"},
 			"limit":           {Type: "number", Description: "Common item limit for adapter commands such as twitter timeline.", Required: false},
 			"feed_type":       {Type: "string", Description: "Twitter timeline feed type. Defaults to following for authenticated following feed; use for-you only when explicitly requested.", Required: false, Default: "following"},
-			"browser_session": {Type: "string", Description: "Browser session name for action=browser. Reuse the same value to keep tab state.", Required: false, Default: "luckyharness"},
+			"browser_session": {Type: "string", Description: "Browser session name for action=browser. Reuse the same value to keep tab state.", Required: false, Default: "luckyagent"},
 			"max_chars":       {Type: "number", Description: "Maximum characters returned to the model.", Required: false, Default: normalized.MaxChars},
 			"timeout_seconds": {Type: "number", Description: "Per-command timeout in seconds.", Required: false, Default: normalized.TimeoutSeconds},
 		},
@@ -214,9 +214,9 @@ func buildOpenCLIInvocation(cfg *OpenCLIConfig, raw map[string]any) (openCLIInvo
 		return inv, nil
 
 	case openCLIActionBrowser:
-		session := strings.TrimSpace(openCLIStringArgDefault(raw, "browser_session", "luckyharness"))
+		session := strings.TrimSpace(openCLIStringArgDefault(raw, "browser_session", "luckyagent"))
 		if session == "" {
-			session = "luckyharness"
+			session = "luckyagent"
 		}
 		browserCommand := strings.TrimSpace(openCLIStringArg(raw, "browser_command"))
 		if browserCommand == "" {

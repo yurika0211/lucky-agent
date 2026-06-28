@@ -1406,7 +1406,7 @@ func (h *Handler) learningStore() (*learning.ProgressStore, error) {
 		if err != nil {
 			return nil, fmt.Errorf("locate home dir: %w", err)
 		}
-		home = filepath.Join(userHome, ".luckyharness")
+		home = filepath.Join(userHome, ".luckyagent")
 	}
 	return learning.NewProgressStore(home), nil
 }
@@ -1564,7 +1564,7 @@ func (h *Handler) handleProfile(ctx context.Context, msg *gateway.Message) error
 		if err != nil {
 			return h.reply(ctx, msg, fmt.Sprintf("定位 home dir 失败：%s", err.Error()))
 		}
-		home = filepath.Join(userHome, ".luckyharness")
+		home = filepath.Join(userHome, ".luckyagent")
 	}
 	mgr, err := profile.NewManager(home)
 	if err != nil {

@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	serviceName    = "luckyharness"
+	serviceName    = "luckyagent"
 	serviceVersion = "0.27.0"
 )
 

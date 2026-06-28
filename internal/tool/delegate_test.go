@@ -148,7 +148,7 @@ func TestPrepareDelegateExecutionContextUsesDefaultWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareDelegateExecutionContext: %v", err)
 	}
-	if !strings.Contains(filepath.ToSlash(workspace), "/luckyharness-delegate/task-99") {
+	if !strings.Contains(filepath.ToSlash(workspace), "/luckyagent-delegate/task-99") {
 		t.Fatalf("expected default delegate workspace, got %q", workspace)
 	}
 	if got := ExtractDelegateWorkspace(contextStr); got != workspace {

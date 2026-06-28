@@ -20,7 +20,7 @@ func TestBuildSystemPromptIncludesSoulSkillsAndPlatformHints(t *testing.T) {
 		t.Fatalf("write AGENTS.md: %v", err)
 	}
 
-	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestBuildSystemPromptIncludesSoulSkillsAndPlatformHints(t *testing.T) {
 
 func TestBuildSystemPromptIncludesNapCatPlainTextPlatformHint(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestBuildSystemPromptIncludesLuckyHarnessManual(t *testing.T) {
 		t.Fatalf("write manual: %v", err)
 	}
 
-	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestBuildSystemPromptIncludesLowercaseAgentsContext(t *testing.T) {
 	if err := os.WriteFile(agentsPath, []byte("Lowercase project operating rules."), 0644); err != nil {
 		t.Fatalf("write agents.md: %v", err)
 	}
-	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestBuildSystemPromptIncludesLowercaseAgentsContext(t *testing.T) {
 
 func TestBuildSystemPromptOmitsDisabledToolGuidance(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestBuildSystemPromptOmitsDisabledToolGuidance(t *testing.T) {
 
 func TestBuildSystemPromptPinsLuckyHarnessMarkdownMemoryVault(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestBuildSystemPromptPinsLuckyHarnessMarkdownMemoryVault(t *testing.T) {
 	}
 	if strings.Contains(prompt, "~/Documents/Obsidian Vault is required") ||
 		strings.Contains(prompt, "OBSIDIAN_VAULT_PATH is required") ||
-		strings.Contains(prompt, "luckyharness.db is the memory source") {
+		strings.Contains(prompt, "luckyagent.db is the memory source") {
 		t.Fatalf("prompt contains incorrect external-vault memory claim:\n%s", prompt)
 	}
 }
@@ -261,7 +261,7 @@ func TestSanitizeContextContentBlocksInjection(t *testing.T) {
 
 func TestMaterializedContextFallsBackWithoutSessionCwd(t *testing.T) {
 	tmpDir := t.TempDir()
-	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyharness"))
+	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}

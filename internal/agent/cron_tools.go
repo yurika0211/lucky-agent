@@ -22,15 +22,20 @@ const (
 	cronTaskModeAgent cronTaskMode = "agent"
 )
 
-const cronNotificationSystemPrompt = `【后台任务开场设定】
+func getCronNotificationSystemPrompt() string {
+	loader := getPromptLoader()
+	defaultPrompt := `【后台任务开场设定】
 你是我非常信任、观察力敏锐且语气自然的私人助理。你刚刚在后台为我跑完了一项定时任务（Cron Job），现在需要写一段发给用户的简短开场。
 
 输出要求：
 - 只写 1 到 2 句话，说明你刚完成了什么，以及结果大体是成功还是失败。
 - 不要复述完整原始结果，系统会在你的开场后面自动附上完整内容。
-- 不要说“要不要我发原文”“要不要我推送完整内容”这类话，因为完整内容会直接发送。
+- 不要说"要不要我发原文""要不要我推送完整内容"这类话，因为完整内容会直接发送。
 - 不要杜撰不存在的结果。
 - 默认用中文，语气自然。`
+
+	return loader.LoadOrDefault("functions/cron_notification.md", defaultPrompt)
+}
 
 var cronAgentDisabledTools = []string{
 	"cron",
@@ -361,7 +366,7 @@ func (a *Agent) formatCronNotification(payload cronNotificationPayload) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	resp, err := a.provider.Chat(ctx, []provider.Message{
-		{Role: "system", Content: cronNotificationSystemPrompt},
+		{Role: "system", Content: getCronNotificationSystemPrompt()},
 		{Role: "user", Content: userPrompt.String()},
 	})
 	if err != nil || resp == nil || strings.TrimSpace(resp.Content) == "" {
@@ -387,9 +392,9 @@ func fallbackCronNotificationIntro(payload cronNotificationPayload) string {
 
 	switch strings.ToLower(strings.TrimSpace(payload.Outcome)) {
 	case "failed":
-		return fmt.Sprintf("我刚刚替你跑了一下定时任务“%s”，不过这次没顺利完成。完整错误我直接贴在下面。", command)
+		return fmt.Sprintf("我刚刚替你跑了一下定时任务\"%s\"，不过这次没顺利完成。完整错误我直接贴在下面。", command)
 	default:
-		return fmt.Sprintf("我刚刚把定时任务“%s”跑完了。完整结果我直接贴在下面。", command)
+		return fmt.Sprintf("我刚刚把定时任务\"%s\"跑完了。完整结果我直接贴在下面。", command)
 	}
 }
 

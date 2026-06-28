@@ -537,14 +537,14 @@ func TestTextToSpeechToolSavesOutput(t *testing.T) {
 	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
 
 	result, err := r.CallWithShellContext("text_to_speech", map[string]any{
-		"text":       "hello from luckyharness",
+		"text":       "hello from luckyagent",
 		"output_dir": tmpDir,
 	}, &ShellContext{Cwd: tmpDir})
 	if err != nil {
 		t.Fatalf("text_to_speech call: %v", err)
 	}
 
-	if synth.lastReq.Text != "hello from luckyharness" {
+	if synth.lastReq.Text != "hello from luckyagent" {
 		t.Fatalf("unexpected text: %q", synth.lastReq.Text)
 	}
 
@@ -1267,15 +1267,15 @@ func TestToolPermissions(t *testing.T) {
 
 func TestSandboxPathValidation(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	lhDir := filepath.Join(home, ".luckyharness")
+	lhDir := filepath.Join(home, ".luckyagent")
 
 	tests := []struct {
 		name    string
 		path    string
 		wantErr bool
 	}{
-		{"luckyharness dir allowed", lhDir, false},
-		{"luckyharness subfile allowed", filepath.Join(lhDir, "memory.json"), false},
+		{"luckyagent dir allowed", lhDir, false},
+		{"luckyagent subfile allowed", filepath.Join(lhDir, "memory.json"), false},
 		{"tmp allowed", "/tmp/test.txt", false},
 		{"nanobot denied", filepath.Join(home, ".nanobot", "config.json"), true},
 		{"ssh denied", filepath.Join(home, ".ssh", "id_rsa"), true},
@@ -1296,7 +1296,7 @@ func TestSandboxPathValidation(t *testing.T) {
 
 func TestSandboxPathValidationAllowsProjectLocalHome(t *testing.T) {
 	projectHome := filepath.Join(t.TempDir(), ".lh-home")
-	if err := os.MkdirAll(filepath.Join(projectHome, ".luckyharness"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(projectHome, ".luckyagent"), 0755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	t.Setenv("HOME", projectHome)
@@ -1309,7 +1309,7 @@ func TestSandboxPathValidationAllowsProjectLocalHome(t *testing.T) {
 func TestSandboxPathValidationUsesWindowsHomeAndTemp(t *testing.T) {
 	tmpDir := t.TempDir()
 	windowsHome := filepath.Join(tmpDir, "Users", "Alice")
-	if err := os.MkdirAll(filepath.Join(windowsHome, ".luckyharness"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(windowsHome, ".luckyagent"), 0755); err != nil {
 		t.Fatalf("mkdir home: %v", err)
 	}
 	t.Setenv("HOME", windowsHome)
@@ -1317,8 +1317,8 @@ func TestSandboxPathValidationUsesWindowsHomeAndTemp(t *testing.T) {
 	t.Setenv("TEMP", filepath.Join(tmpDir, "Temp"))
 	t.Setenv("TMP", filepath.Join(tmpDir, "Temp"))
 
-	if err := validatePath(filepath.Join(windowsHome, ".luckyharness", "memory.md")); err != nil {
-		t.Fatalf("expected windows home luckyharness path to pass, got %v", err)
+	if err := validatePath(filepath.Join(windowsHome, ".luckyagent", "memory.md")); err != nil {
+		t.Fatalf("expected windows home luckyagent path to pass, got %v", err)
 	}
 	if err := validatePath(filepath.Join(os.TempDir(), "scratch.txt")); err != nil {
 		t.Fatalf("expected temp path to pass, got %v", err)
@@ -1331,7 +1331,7 @@ func TestShellSandboxValidation(t *testing.T) {
 		cmd     string
 		wantErr bool
 	}{
-		{"ls luckyharness ok", "ls ~/.luckyharness/", false},
+		{"ls luckyagent ok", "ls ~/.luckyagent/", false},
 		{"cat nanobot denied", "cat ~/.nanobot/config.json", true},
 		{"grep ssh denied", "grep key ~/.ssh/id_rsa", true},
 		{"echo OPENAI_API_KEY denied", "echo $OPENAI_API_KEY", true},

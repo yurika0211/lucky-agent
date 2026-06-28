@@ -106,8 +106,8 @@ func tuiDirCandidates(explicit string) []string {
 		for _, parent := range walkParents(exeDir, 8) {
 			add(parent)
 			add(filepath.Join(parent, "UI"))
-			add(filepath.Join(parent, "luckyharness"))
-			add(filepath.Join(parent, "luckyharness", "UI"))
+			add(filepath.Join(parent, "luckyagent"))
+			add(filepath.Join(parent, "luckyagent", "UI"))
 		}
 	}
 

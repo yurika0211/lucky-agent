@@ -1163,9 +1163,9 @@ func writeNapCatAttachmentBytes(att *gateway.Attachment, data []byte) (string, e
 func napcatAttachmentStorageDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
-		return filepath.Join(home, ".luckyharness", "data", "napcat", "attachments"), nil
+		return filepath.Join(home, ".luckyagent", "data", "napcat", "attachments"), nil
 	}
-	return filepath.Join(os.TempDir(), "luckyharness", "napcat", "attachments"), nil
+	return filepath.Join(os.TempDir(), "luckyagent", "napcat", "attachments"), nil
 }
 
 func napcatAttachmentFileName(att *gateway.Attachment) string {

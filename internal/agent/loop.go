@@ -28,6 +28,22 @@ import (
 
 var shellCommandSeparator = regexp.MustCompile(`\s*(?:;|&&|\|\|)\s*`)
 
+func getConversationSummaryPrompt() string {
+	loader := getPromptLoader()
+	defaultPrompt := `You are a helpful assistant that summarizes conversations.
+
+Summarize the key points, decisions, and outcomes from the conversation segment provided.
+Focus on:
+- Main topics discussed
+- Important decisions made
+- Action items or next steps
+- Key information exchanged
+
+Keep the summary concise but comprehensive.`
+
+	return loader.LoadOrDefault("functions/conversation_summary.md", defaultPrompt)
+}
+
 // LoopState 代表 Agent Loop 的状态
 type LoopState int
 
@@ -1414,7 +1430,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 	go func() {
 		prompt := summarizePrompt(firstHalf, "(first part)")
 		messages := []provider.Message{
-			{Role: "system", Content: "You are a helpful assistant that summarizes conversations."},
+			{Role: "system", Content: getConversationSummaryPrompt()},
 			{Role: "user", Content: prompt},
 		}
 
@@ -1430,7 +1446,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 	go func() {
 		prompt := summarizePrompt(secondHalf, "(second part)")
 		messages := []provider.Message{
-			{Role: "system", Content: "You are a helpful assistant that summarizes conversations."},
+			{Role: "system", Content: getConversationSummaryPrompt()},
 			{Role: "user", Content: prompt},
 		}
 

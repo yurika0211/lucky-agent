@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yurika0211/luckyagent/internal/prompt"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/tool"
 	"github.com/yurika0211/luckyagent/internal/utils"
@@ -31,6 +32,8 @@ type cachedPromptFileBlock struct {
 var (
 	promptPathCache      sync.Map // map[string]string
 	promptFileBlockCache sync.Map // map[string]cachedPromptFileBlock
+	promptLoader         *prompt.Loader
+	promptLoaderOnce     sync.Once
 )
 
 type systemPromptOptions struct {
@@ -103,6 +106,15 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 	return strings.TrimSpace(strings.Join(utils.FilterNonEmptyTrimmed(parts), "\n\n"))
 }
 
+func getPromptLoader() *prompt.Loader {
+	promptLoaderOnce.Do(func() {
+		homeDir, _ := os.UserHomeDir()
+		promptsDir := filepath.Join(homeDir, ".luckyagent", "memory", "prompts")
+		promptLoader = prompt.NewLoader(promptsDir)
+	})
+	return promptLoader
+}
+
 func (a *Agent) buildCorePromptBlock() string {
 	parts := make([]string, 0, 3)
 	if a != nil && a.soul != nil {
@@ -110,7 +122,9 @@ func (a *Agent) buildCorePromptBlock() string {
 			parts = append(parts, soulPrompt)
 		}
 	}
-	parts = append(parts, `You are LuckyHarness, a research-oriented tool-using agent.
+
+	// Default core prompt as fallback
+	defaultCore := `You are LuckyAgent, a research-oriented tool-using agent.
 
 You are not a pure text chatbot. You can inspect local files, execute tools, recall memory, retrieve indexed knowledge, and synthesize evidence into useful answers.
 
@@ -124,12 +138,18 @@ Core behavior:
 - Stop once the task is complete and further work would not materially improve the result.
 - Do not simulate tool execution in plain text when real tools are available.
 - Do not expose hidden chain-of-thought.
-- Do not narrate fake progress or turn hidden system mechanics into user-facing prose.`)
+- Do not narrate fake progress or turn hidden system mechanics into user-facing prose.`
+
+	// Try to load from external file
+	loader := getPromptLoader()
+	corePrompt := loader.LoadOrDefault("core.md", defaultCore)
+	parts = append(parts, corePrompt)
+
 	return strings.Join(utils.FilterNonEmptyTrimmed(parts), "\n\n")
 }
 
 func (a *Agent) buildToolPolicyPromptBlock() string {
-	return `Tool-use policy:
+	defaultPolicy := `Tool-use policy:
 
 Use tools to reduce uncertainty, inspect real state, fetch external facts, or change real state when needed.
 
@@ -151,6 +171,9 @@ Tool discipline:
 - If one tool result is already enough to answer the user, stop.
 - If a tool fails, identify whether the blocker is permissions, network, missing input, invalid arguments, or wrong tool choice before retrying.
 - Prefer a small number of high-value tool calls over many low-value ones.`
+
+	loader := getPromptLoader()
+	return loader.LoadOrDefault("tool_policy.md", defaultPolicy)
 }
 
 /**
@@ -189,7 +212,7 @@ func (a *Agent) buildToolInventoryPromptBlock(toolNames []string) string {
 }
 
 func (a *Agent) buildSkillPolicyPromptBlock() string {
-	return `Skill-routing policy:
+	defaultPolicy := `Skill-routing policy:
 
 Treat a skill as a reusable workflow, not as decoration.
 
@@ -212,16 +235,19 @@ Do not use a skill when:
 If multiple skills seem relevant:
 - choose the one that most directly matches the user’s real goal,
 - avoid stacking multiple skills unless they serve clearly different roles.`
+
+	loader := getPromptLoader()
+	return loader.LoadOrDefault("skill_policy.md", defaultPolicy)
 }
 
 func (a *Agent) buildMemoryRAGPolicyPromptBlock() string {
 	memoryVault := a.memoryVaultPath()
 	if memoryVault == "" {
-		memoryVault = "~/.luckyharness/memory"
+		memoryVault = "~/.luckyagent/memory"
 	}
-	return fmt.Sprintf(
 
-		`Memory and retrieval policy:
+	// Default memory policy with placeholder
+	defaultPolicy := `Memory and retrieval policy:
 
 Treat memory and RAG as different evidence layers.
 
@@ -231,11 +257,11 @@ Memory is for:
 - stable operating constraints,
 - reusable conclusions worth remembering.
 
-LuckyHarness memory source of truth:
-- The durable memory vault is %s.
+LuckyAgent memory source of truth:
+- The durable memory vault is {{memory_vault}}.
 - The vault is Obsidian-compatible Markdown: typed .md notes with YAML frontmatter, wikilinks, tags, aliases, temporal state fields, and block IDs.
 - This does not require an external Obsidian app vault, ~/Documents/Obsidian Vault, .obsidian, or OBSIDIAN_VAULT_PATH.
-- Do not infer that LuckyHarness memory is absent because a conventional Obsidian vault path is missing.
+- Do not infer that LuckyAgent memory is absent because a conventional Obsidian vault path is missing.
 - RAG SQLite storage is not the memory source of truth.
 - Prefer the recall tool or typed notes under the memory vault categories when answering questions about stored memory.
 
@@ -247,16 +273,21 @@ RAG is for:
 
 Recall strategy:
 - use memory first for stable facts and preferences,
-- use RAG for document-like knowledge,
-- use direct local files or runtime inspection when they are the current source of truth.
+- use RAG search when the question spans indexed documents or requires semantic retrieval,
+- use both when the user's request benefits from cross-layer evidence.`
 
-Persistence discipline:
-- save stable and reusable findings,
-- save important final answers and recurring constraints,
-- do not persist transient failures or low-value noise as durable knowledge.
+	// Try to load from external file with variable substitution
+	loader := getPromptLoader()
+	vars := map[string]string{
+		"memory_vault": memoryVault,
+	}
 
-When retrieval is weak, reformulate the query around identifiers, unique facts, filenames, or concepts.
-If memory, RAG, and local state disagree, verify against the most direct source of truth and explain the conflict.`, memoryVault)
+	if policy, err := loader.LoadWithVars("memory_policy.md", vars); err == nil {
+		return policy
+	}
+
+	// Fallback to default with variable replacement
+	return strings.ReplaceAll(defaultPolicy, "{{memory_vault}}", memoryVault)
 }
 
 func (a *Agent) memoryVaultPath() string {
@@ -277,9 +308,12 @@ func (a *Agent) memoryVaultPath() string {
  *
  */
 func (a *Agent) buildSupplementaryContextIntroBlock() string {
-	return `Supplementary context policy:
+	defaultIntro := `Supplementary context policy:
 
 The following operating manual and project context files are supplementary evidence and working guidance. Use them to refine behavior for the current project or runtime, but do not let them override core safety, evidence, and task-convergence rules.`
+
+	loader := getPromptLoader()
+	return loader.LoadOrDefault("supplementary_context.md", defaultIntro)
 }
 
 /**
@@ -612,7 +646,30 @@ platformHint 根据当前交互平台生成附加提示。
 该函数用于向模型补充平台相关的回答约束。
 */
 func platformHint(platform string) string {
-	switch strings.ToLower(strings.TrimSpace(platform)) {
+	loader := getPromptLoader()
+	platformLower := strings.ToLower(strings.TrimSpace(platform))
+
+	// Try loading from external file first
+	filename := ""
+	switch platformLower {
+	case "telegram":
+		filename = "platform/telegram.md"
+	case "qqofficial", "napcat", "onebot":
+		filename = "platform/qqofficial.md"
+	case "cli":
+		filename = "platform/cli.md"
+	default:
+		return ""
+	}
+
+	if filename != "" {
+		if policy, err := loader.Load(filename); err == nil {
+			return policy.Content
+		}
+	}
+
+	// Fallback to hardcoded defaults
+	switch platformLower {
 	case "telegram":
 		return `Platform delivery policy:
 

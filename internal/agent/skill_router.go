@@ -109,7 +109,7 @@ func isLuckyHarnessMemoryBackendQuestion(input string) bool {
 		strings.Contains(lower, "回忆") ||
 		strings.Contains(lower, "recall") ||
 		strings.Contains(lower, "remember")
-	hasBackend := strings.Contains(lower, "luckyharness") ||
+	hasBackend := strings.Contains(lower, "luckyagent") ||
 		strings.Contains(lower, "记忆系统") ||
 		strings.Contains(lower, "记忆库") ||
 		strings.Contains(lower, "存储") ||

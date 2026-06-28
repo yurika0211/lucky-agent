@@ -233,7 +233,7 @@ func ImageGenerateTool(generator multimodal.ImageGenerator, defaults ImageGenera
 			"output_compression": {Type: "number", Description: "Optional output compression for jpeg/webp, from 0 to 100.", Required: false},
 			"count":              {Type: "number", Description: "Optional number of images to generate. Defaults to 1.", Required: false},
 			"output_path":        {Type: "string", Description: "Optional destination file path for a single generated image.", Required: false},
-			"output_dir":         {Type: "string", Description: "Optional destination directory. Defaults to cwd when allowed, otherwise /tmp/luckyharness-images.", Required: false},
+			"output_dir":         {Type: "string", Description: "Optional destination directory. Defaults to cwd when allowed, otherwise /tmp/luckyagent-images.", Required: false},
 			"filename_prefix":    {Type: "string", Description: "Optional output filename prefix when output_dir is used.", Required: false},
 		},
 		Handler: handleImageGenerate(generator, defaults),
@@ -452,7 +452,7 @@ func resolveImageOutputDir(baseDir, outputDir string) (string, error) {
 	} else if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
 		candidates = append(candidates, filepath.Join(cwd, "generated-images"))
 	}
-	candidates = append(candidates, filepath.Join(os.TempDir(), "luckyharness-images"))
+	candidates = append(candidates, filepath.Join(os.TempDir(), "luckyagent-images"))
 
 	for _, candidate := range candidates {
 		if err := validatePath(candidate); err == nil {
@@ -582,7 +582,7 @@ func TextToSpeechTool(synthesizer multimodal.SpeechSynthesizer, defaults TTSDefa
 			"format":          {Type: "string", Description: "Optional audio format such as mp3, wav, opus, aac, or flac.", Required: false},
 			"speed":           {Type: "number", Description: "Optional playback speed multiplier. Defaults to 1.0.", Required: false},
 			"output_path":     {Type: "string", Description: "Optional destination file path for the generated audio.", Required: false},
-			"output_dir":      {Type: "string", Description: "Optional destination directory. Defaults to cwd when allowed, otherwise /tmp/luckyharness-audio.", Required: false},
+			"output_dir":      {Type: "string", Description: "Optional destination directory. Defaults to cwd when allowed, otherwise /tmp/luckyagent-audio.", Required: false},
 			"filename_prefix": {Type: "string", Description: "Optional output filename prefix when output_dir is used.", Required: false},
 		},
 		Handler: handleTextToSpeech(synthesizer, defaults),
@@ -704,7 +704,7 @@ func resolveGeneratedAudioDir(baseDir, outputDir string) (string, error) {
 	} else if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
 		candidates = append(candidates, filepath.Join(cwd, "generated-audio"))
 	}
-	candidates = append(candidates, filepath.Join(os.TempDir(), "luckyharness-audio"))
+	candidates = append(candidates, filepath.Join(os.TempDir(), "luckyagent-audio"))
 	for _, candidate := range candidates {
 		if err := validatePath(candidate); err == nil {
 			return filepath.Clean(candidate), nil

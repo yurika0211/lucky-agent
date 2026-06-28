@@ -464,7 +464,7 @@ func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	var ragManager *rag.RAGManager
 	var ragPersist *rag.Persistence
 
-	ragDBPath := cfg.HomeDir() + "/rag/luckyharness.db"
+	ragDBPath := cfg.HomeDir() + "/rag/luckyagent.db"
 	ragMgr, err := rag.NewRAGManagerWithSQLite(activeEmb, ragConfig, ragDBPath)
 	if err != nil {
 		ragManager = rag.NewRAGManager(activeEmb, ragConfig)
