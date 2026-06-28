@@ -1,6 +1,6 @@
 # lh-tool-bench
 
-`lh-tool-bench` measures LuckyHarness tool strategy quality without calling an
+`lh-tool-bench` measures LuckyAgent tool strategy quality without calling an
 LLM or executing real tools. It uses golden synthetic tasks plus deterministic
 strategy simulation so tool-routing changes can be compared cheaply and
 reproducibly.

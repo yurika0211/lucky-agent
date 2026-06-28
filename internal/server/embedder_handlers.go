@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/embedder"
+	"github.com/yurika0211/luckyagent/internal/embedder"
 )
 
 // --- v0.21.0: Embedder API handlers ---

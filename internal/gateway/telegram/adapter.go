@@ -19,7 +19,7 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	xproxy "golang.org/x/net/proxy"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 const defaultAttachmentDownloadLimit = 1 << 30

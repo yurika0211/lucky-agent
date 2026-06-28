@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/memory"
 )
 
 func TestMemoryHygieneToolRegistration(t *testing.T) {

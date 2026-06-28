@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 // ---------------------------------------------------------------------------

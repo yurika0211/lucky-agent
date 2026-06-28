@@ -1,6 +1,6 @@
 # Memory Activation Benchmark
 
-`lh-memory-bench` measures LuckyHarness memory retrieval quality and latency.
+`lh-memory-bench` measures LuckyAgent memory retrieval quality and latency.
 It follows the same experiment shape as `lh-cache-bench`: each run writes JSONL
 round records plus per-scenario summary records, so different branches or
 activation variants can be compared with the same command.
@@ -12,7 +12,7 @@ go run ./cmd/lh-memory-bench --help
 ```
 
 The default dataset is synthetic and isolated in a temporary memory vault. The
-synthetic vault uses LuckyHarness Markdown memory notes with YAML frontmatter,
+synthetic vault uses LuckyAgent Markdown memory notes with YAML frontmatter,
 wikilinks, aliases, tags, and temporal-state fields.
 
 ## Recommended A/B Run
@@ -88,7 +88,7 @@ Real memory vault:
 ```bash
 go run ./cmd/lh-memory-bench \
   --dataset real \
-  --memory-dir ~/.luckyharness/memory \
+  --memory-dir ~/.luckyagent/memory \
   --scenario scale \
   --query "女儿户外活动"
 ```

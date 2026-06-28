@@ -4,7 +4,7 @@ import (
 	"math"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/memory"
 )
 
 type entryMetrics struct {

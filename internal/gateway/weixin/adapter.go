@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 const (

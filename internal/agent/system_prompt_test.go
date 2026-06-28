@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/session"
-	"github.com/yurika0211/luckyharness/internal/soul"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/session"
+	"github.com/yurika0211/luckyagent/internal/soul"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 func TestBuildSystemPromptIncludesSoulSkillsAndPlatformHints(t *testing.T) {

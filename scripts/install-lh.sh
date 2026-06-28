@@ -32,7 +32,7 @@ else
   api_url="https://api.github.com/repos/${repo}/releases/tags/${version}"
 fi
 
-archive_name="lh-${os}-${arch}.tar.gz"
+archive_name="la-${os}-${arch}.tar.gz"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -68,9 +68,9 @@ mkdir -p "$tmp_dir"
 curl -fsSL -o "$tmp_dir/$archive_name" "$download_url"
 tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
 mkdir -p "$prefix"
-install -m 0755 "$tmp_dir/lh" "$prefix/lh"
+install -m 0755 "$tmp_dir/la" "$prefix/la"
 
-echo "installed lh to $prefix/lh"
+echo "installed la to $prefix/la"
 
 if [ ! -d "$tmp_dir/UI" ]; then
   source_ref="${repo_ref:-$release_tag}"
@@ -103,7 +103,7 @@ if [ -d "$tmp_dir/UI" ]; then
       npm ci --silent --omit=optional
     )
   else
-    echo "warning: npm was not found; install Node.js/npm before running lh tui" >&2
+    echo "warning: npm was not found; install Node.js/npm before running la tui" >&2
   fi
 
   mkdir -p "$HOME/.luckyharness/runtime"

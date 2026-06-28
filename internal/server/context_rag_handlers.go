@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/contextx"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/contextx"
 )
 
 // ===== v0.13.0: Context Window API =====

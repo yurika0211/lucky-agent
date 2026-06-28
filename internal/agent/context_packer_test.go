@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/contextx"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/contextx"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 func TestBuildTypedMemoryBodyIncludesTypedSections(t *testing.T) {

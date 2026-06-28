@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/embedder"
+	"github.com/yurika0211/luckyagent/internal/embedder"
 )
 
 type contextCheckingEmbedder struct {

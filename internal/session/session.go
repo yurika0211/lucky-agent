@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 // Session 代表一次对话会话

@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 var heartbeatDecisionTool = []map[string]any{

@@ -1,6 +1,6 @@
 # Prompt Cache Benchmark
 
-`lh-cache-bench` measures provider-side prompt-cache behavior for LuckyHarness
+`lh-cache-bench` measures provider-side prompt-cache behavior for LuckyAgent
 system prompt changes. It is intended for A/B testing changes such as removing
 dynamic metadata from `buildSystemPrompt`.
 
@@ -10,11 +10,11 @@ dynamic metadata from `buildSystemPrompt`.
 go run ./cmd/lh-cache-bench --help
 ```
 
-The tool uses the normal LuckyHarness config and writes upstream captures through
+The tool uses the normal LuckyAgent config and writes upstream captures through
 `LH_UPSTREAM_CAPTURE_DIR`.
 
 By default the benchmark copies the active config into a temporary
-LuckyHarness home. This avoids existing sessions, cron jobs, autonomy queues,
+LuckyAgent home. This avoids existing sessions, cron jobs, autonomy queues,
 and other local runtime state from polluting captures. Pass
 `--isolated-home=false` only when intentionally measuring the real local home.
 
@@ -75,7 +75,7 @@ If you need to tune those switches manually, use:
 --no-tools
 ```
 
-Benchmark sessions are removed from the normal LuckyHarness session store by
+Benchmark sessions are removed from the normal LuckyAgent session store by
 default. Add `--keep-sessions` if you want to inspect the generated session
 history afterward.
 

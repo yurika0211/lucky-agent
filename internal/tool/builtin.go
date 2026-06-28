@@ -1,6 +1,6 @@
 package tool
 
-import "github.com/yurika0211/luckyharness/internal/multimodal"
+import "github.com/yurika0211/luckyagent/internal/multimodal"
 
 // RegisterBuiltinTools 注册所有内置工具
 func RegisterBuiltinTools(r *Registry, mediaProcessor ...*multimodal.Processor) {

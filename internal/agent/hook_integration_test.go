@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/hook"
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/hook"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 func requireShForHooks(t *testing.T) {

@@ -1,6 +1,6 @@
-# LuckyHarness Wiki
+# LuckyAgent Wiki
 
-LuckyHarness 是一个面向长期运行的 Agent runtime。它把 CLI、HTTP API、TUI、GUI Dashboard、Telegram、QQ、NapCat、微信网关、记忆、RAG、工具调用和部署流程放在同一套运行时里管理。
+LuckyAgent 是一个面向长期运行的 Agent runtime。它把 CLI、HTTP API、TUI、GUI Dashboard、Telegram、QQ、NapCat、微信网关、记忆、RAG、工具调用和部署流程放在同一套运行时里管理。
 
 如果你是第一次使用，可以按下面顺序阅读：
 
@@ -55,6 +55,6 @@ go run ./cmd/lh msg-gateway start --platform telegram
 
 ## 核心心智模型
 
-LuckyHarness 的关键不是“多几个入口”，而是所有入口都共享同一个 Agent 核心、同一份配置、同一套运行目录和同一组能力。
+LuckyAgent 的关键不是“多几个入口”，而是所有入口都共享同一个 Agent 核心、同一份配置、同一套运行目录和同一组能力。
 
 这意味着你可以先在本地用 `lh chat` 调试，再用 `lh serve` 接入内部系统，最后把同一套配置挂到 Docker 或消息网关上长期运行。

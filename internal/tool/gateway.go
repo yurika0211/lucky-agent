@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 // Gateway 统一工具网关

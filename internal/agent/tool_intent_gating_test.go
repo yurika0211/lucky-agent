@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 func TestToolIntentGatingEnabledDefaultsOff(t *testing.T) {

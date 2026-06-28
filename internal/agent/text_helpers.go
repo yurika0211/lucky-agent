@@ -1,6 +1,6 @@
 package agent
 
-import "github.com/yurika0211/luckyharness/internal/utils"
+import "github.com/yurika0211/luckyagent/internal/utils"
 
 /**
  * truncate 是对 utils.Truncate 的本地封装

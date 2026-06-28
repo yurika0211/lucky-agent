@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 // createTestAgent 创建测试用 Agent（使用临时目录，不污染生产数据）

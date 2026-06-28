@@ -15,10 +15,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yurika0211/luckyharness/internal/embedder"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/multimodal"
-	"github.com/yurika0211/luckyharness/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/embedder"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/multimodal"
+	"github.com/yurika0211/luckyagent/internal/rag"
 )
 
 type namedImageTestProvider struct{}

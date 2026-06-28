@@ -1,6 +1,6 @@
 # lh-multiagent-bench
 
-`lh-multiagent-bench` is an offline benchmark for LuckyHarness multi-agent
+`lh-multiagent-bench` is an offline benchmark for LuckyAgent multi-agent
 planning. It measures whether a task should stay in one agent, be split into
 parallel subtasks, run as a dependency-aware pipeline, use debate/review, or be
 queued into the autonomy worker system.
@@ -188,7 +188,7 @@ Run historical session replay cases:
 
 ```bash
 go run ./cmd/lh-multiagent-bench \
-  -replay ~/.luckyharness/sessions \
+  -replay ~/.luckyagent/sessions \
   -replay-label-out docs/reports/multiagent-replay-labels.jsonl
 ```
 
@@ -204,7 +204,7 @@ go run ./cmd/lh-multiagent-bench \
   -out docs/reports/multiagent-replay-math-full.jsonl
 ```
 
-Replay inputs can be JSON, JSONL, LuckyHarness session Markdown files, or a
+Replay inputs can be JSON, JSONL, LuckyAgent session Markdown files, or a
 directory containing those files. A JSON replay case may provide `prompt` or
 `messages`, plus optional labels such as `gold_mode`, `should_split`,
 `needs_verifier`, `needs_critic`, `allows_background`, `forbidden_modes`, and
@@ -231,7 +231,7 @@ also valid replay input, so it can be hand-edited and passed back through
    version of the mathematical orchestration model before touching runtime.
 8. Check the math columns in `-compare` output, especially `ECE`, `LyapRate`,
    `Replan`, and `Regret`, before treating a planner as calibrated.
-9. Run `-replay` with historical LuckyHarness sessions to measure replay
+9. Run `-replay` with historical LuckyAgent sessions to measure replay
    generalization. The first offline proxy metrics are `VerifierNeedAccuracy`
    and `OODFalseNegativeRate`; replace the semi-automatic labels with human
    labels before treating them as final research numbers.

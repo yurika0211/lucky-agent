@@ -9,7 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyagent/internal/config"
 )
 
 func addTUICmd(root *cobra.Command) {

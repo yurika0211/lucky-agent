@@ -16,7 +16,7 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/utils"
 	"gopkg.in/yaml.v3"
 )
 

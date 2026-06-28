@@ -1,4 +1,4 @@
-# LuckyHarness UI
+# LuckyAgent UI
 
 This workspace contains two independent TypeScript apps:
 

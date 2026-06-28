@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	embedderpkg "github.com/yurika0211/luckyharness/internal/embedder"
-	"github.com/yurika0211/luckyharness/internal/logger"
+	embedderpkg "github.com/yurika0211/luckyagent/internal/embedder"
+	"github.com/yurika0211/luckyagent/internal/logger"
 )
 
 var ragRetrievalLogMu sync.Mutex

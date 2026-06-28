@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/multimodal"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/multimodal"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 // ImageGenerationDefaults captures configurable defaults for the image_generate tool.

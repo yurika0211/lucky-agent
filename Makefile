@@ -21,8 +21,8 @@ build:
 	go build -o lh ./cmd/lh
 
 install: build
-	mkdir -p "$$HOME/.luckyharness/runtime"
-	printf '%s\n' "$(CURDIR)/UI" > "$$HOME/.luckyharness/runtime/tui-ui-dir"
+	mkdir -p "$$HOME/.luckyagent/runtime"
+	printf '%s\n' "$(CURDIR)/UI" > "$$HOME/.luckyagent/runtime/tui-ui-dir"
 	go install ./cmd/lh
 
 test:

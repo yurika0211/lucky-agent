@@ -6,9 +6,9 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 var skillRouteTokenRe = regexp.MustCompile(`[a-zA-Z0-9_+\-]+|[\p{Han}]{2,}`)

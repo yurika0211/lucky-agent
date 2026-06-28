@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 // ============================================================

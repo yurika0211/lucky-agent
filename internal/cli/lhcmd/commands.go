@@ -14,19 +14,19 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
-	"github.com/yurika0211/luckyharness/internal/config"
-	"github.com/yurika0211/luckyharness/internal/cron"
-	"github.com/yurika0211/luckyharness/internal/gateway"
-	luckycollector "github.com/yurika0211/luckyharness/internal/gateway/collector"
-	"github.com/yurika0211/luckyharness/internal/gateway/napcat"
-	"github.com/yurika0211/luckyharness/internal/gateway/openclawweixin"
-	"github.com/yurika0211/luckyharness/internal/gateway/qqofficial"
-	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
-	"github.com/yurika0211/luckyharness/internal/gateway/weixin"
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/server"
-	"github.com/yurika0211/luckyharness/internal/soul"
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/cron"
+	"github.com/yurika0211/luckyagent/internal/gateway"
+	luckycollector "github.com/yurika0211/luckyagent/internal/gateway/collector"
+	"github.com/yurika0211/luckyagent/internal/gateway/napcat"
+	"github.com/yurika0211/luckyagent/internal/gateway/openclawweixin"
+	"github.com/yurika0211/luckyagent/internal/gateway/qqofficial"
+	"github.com/yurika0211/luckyagent/internal/gateway/telegram"
+	"github.com/yurika0211/luckyagent/internal/gateway/weixin"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/server"
+	"github.com/yurika0211/luckyagent/internal/soul"
 )
 
 var (

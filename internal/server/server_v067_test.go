@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/agent"
 )
 
 // v0.67.0: server 包测试补全 - 覆盖 0% 函数

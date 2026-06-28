@@ -1,4 +1,4 @@
-module github.com/yurika0211/luckyharness
+module github.com/yurika0211/luckyagent
 
 go 1.25.0
 

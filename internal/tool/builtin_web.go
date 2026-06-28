@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	searchpkg "github.com/yurika0211/luckyharness/internal/tool/search"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	searchpkg "github.com/yurika0211/luckyagent/internal/tool/search"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 var currentTimeHTTPClient = &http.Client{Timeout: 8 * time.Second}

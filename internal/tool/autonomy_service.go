@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/autonomy"
+	"github.com/yurika0211/luckyagent/internal/autonomy"
 )
 
 // AutonomyStartFunc starts the runtime autonomy kit when a tool action needs

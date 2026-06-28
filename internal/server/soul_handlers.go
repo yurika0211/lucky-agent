@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/yurika0211/luckyharness/internal/soul"
+	"github.com/yurika0211/luckyagent/internal/soul"
 )
 
 // handleSoulTemplates 处理 /api/v1/soul/templates 请求

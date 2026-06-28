@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
 // MemoryToolService implements remember/recall handlers in the tool layer.

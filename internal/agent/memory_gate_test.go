@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/memory"
-	"github.com/yurika0211/luckyharness/internal/provider"
-	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 func TestMemoryGateAutoExecutesRequiredToolsBeforeDirectAnswer(t *testing.T) {

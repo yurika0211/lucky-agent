@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyagent/internal/config"
 )
 
 // TestDelegateManager_SetAgentExecutor 测试设置 Agent 执行器
