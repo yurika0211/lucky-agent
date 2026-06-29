@@ -44,6 +44,7 @@ func OpenCLITool(cfg *OpenCLIConfig, fallbackCfg *WebSearchConfig) *Tool {
 			"limit":           {Type: "number", Description: "Common item limit for adapter commands such as twitter timeline.", Required: false},
 			"feed_type":       {Type: "string", Description: "Twitter timeline feed type. Defaults to following for authenticated following feed; use for-you only when explicitly requested.", Required: false, Default: "following"},
 			"browser_session": {Type: "string", Description: "Browser session name for action=browser. Reuse the same value to keep tab state.", Required: false, Default: "luckyagent"},
+			"download_dir":    {Type: "string", Description: "Directory used as the OpenCLI working/download directory. Defaults to ~/.luckyagent/workspace/downloads/opencli. Explicit values must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
 			"max_chars":       {Type: "number", Description: "Maximum characters returned to the model.", Required: false, Default: normalized.MaxChars},
 			"timeout_seconds": {Type: "number", Description: "Per-command timeout in seconds.", Required: false, Default: normalized.TimeoutSeconds},
 		},
@@ -58,6 +59,7 @@ type openCLIInvocation struct {
 	URL            string
 	MaxChars       int
 	TimeoutSeconds int
+	WorkDir        string
 }
 
 func normalizeOpenCLIConfig(cfg *OpenCLIConfig) *OpenCLIConfig {
@@ -103,9 +105,9 @@ func handleOpenCLI(cfg *OpenCLIConfig, fallbackCfg *WebSearchConfig, args map[st
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(inv.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	output, err := runOpenCLI(ctx, inv.Command, inv.Args, inv.MaxChars)
+	output, err := runOpenCLI(ctx, inv.Command, inv.Args, inv.MaxChars, inv.WorkDir)
 	if inv.Action == openCLIActionWebRead {
-		if saved := readOpenCLISavedMarkdown(output, inv.MaxChars); saved != "" {
+		if saved := readOpenCLISavedMarkdown(output, inv.MaxChars, inv.WorkDir); saved != "" {
 			return formatOpenCLIResult(saved, inv.MaxChars), nil
 		}
 	}
@@ -132,6 +134,11 @@ func buildOpenCLIInvocation(cfg *OpenCLIConfig, raw map[string]any) (openCLIInvo
 		MaxChars:       openCLINumberArg(raw, "max_chars", cfg.MaxChars),
 		TimeoutSeconds: openCLINumberArg(raw, "timeout_seconds", cfg.TimeoutSeconds),
 	}
+	workDir, err := resolveOpenCLIDownloadDir(raw)
+	if err != nil {
+		return inv, err
+	}
+	inv.WorkDir = workDir
 	if inv.MaxChars <= 0 {
 		inv.MaxChars = cfg.MaxChars
 	}
@@ -395,12 +402,22 @@ func normalizeOpenCLIAction(action string) string {
 	}
 }
 
-func runOpenCLI(ctx context.Context, command string, args []string, maxChars int) (string, error) {
+func runOpenCLI(ctx context.Context, command string, args []string, maxChars int, workDir string) (string, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
 		command = "opencli"
 	}
+	if strings.TrimSpace(workDir) != "" {
+		resolvedWorkDir, err := prepareOpenCLIWorkDir(workDir)
+		if err != nil {
+			return "", err
+		}
+		workDir = resolvedWorkDir
+	}
 	cmd := exec.CommandContext(ctx, command, args...)
+	if strings.TrimSpace(workDir) != "" {
+		cmd.Dir = workDir
+	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stdout
@@ -414,6 +431,37 @@ func runOpenCLI(ctx context.Context, command string, args []string, maxChars int
 		return "", fmt.Errorf("opencli command failed: %w", err)
 	}
 	return output, nil
+}
+
+func resolveOpenCLIDownloadDir(raw map[string]any) (string, error) {
+	dir := strings.TrimSpace(openCLIStringArg(raw, "download_dir"))
+	if dir == "" {
+		dir = defaultOpenCLIDownloadDir()
+	}
+	resolved, err := resolveWorkspacePath(dir)
+	if err != nil {
+		return "", fmt.Errorf("download_dir: %w", err)
+	}
+	return resolved, nil
+}
+
+func defaultOpenCLIDownloadDir() string {
+	return filepath.Join(sandboxWorkspaceDir(), "downloads", "opencli")
+}
+
+func prepareOpenCLIWorkDir(dir string) (string, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return "", nil
+	}
+	resolved, err := resolveWorkspacePath(dir)
+	if err != nil {
+		return "", fmt.Errorf("download_dir: %w", err)
+	}
+	if err := os.MkdirAll(resolved, 0o700); err != nil {
+		return "", fmt.Errorf("create download_dir: %w", err)
+	}
+	return resolved, nil
 }
 
 func expandOpenCLIArgs(template []string, rawURL string, maxChars int) ([]string, error) {
@@ -463,13 +511,14 @@ func hasOpenCLIOption(args []string, names ...string) bool {
 	return false
 }
 
-func readOpenCLISavedMarkdown(output string, maxChars int) string {
+func readOpenCLISavedMarkdown(output string, maxChars int, workDir string) string {
 	path := extractOpenCLISavedMarkdownPath(output)
 	if path == "" {
 		return ""
 	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Clean(path)
+	path = resolveOpenCLISavedMarkdownPath(path, workDir)
+	if strings.TrimSpace(workDir) != "" && !pathMatchesPrefix(normalizeSandboxPath(path), normalizeSandboxPath(workDir)) {
+		return ""
 	}
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() || info.Size() == 0 {
@@ -483,6 +532,17 @@ func readOpenCLISavedMarkdown(output string, maxChars int) string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+func resolveOpenCLISavedMarkdownPath(path, workDir string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if !filepath.IsAbs(path) && strings.TrimSpace(workDir) != "" {
+		path = filepath.Join(workDir, path)
+	}
+	return filepath.Clean(path)
 }
 
 func extractOpenCLISavedMarkdownPath(output string) string {

@@ -232,8 +232,8 @@ func ImageGenerateTool(generator multimodal.ImageGenerator, defaults ImageGenera
 			"output_format":      {Type: "string", Description: "Optional output format: png, jpeg, or webp. Defaults to png.", Required: false},
 			"output_compression": {Type: "number", Description: "Optional output compression for jpeg/webp, from 0 to 100.", Required: false},
 			"count":              {Type: "number", Description: "Optional number of images to generate. Defaults to 1.", Required: false},
-			"output_path":        {Type: "string", Description: "Optional destination file path for a single generated image.", Required: false},
-			"output_dir":         {Type: "string", Description: "Optional destination directory. Defaults to cwd when allowed, otherwise /tmp/luckyagent-images.", Required: false},
+			"output_path":        {Type: "string", Description: "Optional destination file path for a single generated image. Must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
+			"output_dir":         {Type: "string", Description: "Optional destination directory. Defaults to ~/.luckyagent/workspace/generated-images. Explicit values must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
 			"filename_prefix":    {Type: "string", Description: "Optional output filename prefix when output_dir is used.", Required: false},
 		},
 		Handler: handleImageGenerate(generator, defaults),
@@ -419,26 +419,23 @@ func saveGeneratedImages(images []multimodal.GeneratedImage, outputPath, outputD
 	for i, image := range images {
 		filename := fmt.Sprintf("%s-%02d%s", filenamePrefix, i+1, extensionForOutputFormat(image.MimeType))
 		path := filepath.Join(dir, filename)
-		if err := validatePath(path); err != nil {
+		resolved, err := resolveWorkspacePath(path)
+		if err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(path, image.Data, 0o644); err != nil {
+		if err := os.WriteFile(resolved, image.Data, 0o644); err != nil {
 			return nil, fmt.Errorf("write generated image: %w", err)
 		}
-		saved = append(saved, path)
+		saved = append(saved, resolved)
 	}
 	return saved, nil
 }
 
-func validateResolvedOutputPath(baseDir, path string) (string, error) {
+func validateResolvedOutputPath(_ string, path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("output path is empty")
 	}
-	path = resolveToolPath(baseDir, path)
-	if err := validatePath(path); err != nil {
-		return "", err
-	}
-	return filepath.Clean(path), nil
+	return resolveWorkspacePath(path)
 }
 
 func resolveImageOutputDir(baseDir, outputDir string) (string, error) {
@@ -446,20 +443,8 @@ func resolveImageOutputDir(baseDir, outputDir string) (string, error) {
 		return validateResolvedOutputPath(baseDir, outputDir)
 	}
 
-	candidates := []string{}
-	if strings.TrimSpace(baseDir) != "" {
-		candidates = append(candidates, filepath.Join(baseDir, "generated-images"))
-	} else if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
-		candidates = append(candidates, filepath.Join(cwd, "generated-images"))
-	}
-	candidates = append(candidates, filepath.Join(os.TempDir(), "luckyagent-images"))
-
-	for _, candidate := range candidates {
-		if err := validatePath(candidate); err == nil {
-			return filepath.Clean(candidate), nil
-		}
-	}
-	return "", fmt.Errorf("no writable default output directory is allowed by the sandbox")
+	dir := filepath.Join(sandboxWorkspaceDir(), "generated-images")
+	return resolveWorkspacePath(dir)
 }
 
 func resolveToolPath(baseDir, path string) string {
@@ -470,6 +455,9 @@ func resolveToolPath(baseDir, path string) string {
 }
 
 func downloadImageInput(rawURL string) ([]byte, string, error) {
+	if err := validateFetchURL(rawURL); err != nil {
+		return nil, "", fmt.Errorf("input_url validation failed: %w", err)
+	}
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, "", fmt.Errorf("create input_url request: %w", err)
@@ -581,8 +569,8 @@ func TextToSpeechTool(synthesizer multimodal.SpeechSynthesizer, defaults TTSDefa
 			"voice":           {Type: "string", Description: "Optional voice name such as alloy, nova, shimmer, or a provider-specific voice ID.", Required: false},
 			"format":          {Type: "string", Description: "Optional audio format such as mp3, wav, opus, aac, or flac.", Required: false},
 			"speed":           {Type: "number", Description: "Optional playback speed multiplier. Defaults to 1.0.", Required: false},
-			"output_path":     {Type: "string", Description: "Optional destination file path for the generated audio.", Required: false},
-			"output_dir":      {Type: "string", Description: "Optional destination directory. Defaults to cwd when allowed, otherwise /tmp/luckyagent-audio.", Required: false},
+			"output_path":     {Type: "string", Description: "Optional destination file path for the generated audio. Must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
+			"output_dir":      {Type: "string", Description: "Optional destination directory. Defaults to ~/.luckyagent/workspace/generated-audio. Explicit values must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
 			"filename_prefix": {Type: "string", Description: "Optional output filename prefix when output_dir is used.", Required: false},
 		},
 		Handler: handleTextToSpeech(synthesizer, defaults),
@@ -685,32 +673,22 @@ func saveSynthesizedAudio(result *multimodal.SpeechSynthesisResult, outputPath, 
 
 	filename := fmt.Sprintf("%s%s", filenamePrefix, extensionForSpeechFormat(result.MimeType))
 	path := filepath.Join(dir, filename)
-	if err := validatePath(path); err != nil {
+	resolved, err := resolveWorkspacePath(path)
+	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, result.Audio, 0o644); err != nil {
+	if err := os.WriteFile(resolved, result.Audio, 0o644); err != nil {
 		return "", fmt.Errorf("write synthesized audio: %w", err)
 	}
-	return path, nil
+	return resolved, nil
 }
 
 func resolveGeneratedAudioDir(baseDir, outputDir string) (string, error) {
 	if outputDir != "" {
 		return validateResolvedOutputPath(baseDir, outputDir)
 	}
-	candidates := []string{}
-	if strings.TrimSpace(baseDir) != "" {
-		candidates = append(candidates, filepath.Join(baseDir, "generated-audio"))
-	} else if cwd, err := os.Getwd(); err == nil && strings.TrimSpace(cwd) != "" {
-		candidates = append(candidates, filepath.Join(cwd, "generated-audio"))
-	}
-	candidates = append(candidates, filepath.Join(os.TempDir(), "luckyagent-audio"))
-	for _, candidate := range candidates {
-		if err := validatePath(candidate); err == nil {
-			return filepath.Clean(candidate), nil
-		}
-	}
-	return "", fmt.Errorf("no writable default output directory is allowed by the sandbox")
+	dir := filepath.Join(sandboxWorkspaceDir(), "generated-audio")
+	return resolveWorkspacePath(dir)
 }
 
 func speechSpeedArg(args map[string]any, def float64) float64 {

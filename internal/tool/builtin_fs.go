@@ -852,6 +852,33 @@ func sandboxHomeDir() string {
 	return home
 }
 
+func sandboxWorkspaceDir() string {
+	return filepath.Join(sandboxHomeDir(), ".luckyagent", "workspace")
+}
+
+func resolveWorkspacePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("workspace path is empty")
+	}
+
+	workspace := filepath.Clean(sandboxWorkspaceDir())
+	clean := filepath.Clean(expandSandboxPath(path))
+	resolved := clean
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(workspace, clean)
+	}
+	resolved = filepath.Clean(resolved)
+
+	if err := validatePath(resolved); err != nil {
+		return "", err
+	}
+	if !pathMatchesPrefix(normalizeSandboxPath(resolved), normalizeSandboxPath(workspace)) {
+		return "", fmt.Errorf("access denied: path is outside workspace (allowed: ~/.luckyagent/workspace/). Requested: %s", path)
+	}
+	return resolved, nil
+}
+
 func normalizeSandboxPath(path string) string {
 	if path == "" {
 		return ""
