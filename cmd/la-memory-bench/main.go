@@ -107,6 +107,14 @@ type benchSummary struct {
 	GraphRecallLift       float64  `json:"graph_recall_lift,omitempty"`
 	AvgGraphOnDurationNS  float64  `json:"avg_graph_on_duration_ns,omitempty"`
 	AvgGraphOffDurationNS float64  `json:"avg_graph_off_duration_ns,omitempty"`
+	AvgTidalOnMRR         float64  `json:"avg_tidal_on_mrr,omitempty"`
+	AvgTidalOffMRR        float64  `json:"avg_tidal_off_mrr,omitempty"`
+	TidalMRRLift          float64  `json:"tidal_mrr_lift,omitempty"`
+	AvgTidalOnStaleRate   float64  `json:"avg_tidal_on_stale_rate,omitempty"`
+	AvgTidalOffStaleRate  float64  `json:"avg_tidal_off_stale_rate,omitempty"`
+	TidalStaleRateDelta   float64  `json:"tidal_stale_rate_delta,omitempty"`
+	AvgTidalOnDurationNS  float64  `json:"avg_tidal_on_duration_ns,omitempty"`
+	AvgTidalOffDurationNS float64  `json:"avg_tidal_off_duration_ns,omitempty"`
 	ComparedModes         []string `json:"compared_modes,omitempty"`
 }
 
@@ -124,7 +132,7 @@ func parseFlags() benchConfig {
 
 	var cfg benchConfig
 	flag.StringVar(&cfg.Variant, "variant", "manual", "label written to each benchmark record, e.g. baseline or activation-v1")
-	flag.StringVar(&cfg.Scenario, "scenario", "all", "scenario to run: lexical, graph, temporal, scale, route, or all")
+	flag.StringVar(&cfg.Scenario, "scenario", "all", "scenario to run: lexical, graph, temporal, scale, route, tidal, or all")
 	flag.StringVar(&cfg.Dataset, "dataset", "synthetic", "dataset to use: synthetic or real")
 	flag.StringVar(&cfg.MemoryDir, "memory-dir", "", "memory vault path for dataset=real")
 	flag.StringVar(&cfg.OutPath, "out", defaultOut, "JSONL output path")
@@ -203,10 +211,10 @@ func run(cfg benchConfig) error {
 
 func expandScenarios(raw string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "lexical", "graph", "temporal", "scale", "route":
+	case "lexical", "graph", "temporal", "scale", "route", "tidal":
 		return []string{strings.ToLower(strings.TrimSpace(raw))}, nil
 	case "all":
-		return []string{"lexical", "graph", "temporal", "scale", "route"}, nil
+		return []string{"lexical", "graph", "temporal", "scale", "route", "tidal"}, nil
 	default:
 		return nil, fmt.Errorf("unknown scenario %q", raw)
 	}
@@ -233,6 +241,11 @@ func runScenario(cfg benchConfig, ds *benchDataset, scenario string, enc *json.E
 					runActivationRecord(cfg, ds, scenario, "graph_off", round, query, false),
 					runActivationRecord(cfg, ds, scenario, "graph_on", round, query, true),
 				)
+			} else if scenario == "tidal" {
+				roundRecords = append(roundRecords,
+					runTidalRecord(cfg, ds, "tidal_off", round, query, false),
+					runTidalRecord(cfg, ds, "tidal_on", round, query, true),
+				)
 			} else if scenario == "route" {
 				roundRecords = append(roundRecords, runRouteRecord(cfg, ds, scenario, round, query))
 			} else {
@@ -251,6 +264,117 @@ func runScenario(cfg benchConfig, ds *benchDataset, scenario string, enc *json.E
 		}
 	}
 	return records, nil
+}
+
+func runTidalRecord(cfg benchConfig, ds *benchDataset, mode string, round int, query benchQuery, enabled bool) benchRecord {
+	previous := ds.Store.ActivationReranker()
+	if enabled {
+		ds.Store.SetActivationReranker(pretrainedTidalReranker())
+	} else {
+		ds.Store.SetActivationReranker(nil)
+	}
+	record := runActivationRecord(cfg, ds, "tidal", mode, round, query, cfg.IncludeGraph)
+	ds.Store.SetActivationReranker(previous)
+	return record
+}
+
+func pretrainedTidalReranker() *memory.TidalMemoryReranker {
+	cfg := memory.DefaultTidalRerankerConfig()
+	cfg.Beta = 1.0
+	cfg.MaxBoost = 1.0
+	cfg.LearningRate = 1.0
+	reranker := memory.NewTidalMemoryReranker(cfg)
+	now := time.Now().UTC()
+	reranker.ObserveFeedback(memory.TidalFeedback{
+		Query: "index benchmark",
+		Entry: memory.Entry{
+			ID:         "mem_bench_tidal_graph",
+			Content:    "Graph RAG index benchmark is the current project focus.",
+			Category:   "project",
+			Tier:       memory.TierMedium,
+			Tags:       []string{"graph-rag", "benchmark"},
+			CreatedAt:  now.Add(-24 * time.Hour),
+			AccessedAt: now.Add(-24 * time.Hour),
+		},
+		Value: 1.0,
+		At:    now,
+	})
+	reranker.ObserveFeedback(memory.TidalFeedback{
+		Query: "index benchmark",
+		Entry: memory.Entry{
+			ID:         "mem_bench_tidal_old_pdf",
+			Content:    "PDF index benchmark was an older focus.",
+			Category:   "legacy",
+			Tier:       memory.TierLong,
+			Tags:       []string{"pdf", "legacy"},
+			CreatedAt:  now.Add(-24 * time.Hour),
+			AccessedAt: now.Add(-24 * time.Hour),
+		},
+		Value: -1.0,
+		At:    now,
+	})
+	reranker.ObserveFeedback(memory.TidalFeedback{
+		Query: "voice transcription config 404",
+		Entry: memory.Entry{
+			ID:         "mem_bench_tidal_transcription_config",
+			Content:    "Multimodal transcription config explains voice transcription 404 diagnosis and multipart upload requirements.",
+			Category:   "multimodal",
+			Tier:       memory.TierMedium,
+			Tags:       []string{"transcription", "config", "voice"},
+			CreatedAt:  now.Add(-24 * time.Hour),
+			AccessedAt: now.Add(-24 * time.Hour),
+		},
+		Value: 1.0,
+		At:    now,
+	})
+	reranker.ObserveFeedback(memory.TidalFeedback{
+		Query: "voice transcription config 404",
+		Entry: memory.Entry{
+			ID:         "mem_bench_tidal_generic_api_config",
+			Content:    "Generic API configuration note mentions transcription config.",
+			Category:   "tool",
+			Tier:       memory.TierLong,
+			Tags:       []string{"api", "config"},
+			CreatedAt:  now.Add(-24 * time.Hour),
+			AccessedAt: now.Add(-24 * time.Hour),
+		},
+		Keys: []string{
+			"pair_category:tool+transcription+tool",
+			"pair_tag:tool+transcription+api",
+			"pair_tag:tool+transcription+config",
+		},
+		Value: -1.0,
+		At:    now,
+	})
+	reranker.ObserveFeedback(memory.TidalFeedback{
+		Query: "transcription status",
+		Entry: memory.Entry{
+			ID:         "mem_bench_tidal_stale_asr_ok",
+			Content:    "Old ASR evidence says qwen3-asr-flash-realtime transcription works.",
+			Category:   "obsolete-evidence",
+			Tier:       memory.TierLong,
+			Tags:       []string{"obsolete"},
+			CreatedAt:  now.Add(-24 * time.Hour),
+			AccessedAt: now.Add(-24 * time.Hour),
+		},
+		Value: -1.0,
+		At:    now,
+	})
+	reranker.ObserveFeedback(memory.TidalFeedback{
+		Query: "transcription status",
+		Entry: memory.Entry{
+			ID:         "mem_bench_tidal_current_asr_404",
+			Content:    "Current ASR evidence says the transcription request returns 404.",
+			Category:   "current-evidence",
+			Tier:       memory.TierMedium,
+			Tags:       []string{"api", "current"},
+			CreatedAt:  now.Add(-24 * time.Hour),
+			AccessedAt: now.Add(-24 * time.Hour),
+		},
+		Value: 1.0,
+		At:    now,
+	})
+	return reranker
 }
 
 func runActivationRecord(cfg benchConfig, ds *benchDataset, scenario, mode string, round int, query benchQuery, graph bool) benchRecord {
@@ -344,7 +468,11 @@ func markRecordQuality(record *benchRecord, cfg benchConfig) {
 	record.Clean = record.Error == "" && record.ForbidHitCount <= cfg.MaxStaleHits
 	record.QualityPass = record.Clean
 	if record.ExpectedCount > 0 {
-		record.QualityPass = record.QualityPass && record.RecallAtK >= cfg.MinRecall && record.NoiseAtK <= cfg.MaxNoise
+		if record.Scenario == "tidal" {
+			record.QualityPass = record.QualityPass && record.MRR >= cfg.MinRecall
+		} else {
+			record.QualityPass = record.QualityPass && record.RecallAtK >= cfg.MinRecall && record.NoiseAtK <= cfg.MaxNoise
+		}
 	}
 	if record.ExpectedRisk > 0 {
 		record.QualityPass = record.QualityPass && record.RiskRecall >= cfg.MinRecall
@@ -387,6 +515,8 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 	var riskN, toolN int
 	var graphOnRecall, graphOffRecall, graphOnDuration, graphOffDuration float64
 	var graphOnN, graphOffN int
+	var tidalOnMRR, tidalOffMRR, tidalOnStale, tidalOffStale, tidalOnDuration, tidalOffDuration float64
+	var tidalOnN, tidalOffN int
 	qualityRecords := 0
 	for _, record := range records {
 		durations = append(durations, record.DurationNS)
@@ -401,7 +531,7 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 		if record.Error != "" {
 			summary.Errors++
 		}
-		if !record.Clean {
+		if !record.Clean && record.Scenario != "tidal" {
 			summary.Clean = false
 		}
 		if record.ExpectedCount > 0 || record.ExpectedRisk > 0 || record.ExpectedTools > 0 {
@@ -424,6 +554,16 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 			graphOffRecall += record.RecallAtK
 			graphOffDuration += float64(record.DurationNS)
 			graphOffN++
+		case "tidal_on":
+			tidalOnMRR += record.MRR
+			tidalOnStale += record.StaleHitRate
+			tidalOnDuration += float64(record.DurationNS)
+			tidalOnN++
+		case "tidal_off":
+			tidalOffMRR += record.MRR
+			tidalOffStale += record.StaleHitRate
+			tidalOffDuration += float64(record.DurationNS)
+			tidalOffN++
 		}
 	}
 
@@ -452,12 +592,27 @@ func summarizeRecords(cfg benchConfig, scenario string, records []benchRecord) b
 		summary.AvgGraphOffDurationNS = graphOffDuration / float64(graphOffN)
 		summary.ComparedModes = []string{"graph_off", "graph_on"}
 	}
+	if tidalOnN > 0 && tidalOffN > 0 {
+		summary.AvgTidalOnMRR = tidalOnMRR / float64(tidalOnN)
+		summary.AvgTidalOffMRR = tidalOffMRR / float64(tidalOffN)
+		summary.TidalMRRLift = summary.AvgTidalOnMRR - summary.AvgTidalOffMRR
+		summary.AvgTidalOnStaleRate = tidalOnStale / float64(tidalOnN)
+		summary.AvgTidalOffStaleRate = tidalOffStale / float64(tidalOffN)
+		summary.TidalStaleRateDelta = summary.AvgTidalOnStaleRate - summary.AvgTidalOffStaleRate
+		summary.AvgTidalOnDurationNS = tidalOnDuration / float64(tidalOnN)
+		summary.AvgTidalOffDurationNS = tidalOffDuration / float64(tidalOffN)
+		summary.ComparedModes = []string{"tidal_off", "tidal_on"}
+	}
 
 	summary.QualityPass = summary.Clean
 	if qualityRecords > 0 {
-		candidateRecords := qualityCandidateRecords(records)
-		recallAvg, noiseAvg := averageRecallNoise(candidateRecords)
-		summary.QualityPass = summary.QualityPass && recallAvg >= cfg.MinRecall && noiseAvg <= cfg.MaxNoise
+		if scenario == "tidal" && tidalOnN > 0 {
+			summary.QualityPass = summary.QualityPass && summary.AvgTidalOnMRR >= cfg.MinRecall && summary.TidalMRRLift >= 0 && summary.TidalStaleRateDelta <= 0
+		} else {
+			candidateRecords := qualityCandidateRecords(records)
+			recallAvg, noiseAvg := averageRecallNoise(candidateRecords)
+			summary.QualityPass = summary.QualityPass && recallAvg >= cfg.MinRecall && noiseAvg <= cfg.MaxNoise
+		}
 		if riskN > 0 {
 			summary.QualityPass = summary.QualityPass && summary.AvgRiskRecall >= cfg.MinRecall
 		}

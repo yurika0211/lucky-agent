@@ -32,7 +32,8 @@ func (s *SimpleLLMProvider) Complete(ctx context.Context, prompt string) (string
 }
 
 func main() {
-	fmt.Println("=== Graph RAG Demo ===\n")
+	fmt.Println("=== Graph RAG Demo ===")
+	fmt.Println()
 
 	// 1. 创建 embedder（使用 mock）
 	fmt.Println("1. Creating embedder...")
@@ -99,7 +100,8 @@ func main() {
 	}
 
 	// 6. 测试查询
-	fmt.Println("\n6. Testing queries...\n")
+	fmt.Println("\n6. Testing queries...")
+	fmt.Println()
 
 	queries := []string{
 		"什么是 LuckyAgent",
@@ -172,7 +174,8 @@ func main() {
 	}
 
 	// 7. 显示融合上下文示例
-	fmt.Println("\n7. Example: Fused Context\n")
+	fmt.Println("\n7. Example: Fused Context")
+	fmt.Println()
 	result, err := ragManager.SearchWithGraph(ctx, "Graph RAG 的原理")
 	if err != nil {
 		fmt.Printf("Error: %v\n", err)

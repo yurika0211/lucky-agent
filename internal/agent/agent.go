@@ -421,6 +421,20 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	if err != nil {
 		return memoryRuntime{}, fmt.Errorf("init memory: %w", err)
 	}
+	if c.Memory.Tidal.Enabled {
+		tidalStore, err := memory.OpenTidalStore(tidalMemoryStorePath(cfg.HomeDir(), c.Memory.Tidal.StorePath))
+		if err != nil {
+			_ = mem.Close()
+			return memoryRuntime{}, fmt.Errorf("init tidal memory store: %w", err)
+		}
+		tidalReranker, err := memory.NewPersistentTidalMemoryReranker(tidalRerankerConfig(c.Memory.Tidal), tidalStore)
+		if err != nil {
+			_ = tidalStore.Close()
+			_ = mem.Close()
+			return memoryRuntime{}, fmt.Errorf("init tidal memory reranker: %w", err)
+		}
+		mem.SetActivationReranker(tidalReranker)
+	}
 
 	shortTermMaxTurns := c.Memory.ShortTermMaxTurns
 	if shortTermMaxTurns <= 0 {
@@ -434,11 +448,13 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	}
 	midTerm, err := memory.NewMidTermStore(filepath.Join(cfg.HomeDir(), "memory", "30_Sessions"), midTermMaxSummaries)
 	if err != nil {
+		_ = mem.Close()
 		return memoryRuntime{}, fmt.Errorf("init midterm store: %w", err)
 	}
 
 	sessions, err := session.NewManager(cfg.HomeDir() + "/sessions")
 	if err != nil {
+		_ = mem.Close()
 		return memoryRuntime{}, fmt.Errorf("init sessions: %w", err)
 	}
 
@@ -448,6 +464,26 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 		mid:      midTerm,
 		sessions: sessions,
 	}, nil
+}
+
+func tidalRerankerConfig(cfg config.TidalMemoryConfig) memory.TidalRerankerConfig {
+	out := memory.DefaultTidalRerankerConfig()
+	out.Beta = cfg.Beta
+	out.MaxBoost = cfg.MaxBoost
+	out.LearningRate = cfg.LearningRate
+	out.MinSamples = cfg.MinSamples
+	return out
+}
+
+func tidalMemoryStorePath(homeDir, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return filepath.Join(homeDir, "runtime", "tidal_memory.db")
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(homeDir, configured)
 }
 
 /**
@@ -2518,6 +2554,19 @@ func (a *Agent) MemoryStats() map[memory.Tier]int {
 	return a.memory.Stats()
 }
 
+// TidalMemoryStats returns persisted tidal-memory telemetry when enabled.
+func (a *Agent) TidalMemoryStats() (memory.TidalStoreStats, bool, error) {
+	if a == nil || a.memory == nil {
+		return memory.TidalStoreStats{}, false, nil
+	}
+	reranker, ok := a.memory.ActivationReranker().(*memory.TidalMemoryReranker)
+	if !ok || reranker == nil {
+		return memory.TidalStoreStats{}, false, nil
+	}
+	stats, err := reranker.StoreStats()
+	return stats, true, err
+}
+
 // DecayMemory 执行记忆衰减
 func (a *Agent) DecayMemory(threshold float64) int {
 	return a.memory.Decay(threshold)
@@ -2883,6 +2932,11 @@ func (a *Agent) Close() error {
 	if a.heartbeatSvc != nil {
 		if err := a.heartbeatSvc.Stop(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("stop heartbeat: %w", err)
+		}
+	}
+	if a.memory != nil {
+		if err := a.memory.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("close memory: %w", err)
 		}
 	}
 

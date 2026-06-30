@@ -1,7 +1,10 @@
 package collab
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -50,14 +53,35 @@ type RewardBreakdown struct {
 	Total         float64 `json:"total"`
 }
 
+// MDPAction is the expanded action used by the Q table. Mode remains the
+// executable decision, while the rest describes the orchestration policy.
+type MDPAction struct {
+	Mode            CollabMode `json:"mode"`
+	Aggregation     string     `json:"aggregation"`
+	RetryPolicy     string     `json:"retry_policy"`
+	RequireVerifier bool       `json:"require_verifier"`
+	MaxSteps        int        `json:"max_steps"`
+	MaxConcurrent   int        `json:"max_concurrent"`
+}
+
+// Key returns a stable action identifier for Q(S,A).
+func (a MDPAction) Key() string {
+	return fmt.Sprintf("mode=%s|agg=%s|retry=%s|verify=%t|steps=%d|conc=%d",
+		a.Mode, a.Aggregation, a.RetryPolicy, a.RequireVerifier, a.MaxSteps, a.MaxConcurrent)
+}
+
 // MDPDecision is attached to PlanResult so scheduling decisions are auditable.
 type MDPDecision struct {
-	Version    string                 `json:"version"`
-	State      MDPState               `json:"state"`
-	StateKey   string                 `json:"state_key"`
-	QValues    map[CollabMode]float64 `json:"q_values"`
-	Samples    map[CollabMode]int     `json:"samples"`
-	BestAction CollabMode             `json:"best_action,omitempty"`
+	Version                 string                        `json:"version"`
+	State                   MDPState                      `json:"state"`
+	StateKey                string                        `json:"state_key"`
+	Actions                 map[CollabMode]MDPAction      `json:"actions"`
+	QValues                 map[CollabMode]float64        `json:"q_values"`
+	Samples                 map[CollabMode]int            `json:"samples"`
+	ActionQValues           map[string]float64            `json:"action_q_values"`
+	ActionSamples           map[string]int                `json:"action_samples"`
+	TransitionProbabilities map[string]map[string]float64 `json:"transition_probabilities,omitempty"`
+	BestAction              CollabMode                    `json:"best_action,omitempty"`
 }
 
 // MDPObservation is the execution feedback used by Q-learning.
@@ -71,20 +95,33 @@ type MDPObservation struct {
 
 // MDPModel stores an online Q table for collaboration mode selection.
 type MDPModel struct {
-	mu      sync.RWMutex
-	alpha   float64
-	gamma   float64
-	q       map[string]map[CollabMode]float64
-	samples map[string]map[CollabMode]int
+	mu          sync.RWMutex
+	alpha       float64
+	gamma       float64
+	q           map[string]map[string]float64
+	samples     map[string]map[string]int
+	transitions map[string]map[string]map[string]int
+}
+
+// MDPModelSnapshot is the JSON-persisted form of MDPModel.
+type MDPModelSnapshot struct {
+	Version     string                               `json:"version"`
+	Alpha       float64                              `json:"alpha"`
+	Gamma       float64                              `json:"gamma"`
+	Q           map[string]map[string]float64        `json:"q"`
+	Samples     map[string]map[string]int            `json:"samples"`
+	Transitions map[string]map[string]map[string]int `json:"transitions"`
+	UpdatedAt   time.Time                            `json:"updated_at"`
 }
 
 // NewMDPModel creates a Q-learning model with conservative defaults.
 func NewMDPModel() *MDPModel {
 	return &MDPModel{
-		alpha:   0.35,
-		gamma:   0.72,
-		q:       make(map[string]map[CollabMode]float64),
-		samples: make(map[string]map[CollabMode]int),
+		alpha:       0.35,
+		gamma:       0.72,
+		q:           make(map[string]map[string]float64),
+		samples:     make(map[string]map[string]int),
+		transitions: make(map[string]map[string]map[string]int),
 	}
 }
 
@@ -107,11 +144,15 @@ func PlanStateFromRequest(req PlanRequest) MDPState {
 func (m *MDPModel) Decision(req PlanRequest, modes []CollabMode) MDPDecision {
 	state := PlanStateFromRequest(req)
 	decision := MDPDecision{
-		Version:  mdpPlannerVersion,
-		State:    state,
-		StateKey: state.Key(),
-		QValues:  make(map[CollabMode]float64, len(modes)),
-		Samples:  make(map[CollabMode]int, len(modes)),
+		Version:                 mdpPlannerVersion,
+		State:                   state,
+		StateKey:                state.Key(),
+		Actions:                 make(map[CollabMode]MDPAction, len(modes)),
+		QValues:                 make(map[CollabMode]float64, len(modes)),
+		Samples:                 make(map[CollabMode]int, len(modes)),
+		ActionQValues:           make(map[string]float64, len(modes)),
+		ActionSamples:           make(map[string]int, len(modes)),
+		TransitionProbabilities: make(map[string]map[string]float64, len(modes)),
 	}
 	if m == nil {
 		return decision
@@ -120,16 +161,29 @@ func (m *MDPModel) Decision(req PlanRequest, modes []CollabMode) MDPDecision {
 	defer m.mu.RUnlock()
 	values := m.q[decision.StateKey]
 	samples := m.samples[decision.StateKey]
+	transitions := m.transitions[decision.StateKey]
 	bestSet := false
 	bestValue := 0.0
 	for _, mode := range modes {
+		action := MDPActionForMode(req, mode)
+		actionKey := action.Key()
+		decision.Actions[mode] = action
 		decision.QValues[mode] = 0
 		decision.Samples[mode] = 0
+		decision.ActionQValues[actionKey] = 0
+		decision.ActionSamples[actionKey] = 0
 		if values != nil {
-			decision.QValues[mode] = values[mode]
+			decision.QValues[mode] = values[actionKey]
+			decision.ActionQValues[actionKey] = values[actionKey]
 		}
 		if samples != nil {
-			decision.Samples[mode] = samples[mode]
+			decision.Samples[mode] = samples[actionKey]
+			decision.ActionSamples[actionKey] = samples[actionKey]
+		}
+		if transitions != nil {
+			if counts := transitions[actionKey]; len(counts) > 0 {
+				decision.TransitionProbabilities[actionKey] = transitionProbabilities(counts)
+			}
 		}
 		if !bestSet || decision.QValues[mode] > bestValue {
 			bestSet = true
@@ -147,6 +201,8 @@ func (m *MDPModel) Observe(obs MDPObservation) {
 	}
 	state := PlanStateFromRequest(obs.Request)
 	stateKey := state.Key()
+	actionKey := MDPActionForMode(obs.Request, obs.Action).Key()
+	nextStateKey := terminalStateKey(obs.Outcome)
 	reward := obs.Reward
 	if reward == nil {
 		r := RewardFromObservation(obs.Request, obs.Action, obs.Outcome, obs.Duration)
@@ -156,16 +212,100 @@ func (m *MDPModel) Observe(obs MDPObservation) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.q[stateKey] == nil {
-		m.q[stateKey] = make(map[CollabMode]float64)
+		m.q[stateKey] = make(map[string]float64)
 	}
 	if m.samples[stateKey] == nil {
-		m.samples[stateKey] = make(map[CollabMode]int)
+		m.samples[stateKey] = make(map[string]int)
 	}
-	old := m.q[stateKey][obs.Action]
+	if m.transitions[stateKey] == nil {
+		m.transitions[stateKey] = make(map[string]map[string]int)
+	}
+	if m.transitions[stateKey][actionKey] == nil {
+		m.transitions[stateKey][actionKey] = make(map[string]int)
+	}
+	old := m.q[stateKey][actionKey]
 	nextBest := maxQValue(m.q[stateKey])
 	updated := (1-m.alpha)*old + m.alpha*(reward.Total+m.gamma*nextBest)
-	m.q[stateKey][obs.Action] = updated
-	m.samples[stateKey][obs.Action]++
+	m.q[stateKey][actionKey] = updated
+	m.samples[stateKey][actionKey]++
+	m.transitions[stateKey][actionKey][nextStateKey]++
+}
+
+// Snapshot returns a deep copy suitable for persistence or inspection.
+func (m *MDPModel) Snapshot() MDPModelSnapshot {
+	if m == nil {
+		return MDPModelSnapshot{Version: mdpPlannerVersion, UpdatedAt: time.Now()}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return MDPModelSnapshot{
+		Version:     mdpPlannerVersion,
+		Alpha:       m.alpha,
+		Gamma:       m.gamma,
+		Q:           cloneFloatTable(m.q),
+		Samples:     cloneIntTable(m.samples),
+		Transitions: cloneTransitionTable(m.transitions),
+		UpdatedAt:   time.Now(),
+	}
+}
+
+// Restore replaces the model state from a snapshot.
+func (m *MDPModel) Restore(snapshot MDPModelSnapshot) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.alpha = snapshot.Alpha
+	if m.alpha <= 0 {
+		m.alpha = 0.35
+	}
+	m.gamma = snapshot.Gamma
+	if m.gamma <= 0 {
+		m.gamma = 0.72
+	}
+	m.q = cloneFloatTable(snapshot.Q)
+	m.samples = cloneIntTable(snapshot.Samples)
+	m.transitions = cloneTransitionTable(snapshot.Transitions)
+	if m.q == nil {
+		m.q = make(map[string]map[string]float64)
+	}
+	if m.samples == nil {
+		m.samples = make(map[string]map[string]int)
+	}
+	if m.transitions == nil {
+		m.transitions = make(map[string]map[string]map[string]int)
+	}
+}
+
+// SaveJSON persists the model snapshot to disk.
+func (m *MDPModel) SaveJSON(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("mdp snapshot path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create mdp snapshot dir: %w", err)
+	}
+	data, err := json.MarshalIndent(m.Snapshot(), "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode mdp snapshot: %w", err)
+	}
+	return os.WriteFile(path, data, 0o600)
+}
+
+// LoadMDPModelJSON loads a model snapshot from disk.
+func LoadMDPModelJSON(path string) (*MDPModel, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read mdp snapshot: %w", err)
+	}
+	var snapshot MDPModelSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode mdp snapshot: %w", err)
+	}
+	model := NewMDPModel()
+	model.Restore(snapshot)
+	return model, nil
 }
 
 // RewardFromObservation builds the default reward from runtime outcome.
@@ -193,7 +333,7 @@ func RewardFromObservation(req PlanRequest, mode CollabMode, outcome string, dur
 	return r
 }
 
-func maxQValue(values map[CollabMode]float64) float64 {
+func maxQValue(values map[string]float64) float64 {
 	if len(values) == 0 {
 		return 0
 	}
@@ -206,6 +346,42 @@ func maxQValue(values map[CollabMode]float64) float64 {
 		}
 	}
 	return best
+}
+
+// MDPActionForMode expands a collaboration mode into a concrete orchestration
+// policy action.
+func MDPActionForMode(req PlanRequest, mode CollabMode) MDPAction {
+	f := plannerFeatures(req)
+	action := MDPAction{Mode: mode, RetryPolicy: "none", MaxSteps: maxInt(1, len(req.AgentIDs)), MaxConcurrent: 1}
+	switch mode {
+	case ModeParallel:
+		action.Aggregation = "merge"
+		action.MaxConcurrent = maxInt(2, len(req.AgentIDs))
+		if f.risk >= 0.55 || PlanStateFromRequest(req).HasVerifier {
+			action.RequireVerifier = true
+			action.Aggregation = "critic_merge"
+		}
+		if f.risk >= 0.65 {
+			action.RetryPolicy = "retry_failed_once"
+		}
+	case ModePipeline:
+		action.Aggregation = "last"
+		action.RetryPolicy = "fail_fast"
+		action.MaxSteps = maxInt(1, len(req.AgentIDs))
+		if f.risk >= 0.60 || PlanStateFromRequest(req).HasVerifier {
+			action.RequireVerifier = true
+			action.RetryPolicy = "verify_each_step"
+		}
+	case ModeDebate:
+		action.Aggregation = "vote"
+		action.RetryPolicy = "critic_tiebreak"
+		action.RequireVerifier = true
+		action.MaxSteps = maxInt(2, len(req.AgentIDs)*2)
+		action.MaxConcurrent = 1
+	default:
+		action.Aggregation = "none"
+	}
+	return action
 }
 
 func mdpWeightAdjustment(decision MDPDecision, mode CollabMode) float64 {
@@ -235,9 +411,82 @@ func mdpDecisionSummary(decision MDPDecision) string {
 	parts := make([]string, 0, len(modes))
 	for _, modeName := range modes {
 		mode := CollabMode(modeName)
-		parts = append(parts, fmt.Sprintf("%s=%.4f/%d", mode, decision.QValues[mode], decision.Samples[mode]))
+		actionKey := ""
+		if action, ok := decision.Actions[mode]; ok {
+			actionKey = action.Key()
+		}
+		parts = append(parts, fmt.Sprintf("%s=%.4f/%d[%s]", mode, decision.QValues[mode], decision.Samples[mode], actionKey))
 	}
 	return strings.Join(parts, " ")
+}
+
+func terminalStateKey(outcome string) string {
+	switch outcome {
+	case "success", "partial", "blocked":
+		return "terminal|outcome=" + outcome
+	default:
+		return "terminal|outcome=failure"
+	}
+}
+
+func transitionProbabilities(counts map[string]int) map[string]float64 {
+	total := 0
+	for _, count := range counts {
+		total += count
+	}
+	out := make(map[string]float64, len(counts))
+	if total == 0 {
+		return out
+	}
+	for state, count := range counts {
+		out[state] = float64(count) / float64(total)
+	}
+	return out
+}
+
+func cloneFloatTable(in map[string]map[string]float64) map[string]map[string]float64 {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]map[string]float64, len(in))
+	for state, values := range in {
+		out[state] = make(map[string]float64, len(values))
+		for action, value := range values {
+			out[state][action] = value
+		}
+	}
+	return out
+}
+
+func cloneIntTable(in map[string]map[string]int) map[string]map[string]int {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]map[string]int, len(in))
+	for state, values := range in {
+		out[state] = make(map[string]int, len(values))
+		for action, value := range values {
+			out[state][action] = value
+		}
+	}
+	return out
+}
+
+func cloneTransitionTable(in map[string]map[string]map[string]int) map[string]map[string]map[string]int {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]map[string]map[string]int, len(in))
+	for state, actions := range in {
+		out[state] = make(map[string]map[string]int, len(actions))
+		for action, nextStates := range actions {
+			out[state][action] = make(map[string]int, len(nextStates))
+			for nextState, count := range nextStates {
+				out[state][action][nextState] = count
+			}
+		}
+	}
+	return out
 }
 
 func taskShapeBucket(f features) string {

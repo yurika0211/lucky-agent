@@ -78,8 +78,6 @@ func Example_graphRAGBasicUsage() {
 
 	fmt.Printf("\n=== Fused Context ===\n")
 	fmt.Println(result.Context)
-
-	// Output: Example output
 }
 
 // TestGraphRAGIntegration 集成测试

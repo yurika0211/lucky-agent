@@ -234,6 +234,60 @@ func TestMathPlannerHandlesHeavySingleGuard(t *testing.T) {
 	}
 }
 
+func TestRuntimeMDPPlannerProducesDiagnostics(t *testing.T) {
+	agents, tasks := testFixture()
+	task := findTask(t, tasks, "P2-001")
+	cfg := benchConfig{Variant: "runtime-mdp-v1", SuccessThreshold: 0.70, MaxCoordOverhead: 0.30}
+	runner, err := newStrategyRunner(cfg)
+	if err != nil {
+		t.Fatalf("new runner: %v", err)
+	}
+	result := runner.Run(cfg, task, agents)
+	if result.Mode == "" {
+		t.Fatal("expected runtime mdp mode")
+	}
+	if result.Diagnostics == nil {
+		t.Fatal("expected runtime mdp diagnostics")
+	}
+	if result.Diagnostics.TraceID == "" {
+		t.Fatalf("expected mdp state trace id")
+	}
+	if result.Diagnostics.RecommendedNextAction == "" {
+		t.Fatalf("expected expanded action key")
+	}
+	metrics := evaluateTask(cfg, task, result, agents)
+	runner.Observe(task, result, metrics, agents)
+	updated := runner.Run(cfg, task, agents)
+	if updated.Diagnostics == nil || !strings.Contains(updated.Diagnostics.DecisionRationale, "q=") {
+		t.Fatalf("expected updated mdp rationale, got %#v", updated.Diagnostics)
+	}
+}
+
+func TestRuntimeMDPSnapshotRoundTripInBenchmark(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "runtime-mdp.jsonl")
+	snapshot := filepath.Join(dir, "mdp-snapshot.json")
+	cfg := benchConfig{
+		Variant:          "runtime-mdp-v1",
+		Scenario:         "parallel",
+		OutPath:          out,
+		MDPSnapshotPath:  snapshot,
+		Rounds:           2,
+		SuccessThreshold: 0.70,
+		MaxCoordOverhead: 0.30,
+	}
+	if err := run(cfg); err != nil {
+		t.Fatalf("run runtime mdp: %v", err)
+	}
+	data, err := os.ReadFile(snapshot)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	if !strings.Contains(string(data), `"transitions"`) || !strings.Contains(string(data), `"q"`) {
+		t.Fatalf("expected persisted q table and transitions, got %s", data)
+	}
+}
+
 func TestMathSummaryIncludesDiagnostics(t *testing.T) {
 	agents, tasks := testFixture()
 	cfg := benchConfig{Variant: "math-full-v1", SuccessThreshold: 0.70, MaxCoordOverhead: 0.30}

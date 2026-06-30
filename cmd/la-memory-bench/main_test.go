@@ -11,7 +11,7 @@ func TestExpandScenarios(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expandScenarios: %v", err)
 	}
-	want := []string{"lexical", "graph", "temporal", "scale", "route"}
+	want := []string{"lexical", "graph", "temporal", "scale", "route", "tidal"}
 	if len(got) != len(want) {
 		t.Fatalf("expected %d scenarios, got %#v", len(want), got)
 	}
@@ -119,8 +119,111 @@ func TestSyntheticDatasetLoadsMemoryStore(t *testing.T) {
 	if len(ds.QueriesForScenario("graph", "")) == 0 {
 		t.Fatalf("expected graph queries")
 	}
+	if len(ds.QueriesForScenario("tidal", "")) == 0 {
+		t.Fatalf("expected tidal queries")
+	}
 	results := ds.Store.Activate("telegram channel", memory.ActivationOptions{Limit: 3, IncludeGraph: true})
 	if len(results) == 0 {
 		t.Fatalf("expected activation results")
+	}
+}
+
+func TestTidalScenarioReportsMRRLift(t *testing.T) {
+	cfg := benchConfig{
+		Variant:      "test",
+		Dataset:      "synthetic",
+		Size:         100,
+		Rounds:       1,
+		MinRecall:    0.5,
+		MaxNoise:     1.0,
+		MaxStaleHits: 0,
+	}
+	records := []benchRecord{
+		{
+			Mode:          "tidal_off",
+			DurationNS:    100,
+			ExpectedCount: 1,
+			RecallAtK:     1.0,
+			MRR:           0.5,
+			NoiseAtK:      0.5,
+			StaleHitRate:  0.25,
+			Clean:         true,
+			QualityPass:   true,
+		},
+		{
+			Mode:          "tidal_on",
+			DurationNS:    200,
+			ExpectedCount: 1,
+			RecallAtK:     1.0,
+			MRR:           1.0,
+			NoiseAtK:      0.5,
+			StaleHitRate:  0.10,
+			Clean:         true,
+			QualityPass:   true,
+		},
+	}
+
+	got := summarizeRecords(cfg, "tidal", records)
+	if got.TidalMRRLift != 0.5 {
+		t.Fatalf("TidalMRRLift = %v", got.TidalMRRLift)
+	}
+	if got.AvgTidalOnDurationNS != 200 || got.AvgTidalOffDurationNS != 100 {
+		t.Fatalf("unexpected tidal durations: %#v", got)
+	}
+	if got.TidalStaleRateDelta >= 0 {
+		t.Fatalf("expected tidal stale rate not to increase: %#v", got)
+	}
+}
+
+func TestAllSummaryIgnoresTidalControlGroupDirtyRecords(t *testing.T) {
+	cfg := benchConfig{
+		Variant:      "test",
+		Dataset:      "synthetic",
+		Size:         100,
+		Rounds:       1,
+		MinRecall:    0.5,
+		MaxNoise:     0.5,
+		MaxStaleHits: 0,
+	}
+	records := []benchRecord{
+		{
+			Scenario:      "graph",
+			Mode:          "graph_on",
+			DurationNS:    100,
+			ExpectedCount: 1,
+			RecallAtK:     1.0,
+			NoiseAtK:      0.4,
+			Clean:         true,
+		},
+		{
+			Scenario:      "tidal",
+			Mode:          "tidal_off",
+			DurationNS:    100,
+			ExpectedCount: 1,
+			RecallAtK:     1.0,
+			MRR:           0.5,
+			NoiseAtK:      0.8,
+			StaleHitRate:  0.25,
+			Clean:         false,
+		},
+		{
+			Scenario:      "tidal",
+			Mode:          "tidal_on",
+			DurationNS:    100,
+			ExpectedCount: 1,
+			RecallAtK:     1.0,
+			MRR:           1.0,
+			NoiseAtK:      0.8,
+			StaleHitRate:  0.25,
+			Clean:         false,
+		},
+	}
+
+	got := summarizeRecords(cfg, "all", records)
+	if !got.Clean || !got.QualityPass {
+		t.Fatalf("expected all summary to use candidate quality, got %#v", got)
+	}
+	if got.TidalMRRLift <= 0 || got.TidalStaleRateDelta > 0 {
+		t.Fatalf("expected tidal comparison metrics, got %#v", got)
 	}
 }

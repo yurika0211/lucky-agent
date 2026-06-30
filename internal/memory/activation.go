@@ -20,6 +20,35 @@ type ActivationOptions struct {
 	Explain           bool
 }
 
+// ActivationReranker can adjust activation scores after direct/graph recall and
+// before final ordering. Implementations must not mutate the store.
+type ActivationReranker interface {
+	RerankMemoryActivations(query string, scores []ActivationScore, now time.Time) []ActivationScore
+}
+
+// ActivationEventRecorder is optionally implemented by rerankers that want
+// telemetry about final activation results.
+type ActivationEventRecorder interface {
+	RecordMemoryActivation(query string, scores []ActivationScore, now time.Time)
+}
+
+// ActivationFeedback captures weak supervision from downstream memory usage.
+type ActivationFeedback struct {
+	Query   string
+	QueryID string
+	Entry   Entry
+	Signal  string
+	Value   float64
+	At      time.Time
+	Keys    []string
+}
+
+// ActivationFeedbackObserver is optionally implemented by rerankers that learn
+// from weak runtime feedback such as memories selected into context.
+type ActivationFeedbackObserver interface {
+	ObserveActivationFeedback(feedback ActivationFeedback)
+}
+
 // DefaultActivationOptions returns the behavior used by normal memory search.
 func DefaultActivationOptions() ActivationOptions {
 	return ActivationOptions{
@@ -67,6 +96,7 @@ type ActivationComponents struct {
 	Recency    float64
 	Access     float64
 	GraphBoost float64
+	TidalBoost float64
 }
 
 // MatchScore returns the direct query-match portion before entry modifiers.
@@ -111,24 +141,34 @@ func (s *Store) Activate(query string, opts ActivationOptions) []ActivationScore
 	if !opts.UpdateAccessStats {
 		s.mu.RLock()
 		activated := s.activateLocked(queryLower, queryTerms, now, opts)
+		reranker := s.activationReranker
 		s.mu.RUnlock()
 		if len(activated) == 0 {
 			return []ActivationScore{}
 		}
+		activated = applyActivationReranker(reranker, query, activated, now)
 		sortActivationScores(activated)
+		recordActivationEvent(reranker, query, activated, now)
 		return activated
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	activated := s.activateLocked(queryLower, queryTerms, now, opts)
 	if len(activated) == 0 {
+		s.mu.Unlock()
 		return []ActivationScore{}
 	}
+	reranker := s.activationReranker
+	s.mu.Unlock()
+
+	activated = applyActivationReranker(reranker, query, activated, now)
 
 	sortActivationScores(activated)
+	recordActivationEvent(reranker, query, activated, now)
 
 	if opts.UpdateAccessStats {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 		for _, score := range activated {
 			entry := s.entries[score.EntryID]
 			if entry == nil || !entryIsActive(entry, now) {
@@ -141,6 +181,25 @@ func (s *Store) Activate(query string, opts ActivationOptions) []ActivationScore
 	}
 
 	return activated
+}
+
+func recordActivationEvent(reranker ActivationReranker, query string, scores []ActivationScore, now time.Time) {
+	recorder, ok := reranker.(ActivationEventRecorder)
+	if !ok || recorder == nil || len(scores) == 0 {
+		return
+	}
+	recorder.RecordMemoryActivation(query, scores, now)
+}
+
+func applyActivationReranker(reranker ActivationReranker, query string, scores []ActivationScore, now time.Time) []ActivationScore {
+	if reranker == nil || len(scores) == 0 {
+		return scores
+	}
+	reranked := reranker.RerankMemoryActivations(query, scores, now)
+	if len(reranked) == 0 {
+		return scores
+	}
+	return reranked
 }
 
 func activationScoresToEntries(scores []ActivationScore) []Entry {

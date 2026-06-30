@@ -80,6 +80,46 @@ func NewPlanner(model *AdaptiveMarkovModel) *Planner {
 	return &Planner{model: model, mdp: NewMDPModel()}
 }
 
+// SetMDPModel replaces the online MDP model. Passing nil creates a fresh one.
+func (p *Planner) SetMDPModel(model *MDPModel) {
+	if p == nil {
+		return
+	}
+	if model == nil {
+		model = NewMDPModel()
+	}
+	p.mdp = model
+}
+
+// MDPModel returns the planner's online MDP model.
+func (p *Planner) MDPModel() *MDPModel {
+	if p == nil {
+		return nil
+	}
+	return p.mdp
+}
+
+// SaveMDP persists the current MDP state as JSON.
+func (p *Planner) SaveMDP(path string) error {
+	if p == nil || p.mdp == nil {
+		return fmt.Errorf("mdp model is not configured")
+	}
+	return p.mdp.SaveJSON(path)
+}
+
+// LoadMDP restores the planner's MDP state from a JSON snapshot.
+func (p *Planner) LoadMDP(path string) error {
+	if p == nil {
+		return fmt.Errorf("planner is nil")
+	}
+	model, err := LoadMDPModelJSON(path)
+	if err != nil {
+		return err
+	}
+	p.mdp = model
+	return nil
+}
+
 // Plan selects the minimum-weight executable collaboration path.
 func (p *Planner) Plan(req PlanRequest) PlanResult {
 	if p == nil {

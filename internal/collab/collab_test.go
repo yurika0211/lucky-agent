@@ -270,6 +270,65 @@ func TestDelegateManagerParallel(t *testing.T) {
 	}
 }
 
+func TestDelegateManagerParallelRetryPolicyRetriesFailedSubTask(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"})
+	_ = r.Register(&AgentProfile{ID: "agent-2", Name: "Agent 2"})
+
+	var attempts int64
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		if task.AgentID == "agent-1" && atomic.AddInt64(&attempts, 1) == 1 {
+			return "", context.DeadlineExceeded
+		}
+		return "result_from_" + task.AgentID, nil
+	})
+	dm := NewDelegateManager(r, handler)
+
+	task, err := dm.Delegate(context.Background(), ModeParallel, "并行比较删除 verifier 风险", "input", []string{"agent-1", "agent-2"}, 10*time.Second)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	updated, ok := dm.GetTask(task.ID)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if updated.State != TaskCompleted {
+		t.Fatalf("task state: got %s, want completed; result=%s", updated.State, updated.Result)
+	}
+	if atomic.LoadInt64(&attempts) != 2 {
+		t.Fatalf("expected agent-1 to be retried once, attempts=%d", attempts)
+	}
+}
+
+func TestDelegateManagerVerifierRejectsEmptyOutput(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"})
+
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		return "", nil
+	})
+	dm := NewDelegateManager(r, handler)
+
+	task, err := dm.Delegate(context.Background(), ModePipeline, "先执行，再 verifier 测试", "input", []string{"agent-1"}, 10*time.Second)
+	if err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	updated, ok := dm.GetTask(task.ID)
+	if !ok {
+		t.Fatal("task not found")
+	}
+	if updated.State != TaskFailed {
+		t.Fatalf("task state: got %s, want failed; result=%s", updated.State, updated.Result)
+	}
+	if len(updated.SubTasks) == 0 || !strings.Contains(updated.SubTasks[0].Error, "verifier rejected") {
+		t.Fatalf("expected verification error, subtasks=%+v", updated.SubTasks)
+	}
+}
+
 func TestDelegateManagerCancel(t *testing.T) {
 	r := NewRegistry()
 	_ = r.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"})

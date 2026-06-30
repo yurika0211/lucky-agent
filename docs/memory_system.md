@@ -119,6 +119,355 @@ J = ||M_observed − Σ w·q||² + λ · ||∇w||²
 
 如果想要，我可以把整套算法的 Python 原型（Ridge 回归估计 w[k] + Volterra 交叉项 + MHACS 平滑正则）落地成可执行代码，然后用你当前的记忆数据跑一轮参数估计，看看真实的记忆衰减曲线长什么样。
 
+---
+工程落地评估：当前效果与潮汐方案的真实边界
+
+先把现状说清楚：当前 LuckyAgent 记忆系统已经有可用的激活机制，但还没有实现这里描述的 Response Method。
+
+当前代码里的真实路径是：
+
+query → lexical/alias/tag/category 匹配 → importance × recency × access × tier 排序 → Obsidian wikilink 图扩散 → 返回记忆
+
+对应实现：
+
+```go
+matchScore := components.MatchScore()
+total := matchScore * e.Weight(now) * components.Tier
+```
+
+其中：
+
+```go
+Weight = Importance × Recency × AccessBoost
+```
+
+这套机制的效果是真实存在的。当前 synthetic benchmark 的结果大致是：
+
+| 场景 | recall@k | precision@k | noise@k | 平均延迟 |
+|------|----------|-------------|---------|----------|
+| lexical | 1.00 | 1.00 | 0.00 | 约 5ms |
+| graph | 0.83 | 0.55 | 0.45 | 约 9ms |
+| temporal | 1.00 | 0.50 | 0.50 | 约 19ms |
+| route | 1.00 | 0.50 | 0.50 | 约 32ms |
+| all | 0.94 | 0.52 | 0.48 | 约 14ms |
+
+其中 Obsidian 图扩散是有效的：graph 场景中关闭图扩散时 recall 约 0.67，开启后约 1.00，lift 约 0.33。
+
+但这不能证明潮汐 Response Method 已经有效。现在的 benchmark 证明的是：
+
+1. 关键词、别名、标签、分类匹配有效。
+2. Obsidian wikilink 图扩散能补全关联记忆。
+3. temporal state 能避免过期/失效记忆污染 active recall。
+4. 目前 precision/noise 仍有提升空间。
+
+它没有证明：
+
+1. 系统学到了用户查询的响应核 K(τ)。
+2. 系统能根据查询历史动态改变衰减曲线。
+3. Volterra 交叉项提升了跨主题记忆召回。
+4. 短序列正则化比固定半衰期更稳。
+
+---
+最小可行实现：Tidal Memory Reranker
+
+不要第一步就重写 Store。最小实现应该作为 reranker 插在现有 Activate 后面。
+
+目标：
+
+1. 保留现有 recall 能力。
+2. 只对候选记忆重新排序。
+3. 用真实反馈逐步学习每类记忆的时间响应。
+4. A/B 证明有效后，再考虑影响写入、压缩、主动召回。
+
+推荐链路：
+
+```text
+Store.Activate(query)
+  → top N candidate memories
+  → TidalReranker.Score(query, candidate, now)
+  → reranked top K
+```
+
+这样做的原因是：现有系统 recall 已经不错，贸然替换底层召回会破坏稳定性。rerank 层只改变排序，风险小，也更容易 A/B。
+
+---
+数据模型
+
+新增一个轻量 runtime 数据库，不写进 Obsidian vault。Obsidian vault 仍然是 durable memory source of truth；潮汐模型只是运行时统计和排序参数。
+
+建议路径：
+
+```text
+${HOME}/.luckyagent/runtime/tidal_memory.db
+```
+
+表 1：query_events
+
+```sql
+CREATE TABLE query_events (
+  id TEXT PRIMARY KEY,
+  session_id TEXT,
+  query TEXT NOT NULL,
+  query_terms TEXT,
+  intent_tags TEXT,
+  created_at TIMESTAMP NOT NULL
+);
+```
+
+记录每次查询。`intent_tags` 可以先用确定性规则生成，比如 `code`, `family`, `health`, `project`, `tool`, `weather`。
+
+表 2：recall_events
+
+```sql
+CREATE TABLE recall_events (
+  id TEXT PRIMARY KEY,
+  query_id TEXT NOT NULL,
+  memory_id TEXT NOT NULL,
+  rank INTEGER NOT NULL,
+  score REAL NOT NULL,
+  source TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+```
+
+记录每次召回了什么。`source` 可以是 `direct`, `graph`, `temporal`, `route`。
+
+表 3：feedback_events
+
+```sql
+CREATE TABLE feedback_events (
+  id TEXT PRIMARY KEY,
+  query_id TEXT NOT NULL,
+  memory_id TEXT NOT NULL,
+  signal TEXT NOT NULL,
+  value REAL NOT NULL,
+  created_at TIMESTAMP NOT NULL
+);
+```
+
+反馈信号一开始不要复杂，先用弱监督：
+
+| signal | 含义 | value 示例 |
+|--------|------|------------|
+| used_in_answer | 记忆被放进最终上下文/回答 | 1.0 |
+| user_repeated_query | 用户重复追问，说明上次召回可能不够 | -0.5 |
+| user_correction | 用户纠正了相关事实 | -1.0 |
+| route_constraint_used | 记忆产生了有效工具/回答约束 | 0.8 |
+| stale_blocked | 记忆被 temporal resolver 判定失效 | -0.8 |
+
+表 4：response_kernels
+
+```sql
+CREATE TABLE response_kernels (
+  key TEXT PRIMARY KEY,
+  feature TEXT NOT NULL,
+  bins TEXT NOT NULL,
+  weights TEXT NOT NULL,
+  updated_at TIMESTAMP NOT NULL
+);
+```
+
+`key` 可以是：
+
+```text
+tier:long
+category:project
+tag:health
+intent:code
+```
+
+第一版不要给每条 memory 单独学习 kernel。每条记忆一个 kernel 数据太稀疏，容易过拟合。先按 tier/category/tag/intent 聚合。
+
+---
+响应核怎么学
+
+第一版不要直接上完整 RLS。
+
+原因：标准 RLS 需要维护协方差矩阵，若窗口维度是 n，通常是 O(n²) 内存和更新成本。文档里说的 O(n) 只有在使用 diagonal RLS、LMS、EWMA 或强约束近似时才成立。
+
+推荐第一阶段使用 EWMA histogram：
+
+```text
+delay_bin = bucket(now - memory.CreatedAt or now - memory.AccessedAt)
+reward = feedback value
+kernel[delay_bin] = (1 - α) * kernel[delay_bin] + α * reward
+```
+
+时间桶建议：
+
+```text
+0-10m, 10m-1h, 1h-6h, 6h-1d, 1d-7d, 7d-30d, 30d-180d, 180d+
+```
+
+这样得到的是一个非常稳的离散响应核。它虽然没有论文里的连续卷积漂亮，但足够回答第一个工程问题：
+
+哪些时间尺度的记忆，在什么查询意图下，真的更容易产生有用召回？
+
+第二阶段再加 Ridge 回归：
+
+```text
+reward ≈ Σ w[k] * feature[k] + λ * ||∇w||²
+```
+
+第三阶段再考虑 Volterra 交叉项：
+
+```text
+reward ≈ linear_terms + pair_terms(intent_a × intent_b)
+```
+
+交叉项只对高频 pair 开启，例如：
+
+```text
+project × code
+family × health
+tool × config
+rag × memory
+```
+
+---
+Rerank 公式
+
+第一版建议：
+
+```text
+final_score =
+  base_activation_score
+  × (1 + β * tidal_boost)
+  × freshness_guard
+  × temporal_guard
+```
+
+其中：
+
+```text
+tidal_boost = kernel(intent, category, delay_bin)
+```
+
+约束：
+
+1. `β` 默认 0.15，避免学习层过早压倒现有排序。
+2. `temporal_guard` 必须优先于学习分数。过期、superseded、archived、conflict 不能被 boost 回来。
+3. `tidal_boost` 初始为 0；没有反馈时系统退化为当前实现。
+4. 单次 boost 上限建议 0.35，防止冷启动噪声把排序打歪。
+
+例子：
+
+用户最近一周一直在做 Graph RAG，`intent:rag` 和 `category:project` 在 `1d-7d` 桶里 reward 高。之后用户问“这个索引怎么修”，同样匹配分下，Graph RAG 项目记忆会轻微前移。
+
+这才是 Response Method 在记忆系统里的工程意义：不是替代关键词匹配，而是学习“什么时候什么类型的记忆更有用”。
+
+---
+A/B 验证设计
+
+新增 benchmark variant：
+
+```bash
+go run ./cmd/la-memory-bench \
+  --variant tidal-rerank-v1 \
+  --scenario all \
+  --dataset synthetic \
+  --size 10000 \
+  --rounds 10 \
+  --limit 6
+```
+
+但 synthetic dataset 现在还不够，需要新增三类 case：
+
+1. temporal preference shift
+
+旧事实和新事实都能关键词命中，但最近高 reward 的项目应该排前。
+
+例子：
+
+```text
+过去：用户常做 PDF 导出
+最近：用户连续处理 Graph RAG
+查询：索引 benchmark 怎么跑
+期望：Graph RAG 记忆排在 PDF 记忆前
+```
+
+2. cross-topic interaction
+
+单独 topic A 或 B 都不足以命中最佳记忆，但 A+B 同时出现时应该 boost 交叉记忆。
+
+例子：
+
+```text
+查询：微信语音转录 404 和配置有什么关系
+期望：multimodal transcription config 记忆被 boost
+```
+
+3. stale reward suppression
+
+一条旧记忆访问次数很多，但最近被用户纠正过。学习层必须降权，不能因为 access_count 高继续前排。
+
+例子：
+
+```text
+旧记忆：转录模型 qwen3-asr-flash-realtime 可用
+新反馈：真实 multipart 请求返回 404
+期望：旧可用结论不再前排
+```
+
+通过标准：
+
+| 指标 | 目标 |
+|------|------|
+| recall@k | 不低于当前 baseline |
+| precision@k | 提升或持平 |
+| noise@k | 下降 |
+| stale_hit_rate | 不上升 |
+| p95 latency | 增加不超过 20% |
+| graph_recall_lift | 不被破坏 |
+
+最重要的是 precision/noise。当前系统 recall 已经高，真正的问题是返回的相关记忆里混了太多弱相关项。潮汐 rerank 的价值应该体现在“把最有时效和最符合当前工作惯性的记忆排前”。
+
+---
+实施路线
+
+Phase 1：观测，不改排序
+
+1. 在 `Store.Activate` 外层记录 query_events 和 recall_events。
+2. 从 route/answer/context 使用情况记录弱反馈。
+3. 增加 `lh memory tidal stats` 查看各类 kernel 统计。
+4. benchmark 只报告数据分布，不改变召回结果。
+
+验收：不影响现有 benchmark；能看到不同 category/tag/intent 的 delay-bin reward。
+
+Phase 2：保守 rerank
+
+1. 新增 `TidalReranker`。
+2. 只对 top N 做 rerank，不扩大召回集合。
+3. 默认 behind config：`memory.tidal.enabled=false`。
+4. benchmark 新增 `tidal` scenario。
+
+验收：recall 不下降，precision/noise 有改善，p95 延迟增加不超过 20%。
+
+Phase 3：交叉项
+
+1. 增加高频 intent pair 的二阶特征。
+2. 只允许白名单 pair 生效。
+3. 添加过拟合保护：样本数低于阈值不启用。
+
+验收：cross-topic benchmark 有提升，普通 lexical/temporal 不退化。
+
+Phase 4：压缩和写入策略
+
+1. 低 reward 长期记忆进入压缩候选。
+2. 高 reward 交叉主题形成 summary memory。
+3. 与 hygiene/temporal resolver 联动，避免错误记忆被总结固化。
+
+验收：记忆数量增长变慢，核心 recall 不下降。
+
+---
+判断
+
+这个方案作为数学隐喻是成立的，但必须降落成一个保守的 reranker 才是真的工程方案。
+
+现在已经验证有效的是 Obsidian graph memory，不是潮汐响应核。潮汐方案的第一目标不应该是提高 recall，而应该是降低 noise、提高排序质量，并让系统能随用户近期工作惯性轻微自适应。
+
+一句话：当前系统负责“找得到”；潮汐系统应该负责“排得更像现在的你”。
+
 References:
 [1] Web search. Query: "tidal harmonic analysis mathematical model academic paper Munk Cartwright". Sources: “A modified tidal harmonic analysis model for short-term water level ...”（https://www.sciencedirect.com/science/article/abs/pii/S1463500323000926）; “Versatile Harmonic Tidal Analysis: Improvements and Applications in”（https://journals.ametsoc.org/view/journals/atot/26/4/2008jtecho615_1.xml）.
 [2] Web search. Query: "tidal prediction harmonic constants nodal modulation amplitude phase scholarly p...". Sources: “U.S. DEPARTMENT OF COMMERCE National Oceanic and Atmospheric Administration”（https://tidesandcurrents.noaa.gov/publications/Tidal_Analysis_and_Predictions.pdf）; “Seasonal and nodal variations of predominant tidal constituents in ...”（https://www.sciencedirect.com/science/article/abs/pii/S0278434321000297）.

@@ -1030,12 +1030,27 @@ func (s *Server) handleMemoryStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stats := s.agent.MemoryStats()
-	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+	payload := map[string]interface{}{
 		"short_term":  stats[memory.TierShort],
 		"medium_term": stats[memory.TierMedium],
 		"long_term":   stats[memory.TierLong],
 		"total":       stats[memory.TierShort] + stats[memory.TierMedium] + stats[memory.TierLong],
-	})
+	}
+	if tidalStats, enabled, err := s.agent.TidalMemoryStats(); err == nil {
+		payload["tidal"] = map[string]interface{}{
+			"enabled":         enabled,
+			"query_events":    tidalStats.QueryEvents,
+			"recall_events":   tidalStats.RecallEvents,
+			"feedback_events": tidalStats.FeedbackEvents,
+			"kernels":         tidalStats.Kernels,
+		}
+	} else {
+		payload["tidal"] = map[string]interface{}{
+			"enabled": false,
+			"error":   err.Error(),
+		}
+	}
+	s.sendJSON(w, http.StatusOK, payload)
 }
 
 // handleTools 工具列表

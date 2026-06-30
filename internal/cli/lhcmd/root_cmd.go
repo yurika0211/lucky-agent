@@ -235,7 +235,22 @@ func newRootCmd() *cobra.Command {
 	memoryMigrateGraphCmd.Flags().Bool("apply", false, "实际写入迁移结果；默认只 dry-run")
 	memoryMigrateGraphCmd.Flags().Bool("archive-dirty", true, "将 high/critical 脏记忆归档到 90_Archive/dirty")
 	memoryMigrateGraphCmd.Flags().Int("limit", 200, "最多审计/展示的脏记忆数量")
-	memoryCmd.AddCommand(memoryMigrateGraphCmd)
+	memoryTidalStatsCmd := &cobra.Command{
+		Use:   "tidal-stats",
+		Short: "查看潮汐记忆 reranker 的持久化统计",
+		RunE:  runMemoryTidalStats,
+	}
+	memoryTidalCmd := &cobra.Command{
+		Use:   "tidal",
+		Short: "管理潮汐记忆 reranker",
+	}
+	memoryTidalNestedStatsCmd := &cobra.Command{
+		Use:   "stats",
+		Short: "查看潮汐记忆 reranker 的持久化统计",
+		RunE:  runMemoryTidalStats,
+	}
+	memoryTidalCmd.AddCommand(memoryTidalNestedStatsCmd)
+	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryTidalStatsCmd, memoryTidalCmd)
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)
 	addLearnCmd(rootCmd)

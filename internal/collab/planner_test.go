@@ -2,6 +2,7 @@ package collab
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,49 @@ func TestPlannerMDPObservationsUpdateQValues(t *testing.T) {
 	}
 	if plan.MDP.Samples[ModePipeline] == 0 || plan.MDP.Samples[ModeParallel] == 0 {
 		t.Fatalf("expected mdp samples, got %+v", plan.MDP.Samples)
+	}
+}
+
+func TestPlannerMDPPersistenceAndTransitions(t *testing.T) {
+	planner := NewPlanner(nil)
+	req := PlanRequest{
+		Description: "先读代码，再修复问题，最后跑 verifier 测试",
+		AgentIDs:    []string{"repo", "coder", "test"},
+		Agents: []*AgentProfile{
+			{ID: "repo", Capabilities: []string{"repo"}},
+			{ID: "coder", Capabilities: []string{"go", "backend"}},
+			{ID: "test", Capabilities: []string{"test", "verifier"}},
+		},
+		Timeout: 2 * time.Minute,
+	}
+	planner.ObserveExecution(req, ModePipeline, "success", 40*time.Second)
+	before := planner.Plan(req)
+	action := before.MDP.Actions[ModePipeline]
+	actionKey := action.Key()
+	if actionKey == "" {
+		t.Fatal("expected expanded action key")
+	}
+	if before.MDP.ActionQValues[actionKey] == 0 {
+		t.Fatalf("expected learned action q value, got %+v", before.MDP)
+	}
+	if len(before.MDP.TransitionProbabilities[actionKey]) == 0 {
+		t.Fatalf("expected transition probabilities, got %+v", before.MDP.TransitionProbabilities)
+	}
+
+	path := filepath.Join(t.TempDir(), "mdp.json")
+	if err := planner.SaveMDP(path); err != nil {
+		t.Fatalf("save mdp: %v", err)
+	}
+	restored := NewPlanner(nil)
+	if err := restored.LoadMDP(path); err != nil {
+		t.Fatalf("load mdp: %v", err)
+	}
+	after := restored.Plan(req)
+	if after.MDP.ActionQValues[actionKey] != before.MDP.ActionQValues[actionKey] {
+		t.Fatalf("q value not restored: before=%v after=%v", before.MDP.ActionQValues, after.MDP.ActionQValues)
+	}
+	if len(after.MDP.TransitionProbabilities[actionKey]) == 0 {
+		t.Fatalf("transition probabilities not restored: %+v", after.MDP.TransitionProbabilities)
 	}
 }
 

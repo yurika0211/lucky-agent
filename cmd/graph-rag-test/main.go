@@ -39,7 +39,8 @@ func (t *TestLLMProvider) Complete(ctx context.Context, prompt string) (string, 
 }
 
 func main() {
-	fmt.Println("=== Graph RAG 交互式测试工具 ===\n")
+	fmt.Println("=== Graph RAG 交互式测试工具 ===")
+	fmt.Println()
 
 	// 1. 创建 RAG Manager
 	fmt.Println("初始化 Graph RAG...")
@@ -52,7 +53,8 @@ func main() {
 	ragManager := rag.NewRAGManagerWithGraph(embedder, config, llmProvider)
 	defer ragManager.CloseStore()
 
-	fmt.Println("✓ 初始化完成\n")
+	fmt.Println("✓ 初始化完成")
+	fmt.Println()
 
 	// 2. 预加载一些测试数据
 	ctx := context.Background()
@@ -119,12 +121,13 @@ func main() {
 }
 
 func runAutoTests(ctx context.Context, ragManager *rag.RAGManager) {
-	fmt.Println("\n=== 自动测试模式 ===\n")
+	fmt.Println("\n=== 自动测试模式 ===")
+	fmt.Println()
 
 	queries := []string{
 		"张三是谁",
 		"张三在哪个公司工作",
-		"张三在哪个城市工作",  // 需要2跳推理
+		"张三在哪个城市工作", // 需要2跳推理
 		"阿里巴巴在哪里",
 		"杭州有什么公司",
 	}
@@ -180,7 +183,8 @@ func runAutoTests(ctx context.Context, ragManager *rag.RAGManager) {
 
 func runInteractiveTests(ctx context.Context, ragManager *rag.RAGManager, reader *bufio.Reader) {
 	fmt.Println("\n=== 交互测试模式 ===")
-	fmt.Println("输入你的查询（输入 'quit' 退出）\n")
+	fmt.Println("输入你的查询（输入 'quit' 退出）")
+	fmt.Println()
 
 	for {
 		fmt.Print("查询> ")
@@ -236,10 +240,11 @@ func runInteractiveTests(ctx context.Context, ragManager *rag.RAGManager, reader
 }
 
 func runComparisonTests(ctx context.Context, ragManager *rag.RAGManager) {
-	fmt.Println("\n=== 对比测试模式 ===\n")
+	fmt.Println("\n=== 对比测试模式 ===")
+	fmt.Println()
 
 	queries := []string{
-		"张三在哪个城市工作",  // 多跳推理场景
+		"张三在哪个城市工作", // 多跳推理场景
 		"阿里巴巴的总部",
 	}
 

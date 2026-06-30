@@ -323,9 +323,21 @@ type MsgGatewayNapCat struct {
 
 // MemoryConfig 记忆系统配置
 type MemoryConfig struct {
-	ShortTermMaxTurns   int `json:"short_term_max_turns,omitempty"`  // 短期记忆最大轮数（默认 10）
-	MidTermExpireDays   int `json:"midterm_expire_days,omitempty"`   // 中期记忆过期天数（默认 90）
-	MidTermMaxSummaries int `json:"midterm_max_summaries,omitempty"` // 中期记忆最大摘要数（默认 100）
+	ShortTermMaxTurns   int               `json:"short_term_max_turns,omitempty"`  // 短期记忆最大轮数（默认 10）
+	MidTermExpireDays   int               `json:"midterm_expire_days,omitempty"`   // 中期记忆过期天数（默认 90）
+	MidTermMaxSummaries int               `json:"midterm_max_summaries,omitempty"` // 中期记忆最大摘要数（默认 100）
+	Tidal               TidalMemoryConfig `json:"tidal,omitempty"`
+}
+
+// TidalMemoryConfig controls the optional tidal memory reranker. It is disabled
+// by default and only affects memory activation when explicitly enabled.
+type TidalMemoryConfig struct {
+	Enabled      bool    `json:"enabled,omitempty"`
+	Beta         float64 `json:"beta,omitempty"`
+	MaxBoost     float64 `json:"max_boost,omitempty"`
+	LearningRate float64 `json:"learning_rate,omitempty"`
+	MinSamples   int     `json:"min_samples,omitempty"`
+	StorePath    string  `json:"store_path,omitempty"`
 }
 
 // ModelRouterConfig 模型路由配置
@@ -551,6 +563,13 @@ func DefaultConfig() *Config {
 			ShortTermMaxTurns:   10,
 			MidTermExpireDays:   365,
 			MidTermMaxSummaries: 100,
+			Tidal: TidalMemoryConfig{
+				Enabled:      false,
+				Beta:         0.15,
+				MaxBoost:     0.35,
+				LearningRate: 0.20,
+				MinSamples:   1,
+			},
 		},
 		Limits: LimitsConfig{
 			MaxTokens:              4096,
@@ -789,6 +808,18 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Memory.MidTermMaxSummaries <= 0 {
 		cfg.Memory.MidTermMaxSummaries = def.Memory.MidTermMaxSummaries
+	}
+	if cfg.Memory.Tidal.Beta <= 0 {
+		cfg.Memory.Tidal.Beta = def.Memory.Tidal.Beta
+	}
+	if cfg.Memory.Tidal.MaxBoost <= 0 {
+		cfg.Memory.Tidal.MaxBoost = def.Memory.Tidal.MaxBoost
+	}
+	if cfg.Memory.Tidal.LearningRate <= 0 || cfg.Memory.Tidal.LearningRate > 1 {
+		cfg.Memory.Tidal.LearningRate = def.Memory.Tidal.LearningRate
+	}
+	if cfg.Memory.Tidal.MinSamples <= 0 {
+		cfg.Memory.Tidal.MinSamples = def.Memory.Tidal.MinSamples
 	}
 	if cfg.ModelRouter.TokenThreshold <= 0 {
 		cfg.ModelRouter.TokenThreshold = 500
@@ -1222,6 +1253,26 @@ func (m *Manager) Set(key, value string) error {
 		m.config.OpenCLI.FallbackToWebFetch = parseBool(value)
 	case "stream_mode":
 		m.config.StreamMode = value
+	case "memory.tidal.enabled":
+		m.config.Memory.Tidal.Enabled = parseBool(value)
+	case "memory.tidal.beta":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Memory.Tidal.Beta = f
+	case "memory.tidal.max_boost":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Memory.Tidal.MaxBoost = f
+	case "memory.tidal.learning_rate":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Memory.Tidal.LearningRate = f
+	case "memory.tidal.min_samples":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Memory.Tidal.MinSamples = n
+	case "memory.tidal.store_path":
+		m.config.Memory.Tidal.StorePath = value
 	case "agent.max_iterations":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

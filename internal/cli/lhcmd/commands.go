@@ -184,6 +184,18 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Context.MemoryHygieneMinSeverity)
 	case "context.memory_hygiene_max_findings":
 		fmt.Println(cfg.Context.MemoryHygieneMaxFindings)
+	case "memory.tidal.enabled":
+		fmt.Println(cfg.Memory.Tidal.Enabled)
+	case "memory.tidal.beta":
+		fmt.Println(cfg.Memory.Tidal.Beta)
+	case "memory.tidal.max_boost":
+		fmt.Println(cfg.Memory.Tidal.MaxBoost)
+	case "memory.tidal.learning_rate":
+		fmt.Println(cfg.Memory.Tidal.LearningRate)
+	case "memory.tidal.min_samples":
+		fmt.Println(cfg.Memory.Tidal.MinSamples)
+	case "memory.tidal.store_path":
+		fmt.Println(cfg.Memory.Tidal.StorePath)
 	case "msg_gateway.platform":
 		fmt.Println(cfg.MsgGateway.Platform)
 	case "msg_gateway.api_addr":
@@ -258,6 +270,11 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  soul_path: %s\n", cfg.SoulPath)
 	fmt.Printf("  max_tokens: %d\n", cfg.MaxTokens)
 	fmt.Printf("  temperature: %.1f\n", cfg.Temperature)
+	fmt.Printf("  memory.tidal.enabled: %t\n", cfg.Memory.Tidal.Enabled)
+	fmt.Printf("  memory.tidal.beta: %.2f\n", cfg.Memory.Tidal.Beta)
+	fmt.Printf("  memory.tidal.max_boost: %.2f\n", cfg.Memory.Tidal.MaxBoost)
+	fmt.Printf("  memory.tidal.learning_rate: %.2f\n", cfg.Memory.Tidal.LearningRate)
+	fmt.Printf("  memory.tidal.min_samples: %d\n", cfg.Memory.Tidal.MinSamples)
 	return nil
 }
 
@@ -1240,4 +1257,66 @@ func runMemoryMigrateGraph(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+func runMemoryTidalStats(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	path := cliTidalMemoryStorePath(mgr.HomeDir(), cfg.Memory.Tidal.StorePath)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Tidal memory store: %s\n", path)
+			fmt.Println("Status: no store found")
+			return nil
+		}
+		return fmt.Errorf("stat tidal memory store: %w", err)
+	}
+
+	store, err := memory.OpenTidalStore(path)
+	if err != nil {
+		return fmt.Errorf("open tidal memory store: %w", err)
+	}
+	defer store.Close()
+
+	stats, err := store.Stats()
+	if err != nil {
+		return fmt.Errorf("read tidal memory stats: %w", err)
+	}
+	kernels, err := store.LoadKernels()
+	if err != nil {
+		return fmt.Errorf("load tidal memory kernels: %w", err)
+	}
+
+	fmt.Printf("Tidal memory store: %s\n", path)
+	fmt.Printf("Enabled: %t\n", cfg.Memory.Tidal.Enabled)
+	fmt.Printf("Query events: %d\n", stats.QueryEvents)
+	fmt.Printf("Recall events: %d\n", stats.RecallEvents)
+	fmt.Printf("Feedback events: %d\n", stats.FeedbackEvents)
+	fmt.Printf("Kernels: %d\n", stats.Kernels)
+	limit := 10
+	if len(kernels) < limit {
+		limit = len(kernels)
+	}
+	for i := 0; i < limit; i++ {
+		kernel := kernels[i]
+		fmt.Printf("  %s feature=%s weights=%v counts=%v\n", kernel.Key, kernel.Feature, kernel.Weights, kernel.Counts)
+	}
+	return nil
+}
+
+func cliTidalMemoryStorePath(homeDir, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return filepath.Join(homeDir, "runtime", "tidal_memory.db")
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(homeDir, configured)
 }
