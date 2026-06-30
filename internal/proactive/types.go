@@ -45,6 +45,18 @@ type FeedbackEvent struct {
 	CreatedAt      time.Time
 }
 
+// RuntimeEvent captures passive runtime telemetry used by proactive modeling.
+type RuntimeEvent struct {
+	ID        string
+	Source    string
+	SessionID string
+	Type      string
+	Name      string
+	Value     float64
+	Metadata  map[string]string
+	CreatedAt time.Time
+}
+
 // DryRunAction describes an action the proactive gate would take.
 type DryRunAction struct {
 	ID         string
@@ -71,6 +83,7 @@ type Stats struct {
 	Estimates      int `json:"estimates"`
 	Actions        int `json:"actions"`
 	FeedbackEvents int `json:"feedback_events"`
+	RuntimeEvents  int `json:"runtime_events"`
 }
 
 // FeedbackStats summarizes prediction feedback.
@@ -78,4 +91,10 @@ type FeedbackStats struct {
 	Events   int     `json:"events"`
 	Correct  int     `json:"correct"`
 	Accuracy float64 `json:"accuracy"`
+}
+
+// RuntimeEventStats summarizes passive runtime event collection.
+type RuntimeEventStats struct {
+	Events int            `json:"events"`
+	ByType map[string]int `json:"by_type"`
 }

@@ -281,7 +281,13 @@ func newRootCmd() *cobra.Command {
 	proactiveFeedbackCmd.Flags().Float64("value", 0, "反馈值；0 表示自动按 actual==predicted 记为 1，否则 -1")
 	proactiveFeedbackCmd.Flags().String("source", "cli", "反馈来源")
 	proactiveFeedbackCmd.Flags().String("note", "", "反馈备注")
-	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd, proactiveFeedbackCmd)
+	proactiveEventsCmd := &cobra.Command{
+		Use:   "events",
+		Short: "查看最近 proactive runtime events",
+		RunE:  runProactiveEvents,
+	}
+	proactiveEventsCmd.Flags().Int("limit", 20, "最多显示的事件数量")
+	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd, proactiveFeedbackCmd, proactiveEventsCmd)
 
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)

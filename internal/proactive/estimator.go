@@ -34,6 +34,8 @@ func (Estimator) Estimate(signals []Signal, horizon time.Duration) StateEstimate
 
 	timeSig, hasTime := labels["time_of_day"]
 	workspaceSig, hasWorkspace := labels["workspace_context"]
+	toolActivity, hasToolActivity := labels["runtime_tool_activity"]
+	chatActivity, hasChatActivity := labels["runtime_chat_activity"]
 	if hasWorkspace {
 		switch workspaceSig.Label {
 		case "go_repo", "node_repo", "git_repo":
@@ -74,6 +76,21 @@ func (Estimator) Estimate(signals []Signal, horizon time.Duration) StateEstimate
 				reasons = append(reasons, "morning ramp is more likely preparation than execution")
 			}
 		}
+	}
+	if hasToolActivity && toolActivity.Value > 0 {
+		if state == "coding" {
+			confidence += 0.05
+			reasons = append(reasons, "recent tool activity supports active work state")
+		} else if state == "unknown" {
+			state = "working"
+			confidence = 0.50
+			reasons = append(reasons, "recent tool activity indicates active work")
+		}
+	}
+	if hasChatActivity && chatActivity.Value > 0 && state == "unknown" {
+		state = "planning"
+		confidence = 0.40
+		reasons = append(reasons, "recent chat activity indicates planning or clarification")
 	}
 
 	confidence = clamp(confidence, 0, 0.95)

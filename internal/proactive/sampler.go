@@ -14,10 +14,15 @@ import (
 type Sampler struct {
 	Now        func() time.Time
 	WorkingDir string
+	Store      *Store
 }
 
 func NewSampler(workingDir string) Sampler {
 	return Sampler{WorkingDir: strings.TrimSpace(workingDir)}
+}
+
+func NewSamplerWithStore(workingDir string, store *Store) Sampler {
+	return Sampler{WorkingDir: strings.TrimSpace(workingDir), Store: store}
 }
 
 func (s Sampler) Sample(ctx context.Context) ([]Signal, error) {
@@ -54,6 +59,11 @@ func (s Sampler) Sample(ctx context.Context) ([]Signal, error) {
 	if ok {
 		signals = append(signals, workspaceSignal)
 	}
+	runtimeSignals, err := s.runtimeActivitySignals(now)
+	if err != nil {
+		return nil, err
+	}
+	signals = append(signals, runtimeSignals...)
 	return signals, nil
 }
 
@@ -82,6 +92,39 @@ func (s Sampler) workspaceSignal(now time.Time) (Signal, bool, error) {
 		Metadata:  map[string]string{"path": abs, "name": filepath.Base(abs)},
 		CreatedAt: now,
 	}, true, nil
+}
+
+func (s Sampler) runtimeActivitySignals(now time.Time) ([]Signal, error) {
+	if s.Store == nil {
+		return nil, nil
+	}
+	const window = time.Hour
+	counts, err := s.Store.RuntimeEventCountsSince(now.Add(-window))
+	if err != nil {
+		return nil, err
+	}
+	var signals []Signal
+	if count := counts["tool_call"] + counts["tool_blocked"]; count > 0 {
+		signals = append(signals, Signal{
+			ID:        signalID("runtime-tool", now, 4),
+			Channel:   "runtime_tool_activity",
+			Value:     float64(count),
+			Label:     "active",
+			Metadata:  map[string]string{"window_minutes": "60", "count": fmt.Sprintf("%d", count)},
+			CreatedAt: now,
+		})
+	}
+	if count := counts["chat_turn"]; count > 0 {
+		signals = append(signals, Signal{
+			ID:        signalID("runtime-chat", now, 5),
+			Channel:   "runtime_chat_activity",
+			Value:     float64(count),
+			Label:     "active",
+			Metadata:  map[string]string{"window_minutes": "60", "count": fmt.Sprintf("%d", count)},
+			CreatedAt: now,
+		})
+	}
+	return signals, nil
 }
 
 func timeSegment(t time.Time) string {

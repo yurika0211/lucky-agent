@@ -76,6 +76,16 @@ func (s *Store) init() error {
 			note TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS proactive_runtime_events (
+			id TEXT PRIMARY KEY,
+			source TEXT NOT NULL,
+			session_id TEXT NOT NULL,
+			type TEXT NOT NULL,
+			name TEXT NOT NULL,
+			value REAL NOT NULL,
+			metadata TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -226,6 +236,47 @@ func (s *Store) RecordFeedback(event FeedbackEvent) error {
 	return nil
 }
 
+func (s *Store) RecordRuntimeEvent(event RuntimeEvent) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	event.Type = strings.TrimSpace(event.Type)
+	if event.Type == "" {
+		return fmt.Errorf("runtime event type is required")
+	}
+	if strings.TrimSpace(event.ID) == "" {
+		if event.CreatedAt.IsZero() {
+			event.CreatedAt = time.Now()
+		}
+		event.ID = fmt.Sprintf("runtime-%d", event.CreatedAt.UnixNano())
+	}
+	if strings.TrimSpace(event.Source) == "" {
+		event.Source = "runtime"
+	}
+	if event.Metadata == nil {
+		event.Metadata = map[string]string{}
+	}
+	metadata, err := json.Marshal(event.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal runtime event metadata: %w", err)
+	}
+	_, err = s.db.Exec(
+		`INSERT OR REPLACE INTO proactive_runtime_events(id, source, session_id, type, name, value, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.ID,
+		event.Source,
+		event.SessionID,
+		event.Type,
+		event.Name,
+		event.Value,
+		string(metadata),
+		formatTime(event.CreatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("insert proactive runtime event: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Stats() (Stats, error) {
 	if s == nil || s.db == nil {
 		return Stats{}, nil
@@ -239,6 +290,7 @@ func (s *Store) Stats() (Stats, error) {
 		{"proactive_state_estimates", &stats.Estimates},
 		{"proactive_dry_run_actions", &stats.Actions},
 		{"proactive_feedback_events", &stats.FeedbackEvents},
+		{"proactive_runtime_events", &stats.RuntimeEvents},
 	}
 	for _, item := range counts {
 		if err := s.db.QueryRow("SELECT COUNT(*) FROM " + item.table).Scan(item.dest); err != nil {
@@ -246,6 +298,98 @@ func (s *Store) Stats() (Stats, error) {
 		}
 	}
 	return stats, nil
+}
+
+func (s *Store) RuntimeEventStats() (RuntimeEventStats, error) {
+	if s == nil || s.db == nil {
+		return RuntimeEventStats{ByType: map[string]int{}}, nil
+	}
+	stats := RuntimeEventStats{ByType: map[string]int{}}
+	rows, err := s.db.Query(`SELECT type, COUNT(*) FROM proactive_runtime_events GROUP BY type ORDER BY type`)
+	if err != nil {
+		return RuntimeEventStats{}, fmt.Errorf("query proactive runtime event stats: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var typ string
+		var count int
+		if err := rows.Scan(&typ, &count); err != nil {
+			return RuntimeEventStats{}, fmt.Errorf("scan proactive runtime event stats: %w", err)
+		}
+		stats.ByType[typ] = count
+		stats.Events += count
+	}
+	if err := rows.Err(); err != nil {
+		return RuntimeEventStats{}, err
+	}
+	return stats, nil
+}
+
+func (s *Store) RuntimeEventCountsSince(since time.Time) (map[string]int, error) {
+	counts := map[string]int{}
+	if s == nil || s.db == nil {
+		return counts, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT type, COUNT(*)
+		 FROM proactive_runtime_events
+		 WHERE created_at >= ?
+		 GROUP BY type`,
+		formatTime(since),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query proactive runtime event counts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var typ string
+		var count int
+		if err := rows.Scan(&typ, &count); err != nil {
+			return nil, fmt.Errorf("scan proactive runtime event counts: %w", err)
+		}
+		counts[typ] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return counts, nil
+}
+
+func (s *Store) RecentRuntimeEvents(limit int) ([]RuntimeEvent, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(
+		`SELECT id, source, session_id, type, name, value, metadata, created_at
+		 FROM proactive_runtime_events
+		 ORDER BY created_at DESC LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query recent proactive runtime events: %w", err)
+	}
+	defer rows.Close()
+	var events []RuntimeEvent
+	for rows.Next() {
+		var event RuntimeEvent
+		var metadataJSON string
+		var createdAt string
+		if err := rows.Scan(&event.ID, &event.Source, &event.SessionID, &event.Type, &event.Name, &event.Value, &metadataJSON, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan recent proactive runtime event: %w", err)
+		}
+		if err := json.Unmarshal([]byte(metadataJSON), &event.Metadata); err != nil {
+			return nil, fmt.Errorf("decode runtime event metadata: %w", err)
+		}
+		event.CreatedAt = parseTime(createdAt)
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
 }
 
 func (s *Store) FeedbackStats(limit int) (FeedbackStats, error) {

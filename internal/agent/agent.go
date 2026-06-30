@@ -25,6 +25,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/metrics"
 	"github.com/yurika0211/luckyagent/internal/middleware"
 	"github.com/yurika0211/luckyagent/internal/multimodal"
+	"github.com/yurika0211/luckyagent/internal/proactive"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/rag"
 	"github.com/yurika0211/luckyagent/internal/resilience"
@@ -130,7 +131,8 @@ type Agent struct {
 	skills                []*tool.SkillInfo       // 已加载的 skill 列表
 	skillRegistry         *tool.SkillRegistry
 	metrics               *metrics.Metrics // 指标收集器
-	cronEngine            *cron.Engine     // 定时任务引擎
+	proactiveStore        *proactive.Store
+	cronEngine            *cron.Engine // 定时任务引擎
 	cronStore             *cron.Store
 	autonomy              *autonomy.AutonomyKit // 自主工作套件
 	autonomyResultsMu     sync.Mutex
@@ -479,6 +481,28 @@ func tidalMemoryStorePath(homeDir, configured string) string {
 	configured = strings.TrimSpace(configured)
 	if configured == "" {
 		return filepath.Join(homeDir, "runtime", "tidal_memory.db")
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(homeDir, configured)
+}
+
+func initProactiveRuntime(homeDir string, cfg config.ProactiveConfig) (*proactive.Store, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	store, err := proactive.OpenStore(proactiveStorePath(homeDir, cfg.StorePath))
+	if err != nil {
+		return nil, fmt.Errorf("init proactive store: %w", err)
+	}
+	return store, nil
+}
+
+func proactiveStorePath(homeDir, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return filepath.Join(homeDir, "runtime", "proactive_state.db")
 	}
 	if filepath.IsAbs(configured) {
 		return configured
@@ -963,6 +987,10 @@ func New(cfg *config.Manager) (*Agent, error) {
 		return nil, err
 	}
 	supportRT := initSupportRuntime(c, memoryRT.store, ragRT.manager)
+	proactiveStore, err := initProactiveRuntime(cfg.HomeDir(), c.Proactive)
+	if err != nil {
+		return nil, err
+	}
 
 	a := &Agent{
 		cfg:            cfg,
@@ -991,6 +1019,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		collabReg:      collab.NewRegistry(),
 		collabMgr:      nil,
 		metrics:        supportRT.metrics,
+		proactiveStore: proactiveStore,
 		cronEngine:     supportRT.cronEngine,
 		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
 		autonomy:       supportRT.autonomyKit,
@@ -1223,10 +1252,12 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 		// 如果 RunLoop 失败，回退到简单流式聊天
 		response, chatErr := a.chatStreamSimpleInput(ctx, sess, input)
 		if chatErr != nil {
+			a.recordProactiveChatEvent(sess, input, "", 0, fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr))
 			return "", fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr)
 		}
 		// v0.36.0: 记录指标
 		a.metrics.RecordChatRequest()
+		a.recordProactiveChatEvent(sess, input, response, 0, err)
 		return response, nil
 	}
 
@@ -1259,6 +1290,7 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 			a.metrics.RecordToolCall()
 		}
 	}
+	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)
 
 	return response, nil
 }
@@ -2937,6 +2969,11 @@ func (a *Agent) Close() error {
 	if a.memory != nil {
 		if err := a.memory.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("close memory: %w", err)
+		}
+	}
+	if a.proactiveStore != nil {
+		if err := a.proactiveStore.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("close proactive store: %w", err)
 		}
 	}
 

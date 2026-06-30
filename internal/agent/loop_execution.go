@@ -192,6 +192,9 @@ func (a *Agent) executeToolCallsOrdered(
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Index < results[j].Index
 	})
+	for _, result := range results {
+		a.recordProactiveToolEvent(sess, result, false)
+	}
 	return results
 }
 
@@ -222,13 +225,17 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 	allowed := make([]provider.ToolCall, 0, len(toolCalls))
 	for idx, tc := range toolCalls {
 		if msg, blocked := guard.blockMessage(tc); blocked {
-			blockedResults[idx] = executedToolCall{Index: idx, ToolCall: tc, Result: msg, ShortResult: msg}
+			result := executedToolCall{Index: idx, ToolCall: tc, Result: msg, ShortResult: msg}
+			blockedResults[idx] = result
+			a.recordProactiveToolEvent(sess, result, true)
 			continue
 		}
 		if hooksActive {
 			finalArgs, blocked, blockMsg := a.hooks.RunPre(tc.Name, tc.Arguments, source, sessionID)
 			if blocked {
-				blockedResults[idx] = executedToolCall{Index: idx, ToolCall: tc, Result: blockMsg, ShortResult: blockMsg}
+				result := executedToolCall{Index: idx, ToolCall: tc, Result: blockMsg, ShortResult: blockMsg}
+				blockedResults[idx] = result
+				a.recordProactiveToolEvent(sess, result, true)
 				continue
 			}
 			tc.Arguments = finalArgs

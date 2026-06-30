@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -1374,10 +1375,16 @@ func runProactiveStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Estimates: %d\n", stats.Estimates)
 	fmt.Printf("Dry-run actions: %d\n", stats.Actions)
 	fmt.Printf("Feedback events: %d\n", stats.FeedbackEvents)
+	fmt.Printf("Runtime events: %d\n", stats.RuntimeEvents)
 	if feedbackStats, err := store.FeedbackStats(100); err != nil {
 		return err
 	} else if feedbackStats.Events > 0 {
 		fmt.Printf("Feedback accuracy: %.2f (%d/%d recent)\n", feedbackStats.Accuracy, feedbackStats.Correct, feedbackStats.Events)
+	}
+	if runtimeStats, err := store.RuntimeEventStats(); err != nil {
+		return err
+	} else if runtimeStats.Events > 0 {
+		fmt.Printf("Runtime event types: %s\n", formatRuntimeEventTypes(runtimeStats.ByType))
 	}
 	if estimate, ok, err := store.LatestEstimate(); err != nil {
 		return err
@@ -1403,7 +1410,7 @@ func runProactiveSample(cmd *cobra.Command, args []string) error {
 	}
 	defer store.Close()
 
-	sampler := proactive.NewSampler("")
+	sampler := proactive.NewSamplerWithStore("", store)
 	signals, err := sampler.Sample(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("sample proactive signals: %w", err)
@@ -1441,7 +1448,7 @@ func runProactiveDryRun(cmd *cobra.Command, args []string) error {
 		Horizon:             time.Duration(cfg.Proactive.HorizonSeconds) * time.Second,
 	}
 	runner := proactive.NewRunnerWithCalibrator(
-		proactive.NewSampler(""),
+		proactive.NewSamplerWithStore("", store),
 		proactive.NewEstimator(),
 		proactive.NewFeedbackCalibrator(store),
 		proactive.NewGate(gateCfg),
@@ -1465,6 +1472,50 @@ func runProactiveDryRun(cmd *cobra.Command, args []string) error {
 	fmt.Println("Dry-run actions:")
 	for _, action := range decision.Actions {
 		fmt.Printf("  - %s allowed=%t confidence=%.2f reason=%s\n", action.Action, action.Allowed, action.Confidence, action.Reason)
+	}
+	return nil
+}
+
+func runProactiveEvents(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	limit, _ := cmd.Flags().GetInt("limit")
+	events, err := store.RecentRuntimeEvents(limit)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		fmt.Println("No proactive runtime events found.")
+		return nil
+	}
+	for _, event := range events {
+		sessionID := event.SessionID
+		if sessionID == "" {
+			sessionID = "-"
+		}
+		fmt.Printf("%s type=%s name=%s source=%s session=%s value=%.2f\n",
+			event.CreatedAt.Local().Format(time.RFC3339),
+			event.Type,
+			event.Name,
+			event.Source,
+			sessionID,
+			event.Value,
+		)
+		if len(event.Metadata) > 0 {
+			fmt.Printf("  metadata=%s\n", formatStringMap(event.Metadata))
+		}
 	}
 	return nil
 }
@@ -1549,4 +1600,36 @@ func cliProactiveStorePath(homeDir, configured string) string {
 		return configured
 	}
 	return filepath.Join(homeDir, configured)
+}
+
+func formatRuntimeEventTypes(byType map[string]int) string {
+	if len(byType) == 0 {
+		return "-"
+	}
+	keys := make([]string, 0, len(byType))
+	for key := range byType {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, byType[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatStringMap(values map[string]string) string {
+	if len(values) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", key, values[key]))
+	}
+	return strings.Join(parts, ", ")
 }

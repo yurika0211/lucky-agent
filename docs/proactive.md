@@ -156,13 +156,15 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
 
 | 模块 | 当前实现 | 文件 |
 |---|---|---|
-| Gravitational Field Sampler | 采样 `time_of_day`、`day_of_week`、`workspace_context`，暂不做侵入式活动窗口监听 | `internal/proactive/sampler.go` |
+| Gravitational Field Sampler | 采样 `time_of_day`、`day_of_week`、`workspace_context`、最近 runtime activity，暂不做侵入式活动窗口监听 | `internal/proactive/sampler.go` |
 | State Estimator | 启发式估计 `coding`、`planning`、`low_energy`、`unknown`，输出 confidence / noise_variance / reasons | `internal/proactive/estimator.go` |
 | Feedback Calibrator | 根据最近 feedback accuracy 保守校准 confidence；少于 3 条反馈时不介入 | `internal/proactive/calibrator.go` |
 | Tidal Gate | 按 `confidence_threshold` 生成 dry-run action；当前只记录 `would do`，不执行真实动作 | `internal/proactive/gate.go` |
 | Persistence | SQLite 持久化 signals、state estimates、dry-run actions、feedback events | `internal/proactive/store.go` |
+| Runtime Event Stream | 持久化 chat/tool/runtime event；`proactive.enabled=true` 时 agent 记录 chat turn、tool call、blocked tool | `internal/proactive/store.go`, `internal/agent/proactive_events.go` |
 | Runtime config | `proactive.enabled`、`proactive.dry_run`、`proactive.confidence_threshold`、`proactive.horizon_seconds`、`proactive.store_path` | `internal/config/config.go` |
-| Observability | `la proactive status`、`la proactive sample`、`la proactive dry-run`、`la proactive feedback <actual-state>` | `internal/cli/lhcmd` |
+| Observability | `la proactive status`、`la proactive sample`、`la proactive dry-run`、`la proactive feedback <actual-state>`、`la proactive events` | `internal/cli/lhcmd` |
+| Benchmark | 合成信号回放 benchmark，可选 SQLite 持久化 | `cmd/la-proactive-bench` |
 
 默认配置：
 
@@ -184,6 +186,7 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
 - 不采集系统活动窗口、日历、天气等敏感或外部信号。
 - 不做 RLS 响应核学习；`Estimator` 是可替换边界，后续可以把 learned kernel 插进去。
 - 已支持人工/运行时反馈事件，并用 feedback accuracy 做保守 confidence 校准；下一步可以进入响应核学习。
+- `proactive.enabled=false` 时 agent runtime 不采集事件；设置为 true 后仍默认 dry-run，只开始记录 chat/tool 事件。
 
 可运行命令：
 
@@ -192,4 +195,6 @@ la proactive status
 la proactive sample
 la proactive dry-run
 la proactive feedback coding
+la proactive events --limit 20
+go run ./cmd/la-proactive-bench --events 10000 --rounds 3
 ```

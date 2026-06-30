@@ -32,6 +32,42 @@ func TestSamplerDetectsGoRepoWorkspace(t *testing.T) {
 	}
 }
 
+func TestSamplerIncludesRuntimeActivitySignals(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "proactive.db"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+
+	now := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	if err := store.RecordRuntimeEvent(RuntimeEvent{ID: "runtime-1", Type: "tool_call", Name: "file_read", CreatedAt: now.Add(-5 * time.Minute)}); err != nil {
+		t.Fatalf("RecordRuntimeEvent: %v", err)
+	}
+	if err := store.RecordRuntimeEvent(RuntimeEvent{ID: "runtime-2", Type: "chat_turn", Name: "chat", CreatedAt: now.Add(-10 * time.Minute)}); err != nil {
+		t.Fatalf("RecordRuntimeEvent: %v", err)
+	}
+
+	sampler := NewSamplerWithStore(t.TempDir(), store)
+	sampler.Now = func() time.Time { return now }
+	signals, err := sampler.Sample(context.Background())
+	if err != nil {
+		t.Fatalf("Sample: %v", err)
+	}
+	foundTool := false
+	foundChat := false
+	for _, signal := range signals {
+		if signal.Channel == "runtime_tool_activity" && signal.Value == 1 {
+			foundTool = true
+		}
+		if signal.Channel == "runtime_chat_activity" && signal.Value == 1 {
+			foundChat = true
+		}
+	}
+	if !foundTool || !foundChat {
+		t.Fatalf("expected runtime activity signals, got %#v", signals)
+	}
+}
+
 func TestEstimatorPredictsCodingForRepoDuringWorkHours(t *testing.T) {
 	now := time.Date(2026, 7, 1, 15, 0, 0, 0, time.UTC)
 	estimate := NewEstimator().Estimate([]Signal{
@@ -87,6 +123,7 @@ func TestStorePersistsDryRunCycle(t *testing.T) {
 	estimate := StateEstimate{ID: "state-1", PredictedState: "coding", Confidence: 0.75, NoiseVariance: 0.25, Horizon: 5 * time.Minute, Reasons: []string{"test"}, CreatedAt: now}
 	action := DryRunAction{ID: "action-1", StateID: "state-1", Action: "warm_memory_context", Confidence: 0.75, Allowed: true, Reason: "test", CreatedAt: now}
 	feedback := FeedbackEvent{ID: "feedback-1", StateID: "state-1", PredictedState: "coding", ActualState: "coding", Source: "test", CreatedAt: now}
+	runtimeEvent := RuntimeEvent{ID: "runtime-1", Source: "test", SessionID: "sess-1", Type: "tool_call", Name: "file_read", Value: 12, Metadata: map[string]string{"success": "true"}, CreatedAt: now}
 
 	if err := store.RecordSignals([]Signal{signal}); err != nil {
 		t.Fatalf("RecordSignals: %v", err)
@@ -100,12 +137,15 @@ func TestStorePersistsDryRunCycle(t *testing.T) {
 	if err := store.RecordFeedback(feedback); err != nil {
 		t.Fatalf("RecordFeedback: %v", err)
 	}
+	if err := store.RecordRuntimeEvent(runtimeEvent); err != nil {
+		t.Fatalf("RecordRuntimeEvent: %v", err)
+	}
 
 	stats, err := store.Stats()
 	if err != nil {
 		t.Fatalf("Stats: %v", err)
 	}
-	if stats.Signals != 1 || stats.Estimates != 1 || stats.Actions != 1 || stats.FeedbackEvents != 1 {
+	if stats.Signals != 1 || stats.Estimates != 1 || stats.Actions != 1 || stats.FeedbackEvents != 1 || stats.RuntimeEvents != 1 {
 		t.Fatalf("unexpected stats: %#v", stats)
 	}
 	got, ok, err := store.LatestEstimate()
@@ -128,6 +168,27 @@ func TestStorePersistsDryRunCycle(t *testing.T) {
 	}
 	if feedbackStats.Events != 1 || feedbackStats.Correct != 1 || feedbackStats.Accuracy != 1 {
 		t.Fatalf("unexpected feedback stats: %#v", feedbackStats)
+	}
+	runtimeStats, err := store.RuntimeEventStats()
+	if err != nil {
+		t.Fatalf("RuntimeEventStats: %v", err)
+	}
+	if runtimeStats.Events != 1 || runtimeStats.ByType["tool_call"] != 1 {
+		t.Fatalf("unexpected runtime event stats: %#v", runtimeStats)
+	}
+	counts, err := store.RuntimeEventCountsSince(now.Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("RuntimeEventCountsSince: %v", err)
+	}
+	if counts["tool_call"] != 1 {
+		t.Fatalf("unexpected runtime event counts: %#v", counts)
+	}
+	recent, err := store.RecentRuntimeEvents(10)
+	if err != nil {
+		t.Fatalf("RecentRuntimeEvents: %v", err)
+	}
+	if len(recent) != 1 || recent[0].Name != "file_read" || recent[0].Metadata["success"] != "true" {
+		t.Fatalf("unexpected recent events: %#v", recent)
 	}
 }
 
