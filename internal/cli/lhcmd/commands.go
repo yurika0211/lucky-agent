@@ -158,6 +158,18 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Embedding.Dimension)
 	case "embedding.api_key":
 		fmt.Println(maskKey(cfg.Embedding.APIKey))
+	case "multimodal.provider":
+		fmt.Println(cfg.Multimodal.Provider)
+	case "multimodal.api_key":
+		fmt.Println(maskKey(cfg.Multimodal.APIKey))
+	case "multimodal.api_base":
+		fmt.Println(cfg.Multimodal.APIBase)
+	case "multimodal.image_model":
+		fmt.Println(cfg.Multimodal.ImageModel)
+	case "multimodal.transcription_model":
+		fmt.Println(cfg.Multimodal.TranscriptionModel)
+	case "multimodal.image_provider":
+		fmt.Println(cfg.Multimodal.ImageProvider)
 	case "soul_path":
 		fmt.Println(cfg.SoulPath)
 	case "max_tokens":

@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	embedderpkg "github.com/yurika0211/luckyagent/internal/embedder"
@@ -36,12 +37,17 @@ type RAGManager struct {
 	retriever *Retriever
 	embedder  embedderpkg.Embedder
 
+	// Graph RAG support
+	graph          *KnowledgeGraph  // 知识图谱（可选）
+	graphExtractor *EntityExtractor // 实体提取器（可选）
+
 	mu sync.RWMutex
 }
 
 type RAGConfig struct {
 	EmbeddingDim    int
 	RetrieverConfig RetrieverConfig
+	EnableGraph     bool // 是否启用知识图谱
 }
 
 func DefaultRAGConfig() RAGConfig {
@@ -230,6 +236,248 @@ func (m *RAGManager) String() string {
 	if m.IsSQLite() {
 		backend = "sqlite"
 	}
-	return fmt.Sprintf("RAGManager{docs=%d, chunks=%d, embedder=%s, dim=%d, backend=%s}",
-		stats.DocumentCount, stats.ChunkCount, m.embedder.Name(), m.store.Dimension(), backend)
+	graphInfo := ""
+	if m.graph != nil {
+		graphStats := m.graph.Stats()
+		graphInfo = fmt.Sprintf(", graph: %d nodes, %d edges", graphStats.NodeCount, graphStats.EdgeCount)
+	}
+	return fmt.Sprintf("RAGManager{docs=%d, chunks=%d, embedder=%s, dim=%d, backend=%s%s}",
+		stats.DocumentCount, stats.ChunkCount, m.embedder.Name(), m.store.Dimension(), backend, graphInfo)
+}
+
+// --- Graph RAG Extensions ---
+
+// NewRAGManagerWithGraph 创建带知识图谱的 RAG 系统
+func NewRAGManagerWithGraph(embedder embedderpkg.Embedder, config RAGConfig, llmProvider LLMProvider) *RAGManager {
+	m := NewRAGManager(embedder, config)
+	if config.EnableGraph && llmProvider != nil {
+		m.graph = NewKnowledgeGraph()
+		m.graphExtractor = NewEntityExtractor(llmProvider)
+	}
+	return m
+}
+
+// NewRAGManagerWithSQLiteAndGraph 创建带 SQLite 和知识图谱的 RAG 系统
+func NewRAGManagerWithSQLiteAndGraph(embedder embedderpkg.Embedder, config RAGConfig, dbPath string, llmProvider LLMProvider) (*RAGManager, error) {
+	m, err := NewRAGManagerWithSQLite(embedder, config, dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if config.EnableGraph && llmProvider != nil {
+		m.graph = NewKnowledgeGraph()
+		m.graphExtractor = NewEntityExtractor(llmProvider)
+	}
+	return m, nil
+}
+
+// EnableGraph 启用知识图谱（如果尚未启用）
+func (m *RAGManager) EnableGraph(llmProvider LLMProvider) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.graph == nil {
+		m.graph = NewKnowledgeGraph()
+	}
+	if m.graphExtractor == nil && llmProvider != nil {
+		m.graphExtractor = NewEntityExtractor(llmProvider)
+	}
+}
+
+// DisableGraph 禁用知识图谱
+func (m *RAGManager) DisableGraph() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.graph = nil
+	m.graphExtractor = nil
+}
+
+// Graph 返回知识图谱（如果启用）
+func (m *RAGManager) Graph() *KnowledgeGraph {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.graph
+}
+
+// IndexFileWithGraph 索引文件并提取知识图谱
+func (m *RAGManager) IndexFileWithGraph(ctx context.Context, path string) (*Document, error) {
+	// 1. 执行标准的向量索引
+	doc, err := m.IndexFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. 如果启用了图谱，提取实体和关系
+	if m.graph != nil && m.graphExtractor != nil {
+		m.mu.RLock()
+		chunks := make([]*Chunk, 0, len(doc.Chunks))
+		for _, chunkID := range doc.Chunks {
+			if chunk, exists := m.indexer.chunks[chunkID]; exists {
+				chunks = append(chunks, chunk)
+			}
+		}
+		m.mu.RUnlock()
+
+		// 批量提取（简化版：顺序提取）
+		for _, chunk := range chunks {
+			result, err := m.graphExtractor.ExtractEntitiesAndRelations(ctx, chunk)
+			if err != nil {
+				// 记录错误但不阻塞索引
+				continue
+			}
+
+			// 转换为图节点和边
+			nodes, edges := m.graphExtractor.ConvertToGraphNodes(result, chunk.ID)
+
+			// 添加到知识图谱
+			for _, node := range nodes {
+				_ = m.graph.AddNode(node)
+			}
+			for _, edge := range edges {
+				_ = m.graph.AddEdge(edge)
+			}
+		}
+	}
+
+	return doc, nil
+}
+
+// IndexTextWithGraph 索引文本并提取知识图谱
+func (m *RAGManager) IndexTextWithGraph(ctx context.Context, source, title, content string) (*Document, error) {
+	// 1. 执行标准的向量索引
+	doc, err := m.IndexText(source, title, content)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. 如果启用了图谱，提取实体和关系
+	if m.graph != nil && m.graphExtractor != nil {
+		m.mu.RLock()
+		chunks := make([]*Chunk, 0, len(doc.Chunks))
+		for _, chunkID := range doc.Chunks {
+			if chunk, exists := m.indexer.chunks[chunkID]; exists {
+				chunks = append(chunks, chunk)
+			}
+		}
+		m.mu.RUnlock()
+
+		// 批量提取（简化版：顺序提取）
+		for _, chunk := range chunks {
+			result, err := m.graphExtractor.ExtractEntitiesAndRelations(ctx, chunk)
+			if err != nil {
+				// 记录错误但不阻塞索引
+				continue
+			}
+
+			// 转换为图节点和边
+			nodes, edges := m.graphExtractor.ConvertToGraphNodes(result, chunk.ID)
+
+			// 添加到知识图谱
+			for _, node := range nodes {
+				_ = m.graph.AddNode(node)
+			}
+			for _, edge := range edges {
+				_ = m.graph.AddEdge(edge)
+			}
+		}
+	}
+
+	return doc, nil
+}
+
+// GraphRAGSearchResult 融合向量和图检索的结果
+type GraphRAGSearchResult struct {
+	// 向量检索结果
+	ChunkResults []RetrievalResult
+
+	// 图检索结果
+	ActivatedNodes []NodeActivationScore
+
+	// 融合上下文
+	Context string
+}
+
+// SearchWithGraph 使用图增强的检索
+func (m *RAGManager) SearchWithGraph(ctx context.Context, query string) (*GraphRAGSearchResult, error) {
+	result := &GraphRAGSearchResult{}
+
+	// 路径1：向量检索（现有逻辑）
+	chunkResults, err := m.retriever.Search(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	result.ChunkResults = chunkResults
+
+	// 路径2：图激活（如果启用）
+	if m.graph != nil {
+		m.mu.RLock()
+		graph := m.graph
+		m.mu.RUnlock()
+
+		if graph != nil {
+			graphOpts := DefaultGraphActivationOptions()
+			activatedNodes := graph.ActivateGraph(query, graphOpts)
+			result.ActivatedNodes = activatedNodes
+		}
+	}
+
+	// 融合上下文
+	result.Context = m.buildGraphEnhancedContext(result)
+
+	return result, nil
+}
+
+// buildGraphEnhancedContext 构建图增强的上下文
+func (m *RAGManager) buildGraphEnhancedContext(result *GraphRAGSearchResult) string {
+	var sb strings.Builder
+
+	// 1. 相关文档块（来自向量检索）
+	if len(result.ChunkResults) > 0 {
+		sb.WriteString("## Relevant Document Chunks\n\n")
+		for i, chunk := range result.ChunkResults {
+			if i >= 5 { // 限制数量
+				break
+			}
+			content := chunk.Content
+			if len(content) > 200 {
+				content = content[:200] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("### Chunk %d (Score: %.2f)\n", i+1, chunk.Score))
+			sb.WriteString(fmt.Sprintf("Source: %s\n", chunk.DocSource))
+			sb.WriteString(fmt.Sprintf("%s\n\n", content))
+		}
+	}
+
+	// 2. 相关实体和关系（来自图激活）
+	if len(result.ActivatedNodes) > 0 {
+		sb.WriteString("## Activated Knowledge Entities\n\n")
+		for i, nodeScore := range result.ActivatedNodes {
+			if i >= 8 { // 限制数量
+				break
+			}
+			node := nodeScore.Node
+			sb.WriteString(fmt.Sprintf("### %s (%s) [Score: %.2f]\n", node.Name, node.Type, nodeScore.Score))
+			if node.Description != "" {
+				sb.WriteString(fmt.Sprintf("%s\n", node.Description))
+			}
+
+			// 显示激活路径
+			if len(nodeScore.Paths) > 0 && i < 5 {
+				sb.WriteString("\nActivation paths:\n")
+				for j, path := range nodeScore.Paths {
+					if j >= 3 { // 限制路径数量
+						break
+					}
+					m.mu.RLock()
+					fromNode := m.graph.Nodes[path.FromID]
+					m.mu.RUnlock()
+					if fromNode != nil {
+						sb.WriteString(fmt.Sprintf("  - %s -[%s]-> %s\n",
+							fromNode.Name, path.RelType, node.Name))
+					}
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	return sb.String()
 }

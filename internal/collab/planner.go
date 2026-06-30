@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const plannerVersion = "dijkstra-markov-v1"
+const plannerVersion = "dijkstra-markov-mdp-v1"
 
 // PlanRequest describes the scheduling problem the runtime planner solves.
 type PlanRequest struct {
@@ -31,6 +31,7 @@ type PlanResult struct {
 	Candidates    []CandidateScore `json:"candidates"`
 	Trace         []PlanEdge       `json:"trace"`
 	DecisionBasis string           `json:"decision_basis"`
+	MDP           MDPDecision      `json:"mdp"`
 }
 
 // CandidateScore captures the Markov-derived score used by Dijkstra.
@@ -41,6 +42,8 @@ type CandidateScore struct {
 	BlockedProb     float64    `json:"blocked_prob"`
 	EstimatedCost   float64    `json:"estimated_cost"`
 	EstimatedRisk   float64    `json:"estimated_risk"`
+	MDPQValue       float64    `json:"mdp_q_value"`
+	MDPAdjustment   float64    `json:"mdp_adjustment"`
 	DecisionWeight  float64    `json:"decision_weight"`
 	ObservedSamples int        `json:"observed_samples"`
 }
@@ -66,6 +69,7 @@ type TransitionProbability struct {
 // estimates plus cost/risk heuristics.
 type Planner struct {
 	model *AdaptiveMarkovModel
+	mdp   *MDPModel
 }
 
 // NewPlanner creates a planner. Passing nil uses a fresh adaptive Markov model.
@@ -73,7 +77,7 @@ func NewPlanner(model *AdaptiveMarkovModel) *Planner {
 	if model == nil {
 		model = NewAdaptiveMarkovModel()
 	}
-	return &Planner{model: model}
+	return &Planner{model: model, mdp: NewMDPModel()}
 }
 
 // Plan selects the minimum-weight executable collaboration path.
@@ -88,11 +92,16 @@ func (p *Planner) Plan(req PlanRequest) PlanResult {
 
 	candidates := make([]CandidateScore, 0, len(modes))
 	edges := make([]PlanEdge, 0, len(modes)*2)
+	mdpDecision := MDPDecision{}
+	if p.mdp != nil {
+		mdpDecision = p.mdp.Decision(req, modes)
+	}
 	for _, mode := range modes {
 		prob := p.model.Estimate(mode, req)
 		cost := estimatePlannerCost(mode, req)
 		risk := estimatePlannerRisk(mode, req)
-		weight := decisionWeight(prob, cost, risk)
+		adjustment := mdpWeightAdjustment(mdpDecision, mode)
+		weight := decisionWeight(prob, cost, risk) + adjustment
 		candidates = append(candidates, CandidateScore{
 			Mode:            mode,
 			SuccessProb:     prob.Success,
@@ -100,6 +109,8 @@ func (p *Planner) Plan(req PlanRequest) PlanResult {
 			BlockedProb:     prob.Blocked,
 			EstimatedCost:   cost,
 			EstimatedRisk:   risk,
+			MDPQValue:       mdpDecision.QValues[mode],
+			MDPAdjustment:   adjustment,
 			DecisionWeight:  weight,
 			ObservedSamples: prob.Samples,
 		})
@@ -130,6 +141,7 @@ func (p *Planner) Plan(req PlanRequest) PlanResult {
 		Candidates:    candidates,
 		Trace:         trace,
 		DecisionBasis: decisionBasis(req),
+		MDP:           mdpDecision,
 	}
 }
 
@@ -144,6 +156,25 @@ func (p *Planner) ObserveOutcome(mode CollabMode, outcome string) {
 		return
 	}
 	p.model.Observe(mode, outcome)
+}
+
+// ObserveExecution feeds a stateful execution result into both the Markov
+// transition estimate and the MDP Q table.
+func (p *Planner) ObserveExecution(req PlanRequest, mode CollabMode, outcome string, duration time.Duration) {
+	if p == nil || !isExecutableMode(mode) {
+		return
+	}
+	if p.model != nil {
+		p.model.Observe(mode, outcome)
+	}
+	if p.mdp != nil {
+		p.mdp.Observe(MDPObservation{
+			Request:  req,
+			Action:   mode,
+			Outcome:  outcome,
+			Duration: duration,
+		})
+	}
 }
 
 // AdaptiveMarkovModel stores observed outcomes per mode and combines them with

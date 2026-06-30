@@ -160,6 +160,11 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 		task.Metadata["planned_mode"] = string(plan.Mode)
 		task.Metadata["planner_path"] = fmt.Sprint(plan.Path)
 		task.Metadata["planner_weight"] = fmt.Sprintf("%.6f", plan.TotalWeight)
+		task.Metadata["mdp_version"] = plan.MDP.Version
+		task.Metadata["mdp_state"] = plan.MDP.StateKey
+		if summary := mdpDecisionSummary(plan.MDP); summary != "" {
+			task.Metadata["mdp_q_values"] = summary
+		}
 		if payload, err := json.Marshal(plan); err == nil {
 			task.Metadata["planner_trace"] = string(payload)
 		}
@@ -473,13 +478,33 @@ func (dm *DelegateManager) observePlannedOutcome(task *CollabTask) {
 	state := task.State
 	outcome := stateToOutcome(state)
 	if task.Metadata["partial_failure"] == "true" {
-		outcome = "failure"
+		outcome = "partial"
 	}
 	planner := dm.planner
+	req := PlanRequest{
+		Description: task.Description,
+		Input:       task.Input,
+		AgentIDs:    agentIDsFromSubTasks(task.SubTasks),
+		Timeout:     task.Timeout,
+	}
+	duration := time.Duration(0)
+	if !task.CreatedAt.IsZero() && !task.CompletedAt.IsZero() {
+		duration = task.CompletedAt.Sub(task.CreatedAt)
+	}
 	dm.mu.RUnlock()
 	if planner != nil {
-		planner.ObserveOutcome(mode, outcome)
+		planner.ObserveExecution(req, mode, outcome, duration)
 	}
+}
+
+func agentIDsFromSubTasks(subTasks []*SubTask) []string {
+	agentIDs := make([]string, 0, len(subTasks))
+	for _, sub := range subTasks {
+		if sub != nil && sub.AgentID != "" {
+			agentIDs = append(agentIDs, sub.AgentID)
+		}
+	}
+	return agentIDs
 }
 
 // executeSubTask 执行单个子任务

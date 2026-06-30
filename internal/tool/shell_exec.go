@@ -14,11 +14,11 @@ func buildShellCommand(command string) (*exec.Cmd, error) {
 		return exec.Command("sh", "-c", command), nil
 	}
 
-	bashPath, err := resolveBashBinary()
+	powerShellPath, err := resolvePowerShellBinary()
 	if err != nil {
 		return nil, err
 	}
-	return exec.Command(bashPath, "-lc", command), nil
+	return exec.Command(powerShellPath, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command), nil
 }
 
 func buildScriptCommand(scriptPath string, args ...string) ([]string, error) {
@@ -76,6 +76,17 @@ func resolveBashBinary() (string, error) {
 		`C:\Windows\system32\bash.exe`,
 		"bash.exe",
 		"bash",
+	)
+}
+
+func resolvePowerShellBinary() (string, error) {
+	return resolveBinary(
+		"pwsh.exe",
+		"pwsh",
+		`C:\Program Files\PowerShell\7\pwsh.exe`,
+		`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		"powershell.exe",
+		"powershell",
 	)
 }
 

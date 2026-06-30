@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -65,14 +66,7 @@ func handleShell(args map[string]any) (string, error) {
 
 	prefix := ""
 	if len(env) > 0 {
-		validEnvKey := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
-		for k, v := range env {
-			if !validEnvKey.MatchString(k) {
-				continue
-			}
-			escaped := strings.ReplaceAll(v, "'", "'\\''")
-			prefix += fmt.Sprintf("export %s='%s'; ", k, escaped)
-		}
+		prefix = shellEnvPrefix(env, runtime.GOOS)
 	}
 	fullCommand := prefix + command
 
@@ -111,6 +105,24 @@ func handleShell(args map[string]any) (string, error) {
 		}
 		return "", fmt.Errorf("command timed out after %d seconds", timeout)
 	}
+}
+
+func shellEnvPrefix(env map[string]string, goos string) string {
+	validEnvKey := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+	var b strings.Builder
+	for k, v := range env {
+		if !validEnvKey.MatchString(k) {
+			continue
+		}
+		if goos == "windows" {
+			escaped := strings.ReplaceAll(v, "'", "''")
+			fmt.Fprintf(&b, "$env:%s = '%s'; ", k, escaped)
+			continue
+		}
+		escaped := strings.ReplaceAll(v, "'", "'\\''")
+		fmt.Fprintf(&b, "export %s='%s'; ", k, escaped)
+	}
+	return b.String()
 }
 
 func FileReadTool() *Tool {
