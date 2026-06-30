@@ -66,6 +66,16 @@ func (s *Store) init() error {
 			reason TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS proactive_feedback_events (
+			id TEXT PRIMARY KEY,
+			state_id TEXT NOT NULL,
+			predicted_state TEXT NOT NULL,
+			actual_state TEXT NOT NULL,
+			value REAL NOT NULL,
+			source TEXT NOT NULL,
+			note TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -171,6 +181,51 @@ func (s *Store) RecordActions(actions []DryRunAction) error {
 	return nil
 }
 
+func (s *Store) RecordFeedback(event FeedbackEvent) error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	event.ActualState = strings.TrimSpace(event.ActualState)
+	event.PredictedState = strings.TrimSpace(event.PredictedState)
+	if event.ActualState == "" {
+		return fmt.Errorf("actual state is required")
+	}
+	if event.PredictedState == "" {
+		return fmt.Errorf("predicted state is required")
+	}
+	if event.Value == 0 {
+		if strings.EqualFold(event.ActualState, event.PredictedState) {
+			event.Value = 1
+		} else {
+			event.Value = -1
+		}
+	}
+	if strings.TrimSpace(event.ID) == "" {
+		if event.CreatedAt.IsZero() {
+			event.CreatedAt = time.Now()
+		}
+		event.ID = fmt.Sprintf("feedback-%d", event.CreatedAt.UnixNano())
+	}
+	if strings.TrimSpace(event.Source) == "" {
+		event.Source = "cli"
+	}
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO proactive_feedback_events(id, state_id, predicted_state, actual_state, value, source, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.ID,
+		event.StateID,
+		event.PredictedState,
+		event.ActualState,
+		event.Value,
+		event.Source,
+		event.Note,
+		formatTime(event.CreatedAt),
+	)
+	if err != nil {
+		return fmt.Errorf("insert proactive feedback: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Stats() (Stats, error) {
 	if s == nil || s.db == nil {
 		return Stats{}, nil
@@ -183,6 +238,7 @@ func (s *Store) Stats() (Stats, error) {
 		{"proactive_signals", &stats.Signals},
 		{"proactive_state_estimates", &stats.Estimates},
 		{"proactive_dry_run_actions", &stats.Actions},
+		{"proactive_feedback_events", &stats.FeedbackEvents},
 	}
 	for _, item := range counts {
 		if err := s.db.QueryRow("SELECT COUNT(*) FROM " + item.table).Scan(item.dest); err != nil {
@@ -192,30 +248,126 @@ func (s *Store) Stats() (Stats, error) {
 	return stats, nil
 }
 
+func (s *Store) FeedbackStats(limit int) (FeedbackStats, error) {
+	return s.feedbackStats("", limit)
+}
+
+func (s *Store) FeedbackStatsForState(predictedState string, limit int) (FeedbackStats, error) {
+	return s.feedbackStats(strings.TrimSpace(predictedState), limit)
+}
+
+func (s *Store) feedbackStats(predictedState string, limit int) (FeedbackStats, error) {
+	if s == nil || s.db == nil {
+		return FeedbackStats{}, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if predictedState == "" {
+		rows, err = s.db.Query(
+			`SELECT predicted_state, actual_state
+		 FROM proactive_feedback_events
+		 ORDER BY created_at DESC LIMIT ?`,
+			limit,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT predicted_state, actual_state
+		 FROM proactive_feedback_events
+		 WHERE predicted_state = ?
+		 ORDER BY created_at DESC LIMIT ?`,
+			predictedState,
+			limit,
+		)
+	}
+	if err != nil {
+		return FeedbackStats{}, fmt.Errorf("query proactive feedback stats: %w", err)
+	}
+	defer rows.Close()
+
+	var stats FeedbackStats
+	for rows.Next() {
+		var predicted, actual string
+		if err := rows.Scan(&predicted, &actual); err != nil {
+			return FeedbackStats{}, fmt.Errorf("scan proactive feedback stats: %w", err)
+		}
+		stats.Events++
+		if strings.EqualFold(strings.TrimSpace(predicted), strings.TrimSpace(actual)) {
+			stats.Correct++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return FeedbackStats{}, err
+	}
+	if stats.Events > 0 {
+		stats.Accuracy = float64(stats.Correct) / float64(stats.Events)
+	}
+	return stats, nil
+}
+
 func (s *Store) LatestEstimate() (StateEstimate, bool, error) {
 	if s == nil || s.db == nil {
 		return StateEstimate{}, false, nil
 	}
-	var estimate StateEstimate
-	var horizonSeconds int
-	var reasonsJSON string
-	var createdAt string
-	err := s.db.QueryRow(
+	row := s.db.QueryRow(
 		`SELECT id, predicted_state, confidence, noise_variance, horizon_seconds, reasons, created_at
 		 FROM proactive_state_estimates ORDER BY created_at DESC LIMIT 1`,
-	).Scan(&estimate.ID, &estimate.PredictedState, &estimate.Confidence, &estimate.NoiseVariance, &horizonSeconds, &reasonsJSON, &createdAt)
+	)
+	estimate, err := scanEstimate(row)
 	if err == sql.ErrNoRows {
 		return StateEstimate{}, false, nil
 	}
 	if err != nil {
 		return StateEstimate{}, false, fmt.Errorf("load latest proactive estimate: %w", err)
 	}
+	return estimate, true, nil
+}
+
+func (s *Store) EstimateByID(id string) (StateEstimate, bool, error) {
+	if s == nil || s.db == nil {
+		return StateEstimate{}, false, nil
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return StateEstimate{}, false, fmt.Errorf("estimate id is required")
+	}
+	row := s.db.QueryRow(
+		`SELECT id, predicted_state, confidence, noise_variance, horizon_seconds, reasons, created_at
+		 FROM proactive_state_estimates WHERE id = ? LIMIT 1`,
+		id,
+	)
+	estimate, err := scanEstimate(row)
+	if err == sql.ErrNoRows {
+		return StateEstimate{}, false, nil
+	}
+	if err != nil {
+		return StateEstimate{}, false, fmt.Errorf("load proactive estimate: %w", err)
+	}
+	return estimate, true, nil
+}
+
+type estimateScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEstimate(scanner estimateScanner) (StateEstimate, error) {
+	var estimate StateEstimate
+	var horizonSeconds int
+	var reasonsJSON string
+	var createdAt string
+	if err := scanner.Scan(&estimate.ID, &estimate.PredictedState, &estimate.Confidence, &estimate.NoiseVariance, &horizonSeconds, &reasonsJSON, &createdAt); err != nil {
+		return StateEstimate{}, err
+	}
 	if err := json.Unmarshal([]byte(reasonsJSON), &estimate.Reasons); err != nil {
-		return StateEstimate{}, false, fmt.Errorf("decode proactive estimate reasons: %w", err)
+		return StateEstimate{}, fmt.Errorf("decode proactive estimate reasons: %w", err)
 	}
 	estimate.Horizon = time.Duration(horizonSeconds) * time.Second
 	estimate.CreatedAt = parseTime(createdAt)
-	return estimate, true, nil
+	return estimate, nil
 }
 
 func formatTime(t time.Time) string {

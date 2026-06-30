@@ -3,18 +3,36 @@ package proactive
 import (
 	"context"
 	"fmt"
+	"time"
 )
+
+type SignalSampler interface {
+	Sample(context.Context) ([]Signal, error)
+}
+
+type StateEstimator interface {
+	Estimate([]Signal, time.Duration) StateEstimate
+}
+
+type EstimateCalibrator interface {
+	Calibrate(StateEstimate) StateEstimate
+}
 
 // Runner wires sampler, estimator, gate, and optional persistence.
 type Runner struct {
-	Sampler   Sampler
-	Estimator Estimator
-	Gate      Gate
-	Store     *Store
+	Sampler    SignalSampler
+	Estimator  StateEstimator
+	Calibrator EstimateCalibrator
+	Gate       Gate
+	Store      *Store
 }
 
-func NewRunner(sampler Sampler, estimator Estimator, gate Gate, store *Store) Runner {
+func NewRunner(sampler SignalSampler, estimator StateEstimator, gate Gate, store *Store) Runner {
 	return Runner{Sampler: sampler, Estimator: estimator, Gate: gate, Store: store}
+}
+
+func NewRunnerWithCalibrator(sampler SignalSampler, estimator StateEstimator, calibrator EstimateCalibrator, gate Gate, store *Store) Runner {
+	return Runner{Sampler: sampler, Estimator: estimator, Calibrator: calibrator, Gate: gate, Store: store}
 }
 
 func (r Runner) RunDryRun(ctx context.Context) (Decision, error) {
@@ -23,6 +41,9 @@ func (r Runner) RunDryRun(ctx context.Context) (Decision, error) {
 		return Decision{}, err
 	}
 	estimate := r.Estimator.Estimate(signals, r.Gate.Config.Horizon)
+	if r.Calibrator != nil {
+		estimate = r.Calibrator.Calibrate(estimate)
+	}
 	decision, err := r.Gate.Decide(ctx, signals, estimate)
 	if err != nil {
 		return Decision{}, err

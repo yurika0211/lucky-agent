@@ -271,7 +271,17 @@ func newRootCmd() *cobra.Command {
 		Short: "运行一次 proactive gate dry-run",
 		RunE:  runProactiveDryRun,
 	}
-	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd)
+	proactiveFeedbackCmd := &cobra.Command{
+		Use:   "feedback <actual-state>",
+		Short: "记录最近一次 proactive 预测的实际结果",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runProactiveFeedback,
+	}
+	proactiveFeedbackCmd.Flags().String("state-id", "", "要反馈的 state estimate id；默认使用最新估计")
+	proactiveFeedbackCmd.Flags().Float64("value", 0, "反馈值；0 表示自动按 actual==predicted 记为 1，否则 -1")
+	proactiveFeedbackCmd.Flags().String("source", "cli", "反馈来源")
+	proactiveFeedbackCmd.Flags().String("note", "", "反馈备注")
+	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd, proactiveFeedbackCmd)
 
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)

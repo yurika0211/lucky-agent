@@ -33,6 +33,18 @@ type StateEstimate struct {
 	CreatedAt      time.Time
 }
 
+// FeedbackEvent records what actually happened after a prediction.
+type FeedbackEvent struct {
+	ID             string
+	StateID        string
+	PredictedState string
+	ActualState    string
+	Value          float64
+	Source         string
+	Note           string
+	CreatedAt      time.Time
+}
+
 // DryRunAction describes an action the proactive gate would take.
 type DryRunAction struct {
 	ID         string
@@ -55,7 +67,15 @@ type Decision struct {
 
 // Stats summarizes persisted proactive telemetry.
 type Stats struct {
-	Signals   int `json:"signals"`
-	Estimates int `json:"estimates"`
-	Actions   int `json:"actions"`
+	Signals        int `json:"signals"`
+	Estimates      int `json:"estimates"`
+	Actions        int `json:"actions"`
+	FeedbackEvents int `json:"feedback_events"`
+}
+
+// FeedbackStats summarizes prediction feedback.
+type FeedbackStats struct {
+	Events   int     `json:"events"`
+	Correct  int     `json:"correct"`
+	Accuracy float64 `json:"accuracy"`
 }

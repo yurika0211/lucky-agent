@@ -1373,6 +1373,12 @@ func runProactiveStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Signals: %d\n", stats.Signals)
 	fmt.Printf("Estimates: %d\n", stats.Estimates)
 	fmt.Printf("Dry-run actions: %d\n", stats.Actions)
+	fmt.Printf("Feedback events: %d\n", stats.FeedbackEvents)
+	if feedbackStats, err := store.FeedbackStats(100); err != nil {
+		return err
+	} else if feedbackStats.Events > 0 {
+		fmt.Printf("Feedback accuracy: %.2f (%d/%d recent)\n", feedbackStats.Accuracy, feedbackStats.Correct, feedbackStats.Events)
+	}
 	if estimate, ok, err := store.LatestEstimate(); err != nil {
 		return err
 	} else if ok {
@@ -1434,9 +1440,10 @@ func runProactiveDryRun(cmd *cobra.Command, args []string) error {
 		ConfidenceThreshold: cfg.Proactive.ConfidenceThreshold,
 		Horizon:             time.Duration(cfg.Proactive.HorizonSeconds) * time.Second,
 	}
-	runner := proactive.NewRunner(
+	runner := proactive.NewRunnerWithCalibrator(
 		proactive.NewSampler(""),
 		proactive.NewEstimator(),
+		proactive.NewFeedbackCalibrator(store),
 		proactive.NewGate(gateCfg),
 		store,
 	)
@@ -1458,6 +1465,70 @@ func runProactiveDryRun(cmd *cobra.Command, args []string) error {
 	fmt.Println("Dry-run actions:")
 	for _, action := range decision.Actions {
 		fmt.Printf("  - %s allowed=%t confidence=%.2f reason=%s\n", action.Action, action.Allowed, action.Confidence, action.Reason)
+	}
+	return nil
+}
+
+func runProactiveFeedback(cmd *cobra.Command, args []string) error {
+	actualState := strings.TrimSpace(args[0])
+	if actualState == "" {
+		return fmt.Errorf("actual state is required")
+	}
+
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	stateID, _ := cmd.Flags().GetString("state-id")
+	var estimate proactive.StateEstimate
+	var ok bool
+	if strings.TrimSpace(stateID) != "" {
+		estimate, ok, err = store.EstimateByID(stateID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("proactive estimate %q not found", stateID)
+		}
+	} else {
+		estimate, ok, err = store.LatestEstimate()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no proactive estimate found; run `la proactive dry-run` first")
+		}
+	}
+	value, _ := cmd.Flags().GetFloat64("value")
+	source, _ := cmd.Flags().GetString("source")
+	note, _ := cmd.Flags().GetString("note")
+	event := proactive.FeedbackEvent{
+		StateID:        estimate.ID,
+		PredictedState: estimate.PredictedState,
+		ActualState:    actualState,
+		Value:          value,
+		Source:         source,
+		Note:           note,
+		CreatedAt:      time.Now(),
+	}
+	if err := store.RecordFeedback(event); err != nil {
+		return fmt.Errorf("record proactive feedback: %w", err)
+	}
+
+	correct := strings.EqualFold(estimate.PredictedState, actualState)
+	fmt.Printf("Recorded feedback: predicted=%s actual=%s correct=%t\n", estimate.PredictedState, actualState, correct)
+	if feedbackStats, err := store.FeedbackStats(100); err == nil && feedbackStats.Events > 0 {
+		fmt.Printf("Recent feedback accuracy: %.2f (%d/%d)\n", feedbackStats.Accuracy, feedbackStats.Correct, feedbackStats.Events)
 	}
 	return nil
 }

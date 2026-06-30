@@ -158,10 +158,11 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
 |---|---|---|
 | Gravitational Field Sampler | 采样 `time_of_day`、`day_of_week`、`workspace_context`，暂不做侵入式活动窗口监听 | `internal/proactive/sampler.go` |
 | State Estimator | 启发式估计 `coding`、`planning`、`low_energy`、`unknown`，输出 confidence / noise_variance / reasons | `internal/proactive/estimator.go` |
+| Feedback Calibrator | 根据最近 feedback accuracy 保守校准 confidence；少于 3 条反馈时不介入 | `internal/proactive/calibrator.go` |
 | Tidal Gate | 按 `confidence_threshold` 生成 dry-run action；当前只记录 `would do`，不执行真实动作 | `internal/proactive/gate.go` |
-| Persistence | SQLite 持久化 signals、state estimates、dry-run actions | `internal/proactive/store.go` |
+| Persistence | SQLite 持久化 signals、state estimates、dry-run actions、feedback events | `internal/proactive/store.go` |
 | Runtime config | `proactive.enabled`、`proactive.dry_run`、`proactive.confidence_threshold`、`proactive.horizon_seconds`、`proactive.store_path` | `internal/config/config.go` |
-| Observability | `la proactive status`、`la proactive sample`、`la proactive dry-run` | `internal/cli/lhcmd` |
+| Observability | `la proactive status`、`la proactive sample`、`la proactive dry-run`、`la proactive feedback <actual-state>` | `internal/cli/lhcmd` |
 
 默认配置：
 
@@ -182,6 +183,7 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
 - 不自动打开文件、静音通知或执行 shell。
 - 不采集系统活动窗口、日历、天气等敏感或外部信号。
 - 不做 RLS 响应核学习；`Estimator` 是可替换边界，后续可以把 learned kernel 插进去。
+- 已支持人工/运行时反馈事件，并用 feedback accuracy 做保守 confidence 校准；下一步可以进入响应核学习。
 
 可运行命令：
 
@@ -189,4 +191,5 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
 la proactive status
 la proactive sample
 la proactive dry-run
+la proactive feedback coding
 ```
