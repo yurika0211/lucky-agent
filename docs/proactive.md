@@ -147,3 +147,46 @@ history.db          ← 时间序列存储 (SQLite + 按天分区)
 4. gate 动作：不弹窗、不推送。而是：预加载 ~/projects/ 下最近修改的文件列表到内存、预编译重复的 shell 命令到缓存
 5. 14:05：用户打开终端，ls结果第一屏就是昨天改的文件，直接cd进去了。没有一行代码是 agent "帮他做的"，但所有东西都比平时快 1.2 秒
 这就是潮汐式 proactive：不是替用户决策，而是让系统的物理特性匹配用户即将到来的状态惯性。
+
+---
+
+## Implementation status
+
+Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
+
+| 模块 | 当前实现 | 文件 |
+|---|---|---|
+| Gravitational Field Sampler | 采样 `time_of_day`、`day_of_week`、`workspace_context`，暂不做侵入式活动窗口监听 | `internal/proactive/sampler.go` |
+| State Estimator | 启发式估计 `coding`、`planning`、`low_energy`、`unknown`，输出 confidence / noise_variance / reasons | `internal/proactive/estimator.go` |
+| Tidal Gate | 按 `confidence_threshold` 生成 dry-run action；当前只记录 `would do`，不执行真实动作 | `internal/proactive/gate.go` |
+| Persistence | SQLite 持久化 signals、state estimates、dry-run actions | `internal/proactive/store.go` |
+| Runtime config | `proactive.enabled`、`proactive.dry_run`、`proactive.confidence_threshold`、`proactive.horizon_seconds`、`proactive.store_path` | `internal/config/config.go` |
+| Observability | `la proactive status`、`la proactive sample`、`la proactive dry-run` | `internal/cli/lhcmd` |
+
+默认配置：
+
+```json
+{
+  "proactive": {
+    "enabled": false,
+    "dry_run": true,
+    "confidence_threshold": 0.6,
+    "horizon_seconds": 300
+  }
+}
+```
+
+当前版本的边界：
+
+- 不主动发消息。
+- 不自动打开文件、静音通知或执行 shell。
+- 不采集系统活动窗口、日历、天气等敏感或外部信号。
+- 不做 RLS 响应核学习；`Estimator` 是可替换边界，后续可以把 learned kernel 插进去。
+
+可运行命令：
+
+```bash
+la proactive status
+la proactive sample
+la proactive dry-run
+```

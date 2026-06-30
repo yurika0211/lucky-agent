@@ -1,0 +1,61 @@
+package proactive
+
+import "time"
+
+// Config controls the proactive state estimator. The first production slice is
+// intentionally dry-run first: it predicts and records, but does not execute
+// user-visible actions.
+type Config struct {
+	Enabled             bool
+	DryRun              bool
+	ConfidenceThreshold float64
+	Horizon             time.Duration
+}
+
+// Signal is one sampled component of the user's current "gravitational field".
+type Signal struct {
+	ID        string
+	Channel   string
+	Value     float64
+	Label     string
+	Metadata  map[string]string
+	CreatedAt time.Time
+}
+
+// StateEstimate is the predicted user state at a short future horizon.
+type StateEstimate struct {
+	ID             string
+	PredictedState string
+	Confidence     float64
+	NoiseVariance  float64
+	Horizon        time.Duration
+	Reasons        []string
+	CreatedAt      time.Time
+}
+
+// DryRunAction describes an action the proactive gate would take.
+type DryRunAction struct {
+	ID         string
+	StateID    string
+	Action     string
+	Confidence float64
+	Allowed    bool
+	Reason     string
+	CreatedAt  time.Time
+}
+
+// Decision is the complete output of one proactive dry-run cycle.
+type Decision struct {
+	Enabled  bool
+	DryRun   bool
+	Signals  []Signal
+	Estimate StateEstimate
+	Actions  []DryRunAction
+}
+
+// Stats summarizes persisted proactive telemetry.
+type Stats struct {
+	Signals   int `json:"signals"`
+	Estimates int `json:"estimates"`
+	Actions   int `json:"actions"`
+}

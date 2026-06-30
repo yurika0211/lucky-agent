@@ -251,10 +251,32 @@ func newRootCmd() *cobra.Command {
 	}
 	memoryTidalCmd.AddCommand(memoryTidalNestedStatsCmd)
 	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryTidalStatsCmd, memoryTidalCmd)
+
+	proactiveCmd := &cobra.Command{
+		Use:   "proactive",
+		Short: "管理 proactive state estimator",
+	}
+	proactiveStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "查看 proactive 配置和持久化统计",
+		RunE:  runProactiveStatus,
+	}
+	proactiveSampleCmd := &cobra.Command{
+		Use:   "sample",
+		Short: "采样当前 proactive 信号并写入本地 store",
+		RunE:  runProactiveSample,
+	}
+	proactiveDryRunCmd := &cobra.Command{
+		Use:   "dry-run",
+		Short: "运行一次 proactive gate dry-run",
+		RunE:  runProactiveDryRun,
+	}
+	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd)
+
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)
 	addLearnCmd(rootCmd)
-	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd)
+	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd)
 
 	return rootCmd
 }

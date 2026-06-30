@@ -63,6 +63,18 @@ func TestDefaultConfig(t *testing.T) {
 	if len(cfg.Autonomy.Worker.DisabledTools) != 1 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" {
 		t.Errorf("expected autonomy.worker.disabled_tools [autonomy], got %v", cfg.Autonomy.Worker.DisabledTools)
 	}
+	if cfg.Proactive.Enabled {
+		t.Errorf("expected proactive.enabled false by default, got true")
+	}
+	if cfg.Proactive.DryRun == nil || !*cfg.Proactive.DryRun {
+		t.Errorf("expected proactive.dry_run true by default")
+	}
+	if cfg.Proactive.ConfidenceThreshold != 0.60 {
+		t.Errorf("expected proactive.confidence_threshold 0.60, got %.2f", cfg.Proactive.ConfidenceThreshold)
+	}
+	if cfg.Proactive.HorizonSeconds != 300 {
+		t.Errorf("expected proactive.horizon_seconds 300, got %d", cfg.Proactive.HorizonSeconds)
+	}
 	if cfg.ImageGeneration.Provider != "openai" {
 		t.Errorf("expected image_generation.provider openai, got %s", cfg.ImageGeneration.Provider)
 	}
@@ -169,6 +181,46 @@ func TestManagerSetAutonomyEnabled(t *testing.T) {
 	cfg := mgr.Get()
 	if !cfg.Autonomy.Enabled {
 		t.Fatalf("expected autonomy.enabled to be true")
+	}
+}
+
+func TestManagerSetProactiveConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("proactive.enabled", "true"); err != nil {
+		t.Fatalf("Set proactive.enabled: %v", err)
+	}
+	if err := mgr.Set("proactive.dry_run", "false"); err != nil {
+		t.Fatalf("Set proactive.dry_run: %v", err)
+	}
+	if err := mgr.Set("proactive.confidence_threshold", "0.72"); err != nil {
+		t.Fatalf("Set proactive.confidence_threshold: %v", err)
+	}
+	if err := mgr.Set("proactive.horizon_seconds", "600"); err != nil {
+		t.Fatalf("Set proactive.horizon_seconds: %v", err)
+	}
+	if err := mgr.Set("proactive.store_path", "runtime/custom-proactive.db"); err != nil {
+		t.Fatalf("Set proactive.store_path: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if !cfg.Proactive.Enabled {
+		t.Fatalf("expected proactive.enabled true")
+	}
+	if cfg.Proactive.DryRun == nil || *cfg.Proactive.DryRun {
+		t.Fatalf("expected proactive.dry_run false, got %#v", cfg.Proactive.DryRun)
+	}
+	if cfg.Proactive.ConfidenceThreshold != 0.72 {
+		t.Fatalf("expected threshold 0.72, got %.2f", cfg.Proactive.ConfidenceThreshold)
+	}
+	if cfg.Proactive.HorizonSeconds != 600 {
+		t.Fatalf("expected horizon 600, got %d", cfg.Proactive.HorizonSeconds)
+	}
+	if cfg.Proactive.StorePath != "runtime/custom-proactive.db" {
+		t.Fatalf("unexpected store path %q", cfg.Proactive.StorePath)
 	}
 }
 

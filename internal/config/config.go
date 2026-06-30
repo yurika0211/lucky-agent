@@ -83,6 +83,9 @@ type Config struct {
 	// Autonomy 配置
 	Autonomy AutonomyConfig `json:"autonomy,omitempty"`
 
+	// Proactive 配置
+	Proactive ProactiveConfig `json:"proactive,omitempty"`
+
 	// Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
 
@@ -270,6 +273,17 @@ type AutonomyWorkerConfig struct {
 type AutonomyConfig struct {
 	Enabled bool                 `json:"enabled,omitempty"`
 	Worker  AutonomyWorkerConfig `json:"worker,omitempty"`
+}
+
+// ProactiveConfig controls the proactive state estimator and gate. It is
+// disabled and dry-run by default so runtime behavior remains passive unless
+// the user explicitly opts in.
+type ProactiveConfig struct {
+	Enabled             bool    `json:"enabled,omitempty"`
+	DryRun              *bool   `json:"dry_run,omitempty"`
+	ConfidenceThreshold float64 `json:"confidence_threshold,omitempty"`
+	HorizonSeconds      int     `json:"horizon_seconds,omitempty"`
+	StorePath           string  `json:"store_path,omitempty"`
 }
 
 // MsgGatewayConfig 消息网关配置
@@ -648,6 +662,12 @@ func DefaultConfig() *Config {
 				DisabledTools:          []string{"autonomy"},
 			},
 		},
+		Proactive: ProactiveConfig{
+			Enabled:             false,
+			DryRun:              boolPtr(true),
+			ConfidenceThreshold: 0.60,
+			HorizonSeconds:      300,
+		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
 			Telegram: MsgGatewayTelegram{
@@ -941,6 +961,15 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Autonomy.Worker.DisabledTools == nil {
 		cfg.Autonomy.Worker.DisabledTools = append([]string(nil), def.Autonomy.Worker.DisabledTools...)
 	}
+	if cfg.Proactive.DryRun == nil {
+		cfg.Proactive.DryRun = def.Proactive.DryRun
+	}
+	if cfg.Proactive.ConfidenceThreshold <= 0 || cfg.Proactive.ConfidenceThreshold > 1 {
+		cfg.Proactive.ConfidenceThreshold = def.Proactive.ConfidenceThreshold
+	}
+	if cfg.Proactive.HorizonSeconds <= 0 {
+		cfg.Proactive.HorizonSeconds = def.Proactive.HorizonSeconds
+	}
 
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = def.Server.Addr
@@ -1038,6 +1067,10 @@ func cloneConfig(in *Config) *Config {
 	}
 	if in.Autonomy.Worker.DisabledTools != nil {
 		cp.Autonomy.Worker.DisabledTools = append([]string{}, in.Autonomy.Worker.DisabledTools...)
+	}
+	if in.Proactive.DryRun != nil {
+		v := *in.Proactive.DryRun
+		cp.Proactive.DryRun = &v
 	}
 	return &cp
 }
@@ -1360,6 +1393,21 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Autonomy.Worker.DuplicateFetchLimit = n
 	case "autonomy.worker.disabled_tools":
 		m.config.Autonomy.Worker.DisabledTools = splitCSV(value)
+	case "proactive.enabled":
+		m.config.Proactive.Enabled = parseBool(value)
+	case "proactive.dry_run":
+		v := parseBool(value)
+		m.config.Proactive.DryRun = &v
+	case "proactive.confidence_threshold":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Proactive.ConfidenceThreshold = f
+	case "proactive.horizon_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.HorizonSeconds = n
+	case "proactive.store_path":
+		m.config.Proactive.StorePath = value
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":
