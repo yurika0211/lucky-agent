@@ -25,6 +25,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/metrics"
 	"github.com/yurika0211/luckyagent/internal/middleware"
 	"github.com/yurika0211/luckyagent/internal/multimodal"
+	"github.com/yurika0211/luckyagent/internal/proactive"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/rag"
 	"github.com/yurika0211/luckyagent/internal/resilience"
@@ -130,7 +131,8 @@ type Agent struct {
 	skills                []*tool.SkillInfo       // 已加载的 skill 列表
 	skillRegistry         *tool.SkillRegistry
 	metrics               *metrics.Metrics // 指标收集器
-	cronEngine            *cron.Engine     // 定时任务引擎
+	proactiveStore        *proactive.Store
+	cronEngine            *cron.Engine // 定时任务引擎
 	cronStore             *cron.Store
 	autonomy              *autonomy.AutonomyKit // 自主工作套件
 	autonomyResultsMu     sync.Mutex
@@ -421,6 +423,20 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	if err != nil {
 		return memoryRuntime{}, fmt.Errorf("init memory: %w", err)
 	}
+	if c.Memory.Tidal.Enabled {
+		tidalStore, err := memory.OpenTidalStore(tidalMemoryStorePath(cfg.HomeDir(), c.Memory.Tidal.StorePath))
+		if err != nil {
+			_ = mem.Close()
+			return memoryRuntime{}, fmt.Errorf("init tidal memory store: %w", err)
+		}
+		tidalReranker, err := memory.NewPersistentTidalMemoryReranker(tidalRerankerConfig(c.Memory.Tidal), tidalStore)
+		if err != nil {
+			_ = tidalStore.Close()
+			_ = mem.Close()
+			return memoryRuntime{}, fmt.Errorf("init tidal memory reranker: %w", err)
+		}
+		mem.SetActivationReranker(tidalReranker)
+	}
 
 	shortTermMaxTurns := c.Memory.ShortTermMaxTurns
 	if shortTermMaxTurns <= 0 {
@@ -434,11 +450,13 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	}
 	midTerm, err := memory.NewMidTermStore(filepath.Join(cfg.HomeDir(), "memory", "30_Sessions"), midTermMaxSummaries)
 	if err != nil {
+		_ = mem.Close()
 		return memoryRuntime{}, fmt.Errorf("init midterm store: %w", err)
 	}
 
 	sessions, err := session.NewManager(cfg.HomeDir() + "/sessions")
 	if err != nil {
+		_ = mem.Close()
 		return memoryRuntime{}, fmt.Errorf("init sessions: %w", err)
 	}
 
@@ -448,6 +466,48 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 		mid:      midTerm,
 		sessions: sessions,
 	}, nil
+}
+
+func tidalRerankerConfig(cfg config.TidalMemoryConfig) memory.TidalRerankerConfig {
+	out := memory.DefaultTidalRerankerConfig()
+	out.Beta = cfg.Beta
+	out.MaxBoost = cfg.MaxBoost
+	out.LearningRate = cfg.LearningRate
+	out.MinSamples = cfg.MinSamples
+	return out
+}
+
+func tidalMemoryStorePath(homeDir, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return filepath.Join(homeDir, "runtime", "tidal_memory.db")
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(homeDir, configured)
+}
+
+func initProactiveRuntime(homeDir string, cfg config.ProactiveConfig) (*proactive.Store, error) {
+	if !cfg.Enabled {
+		return nil, nil
+	}
+	store, err := proactive.OpenStore(proactiveStorePath(homeDir, cfg.StorePath))
+	if err != nil {
+		return nil, fmt.Errorf("init proactive store: %w", err)
+	}
+	return store, nil
+}
+
+func proactiveStorePath(homeDir, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return filepath.Join(homeDir, "runtime", "proactive_state.db")
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(homeDir, configured)
 }
 
 /**
@@ -927,6 +987,10 @@ func New(cfg *config.Manager) (*Agent, error) {
 		return nil, err
 	}
 	supportRT := initSupportRuntime(c, memoryRT.store, ragRT.manager)
+	proactiveStore, err := initProactiveRuntime(cfg.HomeDir(), c.Proactive)
+	if err != nil {
+		return nil, err
+	}
 
 	a := &Agent{
 		cfg:            cfg,
@@ -955,6 +1019,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		collabReg:      collab.NewRegistry(),
 		collabMgr:      nil,
 		metrics:        supportRT.metrics,
+		proactiveStore: proactiveStore,
 		cronEngine:     supportRT.cronEngine,
 		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
 		autonomy:       supportRT.autonomyKit,
@@ -1187,10 +1252,12 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 		// 如果 RunLoop 失败，回退到简单流式聊天
 		response, chatErr := a.chatStreamSimpleInput(ctx, sess, input)
 		if chatErr != nil {
+			a.recordProactiveChatEvent(sess, input, "", 0, fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr))
 			return "", fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr)
 		}
 		// v0.36.0: 记录指标
 		a.metrics.RecordChatRequest()
+		a.recordProactiveChatEvent(sess, input, response, 0, err)
 		return response, nil
 	}
 
@@ -1223,6 +1290,7 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 			a.metrics.RecordToolCall()
 		}
 	}
+	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)
 
 	return response, nil
 }
@@ -2518,6 +2586,19 @@ func (a *Agent) MemoryStats() map[memory.Tier]int {
 	return a.memory.Stats()
 }
 
+// TidalMemoryStats returns persisted tidal-memory telemetry when enabled.
+func (a *Agent) TidalMemoryStats() (memory.TidalStoreStats, bool, error) {
+	if a == nil || a.memory == nil {
+		return memory.TidalStoreStats{}, false, nil
+	}
+	reranker, ok := a.memory.ActivationReranker().(*memory.TidalMemoryReranker)
+	if !ok || reranker == nil {
+		return memory.TidalStoreStats{}, false, nil
+	}
+	stats, err := reranker.StoreStats()
+	return stats, true, err
+}
+
 // DecayMemory 执行记忆衰减
 func (a *Agent) DecayMemory(threshold float64) int {
 	return a.memory.Decay(threshold)
@@ -2883,6 +2964,16 @@ func (a *Agent) Close() error {
 	if a.heartbeatSvc != nil {
 		if err := a.heartbeatSvc.Stop(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("stop heartbeat: %w", err)
+		}
+	}
+	if a.memory != nil {
+		if err := a.memory.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("close memory: %w", err)
+		}
+	}
+	if a.proactiveStore != nil {
+		if err := a.proactiveStore.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("close proactive store: %w", err)
 		}
 	}
 

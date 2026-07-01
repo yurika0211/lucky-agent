@@ -3,6 +3,9 @@ package lhcmd
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +15,30 @@ import (
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/gateway/weixin"
 )
+
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+
+	runErr := fn()
+	closeErr := w.Close()
+	os.Stdout = old
+
+	out, readErr := io.ReadAll(r)
+	if readErr != nil {
+		t.Fatalf("read stdout: %v", readErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close stdout: %v", closeErr)
+	}
+	return string(out), runErr
+}
 
 func newMsgGatewayStartTestCmd() *cobra.Command {
 	cmd := &cobra.Command{}
@@ -54,6 +81,48 @@ func TestResolveMsgGatewayStartOptionsUsesConfigDefaults(t *testing.T) {
 	}
 	if opts.NapCatListenAddr != "127.0.0.1:6701" || opts.NapCatPath != "/onebot/v11/ws" || opts.NapCatAccessToken != "nap-token" {
 		t.Fatalf("expected napcat config defaults, got listen=%q path=%q token=%q", opts.NapCatListenAddr, opts.NapCatPath, opts.NapCatAccessToken)
+	}
+}
+
+func TestRunConfigGetSupportsMultimodalKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	configDir := filepath.Join(home, ".luckyagent")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	data := []byte(`{
+  "multimodal": {
+    "provider": "openai",
+    "api_key": "sk-1234567890abcdef",
+    "api_base": "https://api.example.test/v1",
+    "image_model": "gemini-image",
+    "transcription_model": "qwen-asr",
+    "image_provider": "openai-media"
+  }
+}`)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := captureStdout(t, func() error {
+		return runConfigGet(&cobra.Command{}, []string{"multimodal.api_base"})
+	})
+	if err != nil {
+		t.Fatalf("runConfigGet multimodal.api_base: %v", err)
+	}
+	if strings.TrimSpace(out) != "https://api.example.test/v1" {
+		t.Fatalf("unexpected api_base output: %q", out)
+	}
+
+	out, err = captureStdout(t, func() error {
+		return runConfigGet(&cobra.Command{}, []string{"multimodal.api_key"})
+	})
+	if err != nil {
+		t.Fatalf("runConfigGet multimodal.api_key: %v", err)
+	}
+	if strings.TrimSpace(out) != "sk-12345..." {
+		t.Fatalf("unexpected masked api_key output: %q", out)
 	}
 }
 

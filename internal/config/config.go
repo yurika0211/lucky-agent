@@ -83,6 +83,9 @@ type Config struct {
 	// Autonomy 配置
 	Autonomy AutonomyConfig `json:"autonomy,omitempty"`
 
+	// Proactive 配置
+	Proactive ProactiveConfig `json:"proactive,omitempty"`
+
 	// Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
 
@@ -272,6 +275,17 @@ type AutonomyConfig struct {
 	Worker  AutonomyWorkerConfig `json:"worker,omitempty"`
 }
 
+// ProactiveConfig controls the proactive state estimator and gate. It is
+// disabled and dry-run by default so runtime behavior remains passive unless
+// the user explicitly opts in.
+type ProactiveConfig struct {
+	Enabled             bool    `json:"enabled,omitempty"`
+	DryRun              *bool   `json:"dry_run,omitempty"`
+	ConfidenceThreshold float64 `json:"confidence_threshold,omitempty"`
+	HorizonSeconds      int     `json:"horizon_seconds,omitempty"`
+	StorePath           string  `json:"store_path,omitempty"`
+}
+
 // MsgGatewayConfig 消息网关配置
 type MsgGatewayConfig struct {
 	Platform       string                   `json:"platform,omitempty"`
@@ -323,9 +337,21 @@ type MsgGatewayNapCat struct {
 
 // MemoryConfig 记忆系统配置
 type MemoryConfig struct {
-	ShortTermMaxTurns   int `json:"short_term_max_turns,omitempty"`  // 短期记忆最大轮数（默认 10）
-	MidTermExpireDays   int `json:"midterm_expire_days,omitempty"`   // 中期记忆过期天数（默认 90）
-	MidTermMaxSummaries int `json:"midterm_max_summaries,omitempty"` // 中期记忆最大摘要数（默认 100）
+	ShortTermMaxTurns   int               `json:"short_term_max_turns,omitempty"`  // 短期记忆最大轮数（默认 10）
+	MidTermExpireDays   int               `json:"midterm_expire_days,omitempty"`   // 中期记忆过期天数（默认 90）
+	MidTermMaxSummaries int               `json:"midterm_max_summaries,omitempty"` // 中期记忆最大摘要数（默认 100）
+	Tidal               TidalMemoryConfig `json:"tidal,omitempty"`
+}
+
+// TidalMemoryConfig controls the optional tidal memory reranker. It is disabled
+// by default and only affects memory activation when explicitly enabled.
+type TidalMemoryConfig struct {
+	Enabled      bool    `json:"enabled,omitempty"`
+	Beta         float64 `json:"beta,omitempty"`
+	MaxBoost     float64 `json:"max_boost,omitempty"`
+	LearningRate float64 `json:"learning_rate,omitempty"`
+	MinSamples   int     `json:"min_samples,omitempty"`
+	StorePath    string  `json:"store_path,omitempty"`
 }
 
 // ModelRouterConfig 模型路由配置
@@ -551,6 +577,13 @@ func DefaultConfig() *Config {
 			ShortTermMaxTurns:   10,
 			MidTermExpireDays:   365,
 			MidTermMaxSummaries: 100,
+			Tidal: TidalMemoryConfig{
+				Enabled:      false,
+				Beta:         0.15,
+				MaxBoost:     0.35,
+				LearningRate: 0.20,
+				MinSamples:   1,
+			},
 		},
 		Limits: LimitsConfig{
 			MaxTokens:              4096,
@@ -628,6 +661,12 @@ func DefaultConfig() *Config {
 				DuplicateFetchLimit:    300,
 				DisabledTools:          []string{"autonomy"},
 			},
+		},
+		Proactive: ProactiveConfig{
+			Enabled:             false,
+			DryRun:              boolPtr(true),
+			ConfidenceThreshold: 0.60,
+			HorizonSeconds:      300,
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
@@ -790,6 +829,18 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Memory.MidTermMaxSummaries <= 0 {
 		cfg.Memory.MidTermMaxSummaries = def.Memory.MidTermMaxSummaries
 	}
+	if cfg.Memory.Tidal.Beta <= 0 {
+		cfg.Memory.Tidal.Beta = def.Memory.Tidal.Beta
+	}
+	if cfg.Memory.Tidal.MaxBoost <= 0 {
+		cfg.Memory.Tidal.MaxBoost = def.Memory.Tidal.MaxBoost
+	}
+	if cfg.Memory.Tidal.LearningRate <= 0 || cfg.Memory.Tidal.LearningRate > 1 {
+		cfg.Memory.Tidal.LearningRate = def.Memory.Tidal.LearningRate
+	}
+	if cfg.Memory.Tidal.MinSamples <= 0 {
+		cfg.Memory.Tidal.MinSamples = def.Memory.Tidal.MinSamples
+	}
 	if cfg.ModelRouter.TokenThreshold <= 0 {
 		cfg.ModelRouter.TokenThreshold = 500
 	}
@@ -910,6 +961,15 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Autonomy.Worker.DisabledTools == nil {
 		cfg.Autonomy.Worker.DisabledTools = append([]string(nil), def.Autonomy.Worker.DisabledTools...)
 	}
+	if cfg.Proactive.DryRun == nil {
+		cfg.Proactive.DryRun = def.Proactive.DryRun
+	}
+	if cfg.Proactive.ConfidenceThreshold <= 0 || cfg.Proactive.ConfidenceThreshold > 1 {
+		cfg.Proactive.ConfidenceThreshold = def.Proactive.ConfidenceThreshold
+	}
+	if cfg.Proactive.HorizonSeconds <= 0 {
+		cfg.Proactive.HorizonSeconds = def.Proactive.HorizonSeconds
+	}
 
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = def.Server.Addr
@@ -1007,6 +1067,10 @@ func cloneConfig(in *Config) *Config {
 	}
 	if in.Autonomy.Worker.DisabledTools != nil {
 		cp.Autonomy.Worker.DisabledTools = append([]string{}, in.Autonomy.Worker.DisabledTools...)
+	}
+	if in.Proactive.DryRun != nil {
+		v := *in.Proactive.DryRun
+		cp.Proactive.DryRun = &v
 	}
 	return &cp
 }
@@ -1222,6 +1286,26 @@ func (m *Manager) Set(key, value string) error {
 		m.config.OpenCLI.FallbackToWebFetch = parseBool(value)
 	case "stream_mode":
 		m.config.StreamMode = value
+	case "memory.tidal.enabled":
+		m.config.Memory.Tidal.Enabled = parseBool(value)
+	case "memory.tidal.beta":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Memory.Tidal.Beta = f
+	case "memory.tidal.max_boost":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Memory.Tidal.MaxBoost = f
+	case "memory.tidal.learning_rate":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Memory.Tidal.LearningRate = f
+	case "memory.tidal.min_samples":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Memory.Tidal.MinSamples = n
+	case "memory.tidal.store_path":
+		m.config.Memory.Tidal.StorePath = value
 	case "agent.max_iterations":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
@@ -1309,6 +1393,21 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Autonomy.Worker.DuplicateFetchLimit = n
 	case "autonomy.worker.disabled_tools":
 		m.config.Autonomy.Worker.DisabledTools = splitCSV(value)
+	case "proactive.enabled":
+		m.config.Proactive.Enabled = parseBool(value)
+	case "proactive.dry_run":
+		v := parseBool(value)
+		m.config.Proactive.DryRun = &v
+	case "proactive.confidence_threshold":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Proactive.ConfidenceThreshold = f
+	case "proactive.horizon_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.HorizonSeconds = n
+	case "proactive.store_path":
+		m.config.Proactive.StorePath = value
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":

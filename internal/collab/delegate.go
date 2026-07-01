@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -63,6 +64,12 @@ type DelegateManager struct {
 // TaskHandler 子任务执行处理器接口
 type TaskHandler interface {
 	HandleSubTask(ctx context.Context, task *SubTask) (string, error)
+}
+
+// SubTaskVerifier is an optional extension for handlers that can validate a
+// subtask output before the orchestration policy accepts it.
+type SubTaskVerifier interface {
+	VerifySubTask(ctx context.Context, task *SubTask, output string) error
 }
 
 // TaskHandlerFunc 函数式 TaskHandler
@@ -160,6 +167,14 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 		task.Metadata["planned_mode"] = string(plan.Mode)
 		task.Metadata["planner_path"] = fmt.Sprint(plan.Path)
 		task.Metadata["planner_weight"] = fmt.Sprintf("%.6f", plan.TotalWeight)
+		task.Metadata["mdp_version"] = plan.MDP.Version
+		task.Metadata["mdp_state"] = plan.MDP.StateKey
+		if summary := mdpDecisionSummary(plan.MDP); summary != "" {
+			task.Metadata["mdp_q_values"] = summary
+		}
+		if action, ok := plan.MDP.Actions[plan.Mode]; ok {
+			task.Metadata["mdp_action"] = action.Key()
+		}
 		if payload, err := json.Marshal(plan); err == nil {
 			task.Metadata["planner_trace"] = string(payload)
 		}
@@ -277,10 +292,15 @@ func (dm *DelegateManager) executePipeline(ctx context.Context, task *CollabTask
 	task.State = TaskRunning
 	dm.mu.Unlock()
 
+	action := dm.actionForTask(task)
 	var pipelineResult string
 	input := task.Input
+	limit := len(task.SubTasks)
+	if action.MaxSteps > 0 && action.MaxSteps < limit {
+		limit = action.MaxSteps
+	}
 
-	for _, sub := range task.SubTasks {
+	for _, sub := range task.SubTasks[:limit] {
 		// 检查取消
 		dm.mu.RLock()
 		if task.State == TaskCancelled {
@@ -292,7 +312,7 @@ func (dm *DelegateManager) executePipeline(ctx context.Context, task *CollabTask
 		// 更新子任务输入（前一步的输出作为下一步的输入）
 		sub.Input = input
 
-		result, err := dm.executeSubTask(ctx, sub)
+		result, err := dm.executeSubTaskWithAction(ctx, sub, action)
 		if err != nil {
 			dm.mu.Lock()
 			sub.State = TaskFailed
@@ -312,6 +332,10 @@ func (dm *DelegateManager) executePipeline(ctx context.Context, task *CollabTask
 	dm.mu.Lock()
 	task.State = TaskCompleted
 	task.Result = pipelineResult
+	if limit < len(task.SubTasks) {
+		task.Metadata["step_limit_reached"] = "true"
+		task.Metadata["partial_failure"] = "true"
+	}
 	task.CompletedAt = time.Now()
 	dm.mu.Unlock()
 }
@@ -324,16 +348,27 @@ func (dm *DelegateManager) executeParallel(ctx context.Context, task *CollabTask
 	task.State = TaskRunning
 	dm.mu.Unlock()
 
+	action := dm.actionForTask(task)
 	var wg sync.WaitGroup
 	results := make([]string, len(task.SubTasks))
 	errors := make([]error, len(task.SubTasks))
+	maxConcurrent := action.MaxConcurrent
+	if maxConcurrent <= 0 || maxConcurrent > len(task.SubTasks) {
+		maxConcurrent = len(task.SubTasks)
+	}
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	sem := make(chan struct{}, maxConcurrent)
 
 	for i, sub := range task.SubTasks {
 		wg.Add(1)
 		go func(idx int, s *SubTask) {
 			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
-			result, err := dm.executeSubTask(ctx, s)
+			result, err := dm.executeSubTaskWithAction(ctx, s, action)
 			dm.mu.Lock()
 			if err != nil {
 				s.State = TaskFailed
@@ -371,6 +406,7 @@ func (dm *DelegateManager) executeParallel(ctx context.Context, task *CollabTask
 		task.Result = "All sub-tasks completed successfully"
 	}
 	task.Metadata["results_count"] = fmt.Sprintf("%d", len(results)-failed)
+	task.Metadata["max_concurrent"] = fmt.Sprintf("%d", maxConcurrent)
 	task.CompletedAt = time.Now()
 	dm.mu.Unlock()
 }
@@ -383,7 +419,11 @@ func (dm *DelegateManager) executeDebate(ctx context.Context, task *CollabTask) 
 	task.State = TaskRunning
 	dm.mu.Unlock()
 
-	rounds := 2                            // 默认 2 轮辩论
+	action := dm.actionForTask(task)
+	rounds := 2
+	if len(task.SubTasks) > 0 && action.MaxSteps > 0 {
+		rounds = maxInt(1, action.MaxSteps/len(task.SubTasks))
+	}
 	positions := make(map[string][]string) // agentID -> positions per round
 	votes := make(map[string]string)       // agentID -> voted position
 
@@ -409,7 +449,7 @@ func (dm *DelegateManager) executeDebate(ctx context.Context, task *CollabTask) 
 			}
 
 			sub.Input = debateCtx
-			result, err := dm.executeSubTask(ctx, sub)
+			result, err := dm.executeSubTaskWithAction(ctx, sub, action)
 			if err != nil {
 				positions[sub.AgentID] = append(positions[sub.AgentID], fmt.Sprintf("[Error: %s]", err))
 			} else {
@@ -429,7 +469,7 @@ func (dm *DelegateManager) executeDebate(ctx context.Context, task *CollabTask) 
 		voteCtx += "\n\nCast your vote for the best position (reply with the agent ID you support)."
 
 		sub.Input = voteCtx
-		result, err := dm.executeSubTask(ctx, sub)
+		result, err := dm.executeSubTaskWithAction(ctx, sub, action)
 		if err == nil {
 			votes[sub.AgentID] = result
 		}
@@ -454,8 +494,25 @@ func (dm *DelegateManager) executeDebate(ctx context.Context, task *CollabTask) 
 	task.State = TaskCompleted
 	if winner != "" && len(positions[winner]) > 0 {
 		task.Result = positions[winner][len(positions[winner])-1]
+		if action.RequireVerifier {
+			if err := verifyFinalResult(task.Result); err != nil {
+				task.State = TaskFailed
+				task.Result = fmt.Sprintf("Debate verifier failed: %s", err)
+				task.Metadata["verifier_failed"] = "true"
+			}
+		}
 	} else {
 		task.Result = "Debate completed with no clear winner"
+		if action.RetryPolicy == "critic_tiebreak" {
+			for aid, pos := range positions {
+				if len(pos) > 0 {
+					winner = aid
+					task.Result = pos[len(pos)-1]
+					task.Metadata["critic_tiebreak"] = "true"
+					break
+				}
+			}
+		}
 	}
 	task.Metadata["debate_rounds"] = fmt.Sprintf("%d", rounds)
 	task.Metadata["debate_winner"] = winner
@@ -473,13 +530,122 @@ func (dm *DelegateManager) observePlannedOutcome(task *CollabTask) {
 	state := task.State
 	outcome := stateToOutcome(state)
 	if task.Metadata["partial_failure"] == "true" {
-		outcome = "failure"
+		outcome = "partial"
 	}
 	planner := dm.planner
+	req := PlanRequest{
+		Description: task.Description,
+		Input:       task.Input,
+		AgentIDs:    agentIDsFromSubTasks(task.SubTasks),
+		Timeout:     task.Timeout,
+	}
+	duration := time.Duration(0)
+	if !task.CreatedAt.IsZero() && !task.CompletedAt.IsZero() {
+		duration = task.CompletedAt.Sub(task.CreatedAt)
+	}
 	dm.mu.RUnlock()
 	if planner != nil {
-		planner.ObserveOutcome(mode, outcome)
+		planner.ObserveExecution(req, mode, outcome, duration)
 	}
+}
+
+func agentIDsFromSubTasks(subTasks []*SubTask) []string {
+	agentIDs := make([]string, 0, len(subTasks))
+	for _, sub := range subTasks {
+		if sub != nil && sub.AgentID != "" {
+			agentIDs = append(agentIDs, sub.AgentID)
+		}
+	}
+	return agentIDs
+}
+
+func (dm *DelegateManager) actionForTask(task *CollabTask) MDPAction {
+	if task == nil {
+		return MDPAction{}
+	}
+	if task.Metadata != nil {
+		if raw := task.Metadata["planner_trace"]; raw != "" {
+			var plan PlanResult
+			if err := json.Unmarshal([]byte(raw), &plan); err == nil {
+				if action, ok := plan.MDP.Actions[task.Mode]; ok {
+					return action
+				}
+			}
+		}
+	}
+	return MDPActionForMode(PlanRequest{
+		Description: task.Description,
+		Input:       task.Input,
+		AgentIDs:    agentIDsFromSubTasks(task.SubTasks),
+		Timeout:     task.Timeout,
+	}, task.Mode)
+}
+
+func (dm *DelegateManager) executeSubTaskWithAction(ctx context.Context, sub *SubTask, action MDPAction) (string, error) {
+	attempts := 1
+	if action.RetryPolicy == "retry_failed_once" || action.RetryPolicy == "verify_each_step" {
+		attempts = 2
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		result, err := dm.executeSubTask(ctx, sub)
+		if err == nil && action.RequireVerifier {
+			err = dm.verifySubTaskOutput(ctx, sub, result)
+			if err != nil {
+				dm.markSubTaskVerificationFailed(sub, err)
+			}
+		}
+		if err == nil {
+			if attempt > 1 {
+				dm.mu.Lock()
+				sub.Error = ""
+				dm.mu.Unlock()
+			}
+			return result, nil
+		}
+		lastErr = err
+		if !shouldRetryAction(action, attempt, attempts) {
+			break
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("sub-task %s failed", sub.ID)
+	}
+	return "", lastErr
+}
+
+func shouldRetryAction(action MDPAction, attempt, attempts int) bool {
+	if attempt >= attempts {
+		return false
+	}
+	return action.RetryPolicy == "retry_failed_once" || action.RetryPolicy == "verify_each_step"
+}
+
+func (dm *DelegateManager) verifySubTaskOutput(ctx context.Context, sub *SubTask, output string) error {
+	if dm.handler != nil {
+		if verifier, ok := dm.handler.(SubTaskVerifier); ok {
+			return verifier.VerifySubTask(ctx, sub, output)
+		}
+	}
+	if strings.TrimSpace(output) == "" {
+		return fmt.Errorf("verifier rejected empty output")
+	}
+	return nil
+}
+
+func (dm *DelegateManager) markSubTaskVerificationFailed(sub *SubTask, err error) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	sub.State = TaskFailed
+	sub.Error = fmt.Sprintf("verification failed: %s", err)
+	sub.CompletedAt = time.Now()
+}
+
+func verifyFinalResult(output string) error {
+	if strings.TrimSpace(output) == "" {
+		return fmt.Errorf("verifier rejected empty final result")
+	}
+	return nil
 }
 
 // executeSubTask 执行单个子任务
@@ -512,6 +678,7 @@ func (dm *DelegateManager) executeSubTask(ctx context.Context, sub *SubTask) (st
 	} else {
 		sub.State = TaskCompleted
 		sub.Output = result
+		sub.Error = ""
 	}
 	sub.CompletedAt = time.Now()
 	dm.mu.Unlock()

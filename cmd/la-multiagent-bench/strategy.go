@@ -55,6 +55,8 @@ func normalizeVariant(raw string) string {
 		return "dependency-aware"
 	case "debate", "debate-review", "a4":
 		return "debate-review"
+	case "runtime-mdp", "runtime-mdp-v1":
+		return "runtime-mdp-v1"
 	case "math-mdp", "math-mdp-v1":
 		return "math-mdp-v1"
 	case "math-ssp", "math-ssp-v1":

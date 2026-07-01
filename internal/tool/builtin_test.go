@@ -1332,20 +1332,48 @@ func TestShellTool(t *testing.T) {
 	}
 }
 
-func TestBuildShellCommandWindowsUsesBash(t *testing.T) {
+func TestBuildShellCommandWindowsUsesPowerShell(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skip("windows-specific test")
 	}
 
-	cmd, err := buildShellCommand("echo hello")
+	cmd, err := buildShellCommand("Get-Location")
 	if err != nil {
 		t.Fatalf("buildShellCommand: %v", err)
 	}
-	if len(cmd.Args) < 2 {
+	if len(cmd.Args) < 5 {
 		t.Fatalf("unexpected command args: %#v", cmd.Args)
 	}
-	if strings.Contains(strings.Join(cmd.Args, " "), "sh -c") {
-		t.Fatalf("expected non-sh shell command on windows, got %#v", cmd.Args)
+	joined := strings.Join(cmd.Args, " ")
+	if !strings.Contains(strings.ToLower(filepath.Base(cmd.Args[0])), "powershell") &&
+		!strings.Contains(strings.ToLower(filepath.Base(cmd.Args[0])), "pwsh") {
+		t.Fatalf("expected PowerShell executable on windows, got %#v", cmd.Args)
+	}
+	if !strings.Contains(joined, "-NoProfile") || !strings.Contains(joined, "-Command") || !strings.Contains(joined, "Get-Location") {
+		t.Fatalf("expected PowerShell command flags on windows, got %#v", cmd.Args)
+	}
+}
+
+func TestShellEnvPrefixUsesPlatformSyntax(t *testing.T) {
+	env := map[string]string{
+		"GOOD":    "it's ok",
+		"BAD-KEY": "ignored",
+	}
+
+	unixPrefix := shellEnvPrefix(env, "linux")
+	if !strings.Contains(unixPrefix, "export GOOD='it'\\''s ok'; ") {
+		t.Fatalf("unexpected unix env prefix: %q", unixPrefix)
+	}
+	if strings.Contains(unixPrefix, "BAD-KEY") {
+		t.Fatalf("invalid env key should be ignored: %q", unixPrefix)
+	}
+
+	windowsPrefix := shellEnvPrefix(env, "windows")
+	if !strings.Contains(windowsPrefix, "$env:GOOD = 'it''s ok'; ") {
+		t.Fatalf("unexpected windows env prefix: %q", windowsPrefix)
+	}
+	if strings.Contains(windowsPrefix, "BAD-KEY") {
+		t.Fatalf("invalid env key should be ignored: %q", windowsPrefix)
 	}
 }
 

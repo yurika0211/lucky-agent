@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -25,6 +26,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/gateway/telegram"
 	"github.com/yurika0211/luckyagent/internal/gateway/weixin"
 	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/proactive"
 	"github.com/yurika0211/luckyagent/internal/server"
 	"github.com/yurika0211/luckyagent/internal/soul"
 )
@@ -158,6 +160,18 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Embedding.Dimension)
 	case "embedding.api_key":
 		fmt.Println(maskKey(cfg.Embedding.APIKey))
+	case "multimodal.provider":
+		fmt.Println(cfg.Multimodal.Provider)
+	case "multimodal.api_key":
+		fmt.Println(maskKey(cfg.Multimodal.APIKey))
+	case "multimodal.api_base":
+		fmt.Println(cfg.Multimodal.APIBase)
+	case "multimodal.image_model":
+		fmt.Println(cfg.Multimodal.ImageModel)
+	case "multimodal.transcription_model":
+		fmt.Println(cfg.Multimodal.TranscriptionModel)
+	case "multimodal.image_provider":
+		fmt.Println(cfg.Multimodal.ImageProvider)
 	case "soul_path":
 		fmt.Println(cfg.SoulPath)
 	case "max_tokens":
@@ -172,6 +186,28 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Context.MemoryHygieneMinSeverity)
 	case "context.memory_hygiene_max_findings":
 		fmt.Println(cfg.Context.MemoryHygieneMaxFindings)
+	case "memory.tidal.enabled":
+		fmt.Println(cfg.Memory.Tidal.Enabled)
+	case "memory.tidal.beta":
+		fmt.Println(cfg.Memory.Tidal.Beta)
+	case "memory.tidal.max_boost":
+		fmt.Println(cfg.Memory.Tidal.MaxBoost)
+	case "memory.tidal.learning_rate":
+		fmt.Println(cfg.Memory.Tidal.LearningRate)
+	case "memory.tidal.min_samples":
+		fmt.Println(cfg.Memory.Tidal.MinSamples)
+	case "memory.tidal.store_path":
+		fmt.Println(cfg.Memory.Tidal.StorePath)
+	case "proactive.enabled":
+		fmt.Println(cfg.Proactive.Enabled)
+	case "proactive.dry_run":
+		fmt.Println(proactiveDryRunEnabled(cfg))
+	case "proactive.confidence_threshold":
+		fmt.Println(cfg.Proactive.ConfidenceThreshold)
+	case "proactive.horizon_seconds":
+		fmt.Println(cfg.Proactive.HorizonSeconds)
+	case "proactive.store_path":
+		fmt.Println(cfg.Proactive.StorePath)
 	case "msg_gateway.platform":
 		fmt.Println(cfg.MsgGateway.Platform)
 	case "msg_gateway.api_addr":
@@ -246,6 +282,15 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  soul_path: %s\n", cfg.SoulPath)
 	fmt.Printf("  max_tokens: %d\n", cfg.MaxTokens)
 	fmt.Printf("  temperature: %.1f\n", cfg.Temperature)
+	fmt.Printf("  memory.tidal.enabled: %t\n", cfg.Memory.Tidal.Enabled)
+	fmt.Printf("  memory.tidal.beta: %.2f\n", cfg.Memory.Tidal.Beta)
+	fmt.Printf("  memory.tidal.max_boost: %.2f\n", cfg.Memory.Tidal.MaxBoost)
+	fmt.Printf("  memory.tidal.learning_rate: %.2f\n", cfg.Memory.Tidal.LearningRate)
+	fmt.Printf("  memory.tidal.min_samples: %d\n", cfg.Memory.Tidal.MinSamples)
+	fmt.Printf("  proactive.enabled: %t\n", cfg.Proactive.Enabled)
+	fmt.Printf("  proactive.dry_run: %t\n", proactiveDryRunEnabled(cfg))
+	fmt.Printf("  proactive.confidence_threshold: %.2f\n", cfg.Proactive.ConfidenceThreshold)
+	fmt.Printf("  proactive.horizon_seconds: %d\n", cfg.Proactive.HorizonSeconds)
 	return nil
 }
 
@@ -1228,4 +1273,363 @@ func runMemoryMigrateGraph(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+func runMemoryTidalStats(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	path := cliTidalMemoryStorePath(mgr.HomeDir(), cfg.Memory.Tidal.StorePath)
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("Tidal memory store: %s\n", path)
+			fmt.Println("Status: no store found")
+			return nil
+		}
+		return fmt.Errorf("stat tidal memory store: %w", err)
+	}
+
+	store, err := memory.OpenTidalStore(path)
+	if err != nil {
+		return fmt.Errorf("open tidal memory store: %w", err)
+	}
+	defer store.Close()
+
+	stats, err := store.Stats()
+	if err != nil {
+		return fmt.Errorf("read tidal memory stats: %w", err)
+	}
+	kernels, err := store.LoadKernels()
+	if err != nil {
+		return fmt.Errorf("load tidal memory kernels: %w", err)
+	}
+
+	fmt.Printf("Tidal memory store: %s\n", path)
+	fmt.Printf("Enabled: %t\n", cfg.Memory.Tidal.Enabled)
+	fmt.Printf("Query events: %d\n", stats.QueryEvents)
+	fmt.Printf("Recall events: %d\n", stats.RecallEvents)
+	fmt.Printf("Feedback events: %d\n", stats.FeedbackEvents)
+	fmt.Printf("Kernels: %d\n", stats.Kernels)
+	limit := 10
+	if len(kernels) < limit {
+		limit = len(kernels)
+	}
+	for i := 0; i < limit; i++ {
+		kernel := kernels[i]
+		fmt.Printf("  %s feature=%s weights=%v counts=%v\n", kernel.Key, kernel.Feature, kernel.Weights, kernel.Counts)
+	}
+	return nil
+}
+
+func cliTidalMemoryStorePath(homeDir, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return filepath.Join(homeDir, "runtime", "tidal_memory.db")
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(homeDir, configured)
+}
+
+func runProactiveStatus(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	path := cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath)
+
+	fmt.Printf("Proactive enabled: %t\n", cfg.Proactive.Enabled)
+	fmt.Printf("Dry-run: %t\n", proactiveDryRunEnabled(cfg))
+	fmt.Printf("Confidence threshold: %.2f\n", cfg.Proactive.ConfidenceThreshold)
+	fmt.Printf("Horizon seconds: %d\n", cfg.Proactive.HorizonSeconds)
+	fmt.Printf("Store: %s\n", path)
+
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("Status: no store found")
+			return nil
+		}
+		return fmt.Errorf("stat proactive store: %w", err)
+	}
+	store, err := proactive.OpenStore(path)
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	stats, err := store.Stats()
+	if err != nil {
+		return fmt.Errorf("read proactive stats: %w", err)
+	}
+	fmt.Printf("Signals: %d\n", stats.Signals)
+	fmt.Printf("Estimates: %d\n", stats.Estimates)
+	fmt.Printf("Dry-run actions: %d\n", stats.Actions)
+	fmt.Printf("Feedback events: %d\n", stats.FeedbackEvents)
+	fmt.Printf("Runtime events: %d\n", stats.RuntimeEvents)
+	if feedbackStats, err := store.FeedbackStats(100); err != nil {
+		return err
+	} else if feedbackStats.Events > 0 {
+		fmt.Printf("Feedback accuracy: %.2f (%d/%d recent)\n", feedbackStats.Accuracy, feedbackStats.Correct, feedbackStats.Events)
+	}
+	if runtimeStats, err := store.RuntimeEventStats(); err != nil {
+		return err
+	} else if runtimeStats.Events > 0 {
+		fmt.Printf("Runtime event types: %s\n", formatRuntimeEventTypes(runtimeStats.ByType))
+	}
+	if estimate, ok, err := store.LatestEstimate(); err != nil {
+		return err
+	} else if ok {
+		fmt.Printf("Latest estimate: %s confidence=%.2f noise=%.2f horizon=%s\n",
+			estimate.PredictedState, estimate.Confidence, estimate.NoiseVariance, estimate.Horizon)
+	}
+	return nil
+}
+
+func runProactiveSample(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	sampler := proactive.NewSamplerWithStore("", store)
+	signals, err := sampler.Sample(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("sample proactive signals: %w", err)
+	}
+	if err := store.RecordSignals(signals); err != nil {
+		return fmt.Errorf("persist proactive signals: %w", err)
+	}
+
+	fmt.Printf("Sampled signals: %d\n", len(signals))
+	for _, signal := range signals {
+		fmt.Printf("  %s value=%.3f label=%s\n", signal.Channel, signal.Value, signal.Label)
+	}
+	return nil
+}
+
+func runProactiveDryRun(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	gateCfg := proactive.Config{
+		Enabled:             cfg.Proactive.Enabled,
+		DryRun:              proactiveDryRunEnabled(cfg),
+		ConfidenceThreshold: cfg.Proactive.ConfidenceThreshold,
+		Horizon:             time.Duration(cfg.Proactive.HorizonSeconds) * time.Second,
+	}
+	runner := proactive.NewRunnerWithCalibrator(
+		proactive.NewSamplerWithStore("", store),
+		proactive.NewEstimator(),
+		proactive.NewFeedbackCalibrator(store),
+		proactive.NewGate(gateCfg),
+		store,
+	)
+	decision, err := runner.RunDryRun(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("run proactive dry-run: %w", err)
+	}
+
+	fmt.Printf("Predicted state: %s\n", decision.Estimate.PredictedState)
+	fmt.Printf("Confidence: %.2f\n", decision.Estimate.Confidence)
+	fmt.Printf("Noise variance: %.2f\n", decision.Estimate.NoiseVariance)
+	fmt.Printf("Horizon: %s\n", decision.Estimate.Horizon)
+	if len(decision.Estimate.Reasons) > 0 {
+		fmt.Println("Reasons:")
+		for _, reason := range decision.Estimate.Reasons {
+			fmt.Printf("  - %s\n", reason)
+		}
+	}
+	fmt.Println("Dry-run actions:")
+	for _, action := range decision.Actions {
+		fmt.Printf("  - %s allowed=%t confidence=%.2f reason=%s\n", action.Action, action.Allowed, action.Confidence, action.Reason)
+	}
+	return nil
+}
+
+func runProactiveEvents(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	limit, _ := cmd.Flags().GetInt("limit")
+	events, err := store.RecentRuntimeEvents(limit)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		fmt.Println("No proactive runtime events found.")
+		return nil
+	}
+	for _, event := range events {
+		sessionID := event.SessionID
+		if sessionID == "" {
+			sessionID = "-"
+		}
+		fmt.Printf("%s type=%s name=%s source=%s session=%s value=%.2f\n",
+			event.CreatedAt.Local().Format(time.RFC3339),
+			event.Type,
+			event.Name,
+			event.Source,
+			sessionID,
+			event.Value,
+		)
+		if len(event.Metadata) > 0 {
+			fmt.Printf("  metadata=%s\n", formatStringMap(event.Metadata))
+		}
+	}
+	return nil
+}
+
+func runProactiveFeedback(cmd *cobra.Command, args []string) error {
+	actualState := strings.TrimSpace(args[0])
+	if actualState == "" {
+		return fmt.Errorf("actual state is required")
+	}
+
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	stateID, _ := cmd.Flags().GetString("state-id")
+	var estimate proactive.StateEstimate
+	var ok bool
+	if strings.TrimSpace(stateID) != "" {
+		estimate, ok, err = store.EstimateByID(stateID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("proactive estimate %q not found", stateID)
+		}
+	} else {
+		estimate, ok, err = store.LatestEstimate()
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("no proactive estimate found; run `la proactive dry-run` first")
+		}
+	}
+	value, _ := cmd.Flags().GetFloat64("value")
+	source, _ := cmd.Flags().GetString("source")
+	note, _ := cmd.Flags().GetString("note")
+	event := proactive.FeedbackEvent{
+		StateID:        estimate.ID,
+		PredictedState: estimate.PredictedState,
+		ActualState:    actualState,
+		Value:          value,
+		Source:         source,
+		Note:           note,
+		CreatedAt:      time.Now(),
+	}
+	if err := store.RecordFeedback(event); err != nil {
+		return fmt.Errorf("record proactive feedback: %w", err)
+	}
+
+	correct := strings.EqualFold(estimate.PredictedState, actualState)
+	fmt.Printf("Recorded feedback: predicted=%s actual=%s correct=%t\n", estimate.PredictedState, actualState, correct)
+	if feedbackStats, err := store.FeedbackStats(100); err == nil && feedbackStats.Events > 0 {
+		fmt.Printf("Recent feedback accuracy: %.2f (%d/%d)\n", feedbackStats.Accuracy, feedbackStats.Correct, feedbackStats.Events)
+	}
+	return nil
+}
+
+func proactiveDryRunEnabled(cfg *config.Config) bool {
+	if cfg == nil || cfg.Proactive.DryRun == nil {
+		return true
+	}
+	return *cfg.Proactive.DryRun
+}
+
+func cliProactiveStorePath(homeDir, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return filepath.Join(homeDir, "runtime", "proactive_state.db")
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(homeDir, configured)
+}
+
+func formatRuntimeEventTypes(byType map[string]int) string {
+	if len(byType) == 0 {
+		return "-"
+	}
+	keys := make([]string, 0, len(byType))
+	for key := range byType {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%d", key, byType[key]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatStringMap(values map[string]string) string {
+	if len(values) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", key, values[key]))
+	}
+	return strings.Join(parts, ", ")
 }

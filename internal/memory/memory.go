@@ -110,12 +110,17 @@ func (e *Entry) halflife() float64 {
 
 // Store 管理三层持久记忆
 type Store struct {
-	mu      sync.RWMutex
-	entries map[string]*Entry // key: entry ID
-	paths   map[string]string // key: entry ID, value: relative note path
-	graph   *GraphIndex
-	dir     string
-	nextID  int64
+	mu                 sync.RWMutex
+	entries            map[string]*Entry // key: entry ID
+	paths              map[string]string // key: entry ID, value: relative note path
+	graph              *GraphIndex
+	activationReranker ActivationReranker
+	dir                string
+	nextID             int64
+}
+
+type closeableActivationReranker interface {
+	Close() error
 }
 
 // GraphIndex is derived from Obsidian wikilinks. Markdown notes remain the
@@ -442,6 +447,71 @@ func (s *Store) SearchParallel(query string, limit int) []Entry {
 // Search 搜索记忆（关键词匹配 + 权重排序）
 func (s *Store) Search(query string) []Entry {
 	return activationScoresToEntries(s.Activate(query, DefaultActivationOptions()))
+}
+
+// SetActivationReranker installs an optional post-recall reranker. Passing nil
+// restores the default activation ordering.
+func (s *Store) SetActivationReranker(reranker ActivationReranker) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.activationReranker = reranker
+}
+
+// ActivationReranker returns the currently installed post-recall reranker.
+func (s *Store) ActivationReranker() ActivationReranker {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.activationReranker
+}
+
+// Close releases optional resources owned by pluggable memory components.
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	reranker := s.activationReranker
+	s.mu.RUnlock()
+	if closer, ok := reranker.(closeableActivationReranker); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
+// RecordActivationFeedback sends weak downstream usage feedback to the active
+// reranker when it supports online learning.
+func (s *Store) RecordActivationFeedback(query string, entries []Entry, signal string, value float64, now time.Time) {
+	if s == nil || len(entries) == 0 || value == 0 {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	s.mu.RLock()
+	reranker := s.activationReranker
+	s.mu.RUnlock()
+	observer, ok := reranker.(ActivationFeedbackObserver)
+	if !ok || observer == nil {
+		return
+	}
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.ID) == "" {
+			continue
+		}
+		observer.ObserveActivationFeedback(ActivationFeedback{
+			Query:  query,
+			Entry:  entry,
+			Signal: signal,
+			Value:  value,
+			At:     now,
+		})
+	}
 }
 
 // Route searches memory and derives deterministic tool/answer constraints.

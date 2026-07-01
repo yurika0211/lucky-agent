@@ -637,9 +637,18 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScop
 	body := p.buildTypedMemoryBody(route, results, bodyBudget)
 	content := header
 	if body != "" {
+		p.recordMemoryContextFeedback(query, results)
 		content += "\n\n" + body
 	}
 	return provider.Message{Role: "system", Content: content}
+}
+
+func (p *contextPlanner) recordMemoryContextFeedback(query string, results []memory.Entry) {
+	if p.agent == nil || p.agent.memory == nil || len(results) == 0 {
+		return
+	}
+	limit := utils.MinInt(6, len(results))
+	p.agent.memory.RecordActivationFeedback(query, results[:limit], "context_selected", 0.15, time.Now())
 }
 
 func (p *contextPlanner) buildTypedMemoryBody(route memory.RouteAnalysis, results []memory.Entry, tokenBudget int) string {

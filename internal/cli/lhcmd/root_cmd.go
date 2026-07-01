@@ -235,11 +235,64 @@ func newRootCmd() *cobra.Command {
 	memoryMigrateGraphCmd.Flags().Bool("apply", false, "实际写入迁移结果；默认只 dry-run")
 	memoryMigrateGraphCmd.Flags().Bool("archive-dirty", true, "将 high/critical 脏记忆归档到 90_Archive/dirty")
 	memoryMigrateGraphCmd.Flags().Int("limit", 200, "最多审计/展示的脏记忆数量")
-	memoryCmd.AddCommand(memoryMigrateGraphCmd)
+	memoryTidalStatsCmd := &cobra.Command{
+		Use:   "tidal-stats",
+		Short: "查看潮汐记忆 reranker 的持久化统计",
+		RunE:  runMemoryTidalStats,
+	}
+	memoryTidalCmd := &cobra.Command{
+		Use:   "tidal",
+		Short: "管理潮汐记忆 reranker",
+	}
+	memoryTidalNestedStatsCmd := &cobra.Command{
+		Use:   "stats",
+		Short: "查看潮汐记忆 reranker 的持久化统计",
+		RunE:  runMemoryTidalStats,
+	}
+	memoryTidalCmd.AddCommand(memoryTidalNestedStatsCmd)
+	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryTidalStatsCmd, memoryTidalCmd)
+
+	proactiveCmd := &cobra.Command{
+		Use:   "proactive",
+		Short: "管理 proactive state estimator",
+	}
+	proactiveStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "查看 proactive 配置和持久化统计",
+		RunE:  runProactiveStatus,
+	}
+	proactiveSampleCmd := &cobra.Command{
+		Use:   "sample",
+		Short: "采样当前 proactive 信号并写入本地 store",
+		RunE:  runProactiveSample,
+	}
+	proactiveDryRunCmd := &cobra.Command{
+		Use:   "dry-run",
+		Short: "运行一次 proactive gate dry-run",
+		RunE:  runProactiveDryRun,
+	}
+	proactiveFeedbackCmd := &cobra.Command{
+		Use:   "feedback <actual-state>",
+		Short: "记录最近一次 proactive 预测的实际结果",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runProactiveFeedback,
+	}
+	proactiveFeedbackCmd.Flags().String("state-id", "", "要反馈的 state estimate id；默认使用最新估计")
+	proactiveFeedbackCmd.Flags().Float64("value", 0, "反馈值；0 表示自动按 actual==predicted 记为 1，否则 -1")
+	proactiveFeedbackCmd.Flags().String("source", "cli", "反馈来源")
+	proactiveFeedbackCmd.Flags().String("note", "", "反馈备注")
+	proactiveEventsCmd := &cobra.Command{
+		Use:   "events",
+		Short: "查看最近 proactive runtime events",
+		RunE:  runProactiveEvents,
+	}
+	proactiveEventsCmd.Flags().Int("limit", 20, "最多显示的事件数量")
+	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd, proactiveFeedbackCmd, proactiveEventsCmd)
+
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)
 	addLearnCmd(rootCmd)
-	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd)
+	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd)
 
 	return rootCmd
 }

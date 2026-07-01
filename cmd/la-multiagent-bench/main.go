@@ -20,6 +20,7 @@ type benchConfig struct {
 	ReplayPath       string
 	ReplayLabelOut   string
 	ReplayOnly       bool
+	MDPSnapshotPath  string
 	Rounds           int
 	Delay            time.Duration
 	SuccessThreshold float64
@@ -152,7 +153,7 @@ func parseFlags() benchConfig {
 	now := time.Now().Format("20060102-150405")
 	defaultOut := filepath.Join(os.TempDir(), "lh-multiagent-bench", "results-"+now+".jsonl")
 	var cfg benchConfig
-	flag.StringVar(&cfg.Variant, "variant", "baseline", "multi-agent strategy variant: baseline, capability-routed, parallel-routed, dependency-aware, debate-review, math-mdp-v1, math-ssp-v1, math-lyapunov-v1, math-verifier-v1, math-full-v1")
+	flag.StringVar(&cfg.Variant, "variant", "baseline", "multi-agent strategy variant: baseline, capability-routed, parallel-routed, dependency-aware, debate-review, runtime-mdp-v1, math-mdp-v1, math-ssp-v1, math-lyapunov-v1, math-verifier-v1, math-full-v1")
 	flag.StringVar(&cfg.Scenario, "scenario", "all", "scenario to run: single, parallel, pipeline, debate, autonomy, heavy, or all")
 	flag.StringVar(&cfg.OutPath, "out", defaultOut, "JSONL output path")
 	flag.StringVar(&cfg.ComparePaths, "compare", "", "comma-separated JSONL result files to compare instead of running benchmark")
@@ -160,6 +161,7 @@ func parseFlags() benchConfig {
 	flag.StringVar(&cfg.ReplayPath, "replay", "", "optional JSON, JSONL, session .md, or directory of historical lh sessions to replay")
 	flag.StringVar(&cfg.ReplayLabelOut, "replay-label-out", "", "write semi-automatic replay labels to this JSONL path and exit")
 	flag.BoolVar(&cfg.ReplayOnly, "replay-only", false, "run only cases loaded from -replay")
+	flag.StringVar(&cfg.MDPSnapshotPath, "mdp-snapshot", "", "optional runtime-mdp-v1 JSON snapshot path to load before and save after benchmark")
 	flag.IntVar(&cfg.Rounds, "rounds", 3, "rounds per scenario")
 	flag.DurationVar(&cfg.Delay, "delay", 0, "delay between rounds")
 	flag.Float64Var(&cfg.SuccessThreshold, "success-threshold", 0.70, "probability threshold for marking a task successful")
@@ -211,10 +213,14 @@ func run(cfg benchConfig) error {
 	if err != nil {
 		return err
 	}
+	runner, err := newStrategyRunner(cfg)
+	if err != nil {
+		return err
+	}
 
 	var all []benchRecord
 	for _, scenario := range scenarios {
-		records, err := runScenario(cfg, scenario, tasks, agents, enc)
+		records, err := runScenario(cfg, scenario, tasks, agents, enc, runner)
 		if err != nil {
 			return err
 		}
@@ -232,6 +238,11 @@ func run(cfg benchConfig) error {
 			return fmt.Errorf("write aggregate summary: %w", err)
 		}
 		printSummary(summary)
+	}
+	if runner != nil {
+		if err := runner.Save(); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(os.Stderr, "results: %s\n", cfg.OutPath)
 	return nil
@@ -265,7 +276,7 @@ func scenarioNames(tasks []benchTask) []string {
 	return names
 }
 
-func runScenario(cfg benchConfig, scenario string, tasks []benchTask, agents map[string]agentSpec, enc *json.Encoder) ([]benchRecord, error) {
+func runScenario(cfg benchConfig, scenario string, tasks []benchTask, agents map[string]agentSpec, enc *json.Encoder, runner *strategyRunner) ([]benchRecord, error) {
 	selected := tasksForScenario(tasks, scenario)
 	if len(selected) == 0 {
 		return nil, fmt.Errorf("no tasks for scenario %s", scenario)
@@ -276,7 +287,7 @@ func runScenario(cfg benchConfig, scenario string, tasks []benchTask, agents map
 			time.Sleep(cfg.Delay)
 		}
 		for _, task := range selected {
-			record := runTask(cfg, round, task, agents)
+			record := runTaskWithRunner(cfg, round, task, agents, runner)
 			if round < cfg.Rounds && cfg.Delay > 0 {
 				record.SleepBeforeNextMS = cfg.Delay.Milliseconds()
 			}
@@ -301,9 +312,19 @@ func tasksForScenario(tasks []benchTask, scenario string) []benchTask {
 }
 
 func runTask(cfg benchConfig, round int, task benchTask, agents map[string]agentSpec) benchRecord {
+	return runTaskWithRunner(cfg, round, task, agents, nil)
+}
+
+func runTaskWithRunner(cfg benchConfig, round int, task benchTask, agents map[string]agentSpec, runner *strategyRunner) benchRecord {
 	started := time.Now()
 	result := runStrategy(cfg, task, agents)
+	if runner != nil {
+		result = runner.Run(cfg, task, agents)
+	}
 	metrics := evaluateTask(cfg, task, result, agents)
+	if runner != nil {
+		runner.Observe(task, result, metrics, agents)
+	}
 	duration := time.Since(started)
 	return benchRecord{
 		Type:                   "record",

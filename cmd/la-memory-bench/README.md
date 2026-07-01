@@ -57,6 +57,8 @@ jq -s '
     avg_noise_at_k,
     avg_stale_hit_rate,
     graph_recall_lift,
+    tidal_mrr_lift,
+    tidal_stale_rate_delta,
     clean,
     quality_pass
   })
@@ -73,6 +75,12 @@ jq -s '
 - `scale`: measures activation latency against the selected dataset size.
 - `route`: measures `Store.Route` end-to-end routing signals such as risk flags
   and required tools.
+- `tidal`: compares baseline ordering against the pluggable
+  `TidalMemoryReranker`. The summary reports MRR lift because the first version
+  is a conservative reranker, not a wider recall path. Synthetic tidal queries
+  cover temporal preference shift, cross-topic transcription/config recall, and
+  stale reward suppression. The summary also reports stale-rate delta and fails
+  if `tidal_on` increases stale hits over `tidal_off`.
 - `all`: runs all scenarios in order.
 
 ## Datasets

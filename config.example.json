@@ -172,6 +172,13 @@
       ]
     }
   },
+  "proactive": {
+    "enabled": false,
+    "dry_run": true,
+    "confidence_threshold": 0.6,
+    "horizon_seconds": 300,
+    "store_path": ""
+  },
   "msg_gateway": {
     "platform": "telegram",
     "start_all": false,

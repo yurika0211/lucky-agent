@@ -19,6 +19,8 @@ runtime path.
 - `dependency-aware`: preserves dependency order and uses the gold mode in this
   synthetic suite.
 - `debate-review`: dependency-aware plus stronger critic/review aggregation.
+- `runtime-mdp-v1`: runs the real `internal/collab` Dijkstra + Markov + MDP
+  Q-learning planner, with optional snapshot persistence via `-mdp-snapshot`.
 - `math-mdp-v1`: deterministic offline Contextual MDP planner that scores
   candidate modes by expected utility.
 - `math-ssp-v1`: stochastic-shortest-path style planner that chooses the lowest

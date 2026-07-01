@@ -125,6 +125,13 @@ func TestHandleMemoryStats(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, ok := resp["tidal"].(map[string]interface{}); !ok {
+		t.Fatalf("expected tidal stats in response, got %#v", resp)
+	}
 }
 
 func TestHandleMemorySave(t *testing.T) {

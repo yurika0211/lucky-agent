@@ -19,6 +19,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/memory"
 	"github.com/yurika0211/luckyagent/internal/metrics"
 	"github.com/yurika0211/luckyagent/internal/multimodal"
+	"github.com/yurika0211/luckyagent/internal/proactive"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/soul"
@@ -124,6 +125,82 @@ func TestNewPrefersConfiguredEmbedderForRAG(t *testing.T) {
 	}
 	if emb := reg.Active(); emb == nil || emb.Dimension() != 2048 {
 		t.Fatalf("expected active embedder dimension 2048, got %+v", emb)
+	}
+}
+
+func TestNewInitializesProactiveStoreOnlyWhenEnabled(t *testing.T) {
+	disabledDir := t.TempDir()
+	disabledCfg, err := config.NewManagerWithDir(disabledDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir disabled: %v", err)
+	}
+	disabledAgent, err := New(disabledCfg)
+	if err != nil {
+		t.Fatalf("New disabled proactive: %v", err)
+	}
+	if disabledAgent.proactiveStore != nil {
+		t.Fatalf("expected proactive store to be nil when disabled")
+	}
+	if err := disabledAgent.Close(); err != nil {
+		t.Fatalf("Close disabled agent: %v", err)
+	}
+
+	enabledDir := t.TempDir()
+	enabledCfg, err := config.NewManagerWithDir(enabledDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir enabled: %v", err)
+	}
+	if err := enabledCfg.Set("proactive.enabled", "true"); err != nil {
+		t.Fatalf("Set proactive.enabled: %v", err)
+	}
+	if err := enabledCfg.Set("proactive.store_path", "runtime/test-proactive.db"); err != nil {
+		t.Fatalf("Set proactive.store_path: %v", err)
+	}
+	enabledAgent, err := New(enabledCfg)
+	if err != nil {
+		t.Fatalf("New enabled proactive: %v", err)
+	}
+	if enabledAgent.proactiveStore == nil {
+		t.Fatalf("expected proactive store to be initialized")
+	}
+	if err := enabledAgent.Close(); err != nil {
+		t.Fatalf("Close enabled agent: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(enabledDir, "runtime", "test-proactive.db")); err != nil {
+		t.Fatalf("expected proactive db to exist: %v", err)
+	}
+}
+
+func TestRecordProactiveRuntimeEvents(t *testing.T) {
+	store, err := proactive.OpenStore(filepath.Join(t.TempDir(), "proactive.db"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer store.Close()
+
+	a := &Agent{proactiveStore: store}
+	sess := session.NewSession("sess-1", t.TempDir())
+	sess.SetCwd("/tmp/project")
+	a.recordProactiveChatEvent(sess, TextUserTurnInput("hello"), "world", 1, nil)
+	a.recordProactiveToolEvent(sess, executedToolCall{
+		ToolCall: provider.ToolCall{Name: "file_read", Arguments: `{"path":"README.md"}`},
+		Result:   "ok",
+		Duration: 12 * time.Millisecond,
+	}, false)
+
+	stats, err := store.RuntimeEventStats()
+	if err != nil {
+		t.Fatalf("RuntimeEventStats: %v", err)
+	}
+	if stats.ByType["chat_turn"] != 1 || stats.ByType["tool_call"] != 1 {
+		t.Fatalf("unexpected runtime event stats: %#v", stats)
+	}
+	events, err := store.RecentRuntimeEvents(10)
+	if err != nil {
+		t.Fatalf("RecentRuntimeEvents: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 runtime events, got %d", len(events))
 	}
 }
 
