@@ -132,6 +132,7 @@ type Agent struct {
 	skillRegistry         *tool.SkillRegistry
 	metrics               *metrics.Metrics // 指标收集器
 	proactiveStore        *proactive.Store
+	proactiveRuntime      *proactive.RuntimeService
 	cronEngine            *cron.Engine // 定时任务引擎
 	cronStore             *cron.Store
 	autonomy              *autonomy.AutonomyKit // 自主工作套件
@@ -508,6 +509,62 @@ func proactiveStorePath(homeDir, configured string) string {
 		return configured
 	}
 	return filepath.Join(homeDir, configured)
+}
+
+func initProactiveRuntimeService(homeDir string, cfg config.ProactiveConfig, store *proactive.Store) *proactive.RuntimeService {
+	if store == nil || !cfg.Enabled || cfg.ActionIntervalSecs <= 0 {
+		return nil
+	}
+	workspaceDir, _ := os.Getwd()
+	dryRun := true
+	if cfg.DryRun != nil {
+		dryRun = *cfg.DryRun
+	}
+	gateCfg := proactive.Config{
+		Enabled:             cfg.Enabled,
+		DryRun:              dryRun,
+		ConfidenceThreshold: cfg.ConfidenceThreshold,
+		Horizon:             time.Duration(cfg.HorizonSeconds) * time.Second,
+	}
+	calibrator := proactive.NewFeedbackCalibrator(store)
+	calibrator.KernelMinSamples = cfg.KernelMinSamples
+	runner := proactive.NewRunnerWithCalibrator(
+		proactive.NewSamplerWithStore(workspaceDir, store),
+		proactive.NewEstimator(),
+		calibrator,
+		proactive.NewGate(gateCfg),
+		store,
+	)
+	executor := proactive.NewActionExecutor(proactive.ActionPolicy{
+		Enabled:        cfg.Enabled,
+		DryRun:         dryRun,
+		MaxActions:     cfg.MaxActions,
+		Cooldown:       time.Duration(cfg.ActionCooldownSecs) * time.Second,
+		WorkspaceDir:   workspaceDir,
+		HomeDir:        homeDir,
+		Allowed:        proactiveAllowedActionMap(cfg.AllowedActions),
+		ExecutionStore: store,
+	})
+	return proactive.NewRuntimeService(proactive.RuntimeServiceOptions{
+		Runner:   runner,
+		Executor: executor,
+		Store:    store,
+		Interval: time.Duration(cfg.ActionIntervalSecs) * time.Second,
+	})
+}
+
+func proactiveAllowedActionMap(actions []string) map[string]bool {
+	if actions == nil {
+		return nil
+	}
+	allowed := make(map[string]bool, len(actions))
+	for _, action := range actions {
+		action = strings.TrimSpace(action)
+		if action != "" {
+			allowed[action] = true
+		}
+	}
+	return allowed
 }
 
 /**
@@ -991,42 +1048,44 @@ func New(cfg *config.Manager) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	proactiveRuntime := initProactiveRuntimeService(cfg.HomeDir(), c.Proactive, proactiveStore)
 
 	a := &Agent{
-		cfg:            cfg,
-		soul:           soulRT.soul,
-		tmplMgr:        soulRT.tmplMgr,
-		provider:       providerRT.provider,
-		registry:       providerRT.registry,
-		catalog:        providerRT.catalog,
-		tokenStore:     providerRT.tokenStore,
-		memory:         memoryRT.store,
-		shortTerm:      memoryRT.short,
-		midTerm:        memoryRT.mid,
-		sessions:       memoryRT.sessions,
-		tools:          supportRT.tools,
-		gateway:        supportRT.toolGateway,
-		hooks:          hook.NewRunner(buildHookRuntimeConfig(c)),
-		msgGateway:     gateway.NewGatewayManager(),
-		mcpClient:      supportRT.mcpClient,
-		delegate:       supportRT.delegateMgr,
-		contextWin:     supportRT.contextWin,
-		contextEst:     supportRT.contextEst,
-		ragManager:     ragRT.manager,
-		ragPersist:     ragRT.persist,
-		streamIndexer:  ragRT.streamIndexer,
-		embedderReg:    ragRT.embedderReg,
-		collabReg:      collab.NewRegistry(),
-		collabMgr:      nil,
-		metrics:        supportRT.metrics,
-		proactiveStore: proactiveStore,
-		cronEngine:     supportRT.cronEngine,
-		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
-		autonomy:       supportRT.autonomyKit,
-		contextCache:   newContextMessageCache(64),
-		mediaProcessor: supportRT.mediaProcessor,
-		activeModel:    c.Model,
-		activeAPIBase:  c.APIBase,
+		cfg:              cfg,
+		soul:             soulRT.soul,
+		tmplMgr:          soulRT.tmplMgr,
+		provider:         providerRT.provider,
+		registry:         providerRT.registry,
+		catalog:          providerRT.catalog,
+		tokenStore:       providerRT.tokenStore,
+		memory:           memoryRT.store,
+		shortTerm:        memoryRT.short,
+		midTerm:          memoryRT.mid,
+		sessions:         memoryRT.sessions,
+		tools:            supportRT.tools,
+		gateway:          supportRT.toolGateway,
+		hooks:            hook.NewRunner(buildHookRuntimeConfig(c)),
+		msgGateway:       gateway.NewGatewayManager(),
+		mcpClient:        supportRT.mcpClient,
+		delegate:         supportRT.delegateMgr,
+		contextWin:       supportRT.contextWin,
+		contextEst:       supportRT.contextEst,
+		ragManager:       ragRT.manager,
+		ragPersist:       ragRT.persist,
+		streamIndexer:    ragRT.streamIndexer,
+		embedderReg:      ragRT.embedderReg,
+		collabReg:        collab.NewRegistry(),
+		collabMgr:        nil,
+		metrics:          supportRT.metrics,
+		proactiveStore:   proactiveStore,
+		proactiveRuntime: proactiveRuntime,
+		cronEngine:       supportRT.cronEngine,
+		cronStore:        cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
+		autonomy:         supportRT.autonomyKit,
+		contextCache:     newContextMessageCache(64),
+		mediaProcessor:   supportRT.mediaProcessor,
+		activeModel:      c.Model,
+		activeAPIBase:    c.APIBase,
 	}
 
 	a.collabReg.Register(&collab.AgentProfile{
@@ -1037,6 +1096,11 @@ func New(cfg *config.Manager) (*Agent, error) {
 		Status:       collab.StatusOnline,
 	})
 	a.collabMgr = collab.NewDelegateManager(a.collabReg, nil)
+	if a.proactiveRuntime != nil {
+		if err := a.proactiveRuntime.Start(context.Background()); err != nil {
+			fmt.Printf("[proactive] start failed: %v\n", err)
+		}
+	}
 
 	autonomyQueuePath := filepath.Join(cfg.HomeDir(), "runtime", "autonomy_queue.json")
 	if restored, restoreErr := supportRT.autonomyKit.EnablePersistence(autonomyQueuePath); restoreErr != nil {
@@ -2964,6 +3028,11 @@ func (a *Agent) Close() error {
 	if a.heartbeatSvc != nil {
 		if err := a.heartbeatSvc.Stop(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("stop heartbeat: %w", err)
+		}
+	}
+	if a.proactiveRuntime != nil {
+		if err := a.proactiveRuntime.Stop(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("stop proactive runtime: %w", err)
 		}
 	}
 	if a.memory != nil {

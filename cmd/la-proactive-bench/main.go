@@ -43,16 +43,17 @@ func main() {
 
 	total := time.Duration(0)
 	for round := 1; round <= *rounds; round++ {
-		elapsed, decisions, err := runRound(context.Background(), *events, store)
+		elapsed, decisions, executions, err := runRound(context.Background(), *events, store)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "round %d failed: %v\n", round, err)
 			os.Exit(1)
 		}
 		total += elapsed
-		fmt.Printf("round=%d events=%d decisions=%d elapsed_ms=%d per_event_us=%.2f\n",
+		fmt.Printf("round=%d events=%d decisions=%d executions=%d elapsed_ms=%d per_event_us=%.2f\n",
 			round,
 			*events,
 			decisions,
+			executions,
 			elapsed.Milliseconds(),
 			float64(elapsed.Microseconds())/float64(*events),
 		)
@@ -67,39 +68,52 @@ func main() {
 	)
 }
 
-func runRound(ctx context.Context, events int, store *proactive.Store) (time.Duration, int, error) {
+func runRound(ctx context.Context, events int, store *proactive.Store) (time.Duration, int, int, error) {
 	estimator := proactive.NewEstimator()
 	gate := proactive.NewGate(proactive.Config{Enabled: true, DryRun: true, ConfidenceThreshold: 0.60, Horizon: 5 * time.Minute})
 	calibrator := proactive.NewFeedbackCalibrator(store)
+	executor := proactive.NewActionExecutor(proactive.ActionPolicy{Enabled: true, DryRun: true, ExecutionStore: store})
 	start := time.Now()
 	decisions := 0
+	executions := 0
 	base := time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC)
 	for i := 0; i < events; i++ {
 		if err := ctx.Err(); err != nil {
-			return 0, 0, err
+			return 0, 0, 0, err
 		}
 		now := base.Add(time.Duration(i) * time.Minute)
 		signals := syntheticSignals(now, i)
 		estimate := estimator.Estimate(signals, gate.Config.Horizon)
-		estimate = calibrator.Calibrate(estimate)
+		estimate = calibrator.Calibrate(estimate, signals)
 		decision, err := gate.Decide(ctx, signals, estimate)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, 0, err
 		}
 		decisions += len(decision.Actions)
+		actionExecutions, err := executor.Execute(ctx, decision)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		executions += len(actionExecutions)
 		if store != nil {
 			if err := store.RecordSignals(signals); err != nil {
-				return 0, 0, err
+				return 0, 0, 0, err
 			}
 			if err := store.RecordEstimate(estimate); err != nil {
-				return 0, 0, err
+				return 0, 0, 0, err
+			}
+			if err := store.RecordEstimateSignals(estimate.ID, signals); err != nil {
+				return 0, 0, 0, err
 			}
 			if err := store.RecordActions(decision.Actions); err != nil {
-				return 0, 0, err
+				return 0, 0, 0, err
+			}
+			if err := store.RecordActionExecutions(actionExecutions); err != nil {
+				return 0, 0, 0, err
 			}
 		}
 	}
-	return time.Since(start), decisions, nil
+	return time.Since(start), decisions, executions, nil
 }
 
 func syntheticSignals(now time.Time, i int) []proactive.Signal {

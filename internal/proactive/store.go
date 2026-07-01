@@ -66,6 +66,11 @@ func (s *Store) init() error {
 			reason TEXT NOT NULL,
 			created_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS proactive_estimate_signals (
+			estimate_id TEXT NOT NULL,
+			signal_id TEXT NOT NULL,
+			PRIMARY KEY (estimate_id, signal_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS proactive_feedback_events (
 			id TEXT PRIMARY KEY,
 			state_id TEXT NOT NULL,
@@ -85,6 +90,25 @@ func (s *Store) init() error {
 			value REAL NOT NULL,
 			metadata TEXT NOT NULL,
 			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS proactive_action_executions (
+			id TEXT PRIMARY KEY,
+			action_id TEXT NOT NULL,
+			state_id TEXT NOT NULL,
+			action TEXT NOT NULL,
+			status TEXT NOT NULL,
+			reason TEXT NOT NULL,
+			metadata TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS proactive_signal_weights (
+			predicted_state TEXT NOT NULL,
+			channel TEXT NOT NULL,
+			label TEXT NOT NULL,
+			weight REAL NOT NULL,
+			samples INTEGER NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (predicted_state, channel, label)
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -191,6 +215,37 @@ func (s *Store) RecordActions(actions []DryRunAction) error {
 	return nil
 }
 
+func (s *Store) RecordEstimateSignals(estimateID string, signals []Signal) error {
+	if s == nil || s.db == nil || len(signals) == 0 {
+		return nil
+	}
+	estimateID = strings.TrimSpace(estimateID)
+	if estimateID == "" {
+		return fmt.Errorf("estimate id is required")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin proactive estimate signal insert: %w", err)
+	}
+	defer tx.Rollback()
+	for _, signal := range signals {
+		if strings.TrimSpace(signal.ID) == "" {
+			continue
+		}
+		if _, err := tx.Exec(
+			`INSERT OR REPLACE INTO proactive_estimate_signals(estimate_id, signal_id) VALUES (?, ?)`,
+			estimateID,
+			signal.ID,
+		); err != nil {
+			return fmt.Errorf("insert proactive estimate signal: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit proactive estimate signals: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) RecordFeedback(event FeedbackEvent) error {
 	if s == nil || s.db == nil {
 		return nil
@@ -236,6 +291,91 @@ func (s *Store) RecordFeedback(event FeedbackEvent) error {
 	return nil
 }
 
+type KernelLearningConfig struct {
+	Enabled      bool
+	LearningRate float64
+}
+
+func (s *Store) LearnFromFeedback(event FeedbackEvent, cfg KernelLearningConfig) (int, error) {
+	if s == nil || s.db == nil || !cfg.Enabled {
+		return 0, nil
+	}
+	if cfg.LearningRate <= 0 || cfg.LearningRate > 1 {
+		cfg.LearningRate = 0.08
+	}
+	signals, err := s.SignalsForEstimate(event.StateID)
+	if err != nil {
+		return 0, err
+	}
+	if len(signals) == 0 {
+		return 0, nil
+	}
+	predictedState := strings.TrimSpace(event.PredictedState)
+	if predictedState == "" {
+		predictedState = strings.TrimSpace(event.ActualState)
+	}
+	if predictedState == "" {
+		return 0, nil
+	}
+	target := -1.0
+	if event.Value > 0 || strings.EqualFold(strings.TrimSpace(event.PredictedState), strings.TrimSpace(event.ActualState)) {
+		target = 1.0
+	}
+	now := event.CreatedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin proactive kernel update: %w", err)
+	}
+	defer tx.Rollback()
+	updates := 0
+	for _, signal := range signals {
+		channel := strings.TrimSpace(signal.Channel)
+		label := strings.TrimSpace(signal.Label)
+		if channel == "" || label == "" {
+			continue
+		}
+		var weight float64
+		var samples int
+		err := tx.QueryRow(
+			`SELECT weight, samples FROM proactive_signal_weights
+			 WHERE predicted_state = ? AND channel = ? AND label = ?`,
+			predictedState,
+			channel,
+			label,
+		).Scan(&weight, &samples)
+		if err != nil && err != sql.ErrNoRows {
+			return 0, fmt.Errorf("load proactive signal weight: %w", err)
+		}
+		if err == sql.ErrNoRows {
+			weight = 0
+			samples = 0
+		}
+		weight = clamp(weight+cfg.LearningRate*(target-weight), -1, 1)
+		samples++
+		if _, err := tx.Exec(
+			`INSERT OR REPLACE INTO proactive_signal_weights(predicted_state, channel, label, weight, samples, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			predictedState,
+			channel,
+			label,
+			weight,
+			samples,
+			formatTime(now),
+		); err != nil {
+			return 0, fmt.Errorf("upsert proactive signal weight: %w", err)
+		}
+		updates++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit proactive kernel update: %w", err)
+	}
+	return updates, nil
+}
+
 func (s *Store) RecordRuntimeEvent(event RuntimeEvent) error {
 	if s == nil || s.db == nil {
 		return nil
@@ -277,6 +417,47 @@ func (s *Store) RecordRuntimeEvent(event RuntimeEvent) error {
 	return nil
 }
 
+func (s *Store) RecordActionExecutions(executions []ActionExecution) error {
+	if s == nil || s.db == nil || len(executions) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin proactive action execution insert: %w", err)
+	}
+	defer tx.Rollback()
+	for _, execution := range executions {
+		if strings.TrimSpace(execution.ID) == "" {
+			return fmt.Errorf("action execution id is required")
+		}
+		if execution.Metadata == nil {
+			execution.Metadata = map[string]string{}
+		}
+		metadata, err := json.Marshal(execution.Metadata)
+		if err != nil {
+			return fmt.Errorf("marshal action execution metadata: %w", err)
+		}
+		_, err = tx.Exec(
+			`INSERT OR REPLACE INTO proactive_action_executions(id, action_id, state_id, action, status, reason, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			execution.ID,
+			execution.ActionID,
+			execution.StateID,
+			execution.Action,
+			execution.Status,
+			execution.Reason,
+			string(metadata),
+			formatTime(execution.CreatedAt),
+		)
+		if err != nil {
+			return fmt.Errorf("insert proactive action execution: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit proactive action executions: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) Stats() (Stats, error) {
 	if s == nil || s.db == nil {
 		return Stats{}, nil
@@ -291,6 +472,7 @@ func (s *Store) Stats() (Stats, error) {
 		{"proactive_dry_run_actions", &stats.Actions},
 		{"proactive_feedback_events", &stats.FeedbackEvents},
 		{"proactive_runtime_events", &stats.RuntimeEvents},
+		{"proactive_action_executions", &stats.Executions},
 	}
 	for _, item := range counts {
 		if err := s.db.QueryRow("SELECT COUNT(*) FROM " + item.table).Scan(item.dest); err != nil {
@@ -298,6 +480,63 @@ func (s *Store) Stats() (Stats, error) {
 		}
 	}
 	return stats, nil
+}
+
+func (s *Store) RecentActionExecutions(limit int) ([]ActionExecution, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(
+		`SELECT id, action_id, state_id, action, status, reason, metadata, created_at
+		 FROM proactive_action_executions
+		 ORDER BY created_at DESC LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query recent proactive action executions: %w", err)
+	}
+	defer rows.Close()
+	var executions []ActionExecution
+	for rows.Next() {
+		execution, err := scanActionExecution(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan recent proactive action execution: %w", err)
+		}
+		executions = append(executions, execution)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return executions, nil
+}
+
+func (s *Store) LatestSuccessfulActionExecution(action string) (ActionExecution, bool, error) {
+	if s == nil || s.db == nil {
+		return ActionExecution{}, false, nil
+	}
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return ActionExecution{}, false, fmt.Errorf("action is required")
+	}
+	row := s.db.QueryRow(
+		`SELECT id, action_id, state_id, action, status, reason, metadata, created_at
+		 FROM proactive_action_executions
+		 WHERE action = ? AND status = ?
+		 ORDER BY created_at DESC LIMIT 1`,
+		action,
+		ActionStatusSuccess,
+	)
+	execution, err := scanActionExecution(row)
+	if err == sql.ErrNoRows {
+		return ActionExecution{}, false, nil
+	}
+	if err != nil {
+		return ActionExecution{}, false, fmt.Errorf("load latest proactive action execution: %w", err)
+	}
+	return execution, true, nil
 }
 
 func (s *Store) RuntimeEventStats() (RuntimeEventStats, error) {
@@ -323,6 +562,118 @@ func (s *Store) RuntimeEventStats() (RuntimeEventStats, error) {
 		return RuntimeEventStats{}, err
 	}
 	return stats, nil
+}
+
+func (s *Store) KernelStats() (KernelStats, error) {
+	if s == nil || s.db == nil {
+		return KernelStats{}, nil
+	}
+	var stats KernelStats
+	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(samples), 0) FROM proactive_signal_weights`).Scan(&stats.Weights, &stats.Samples); err != nil {
+		return KernelStats{}, fmt.Errorf("query proactive kernel stats: %w", err)
+	}
+	return stats, nil
+}
+
+func (s *Store) SignalWeightsForState(predictedState string) (map[string]SignalWeight, error) {
+	weights := map[string]SignalWeight{}
+	if s == nil || s.db == nil {
+		return weights, nil
+	}
+	predictedState = strings.TrimSpace(predictedState)
+	if predictedState == "" {
+		return weights, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT predicted_state, channel, label, weight, samples, updated_at
+		 FROM proactive_signal_weights
+		 WHERE predicted_state = ?`,
+		predictedState,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query proactive signal weights: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var weight SignalWeight
+		var updatedAt string
+		if err := rows.Scan(&weight.PredictedState, &weight.Channel, &weight.Label, &weight.Weight, &weight.Samples, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan proactive signal weight: %w", err)
+		}
+		weight.UpdatedAt = parseTime(updatedAt)
+		weights[signalWeightKey(weight.Channel, weight.Label)] = weight
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return weights, nil
+}
+
+func (s *Store) RecentSignalWeights(limit int) ([]SignalWeight, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(
+		`SELECT predicted_state, channel, label, weight, samples, updated_at
+		 FROM proactive_signal_weights
+		 ORDER BY updated_at DESC, samples DESC LIMIT ?`,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query recent proactive signal weights: %w", err)
+	}
+	defer rows.Close()
+	var weights []SignalWeight
+	for rows.Next() {
+		var weight SignalWeight
+		var updatedAt string
+		if err := rows.Scan(&weight.PredictedState, &weight.Channel, &weight.Label, &weight.Weight, &weight.Samples, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan recent proactive signal weight: %w", err)
+		}
+		weight.UpdatedAt = parseTime(updatedAt)
+		weights = append(weights, weight)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return weights, nil
+}
+
+func (s *Store) SignalsForEstimate(estimateID string) ([]Signal, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	estimateID = strings.TrimSpace(estimateID)
+	if estimateID == "" {
+		return nil, nil
+	}
+	rows, err := s.db.Query(
+		`SELECT sig.id, sig.channel, sig.value, sig.label, sig.metadata, sig.created_at
+		 FROM proactive_estimate_signals rel
+		 JOIN proactive_signals sig ON sig.id = rel.signal_id
+		 WHERE rel.estimate_id = ?
+		 ORDER BY sig.created_at ASC, sig.id ASC`,
+		estimateID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query proactive estimate signals: %w", err)
+	}
+	defer rows.Close()
+	var signals []Signal
+	for rows.Next() {
+		signal, err := scanSignal(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan proactive estimate signal: %w", err)
+		}
+		signals = append(signals, signal)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return signals, nil
 }
 
 func (s *Store) RuntimeEventCountsSince(since time.Time) (map[string]int, error) {
@@ -498,6 +849,34 @@ type estimateScanner interface {
 	Scan(dest ...any) error
 }
 
+func scanActionExecution(scanner estimateScanner) (ActionExecution, error) {
+	var execution ActionExecution
+	var metadataJSON string
+	var createdAt string
+	if err := scanner.Scan(&execution.ID, &execution.ActionID, &execution.StateID, &execution.Action, &execution.Status, &execution.Reason, &metadataJSON, &createdAt); err != nil {
+		return ActionExecution{}, err
+	}
+	if err := json.Unmarshal([]byte(metadataJSON), &execution.Metadata); err != nil {
+		return ActionExecution{}, fmt.Errorf("decode action execution metadata: %w", err)
+	}
+	execution.CreatedAt = parseTime(createdAt)
+	return execution, nil
+}
+
+func scanSignal(scanner estimateScanner) (Signal, error) {
+	var signal Signal
+	var metadataJSON string
+	var createdAt string
+	if err := scanner.Scan(&signal.ID, &signal.Channel, &signal.Value, &signal.Label, &metadataJSON, &createdAt); err != nil {
+		return Signal{}, err
+	}
+	if err := json.Unmarshal([]byte(metadataJSON), &signal.Metadata); err != nil {
+		return Signal{}, fmt.Errorf("decode proactive signal metadata: %w", err)
+	}
+	signal.CreatedAt = parseTime(createdAt)
+	return signal, nil
+}
+
 func scanEstimate(scanner estimateScanner) (StateEstimate, error) {
 	var estimate StateEstimate
 	var horizonSeconds int
@@ -527,4 +906,8 @@ func parseTime(raw string) time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+func signalWeightKey(channel, label string) string {
+	return strings.TrimSpace(channel) + "\x00" + strings.TrimSpace(label)
 }

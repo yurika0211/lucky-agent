@@ -141,6 +141,9 @@ func TestNewInitializesProactiveStoreOnlyWhenEnabled(t *testing.T) {
 	if disabledAgent.proactiveStore != nil {
 		t.Fatalf("expected proactive store to be nil when disabled")
 	}
+	if disabledAgent.proactiveRuntime != nil {
+		t.Fatalf("expected proactive runtime to be nil when disabled")
+	}
 	if err := disabledAgent.Close(); err != nil {
 		t.Fatalf("Close disabled agent: %v", err)
 	}
@@ -162,6 +165,9 @@ func TestNewInitializesProactiveStoreOnlyWhenEnabled(t *testing.T) {
 	}
 	if enabledAgent.proactiveStore == nil {
 		t.Fatalf("expected proactive store to be initialized")
+	}
+	if enabledAgent.proactiveRuntime == nil || !enabledAgent.proactiveRuntime.Started() {
+		t.Fatalf("expected proactive runtime to be started")
 	}
 	if err := enabledAgent.Close(); err != nil {
 		t.Fatalf("Close enabled agent: %v", err)

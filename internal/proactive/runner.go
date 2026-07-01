@@ -15,7 +15,7 @@ type StateEstimator interface {
 }
 
 type EstimateCalibrator interface {
-	Calibrate(StateEstimate) StateEstimate
+	Calibrate(StateEstimate, []Signal) StateEstimate
 }
 
 // Runner wires sampler, estimator, gate, and optional persistence.
@@ -42,7 +42,7 @@ func (r Runner) RunDryRun(ctx context.Context) (Decision, error) {
 	}
 	estimate := r.Estimator.Estimate(signals, r.Gate.Config.Horizon)
 	if r.Calibrator != nil {
-		estimate = r.Calibrator.Calibrate(estimate)
+		estimate = r.Calibrator.Calibrate(estimate, signals)
 	}
 	decision, err := r.Gate.Decide(ctx, signals, estimate)
 	if err != nil {
@@ -54,6 +54,9 @@ func (r Runner) RunDryRun(ctx context.Context) (Decision, error) {
 		}
 		if err := r.Store.RecordEstimate(estimate); err != nil {
 			return Decision{}, fmt.Errorf("persist proactive estimate: %w", err)
+		}
+		if err := r.Store.RecordEstimateSignals(estimate.ID, signals); err != nil {
+			return Decision{}, fmt.Errorf("persist proactive estimate signals: %w", err)
 		}
 		if err := r.Store.RecordActions(decision.Actions); err != nil {
 			return Decision{}, fmt.Errorf("persist proactive actions: %w", err)

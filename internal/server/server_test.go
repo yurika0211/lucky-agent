@@ -134,6 +134,42 @@ func TestHandleMemoryStats(t *testing.T) {
 	}
 }
 
+func TestHandleProactiveStatus(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/proactive/status?limit=5", nil)
+	w := httptest.NewRecorder()
+	s.handleProactiveStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["enabled"] != false {
+		t.Fatalf("expected proactive disabled by default, got %#v", resp)
+	}
+	if _, ok := resp["stats"].(map[string]interface{}); !ok {
+		t.Fatalf("expected proactive stats, got %#v", resp)
+	}
+}
+
+func TestHandleProactiveStatusRejectsInvalidLimit(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/proactive/status?limit=bad", nil)
+	w := httptest.NewRecorder()
+	s.handleProactiveStatus(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
+	}
+}
+
 func TestHandleMemorySave(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())

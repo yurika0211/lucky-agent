@@ -271,6 +271,12 @@ func newRootCmd() *cobra.Command {
 		Short: "运行一次 proactive gate dry-run",
 		RunE:  runProactiveDryRun,
 	}
+	proactiveActCmd := &cobra.Command{
+		Use:   "act",
+		Short: "执行一次受安全策略限制的 proactive action run",
+		RunE:  runProactiveAct,
+	}
+	proactiveActCmd.Flags().Bool("apply", false, "实际执行 allowlist 内的安全动作；默认只 dry-run")
 	proactiveFeedbackCmd := &cobra.Command{
 		Use:   "feedback <actual-state>",
 		Short: "记录最近一次 proactive 预测的实际结果",
@@ -287,7 +293,19 @@ func newRootCmd() *cobra.Command {
 		RunE:  runProactiveEvents,
 	}
 	proactiveEventsCmd.Flags().Int("limit", 20, "最多显示的事件数量")
-	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd, proactiveFeedbackCmd, proactiveEventsCmd)
+	proactiveExecutionsCmd := &cobra.Command{
+		Use:   "executions",
+		Short: "查看最近 proactive action executions",
+		RunE:  runProactiveExecutions,
+	}
+	proactiveExecutionsCmd.Flags().Int("limit", 20, "最多显示的执行记录数量")
+	proactiveKernelsCmd := &cobra.Command{
+		Use:   "kernels",
+		Short: "查看最近 learned proactive signal kernels",
+		RunE:  runProactiveKernels,
+	}
+	proactiveKernelsCmd.Flags().Int("limit", 20, "最多显示的 kernel 权重数量")
+	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd, proactiveActCmd, proactiveFeedbackCmd, proactiveEventsCmd, proactiveExecutionsCmd, proactiveKernelsCmd)
 
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)

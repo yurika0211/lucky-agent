@@ -75,6 +75,27 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Proactive.HorizonSeconds != 300 {
 		t.Errorf("expected proactive.horizon_seconds 300, got %d", cfg.Proactive.HorizonSeconds)
 	}
+	if cfg.Proactive.ActionIntervalSecs != 300 {
+		t.Errorf("expected proactive.action_interval_seconds 300, got %d", cfg.Proactive.ActionIntervalSecs)
+	}
+	if cfg.Proactive.MaxActions != 2 {
+		t.Errorf("expected proactive.max_actions 2, got %d", cfg.Proactive.MaxActions)
+	}
+	if cfg.Proactive.ActionCooldownSecs != 300 {
+		t.Errorf("expected proactive.action_cooldown_seconds 300, got %d", cfg.Proactive.ActionCooldownSecs)
+	}
+	if len(cfg.Proactive.AllowedActions) != 4 {
+		t.Errorf("expected 4 proactive.allowed_actions, got %v", cfg.Proactive.AllowedActions)
+	}
+	if cfg.Proactive.KernelLearning == nil || !*cfg.Proactive.KernelLearning {
+		t.Errorf("expected proactive.kernel_learning_enabled true by default")
+	}
+	if cfg.Proactive.KernelLearningRate != 0.08 {
+		t.Errorf("expected proactive.kernel_learning_rate 0.08, got %.2f", cfg.Proactive.KernelLearningRate)
+	}
+	if cfg.Proactive.KernelMinSamples != 2 {
+		t.Errorf("expected proactive.kernel_min_samples 2, got %d", cfg.Proactive.KernelMinSamples)
+	}
 	if cfg.ImageGeneration.Provider != "openai" {
 		t.Errorf("expected image_generation.provider openai, got %s", cfg.ImageGeneration.Provider)
 	}
@@ -205,6 +226,27 @@ func TestManagerSetProactiveConfig(t *testing.T) {
 	if err := mgr.Set("proactive.store_path", "runtime/custom-proactive.db"); err != nil {
 		t.Fatalf("Set proactive.store_path: %v", err)
 	}
+	if err := mgr.Set("proactive.action_interval_seconds", "180"); err != nil {
+		t.Fatalf("Set proactive.action_interval_seconds: %v", err)
+	}
+	if err := mgr.Set("proactive.max_actions", "3"); err != nil {
+		t.Fatalf("Set proactive.max_actions: %v", err)
+	}
+	if err := mgr.Set("proactive.action_cooldown_seconds", "120"); err != nil {
+		t.Fatalf("Set proactive.action_cooldown_seconds: %v", err)
+	}
+	if err := mgr.Set("proactive.allowed_actions", "warm_memory_context,prefer_lightweight_tasks"); err != nil {
+		t.Fatalf("Set proactive.allowed_actions: %v", err)
+	}
+	if err := mgr.Set("proactive.kernel_learning_enabled", "false"); err != nil {
+		t.Fatalf("Set proactive.kernel_learning_enabled: %v", err)
+	}
+	if err := mgr.Set("proactive.kernel_learning_rate", "0.12"); err != nil {
+		t.Fatalf("Set proactive.kernel_learning_rate: %v", err)
+	}
+	if err := mgr.Set("proactive.kernel_min_samples", "4"); err != nil {
+		t.Fatalf("Set proactive.kernel_min_samples: %v", err)
+	}
 
 	cfg := mgr.Get()
 	if !cfg.Proactive.Enabled {
@@ -221,6 +263,27 @@ func TestManagerSetProactiveConfig(t *testing.T) {
 	}
 	if cfg.Proactive.StorePath != "runtime/custom-proactive.db" {
 		t.Fatalf("unexpected store path %q", cfg.Proactive.StorePath)
+	}
+	if cfg.Proactive.ActionIntervalSecs != 180 {
+		t.Fatalf("expected action interval 180, got %d", cfg.Proactive.ActionIntervalSecs)
+	}
+	if cfg.Proactive.MaxActions != 3 {
+		t.Fatalf("expected max actions 3, got %d", cfg.Proactive.MaxActions)
+	}
+	if cfg.Proactive.ActionCooldownSecs != 120 {
+		t.Fatalf("expected action cooldown 120, got %d", cfg.Proactive.ActionCooldownSecs)
+	}
+	if len(cfg.Proactive.AllowedActions) != 2 || cfg.Proactive.AllowedActions[0] != "warm_memory_context" {
+		t.Fatalf("unexpected allowed actions %v", cfg.Proactive.AllowedActions)
+	}
+	if cfg.Proactive.KernelLearning == nil || *cfg.Proactive.KernelLearning {
+		t.Fatalf("expected kernel learning false, got %#v", cfg.Proactive.KernelLearning)
+	}
+	if cfg.Proactive.KernelLearningRate != 0.12 {
+		t.Fatalf("expected kernel learning rate 0.12, got %.2f", cfg.Proactive.KernelLearningRate)
+	}
+	if cfg.Proactive.KernelMinSamples != 4 {
+		t.Fatalf("expected kernel min samples 4, got %d", cfg.Proactive.KernelMinSamples)
 	}
 }
 

@@ -279,11 +279,18 @@ type AutonomyConfig struct {
 // disabled and dry-run by default so runtime behavior remains passive unless
 // the user explicitly opts in.
 type ProactiveConfig struct {
-	Enabled             bool    `json:"enabled,omitempty"`
-	DryRun              *bool   `json:"dry_run,omitempty"`
-	ConfidenceThreshold float64 `json:"confidence_threshold,omitempty"`
-	HorizonSeconds      int     `json:"horizon_seconds,omitempty"`
-	StorePath           string  `json:"store_path,omitempty"`
+	Enabled             bool     `json:"enabled,omitempty"`
+	DryRun              *bool    `json:"dry_run,omitempty"`
+	ConfidenceThreshold float64  `json:"confidence_threshold,omitempty"`
+	HorizonSeconds      int      `json:"horizon_seconds,omitempty"`
+	StorePath           string   `json:"store_path,omitempty"`
+	ActionIntervalSecs  int      `json:"action_interval_seconds,omitempty"`
+	MaxActions          int      `json:"max_actions,omitempty"`
+	ActionCooldownSecs  int      `json:"action_cooldown_seconds,omitempty"`
+	AllowedActions      []string `json:"allowed_actions,omitempty"`
+	KernelLearning      *bool    `json:"kernel_learning_enabled,omitempty"`
+	KernelLearningRate  float64  `json:"kernel_learning_rate,omitempty"`
+	KernelMinSamples    int      `json:"kernel_min_samples,omitempty"`
 }
 
 // MsgGatewayConfig 消息网关配置
@@ -667,6 +674,18 @@ func DefaultConfig() *Config {
 			DryRun:              boolPtr(true),
 			ConfidenceThreshold: 0.60,
 			HorizonSeconds:      300,
+			ActionIntervalSecs:  300,
+			MaxActions:          2,
+			ActionCooldownSecs:  300,
+			KernelLearning:      boolPtr(true),
+			KernelLearningRate:  0.08,
+			KernelMinSamples:    2,
+			AllowedActions: []string{
+				"preload_recent_project_context",
+				"warm_memory_context",
+				"preload_recent_session_summary",
+				"prefer_lightweight_tasks",
+			},
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
@@ -970,6 +989,27 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Proactive.HorizonSeconds <= 0 {
 		cfg.Proactive.HorizonSeconds = def.Proactive.HorizonSeconds
 	}
+	if cfg.Proactive.ActionIntervalSecs <= 0 {
+		cfg.Proactive.ActionIntervalSecs = def.Proactive.ActionIntervalSecs
+	}
+	if cfg.Proactive.MaxActions <= 0 {
+		cfg.Proactive.MaxActions = def.Proactive.MaxActions
+	}
+	if cfg.Proactive.ActionCooldownSecs <= 0 {
+		cfg.Proactive.ActionCooldownSecs = def.Proactive.ActionCooldownSecs
+	}
+	if cfg.Proactive.AllowedActions == nil {
+		cfg.Proactive.AllowedActions = append([]string(nil), def.Proactive.AllowedActions...)
+	}
+	if cfg.Proactive.KernelLearning == nil {
+		cfg.Proactive.KernelLearning = def.Proactive.KernelLearning
+	}
+	if cfg.Proactive.KernelLearningRate <= 0 || cfg.Proactive.KernelLearningRate > 1 {
+		cfg.Proactive.KernelLearningRate = def.Proactive.KernelLearningRate
+	}
+	if cfg.Proactive.KernelMinSamples <= 0 {
+		cfg.Proactive.KernelMinSamples = def.Proactive.KernelMinSamples
+	}
 
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = def.Server.Addr
@@ -1071,6 +1111,13 @@ func cloneConfig(in *Config) *Config {
 	if in.Proactive.DryRun != nil {
 		v := *in.Proactive.DryRun
 		cp.Proactive.DryRun = &v
+	}
+	if in.Proactive.KernelLearning != nil {
+		v := *in.Proactive.KernelLearning
+		cp.Proactive.KernelLearning = &v
+	}
+	if in.Proactive.AllowedActions != nil {
+		cp.Proactive.AllowedActions = append([]string{}, in.Proactive.AllowedActions...)
 	}
 	return &cp
 }
@@ -1408,6 +1455,31 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Proactive.HorizonSeconds = n
 	case "proactive.store_path":
 		m.config.Proactive.StorePath = value
+	case "proactive.action_interval_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.ActionIntervalSecs = n
+	case "proactive.max_actions":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.MaxActions = n
+	case "proactive.action_cooldown_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.ActionCooldownSecs = n
+	case "proactive.allowed_actions":
+		m.config.Proactive.AllowedActions = splitCSV(value)
+	case "proactive.kernel_learning_enabled":
+		v := parseBool(value)
+		m.config.Proactive.KernelLearning = &v
+	case "proactive.kernel_learning_rate":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Proactive.KernelLearningRate = f
+	case "proactive.kernel_min_samples":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.KernelMinSamples = n
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":

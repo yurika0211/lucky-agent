@@ -324,6 +324,7 @@ func (s *Server) Start() error {
 		{path: "/api/v1/memory", handler: s.handleMemory},
 		{path: "/api/v1/memory/recall", handler: s.handleMemoryRecall},
 		{path: "/api/v1/memory/stats", handler: s.handleMemoryStats},
+		{path: "/api/v1/proactive/status", handler: s.handleProactiveStatus},
 		{path: "/api/v1/tools", handler: s.handleTools},
 		{path: "/api/v1/stats", handler: s.handleStats},
 		{path: "/api/v1/soul", handler: s.handleSoul},
@@ -1053,6 +1054,35 @@ func (s *Server) handleMemoryStats(w http.ResponseWriter, r *http.Request) {
 	s.sendJSON(w, http.StatusOK, payload)
 }
 
+func (s *Server) handleProactiveStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+	if s.agent == nil {
+		s.sendError(w, "agent unavailable", http.StatusServiceUnavailable, "")
+		return
+	}
+	limit := 20
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			s.sendError(w, "invalid limit", http.StatusBadRequest, "limit must be a non-negative integer")
+			return
+		}
+		if n > 100 {
+			n = 100
+		}
+		limit = n
+	}
+	status, err := s.agent.ProactiveStatus(limit)
+	if err != nil {
+		s.sendError(w, "proactive status failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.sendJSON(w, http.StatusOK, status)
+}
+
 // handleTools 工具列表
 func (s *Server) handleTools(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -1193,6 +1223,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"POST /api/v1/memory     — 保存记忆",
 			"GET  /api/v1/memory/recall?q= — 搜索记忆",
 			"GET  /api/v1/memory/stats    — 记忆统计",
+			"GET  /api/v1/proactive/status — proactive 状态",
 			"GET  /api/v1/tools      — 工具列表",
 			"GET  /api/v1/stats      — 服务器统计",
 			"GET  /api/v1/soul       — SOUL 信息",

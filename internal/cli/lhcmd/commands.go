@@ -208,6 +208,20 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Proactive.HorizonSeconds)
 	case "proactive.store_path":
 		fmt.Println(cfg.Proactive.StorePath)
+	case "proactive.action_interval_seconds":
+		fmt.Println(cfg.Proactive.ActionIntervalSecs)
+	case "proactive.max_actions":
+		fmt.Println(cfg.Proactive.MaxActions)
+	case "proactive.action_cooldown_seconds":
+		fmt.Println(cfg.Proactive.ActionCooldownSecs)
+	case "proactive.allowed_actions":
+		fmt.Println(strings.Join(cfg.Proactive.AllowedActions, ","))
+	case "proactive.kernel_learning_enabled":
+		fmt.Println(proactiveKernelLearningEnabled(cfg))
+	case "proactive.kernel_learning_rate":
+		fmt.Println(cfg.Proactive.KernelLearningRate)
+	case "proactive.kernel_min_samples":
+		fmt.Println(cfg.Proactive.KernelMinSamples)
 	case "msg_gateway.platform":
 		fmt.Println(cfg.MsgGateway.Platform)
 	case "msg_gateway.api_addr":
@@ -291,6 +305,13 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  proactive.dry_run: %t\n", proactiveDryRunEnabled(cfg))
 	fmt.Printf("  proactive.confidence_threshold: %.2f\n", cfg.Proactive.ConfidenceThreshold)
 	fmt.Printf("  proactive.horizon_seconds: %d\n", cfg.Proactive.HorizonSeconds)
+	fmt.Printf("  proactive.action_interval_seconds: %d\n", cfg.Proactive.ActionIntervalSecs)
+	fmt.Printf("  proactive.max_actions: %d\n", cfg.Proactive.MaxActions)
+	fmt.Printf("  proactive.action_cooldown_seconds: %d\n", cfg.Proactive.ActionCooldownSecs)
+	fmt.Printf("  proactive.allowed_actions: %s\n", strings.Join(cfg.Proactive.AllowedActions, ","))
+	fmt.Printf("  proactive.kernel_learning_enabled: %t\n", proactiveKernelLearningEnabled(cfg))
+	fmt.Printf("  proactive.kernel_learning_rate: %.2f\n", cfg.Proactive.KernelLearningRate)
+	fmt.Printf("  proactive.kernel_min_samples: %d\n", cfg.Proactive.KernelMinSamples)
 	return nil
 }
 
@@ -1352,6 +1373,13 @@ func runProactiveStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Dry-run: %t\n", proactiveDryRunEnabled(cfg))
 	fmt.Printf("Confidence threshold: %.2f\n", cfg.Proactive.ConfidenceThreshold)
 	fmt.Printf("Horizon seconds: %d\n", cfg.Proactive.HorizonSeconds)
+	fmt.Printf("Action interval seconds: %d\n", cfg.Proactive.ActionIntervalSecs)
+	fmt.Printf("Max actions per run: %d\n", cfg.Proactive.MaxActions)
+	fmt.Printf("Action cooldown seconds: %d\n", cfg.Proactive.ActionCooldownSecs)
+	fmt.Printf("Allowed actions: %s\n", strings.Join(cfg.Proactive.AllowedActions, ","))
+	fmt.Printf("Kernel learning: %t\n", proactiveKernelLearningEnabled(cfg))
+	fmt.Printf("Kernel learning rate: %.2f\n", cfg.Proactive.KernelLearningRate)
+	fmt.Printf("Kernel min samples: %d\n", cfg.Proactive.KernelMinSamples)
 	fmt.Printf("Store: %s\n", path)
 
 	if _, err := os.Stat(path); err != nil {
@@ -1376,6 +1404,7 @@ func runProactiveStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Dry-run actions: %d\n", stats.Actions)
 	fmt.Printf("Feedback events: %d\n", stats.FeedbackEvents)
 	fmt.Printf("Runtime events: %d\n", stats.RuntimeEvents)
+	fmt.Printf("Action executions: %d\n", stats.Executions)
 	if feedbackStats, err := store.FeedbackStats(100); err != nil {
 		return err
 	} else if feedbackStats.Events > 0 {
@@ -1385,6 +1414,11 @@ func runProactiveStatus(cmd *cobra.Command, args []string) error {
 		return err
 	} else if runtimeStats.Events > 0 {
 		fmt.Printf("Runtime event types: %s\n", formatRuntimeEventTypes(runtimeStats.ByType))
+	}
+	if kernelStats, err := store.KernelStats(); err != nil {
+		return err
+	} else if kernelStats.Weights > 0 {
+		fmt.Printf("Kernel weights: %d samples=%d\n", kernelStats.Weights, kernelStats.Samples)
 	}
 	if estimate, ok, err := store.LatestEstimate(); err != nil {
 		return err
@@ -1450,7 +1484,7 @@ func runProactiveDryRun(cmd *cobra.Command, args []string) error {
 	runner := proactive.NewRunnerWithCalibrator(
 		proactive.NewSamplerWithStore("", store),
 		proactive.NewEstimator(),
-		proactive.NewFeedbackCalibrator(store),
+		cliProactiveCalibrator(store, cfg),
 		proactive.NewGate(gateCfg),
 		store,
 	)
@@ -1472,6 +1506,79 @@ func runProactiveDryRun(cmd *cobra.Command, args []string) error {
 	fmt.Println("Dry-run actions:")
 	for _, action := range decision.Actions {
 		fmt.Printf("  - %s allowed=%t confidence=%.2f reason=%s\n", action.Action, action.Allowed, action.Confidence, action.Reason)
+	}
+	return nil
+}
+
+func runProactiveAct(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	apply, _ := cmd.Flags().GetBool("apply")
+	dryRun := proactiveDryRunEnabled(cfg) || !apply
+	gateCfg := proactive.Config{
+		Enabled:             cfg.Proactive.Enabled,
+		DryRun:              dryRun,
+		ConfidenceThreshold: cfg.Proactive.ConfidenceThreshold,
+		Horizon:             time.Duration(cfg.Proactive.HorizonSeconds) * time.Second,
+	}
+	runner := proactive.NewRunnerWithCalibrator(
+		proactive.NewSamplerWithStore("", store),
+		proactive.NewEstimator(),
+		cliProactiveCalibrator(store, cfg),
+		proactive.NewGate(gateCfg),
+		store,
+	)
+	decision, err := runner.RunDryRun(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("run proactive decision: %w", err)
+	}
+
+	wd, _ := os.Getwd()
+	executor := proactive.NewActionExecutor(proactive.ActionPolicy{
+		Enabled:        cfg.Proactive.Enabled,
+		DryRun:         dryRun,
+		MaxActions:     cfg.Proactive.MaxActions,
+		Cooldown:       time.Duration(cfg.Proactive.ActionCooldownSecs) * time.Second,
+		WorkspaceDir:   wd,
+		HomeDir:        mgr.HomeDir(),
+		Allowed:        allowedActionMap(cfg.Proactive.AllowedActions),
+		ExecutionStore: store,
+	})
+	executions, err := executor.Execute(cmd.Context(), decision)
+	if err != nil {
+		return fmt.Errorf("execute proactive actions: %w", err)
+	}
+	if err := store.RecordActionExecutions(executions); err != nil {
+		return fmt.Errorf("persist proactive action executions: %w", err)
+	}
+
+	fmt.Printf("Predicted state: %s confidence=%.2f dry_run=%t enabled=%t\n",
+		decision.Estimate.PredictedState,
+		decision.Estimate.Confidence,
+		dryRun,
+		cfg.Proactive.Enabled,
+	)
+	fmt.Println("Action executions:")
+	for _, execution := range executions {
+		fmt.Printf("  - %s status=%s reason=%s\n", execution.Action, execution.Status, execution.Reason)
+		if len(execution.Metadata) > 0 {
+			fmt.Printf("    metadata=%s\n", formatStringMap(execution.Metadata))
+		}
+	}
+	if apply && proactiveDryRunEnabled(cfg) {
+		fmt.Println("Note: --apply was requested, but proactive.dry_run=true kept this run in dry-run mode.")
 	}
 	return nil
 }
@@ -1516,6 +1623,81 @@ func runProactiveEvents(cmd *cobra.Command, args []string) error {
 		if len(event.Metadata) > 0 {
 			fmt.Printf("  metadata=%s\n", formatStringMap(event.Metadata))
 		}
+	}
+	return nil
+}
+
+func runProactiveExecutions(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	limit, _ := cmd.Flags().GetInt("limit")
+	executions, err := store.RecentActionExecutions(limit)
+	if err != nil {
+		return err
+	}
+	if len(executions) == 0 {
+		fmt.Println("No proactive action executions found.")
+		return nil
+	}
+	for _, execution := range executions {
+		fmt.Printf("%s action=%s status=%s reason=%s\n",
+			execution.CreatedAt.Local().Format(time.RFC3339),
+			execution.Action,
+			execution.Status,
+			execution.Reason,
+		)
+		if len(execution.Metadata) > 0 {
+			fmt.Printf("  metadata=%s\n", formatStringMap(execution.Metadata))
+		}
+	}
+	return nil
+}
+
+func runProactiveKernels(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	limit, _ := cmd.Flags().GetInt("limit")
+	weights, err := store.RecentSignalWeights(limit)
+	if err != nil {
+		return err
+	}
+	if len(weights) == 0 {
+		fmt.Println("No proactive signal kernels found.")
+		return nil
+	}
+	for _, weight := range weights {
+		fmt.Printf("%s state=%s signal=%s/%s weight=%.3f samples=%d\n",
+			weight.UpdatedAt.Local().Format(time.RFC3339),
+			weight.PredictedState,
+			weight.Channel,
+			weight.Label,
+			weight.Weight,
+			weight.Samples,
+		)
 	}
 	return nil
 }
@@ -1575,9 +1757,19 @@ func runProactiveFeedback(cmd *cobra.Command, args []string) error {
 	if err := store.RecordFeedback(event); err != nil {
 		return fmt.Errorf("record proactive feedback: %w", err)
 	}
+	kernelUpdates, err := store.LearnFromFeedback(event, proactive.KernelLearningConfig{
+		Enabled:      proactiveKernelLearningEnabled(cfg),
+		LearningRate: cfg.Proactive.KernelLearningRate,
+	})
+	if err != nil {
+		return fmt.Errorf("learn proactive kernel from feedback: %w", err)
+	}
 
 	correct := strings.EqualFold(estimate.PredictedState, actualState)
 	fmt.Printf("Recorded feedback: predicted=%s actual=%s correct=%t\n", estimate.PredictedState, actualState, correct)
+	if proactiveKernelLearningEnabled(cfg) {
+		fmt.Printf("Kernel updates: %d\n", kernelUpdates)
+	}
 	if feedbackStats, err := store.FeedbackStats(100); err == nil && feedbackStats.Events > 0 {
 		fmt.Printf("Recent feedback accuracy: %.2f (%d/%d)\n", feedbackStats.Accuracy, feedbackStats.Correct, feedbackStats.Events)
 	}
@@ -1591,6 +1783,21 @@ func proactiveDryRunEnabled(cfg *config.Config) bool {
 	return *cfg.Proactive.DryRun
 }
 
+func proactiveKernelLearningEnabled(cfg *config.Config) bool {
+	if cfg == nil || cfg.Proactive.KernelLearning == nil {
+		return true
+	}
+	return *cfg.Proactive.KernelLearning
+}
+
+func cliProactiveCalibrator(store *proactive.Store, cfg *config.Config) proactive.FeedbackCalibrator {
+	calibrator := proactive.NewFeedbackCalibrator(store)
+	if cfg != nil {
+		calibrator.KernelMinSamples = cfg.Proactive.KernelMinSamples
+	}
+	return calibrator
+}
+
 func cliProactiveStorePath(homeDir, configured string) string {
 	configured = strings.TrimSpace(configured)
 	if configured == "" {
@@ -1600,6 +1807,20 @@ func cliProactiveStorePath(homeDir, configured string) string {
 		return configured
 	}
 	return filepath.Join(homeDir, configured)
+}
+
+func allowedActionMap(actions []string) map[string]bool {
+	if actions == nil {
+		return nil
+	}
+	allowed := make(map[string]bool, len(actions))
+	for _, action := range actions {
+		action = strings.TrimSpace(action)
+		if action != "" {
+			allowed[action] = true
+		}
+	}
+	return allowed
 }
 
 func formatRuntimeEventTypes(byType map[string]int) string {

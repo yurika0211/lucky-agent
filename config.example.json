@@ -177,7 +177,19 @@
     "dry_run": true,
     "confidence_threshold": 0.6,
     "horizon_seconds": 300,
-    "store_path": ""
+    "store_path": "",
+    "action_interval_seconds": 300,
+    "max_actions": 2,
+    "action_cooldown_seconds": 300,
+    "kernel_learning_enabled": true,
+    "kernel_learning_rate": 0.08,
+    "kernel_min_samples": 2,
+    "allowed_actions": [
+      "preload_recent_project_context",
+      "warm_memory_context",
+      "preload_recent_session_summary",
+      "prefer_lightweight_tasks"
+    ]
   },
   "msg_gateway": {
     "platform": "telegram",
