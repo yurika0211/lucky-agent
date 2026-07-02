@@ -2038,13 +2038,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		return
 	}
 
+	effectiveCallOpts := prepareLoopCallOptions(messages, callOpts, state.forceSearchSynthesis)
 	logger.Debug("agent stream native iteration started",
 		"session_id", sessionID,
 		"round", round,
 		"remaining", remaining,
 		"messages", len(messages),
-		"tools", len(callOpts.Tools),
-		"tool_choice", fmt.Sprint(callOpts.ToolChoice),
+		"tools", len(effectiveCallOpts.Tools),
+		"tool_choice", fmt.Sprint(effectiveCallOpts.ToolChoice),
 		"force_search_synthesis", state.forceSearchSynthesis,
 	)
 	iterCtx, cancel := streamIterationContext(ctx, state)
@@ -2332,13 +2333,14 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		return
 	}
 
+	effectiveCallOpts := prepareLoopCallOptions(messages, callOpts, state.forceSearchSynthesis)
 	logger.Debug("agent stream simulated iteration started",
 		"session_id", sessionID,
 		"round", round,
 		"remaining", remaining,
 		"messages", len(messages),
-		"tools", len(callOpts.Tools),
-		"tool_choice", fmt.Sprint(callOpts.ToolChoice),
+		"tools", len(effectiveCallOpts.Tools),
+		"tool_choice", fmt.Sprint(effectiveCallOpts.ToolChoice),
 		"force_search_synthesis", state.forceSearchSynthesis,
 	)
 	iterCtx, cancel := streamIterationContext(ctx, state)
