@@ -31,6 +31,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/resilience"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/soul"
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 	"github.com/yurika0211/luckyagent/internal/tool"
 	"github.com/yurika0211/luckyagent/internal/utils"
 )
@@ -145,6 +146,7 @@ type Agent struct {
 	externalReplyAnchors  map[string]externalReplyAnchor
 	contextCache          *contextMessageCache
 	mediaProcessor        *multimodal.Processor
+	taskStore             taskstore.Store
 	autoCompactMu         sync.Mutex
 	autoCompactFailures   map[string]int
 	chatCount             int // 对话计数，用于触发自动摘要
@@ -1051,6 +1053,11 @@ func New(cfg *config.Manager) (*Agent, error) {
 		return nil, err
 	}
 	proactiveRuntime := initProactiveRuntimeService(cfg.HomeDir(), c.Proactive, proactiveStore)
+	taskStore, err := taskstore.NewFileStore(filepath.Join(cfg.HomeDir(), "tasks"))
+	if err != nil {
+		return nil, fmt.Errorf("init task store: %w", err)
+	}
+	supportRT.delegateMgr.SetTaskStore(taskStore)
 
 	a := &Agent{
 		cfg:                 cfg,
@@ -1086,6 +1093,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		autonomy:            supportRT.autonomyKit,
 		contextCache:        newContextMessageCache(64),
 		mediaProcessor:      supportRT.mediaProcessor,
+		taskStore:           taskStore,
 		autoCompactFailures: make(map[string]int),
 		activeModel:         c.Model,
 		activeAPIBase:       c.APIBase,
@@ -1099,6 +1107,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		Status:       collab.StatusOnline,
 	})
 	a.collabMgr = collab.NewDelegateManager(a.collabReg, nil)
+	a.collabMgr.SetTaskStore(taskStore)
 	if a.proactiveRuntime != nil {
 		if err := a.proactiveRuntime.Start(context.Background()); err != nil {
 			fmt.Printf("[proactive] start failed: %v\n", err)
@@ -3108,6 +3117,13 @@ func (a *Agent) ConnectMCPServer(name, url, apiKey string) {
 // Sessions 返回会话管理器
 func (a *Agent) Sessions() *session.Manager {
 	return a.sessions
+}
+
+func (a *Agent) TaskStore() taskstore.Store {
+	if a == nil {
+		return nil
+	}
+	return a.taskStore
 }
 
 // Config 返回配置管理器

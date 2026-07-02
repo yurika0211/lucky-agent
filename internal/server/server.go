@@ -248,6 +248,9 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		// 默认处理器：调用 Agent Chat
 		return a.Chat(ctx, task.Input)
 	}))
+	if a != nil && a.TaskStore() != nil {
+		delegateManager.SetTaskStore(a.TaskStore())
+	}
 
 	// v0.24.0: Workflow Engine
 	workflowExecutor := workflow.NewDefaultExecutor()

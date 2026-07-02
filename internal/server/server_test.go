@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/collab"
 	"github.com/yurika0211/luckyagent/internal/config"
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
@@ -80,6 +83,28 @@ func TestNew(t *testing.T) {
 	if s.rateLimiter == nil {
 		t.Error("rate limiter should not be nil")
 	}
+	if a.TaskStore() == nil {
+		t.Fatal("agent task store should be initialized")
+	}
+	if err := s.collabRegistry.Register(&collab.AgentProfile{ID: "agent-test", Name: "Agent Test"}); err != nil {
+		t.Fatalf("register collab agent: %v", err)
+	}
+	task, err := s.delegateManager.Delegate(context.Background(), collab.ModeParallel, "test unified store", "input", []string{"agent-test"}, time.Second)
+	if err != nil {
+		t.Fatalf("delegate collab task: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		record, ok, err := a.TaskStore().Get(task.ID)
+		if err != nil {
+			t.Fatalf("get task store record: %v", err)
+		}
+		if ok && record.Status == taskstore.StatusCompleted {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task store record: %s", task.ID)
 }
 
 func TestDefaultServerConfig(t *testing.T) {
