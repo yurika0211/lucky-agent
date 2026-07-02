@@ -464,6 +464,7 @@ func TestHandleTasksAPI(t *testing.T) {
 		TaskID:  record.ID,
 		Status:  taskstore.StatusCompleted,
 		Message: "done",
+		Files:   []string{"internal/server/task_handlers.go"},
 	}); err != nil {
 		t.Fatalf("append event: %v", err)
 	}
@@ -511,6 +512,20 @@ func TestHandleTasksAPI(t *testing.T) {
 	}
 	if trace["planner"] != "test" {
 		t.Fatalf("unexpected trace: %+v", trace)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/observation", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 observation, got %d: %s", w.Code, w.Body.String())
+	}
+	var obs map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&obs); err != nil {
+		t.Fatalf("decode observation: %v", err)
+	}
+	if obs["recommended_next"] != "verify" {
+		t.Fatalf("expected verify recommendation, got %+v", obs)
 	}
 }
 

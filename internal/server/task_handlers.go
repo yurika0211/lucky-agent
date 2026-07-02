@@ -102,6 +102,26 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.sendJSON(w, http.StatusOK, payload)
+	case "observation":
+		if r.Method != http.MethodGet {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		record, ok, err := store.Get(taskID)
+		if err != nil {
+			s.sendError(w, "get task failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !ok {
+			s.sendError(w, "task not found", http.StatusNotFound, taskID)
+			return
+		}
+		events, err := store.Events(taskID)
+		if err != nil {
+			s.sendError(w, "get task events failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusOK, taskstore.ReduceObservation(record, events))
 	default:
 		s.sendError(w, "not found", http.StatusNotFound, "")
 	}
