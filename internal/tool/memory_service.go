@@ -273,7 +273,7 @@ func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {
 	if mode == "recent" {
 		limitDefault = defaultRecallRecentLimit
 	}
-	limit, err := boundedIntArg(args["limit"], limitDefault, 1, maxRecallLimit, "limit")
+	limit, err := boundedMemoryIntArg(args["limit"], limitDefault, 1, maxRecallLimit, "limit")
 	if err != nil {
 		return "", err
 	}
@@ -298,7 +298,7 @@ func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {
 	} else if ok {
 		asOf = parsed
 	}
-	graphDepth, err := boundedIntArg(args["graph_depth"], defaultRecallGraphDepth, 0, maxRecallGraphDepth, "graph_depth")
+	graphDepth, err := boundedMemoryIntArg(args["graph_depth"], defaultRecallGraphDepth, 0, maxRecallGraphDepth, "graph_depth")
 	if err != nil {
 		return "", err
 	}
@@ -579,7 +579,7 @@ func numberArg(v any) (float64, bool) {
 	}
 }
 
-func boundedIntArg(v any, defaultValue, minValue, maxValue int, name string) (int, error) {
+func boundedMemoryIntArg(v any, defaultValue, minValue, maxValue int, name string) (int, error) {
 	value := defaultValue
 	if raw, ok := numberArg(v); ok {
 		value = int(raw)
