@@ -24,6 +24,10 @@ const (
 	maxImageGenerateInputs           = 8
 	maxImageGenerateInputBytes int64 = 20 << 20
 	maxImageGenerateTotalBytes int64 = 50 << 20
+
+	maxTTSInputChars = 12000
+	minTTSSpeed      = 0.25
+	maxTTSSpeed      = 4.0
 )
 
 // ImageGenerationDefaults captures configurable defaults for the image_generate tool.
@@ -1105,21 +1109,69 @@ func TextToSpeechTool(synthesizer multimodal.SpeechSynthesizer, defaults TTSDefa
 			"output_path":     {Type: "string", Description: "Optional destination file path for the generated audio. Must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
 			"output_dir":      {Type: "string", Description: "Optional destination directory. Defaults to ~/.luckyagent/workspace/generated-audio. Explicit values must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
 			"filename_prefix": {Type: "string", Description: "Optional output filename prefix when output_dir is used.", Required: false},
+			"overwrite":       {Type: "boolean", Description: "Allow replacing an existing output file. Defaults to false.", Required: false},
+			"dry_run":         {Type: "boolean", Description: "Return the synthesis plan without calling the provider or writing files.", Required: false},
+			"allow_custom_format": {
+				Type:        "boolean",
+				Description: "Allow provider-specific audio formats outside the built-in allowlist.",
+				Required:    false,
+			},
 		},
 		Handler: handleTextToSpeech(synthesizer, defaults),
 	}
 }
 
+type speechSynthesisOptions struct {
+	Text              string
+	Model             string
+	Voice             string
+	Format            string
+	Speed             float64
+	OutputPath        string
+	OutputDir         string
+	FilenamePrefix    string
+	Overwrite         bool
+	DryRun            bool
+	AllowCustomFormat bool
+	BaseDir           string
+}
+
+type speechSynthesisPlan struct {
+	Provider     string  `json:"provider,omitempty"`
+	Model        string  `json:"model,omitempty"`
+	Voice        string  `json:"voice,omitempty"`
+	Format       string  `json:"format"`
+	Speed        float64 `json:"speed"`
+	TextChars    int     `json:"text_chars"`
+	OutputTarget string  `json:"output_target"`
+	Overwrite    bool    `json:"overwrite"`
+	DryRun       bool    `json:"dry_run"`
+}
+
 func handleTextToSpeech(synthesizer multimodal.SpeechSynthesizer, defaults TTSDefaults) func(args map[string]any) (string, error) {
 	return func(args map[string]any) (string, error) {
-		if synthesizer == nil {
-			return "", fmt.Errorf("text-to-speech is not configured")
-		}
-		req, outputPath, outputDir, filenamePrefix, baseDir, err := buildSpeechSynthesisRequest(args, defaults)
+		opts, err := parseSpeechSynthesisOptions(args, defaults)
 		if err != nil {
 			return "", err
 		}
-
+		providerName := ""
+		if synthesizer != nil {
+			providerName = synthesizer.Name()
+		}
+		plan, err := buildSpeechSynthesisPlan(opts, providerName)
+		if err != nil {
+			return "", err
+		}
+		if opts.DryRun {
+			return prettyStructuredValue(plan)
+		}
+		if synthesizer == nil {
+			return "", fmt.Errorf("text-to-speech is not configured")
+		}
+		if err := validateSpeechOutputConflicts(opts); err != nil {
+			return "", err
+		}
+		req := buildSpeechSynthesisRequest(opts)
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 
@@ -1131,7 +1183,7 @@ func handleTextToSpeech(synthesizer multimodal.SpeechSynthesizer, defaults TTSDe
 			return "", fmt.Errorf("text-to-speech returned no audio")
 		}
 
-		savedPath, err := saveSynthesizedAudio(result, outputPath, outputDir, filenamePrefix, baseDir)
+		savedPath, err := saveSynthesizedAudio(result, opts)
 		if err != nil {
 			return "", err
 		}
@@ -1153,50 +1205,122 @@ func handleTextToSpeech(synthesizer multimodal.SpeechSynthesizer, defaults TTSDe
 	}
 }
 
-func buildSpeechSynthesisRequest(args map[string]any, defaults TTSDefaults) (*multimodal.SpeechSynthesisRequest, string, string, string, string, error) {
+func parseSpeechSynthesisOptions(args map[string]any, defaults TTSDefaults) (speechSynthesisOptions, error) {
 	text, _ := args["text"].(string)
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return nil, "", "", "", "", fmt.Errorf("text is required")
+		return speechSynthesisOptions{}, fmt.Errorf("text is required")
+	}
+	if len([]rune(text)) > maxTTSInputChars {
+		return speechSynthesisOptions{}, fmt.Errorf("text exceeds %d character limit; split it into smaller requests", maxTTSInputChars)
 	}
 
 	outputPath, _ := args["output_path"].(string)
 	outputDir, _ := args["output_dir"].(string)
 	filenamePrefix, _ := args["filename_prefix"].(string)
 	baseDir, _ := args["_cwd"].(string)
-
-	req := &multimodal.SpeechSynthesisRequest{
-		Text:   text,
-		Model:  firstNonEmptyString(asString(args["model"]), defaults.Model),
-		Voice:  firstNonEmptyString(asString(args["voice"]), defaults.Voice),
-		Format: normalizeTTSFormat(firstNonEmptyString(asString(args["format"]), defaults.Format)),
-		Speed:  speechSpeedArg(args, defaults.Speed),
+	outputPath = strings.TrimSpace(outputPath)
+	outputDir = strings.TrimSpace(outputDir)
+	filenamePrefix = strings.TrimSpace(filenamePrefix)
+	baseDir = strings.TrimSpace(baseDir)
+	if filenamePrefix != "" {
+		if err := validateFilenamePrefix(filenamePrefix, "filename_prefix"); err != nil {
+			return speechSynthesisOptions{}, err
+		}
 	}
-	return req, strings.TrimSpace(outputPath), strings.TrimSpace(outputDir), strings.TrimSpace(filenamePrefix), strings.TrimSpace(baseDir), nil
+
+	model := firstNonEmptyString(asString(args["model"]), defaults.Model)
+	voice := firstNonEmptyString(asString(args["voice"]), defaults.Voice)
+	if err := validateProviderIDString("model", model); err != nil {
+		return speechSynthesisOptions{}, err
+	}
+	if err := validateProviderIDString("voice", voice); err != nil {
+		return speechSynthesisOptions{}, err
+	}
+	allowCustomFormat := mediaBoolArg(args, "allow_custom_format", false)
+	format, err := validateTTSFormat(firstNonEmptyString(asString(args["format"]), defaults.Format), allowCustomFormat)
+	if err != nil {
+		return speechSynthesisOptions{}, err
+	}
+	speed, err := speechSpeedArg(args, defaults.Speed)
+	if err != nil {
+		return speechSynthesisOptions{}, err
+	}
+
+	return speechSynthesisOptions{
+		Text:              text,
+		Model:             model,
+		Voice:             voice,
+		Format:            format,
+		Speed:             speed,
+		OutputPath:        outputPath,
+		OutputDir:         outputDir,
+		FilenamePrefix:    filenamePrefix,
+		Overwrite:         mediaBoolArg(args, "overwrite", false),
+		DryRun:            mediaBoolArg(args, "dry_run", false),
+		AllowCustomFormat: allowCustomFormat,
+		BaseDir:           baseDir,
+	}, nil
 }
 
-func saveSynthesizedAudio(result *multimodal.SpeechSynthesisResult, outputPath, outputDir, filenamePrefix, baseDir string) (string, error) {
+func buildSpeechSynthesisRequest(opts speechSynthesisOptions) *multimodal.SpeechSynthesisRequest {
+	return &multimodal.SpeechSynthesisRequest{
+		Text:   opts.Text,
+		Model:  opts.Model,
+		Voice:  opts.Voice,
+		Format: opts.Format,
+		Speed:  opts.Speed,
+	}
+}
+
+func buildSpeechSynthesisPlan(opts speechSynthesisOptions, providerName string) (speechSynthesisPlan, error) {
+	target, err := plannedSpeechOutputTarget(opts)
+	if err != nil {
+		return speechSynthesisPlan{}, err
+	}
+	return speechSynthesisPlan{
+		Provider:     providerName,
+		Model:        opts.Model,
+		Voice:        opts.Voice,
+		Format:       opts.Format,
+		Speed:        opts.Speed,
+		TextChars:    len([]rune(opts.Text)),
+		OutputTarget: target,
+		Overwrite:    opts.Overwrite,
+		DryRun:       opts.DryRun,
+	}, nil
+}
+
+func saveSynthesizedAudio(result *multimodal.SpeechSynthesisResult, opts speechSynthesisOptions) (string, error) {
 	if result == nil || len(result.Audio) == 0 {
 		return "", fmt.Errorf("no synthesized audio to save")
 	}
+	filenamePrefix := opts.FilenamePrefix
 	if filenamePrefix == "" {
 		filenamePrefix = fmt.Sprintf("tts-audio-%d", time.Now().UnixNano())
 	}
-	if outputPath != "" {
-		resolved, err := validateResolvedOutputPath(baseDir, outputPath)
+	if opts.OutputPath != "" {
+		resolved, err := validateResolvedOutputPath(opts.BaseDir, opts.OutputPath)
 		if err != nil {
 			return "", err
 		}
 		if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 			return "", fmt.Errorf("create output directory: %w", err)
 		}
-		if err := os.WriteFile(resolved, result.Audio, 0o644); err != nil {
+		if !opts.Overwrite {
+			if _, err := os.Stat(resolved); err == nil {
+				return "", fmt.Errorf("output_path already exists: %s", resolved)
+			} else if !os.IsNotExist(err) {
+				return "", fmt.Errorf("stat output_path: %w", err)
+			}
+		}
+		if err := mediaWriteFileAtomic(resolved, result.Audio, 0o644); err != nil {
 			return "", fmt.Errorf("write output file: %w", err)
 		}
 		return resolved, nil
 	}
 
-	dir, err := resolveGeneratedAudioDir(baseDir, outputDir)
+	dir, err := resolveGeneratedAudioDir(opts.BaseDir, opts.OutputDir)
 	if err != nil {
 		return "", err
 	}
@@ -1210,10 +1334,51 @@ func saveSynthesizedAudio(result *multimodal.SpeechSynthesisResult, outputPath, 
 	if err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(resolved, result.Audio, 0o644); err != nil {
+	if !opts.Overwrite {
+		if _, err := os.Stat(resolved); err == nil {
+			return "", fmt.Errorf("output file already exists: %s", resolved)
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("stat output file: %w", err)
+		}
+	}
+	if err := mediaWriteFileAtomic(resolved, result.Audio, 0o644); err != nil {
 		return "", fmt.Errorf("write synthesized audio: %w", err)
 	}
 	return resolved, nil
+}
+
+func plannedSpeechOutputTarget(opts speechSynthesisOptions) (string, error) {
+	if opts.OutputPath != "" {
+		return validateResolvedOutputPath(opts.BaseDir, opts.OutputPath)
+	}
+	dir, err := resolveGeneratedAudioDir(opts.BaseDir, opts.OutputDir)
+	if err != nil {
+		return "", err
+	}
+	filenamePrefix := opts.FilenamePrefix
+	if filenamePrefix == "" {
+		filenamePrefix = fmt.Sprintf("tts-audio-%d", time.Now().UnixNano())
+	}
+	return resolveWorkspacePath(filepath.Join(dir, fmt.Sprintf("%s%s", filenamePrefix, extensionForSpeechFormat(opts.Format))))
+}
+
+func validateSpeechOutputConflicts(opts speechSynthesisOptions) error {
+	if opts.Overwrite {
+		return nil
+	}
+	target, err := plannedSpeechOutputTarget(opts)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(target); err == nil {
+		if opts.OutputPath != "" {
+			return fmt.Errorf("output_path already exists: %s", target)
+		}
+		return fmt.Errorf("output file already exists: %s", target)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat output target: %w", err)
+	}
+	return nil
 }
 
 func resolveGeneratedAudioDir(baseDir, outputDir string) (string, error) {
@@ -1224,23 +1389,23 @@ func resolveGeneratedAudioDir(baseDir, outputDir string) (string, error) {
 	return resolveWorkspacePath(dir)
 }
 
-func speechSpeedArg(args map[string]any, def float64) float64 {
+func speechSpeedArg(args map[string]any, def float64) (float64, error) {
 	if def <= 0 {
 		def = 1.0
 	}
+	speed := def
 	if raw, ok := args["speed"]; ok {
 		switch v := raw.(type) {
 		case float64:
-			if v > 0 {
-				return v
-			}
+			speed = v
 		case int:
-			if v > 0 {
-				return float64(v)
-			}
+			speed = float64(v)
 		}
 	}
-	return def
+	if speed < minTTSSpeed || speed > maxTTSSpeed {
+		return 0, fmt.Errorf("speed must be between %.2f and %.1f", minTTSSpeed, maxTTSSpeed)
+	}
+	return speed, nil
 }
 
 func extensionForSpeechFormat(value string) string {
@@ -1266,7 +1431,7 @@ func normalizeTTSFormat(value string) string {
 		return "mp3"
 	case "wav", "audio/wav":
 		return "wav"
-	case "opus", "audio/opus", "ogg", "audio/ogg":
+	case "opus", "audio/opus":
 		return "opus"
 	case "aac", "audio/aac":
 		return "aac"
@@ -1277,6 +1442,35 @@ func normalizeTTSFormat(value string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}
+}
+
+func validateTTSFormat(value string, allowCustom bool) (string, error) {
+	format := normalizeTTSFormat(value)
+	switch format {
+	case "mp3", "wav", "opus", "aac", "flac", "pcm":
+		return format, nil
+	default:
+		if allowCustom && format != "" {
+			return format, nil
+		}
+		return "", fmt.Errorf("unsupported audio format %q; supported formats: mp3, wav, opus, aac, flac, pcm", value)
+	}
+}
+
+func validateProviderIDString(param, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if len([]rune(value)) > 128 {
+		return fmt.Errorf("%s exceeds 128 character limit", param)
+	}
+	for _, r := range value {
+		if r < 32 || r == 127 {
+			return fmt.Errorf("%s must not contain control characters", param)
+		}
+	}
+	return nil
 }
 
 func speechFormatFromMimeType(mimeType string) string {

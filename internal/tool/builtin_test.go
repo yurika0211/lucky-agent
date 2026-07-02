@@ -31,6 +31,7 @@ type fakeImageGenerator struct {
 type fakeSpeechSynthesizer struct {
 	lastReq multimodal.SpeechSynthesisRequest
 	result  *multimodal.SpeechSynthesisResult
+	calls   int
 }
 
 func testLuckyAgentWorkspace(t *testing.T) string {
@@ -57,6 +58,7 @@ func (g *fakeImageGenerator) GenerateImage(ctx context.Context, req multimodal.I
 }
 func (s *fakeSpeechSynthesizer) Name() string { return "fake-speech-synthesizer" }
 func (s *fakeSpeechSynthesizer) SynthesizeSpeech(ctx context.Context, req multimodal.SpeechSynthesisRequest) (*multimodal.SpeechSynthesisResult, error) {
+	s.calls++
 	s.lastReq = req
 	if s.result != nil {
 		return s.result, nil
@@ -1131,6 +1133,173 @@ func TestTextToSpeechToolRejectsOutputPathOutsideWorkspace(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "outside workspace") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTextToSpeechToolDryRunReturnsPlanWithoutCallingProvider(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{
+		Model:  "gpt-4o-mini-tts",
+		Voice:  "alloy",
+		Format: "wav",
+		Speed:  1.25,
+	}))
+
+	result, err := r.Call("text_to_speech", map[string]any{
+		"text":        "hello dry run",
+		"dry_run":     true,
+		"output_path": filepath.Join(workspace, "audio", "hello.wav"),
+	})
+	if err != nil {
+		t.Fatalf("text_to_speech dry_run: %v", err)
+	}
+	if synth.calls != 0 {
+		t.Fatalf("expected provider not to be called, got %d calls", synth.calls)
+	}
+	var payload struct {
+		DryRun       bool    `json:"dry_run"`
+		Provider     string  `json:"provider"`
+		Model        string  `json:"model"`
+		Voice        string  `json:"voice"`
+		Format       string  `json:"format"`
+		Speed        float64 `json:"speed"`
+		TextChars    int     `json:"text_chars"`
+		OutputTarget string  `json:"output_target"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal dry_run payload: %v", err)
+	}
+	if !payload.DryRun || payload.Provider != "fake-speech-synthesizer" || payload.Format != "wav" || payload.TextChars != len("hello dry run") {
+		t.Fatalf("unexpected dry_run payload: %+v", payload)
+	}
+	if payload.OutputTarget == "" {
+		t.Fatalf("expected output target in dry_run payload: %+v", payload)
+	}
+}
+
+func TestTextToSpeechToolRejectsLongText(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text": strings.Repeat("x", maxTTSInputChars+1),
+	})
+	if err == nil {
+		t.Fatal("expected long text to be rejected")
+	}
+	if !strings.Contains(err.Error(), "text exceeds") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTextToSpeechToolValidatesSpeedAndFormat(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text":   "bad speed",
+		"speed":  9.0,
+		"format": "mp3",
+	})
+	if err == nil {
+		t.Fatal("expected speed to be rejected")
+	}
+	if !strings.Contains(err.Error(), "speed must be between") {
+		t.Fatalf("unexpected speed error: %v", err)
+	}
+
+	_, err = r.Call("text_to_speech", map[string]any{
+		"text":   "bad format",
+		"format": "ogg",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported format to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported audio format") {
+		t.Fatalf("unexpected format error: %v", err)
+	}
+
+	_, err = r.Call("text_to_speech", map[string]any{
+		"text":                "custom format",
+		"format":              "ogg",
+		"allow_custom_format": true,
+		"dry_run":             true,
+	})
+	if err != nil {
+		t.Fatalf("expected custom format with allow_custom_format to pass: %v", err)
+	}
+}
+
+func TestTextToSpeechToolRejectsFilenamePrefixEscapingWorkspace(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text":            "bad prefix",
+		"filename_prefix": "../audio",
+	})
+	if err == nil {
+		t.Fatal("expected invalid filename_prefix to be rejected")
+	}
+	if !strings.Contains(err.Error(), "filename_prefix") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTextToSpeechToolRejectsExistingOutputUnlessOverwrite(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	outputPath := filepath.Join(workspace, "generated-audio", "existing.mp3")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		t.Fatalf("create output dir: %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	synth := &fakeSpeechSynthesizer{
+		result: &multimodal.SpeechSynthesisResult{
+			Provider: "fake-speech-synthesizer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Audio:    []byte("new"),
+			MimeType: "audio/mpeg",
+		},
+	}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text":        "existing output",
+		"output_path": outputPath,
+	})
+	if err == nil {
+		t.Fatal("expected existing output_path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if synth.calls != 0 {
+		t.Fatalf("expected conflict before provider call, got %d calls", synth.calls)
+	}
+
+	_, err = r.Call("text_to_speech", map[string]any{
+		"text":        "overwrite output",
+		"output_path": outputPath,
+		"overwrite":   true,
+	})
+	if err != nil {
+		t.Fatalf("text_to_speech overwrite: %v", err)
+	}
+	written, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(written) != "new" {
+		t.Fatalf("expected overwritten bytes, got %q", string(written))
 	}
 }
 

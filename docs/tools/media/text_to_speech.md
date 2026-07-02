@@ -37,10 +37,13 @@ ParallelSafe: false
 | `model` | 否 | 配置默认值 | TTS 模型覆盖。 |
 | `voice` | 否 | 配置默认值 | 声音名称，例如 `alloy`、`nova`、`shimmer` 或 provider 自定义 voice ID。 |
 | `format` | 否 | 配置默认值 | 音频格式，例如 `mp3`、`wav`、`opus`、`aac`、`flac`。 |
-| `speed` | 否 | 配置默认值或 `1.0` | 播放速度倍率，必须大于 0 才会生效。 |
+| `speed` | 否 | 配置默认值或 `1.0` | 播放速度倍率，范围 `0.25` 到 `4.0`。 |
 | `output_path` | 否 | 无 | 目标文件路径，必须在 `~/.luckyagent/workspace` 下。 |
 | `output_dir` | 否 | `~/.luckyagent/workspace/generated-audio` | 输出目录，必须在 workspace 下。 |
 | `filename_prefix` | 否 | `tts-audio-<unixnano>` | 使用 `output_dir` 时的文件名前缀。 |
+| `overwrite` | 否 | `false` | 是否允许覆盖已有输出文件。 |
+| `dry_run` | 否 | `false` | 只返回合成计划，不调用 provider，不写文件。 |
+| `allow_custom_format` | 否 | `false` | 允许 provider 自定义音频格式。 |
 
 示例参数：
 
@@ -56,16 +59,17 @@ ParallelSafe: false
 
 `text_to_speech` 的执行过程是：
 
-1. 检查 speech synthesizer 是否已配置。
-2. 读取并校验必填参数 `text`。
-3. 根据调用参数和配置默认值构造 `SpeechSynthesisRequest`。
-4. 规范化音频格式。
-5. 解析速度参数。
-6. 创建 2 分钟超时的 context。
-7. 调用 `synthesizer.SynthesizeSpeech`。
-8. 检查返回音频是否为空。
-9. 将音频写入 workspace。
-10. 返回 JSON 格式的合成结果摘要。
+1. 读取并校验必填参数 `text`，最长 12000 字符。
+2. 校验 `model`、`voice`、`format`、`speed`、输出路径和文件名前缀。
+3. 根据调用参数和配置默认值构造合成计划。
+4. 如果 `dry_run=true`，返回计划，不调用 provider，也不写文件。
+5. 检查 speech synthesizer 是否已配置。
+6. 在调用 provider 前检查输出文件冲突。
+7. 创建 2 分钟超时的 context。
+8. 调用 `synthesizer.SynthesizeSpeech`。
+9. 检查返回音频是否为空。
+10. 将音频原子写入 workspace。
+11. 返回 JSON 格式的合成结果摘要。
 
 如果 synthesizer 没有配置，返回：
 
@@ -94,11 +98,19 @@ text-to-speech returned no audio
 | 空字符串 | `mp3` |
 | `mp3`, `audio/mpeg` | `mp3` |
 | `wav`, `audio/wav` | `wav` |
-| `opus`, `audio/opus`, `ogg`, `audio/ogg` | `opus` |
+| `opus`, `audio/opus` | `opus` |
 | `aac`, `audio/aac` | `aac` |
 | `flac`, `audio/flac` | `flac` |
 | `pcm`, `pcm16`, `audio/pcm` | `pcm` |
-| 其他 | 转小写后原样传给 provider |
+| 其他 | 默认返回错误 |
+
+未知格式默认拒绝。确实需要 provider 扩展格式时，传入：
+
+```json
+{
+  "allow_custom_format": true
+}
+```
 
 保存文件时根据 provider 返回的 MIME 选择扩展名：
 
@@ -115,7 +127,7 @@ text-to-speech returned no audio
 
 `speed` 支持 `float64` 和 `int` 类型。
 
-只有大于 0 时才会生效：
+允许范围是 `0.25 <= speed <= 4.0`：
 
 ```json
 {
@@ -123,7 +135,7 @@ text-to-speech returned no audio
 }
 ```
 
-如果没有提供，或提供值小于等于 0，会使用配置默认值。配置默认值也小于等于 0 时，回退为：
+如果没有提供，会使用配置默认值。配置默认值小于等于 0 时，回退为：
 
 ```text
 1.0
@@ -171,6 +183,15 @@ tts-audio-<time.Now().UnixNano()>
 ```
 
 `output_path` 和 `output_dir` 都会通过 `resolveWorkspacePath` 校验。绝对路径或相对路径最终都不能逃出 `~/.luckyagent/workspace`。
+
+覆盖策略：
+
+- 默认 `overwrite=false`。
+- 目标文件已存在时会在调用 provider 前报错。
+- 只有 `overwrite=true` 才会覆盖已有文件。
+- 写文件使用临时文件加 rename 的原子写入流程。
+
+`filename_prefix` 必须是文件名片段，不能包含路径分隔符、`..` 或控制字符。
 
 ## 配置
 
