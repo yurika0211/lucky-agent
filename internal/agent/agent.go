@@ -1523,8 +1523,10 @@ type CompactSessionResult struct {
 	Summary             string
 	PreTokenEstimate    int
 	PostTokenEstimate   int
+	SummaryTokens       int
 	DroppedMessages     int
 	RestoredAttachments int
+	SummarySource       string
 }
 
 // CompactSession summarizes raw session history since the latest compact
@@ -1569,14 +1571,17 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 	attachments := buildPostCompactAttachments(sess, raw, est)
 	boundaryID := fmt.Sprintf("compact-%d", time.Now().UnixNano())
 	meta := session.CompactMetadata{
-		ID:                boundaryID,
-		Trigger:           trigger,
-		Summary:           summary,
-		CreatedAt:         time.Now(),
-		PreTokenEstimate:  preTokens,
-		PostTokenEstimate: postTokens,
-		DroppedMessages:   len(raw),
-		Attachments:       attachments,
+		ID:                  boundaryID,
+		Trigger:             trigger,
+		Summary:             summary,
+		CreatedAt:           time.Now(),
+		PreTokenEstimate:    preTokens,
+		PostTokenEstimate:   postTokens,
+		SummaryTokens:       postTokens,
+		DroppedMessages:     len(raw),
+		RestoredAttachments: len(attachments),
+		SummarySource:       "llm",
+		Attachments:         attachments,
 	}
 	sess.AddCompactBoundary(meta)
 	if err := sess.Save(); err != nil {
@@ -1588,8 +1593,10 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 		Summary:             summary,
 		PreTokenEstimate:    preTokens,
 		PostTokenEstimate:   postTokens,
+		SummaryTokens:       postTokens,
 		DroppedMessages:     len(raw),
 		RestoredAttachments: len(attachments),
+		SummarySource:       "llm",
 	}, nil
 }
 

@@ -92,13 +92,16 @@ func TestCompactBoundarySplitsPriorRawHistory(t *testing.T) {
 	s.AddMessage("user", "old raw request")
 	s.AddMessage("assistant", "old raw answer")
 	s.AddCompactBoundary(CompactMetadata{
-		ID:                "compact-test",
-		Trigger:           "manual",
-		Summary:           "summary replaces old raw request",
-		CreatedAt:         time.Now(),
-		PreTokenEstimate:  100,
-		PostTokenEstimate: 10,
-		DroppedMessages:   2,
+		ID:                  "compact-test",
+		Trigger:             "manual",
+		Summary:             "summary replaces old raw request",
+		CreatedAt:           time.Now(),
+		PreTokenEstimate:    100,
+		PostTokenEstimate:   10,
+		SummaryTokens:       10,
+		DroppedMessages:     2,
+		RestoredAttachments: 1,
+		SummarySource:       "llm",
 	})
 	s.AddMessage("user", "new request")
 
@@ -114,6 +117,13 @@ func TestCompactBoundarySplitsPriorRawHistory(t *testing.T) {
 	}
 	if len(after) != 1 || after[0].Content != "new request" {
 		t.Fatalf("unexpected messages after boundary: %+v", after)
+	}
+	trace, ok := s.LatestCompactTrace()
+	if !ok {
+		t.Fatal("expected latest compact trace")
+	}
+	if trace.BoundaryID != "compact-test" || trace.SummarySource != "llm" || trace.RestoredAttachments != 1 {
+		t.Fatalf("unexpected compact trace: %+v", trace)
 	}
 }
 

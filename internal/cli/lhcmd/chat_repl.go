@@ -1445,6 +1445,8 @@ func handleSessionCommand(arg string, a *agent.Agent, mgr *session.Manager, curr
 		fmt.Printf("   boundary: %s\n", result.BoundaryID)
 		fmt.Printf("   dropped messages: %d\n", result.DroppedMessages)
 		fmt.Printf("   restored attachments: %d\n", result.RestoredAttachments)
+		fmt.Printf("   summary source: %s\n", result.SummarySource)
+		fmt.Printf("   summary tokens: %d\n", result.SummaryTokens)
 		fmt.Printf("   tokens: %d -> %d\n", result.PreTokenEstimate, result.PostTokenEstimate)
 
 	case "delete":

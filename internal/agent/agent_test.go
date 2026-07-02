@@ -1479,7 +1479,7 @@ func TestCompactSessionAcceptsValidatedSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompactSession: %v", err)
 	}
-	if result.BoundaryID == "" || result.DroppedMessages != 2 || result.RestoredAttachments == 0 {
+	if result.BoundaryID == "" || result.DroppedMessages != 2 || result.RestoredAttachments == 0 || result.SummarySource != "llm" || result.SummaryTokens == 0 {
 		t.Fatalf("unexpected compact result: %+v", result)
 	}
 	messages := sess.GetMessages()
@@ -1490,6 +1490,9 @@ func TestCompactSessionAcceptsValidatedSummary(t *testing.T) {
 	meta, ok := session.ParseCompactMetadata(last)
 	if !ok || len(meta.Attachments) == 0 {
 		t.Fatalf("expected compact metadata attachments, got ok=%t meta=%+v", ok, meta)
+	}
+	if meta.SummarySource != "llm" || meta.SummaryTokens == 0 || meta.RestoredAttachments == 0 {
+		t.Fatalf("expected compact trace metadata, got %+v", meta)
 	}
 }
 

@@ -18,14 +18,17 @@ const CompactBoundaryName = "compact_boundary"
 
 // CompactMetadata records a session compaction boundary.
 type CompactMetadata struct {
-	ID                string              `json:"id"`
-	Trigger           string              `json:"trigger"`
-	Summary           string              `json:"summary"`
-	CreatedAt         time.Time           `json:"created_at"`
-	PreTokenEstimate  int                 `json:"pre_token_estimate,omitempty"`
-	PostTokenEstimate int                 `json:"post_token_estimate,omitempty"`
-	DroppedMessages   int                 `json:"dropped_messages,omitempty"`
-	Attachments       []CompactAttachment `json:"attachments,omitempty"`
+	ID                  string              `json:"id"`
+	Trigger             string              `json:"trigger"`
+	Summary             string              `json:"summary"`
+	CreatedAt           time.Time           `json:"created_at"`
+	PreTokenEstimate    int                 `json:"pre_token_estimate,omitempty"`
+	PostTokenEstimate   int                 `json:"post_token_estimate,omitempty"`
+	SummaryTokens       int                 `json:"summary_tokens,omitempty"`
+	DroppedMessages     int                 `json:"dropped_messages,omitempty"`
+	RestoredAttachments int                 `json:"restored_attachments,omitempty"`
+	SummarySource       string              `json:"summary_source,omitempty"`
+	Attachments         []CompactAttachment `json:"attachments,omitempty"`
 }
 
 type CompactAttachment struct {
@@ -34,6 +37,18 @@ type CompactAttachment struct {
 	Content  string `json:"content"`
 	Priority int    `json:"priority,omitempty"`
 	Tokens   int    `json:"tokens,omitempty"`
+}
+
+type CompactTrace struct {
+	BoundaryID          string    `json:"boundary_id"`
+	Trigger             string    `json:"trigger"`
+	CreatedAt           time.Time `json:"created_at"`
+	PreTokenEstimate    int       `json:"pre_token_estimate,omitempty"`
+	PostTokenEstimate   int       `json:"post_token_estimate,omitempty"`
+	SummaryTokens       int       `json:"summary_tokens,omitempty"`
+	DroppedMessages     int       `json:"dropped_messages,omitempty"`
+	RestoredAttachments int       `json:"restored_attachments,omitempty"`
+	SummarySource       string    `json:"summary_source,omitempty"`
 }
 
 // Session 代表一次对话会话
@@ -252,6 +267,29 @@ func MessagesAfterLastCompactBoundary(messages []provider.Message) ([]provider.M
 	meta, _ := ParseCompactMetadata(messages[last])
 	after := messages[last+1:]
 	return after, meta, last, true
+}
+
+func (s *Session) LatestCompactTrace() (CompactTrace, bool) {
+	messages := s.GetMessages()
+	_, meta, _, ok := MessagesAfterLastCompactBoundary(messages)
+	if !ok {
+		return CompactTrace{}, false
+	}
+	return CompactTraceFromMetadata(meta), true
+}
+
+func CompactTraceFromMetadata(meta CompactMetadata) CompactTrace {
+	return CompactTrace{
+		BoundaryID:          meta.ID,
+		Trigger:             meta.Trigger,
+		CreatedAt:           meta.CreatedAt,
+		PreTokenEstimate:    meta.PreTokenEstimate,
+		PostTokenEstimate:   meta.PostTokenEstimate,
+		SummaryTokens:       meta.SummaryTokens,
+		DroppedMessages:     meta.DroppedMessages,
+		RestoredAttachments: meta.RestoredAttachments,
+		SummarySource:       meta.SummarySource,
+	}
 }
 
 // GetMessages 获取消息（懒加载 + 滑动窗口）

@@ -1062,8 +1062,14 @@ func (p *contextPlanner) compactBoundaryContext(messages []provider.Message) (pr
 	if strings.TrimSpace(meta.Trigger) != "" {
 		b.WriteString("Trigger: " + strings.TrimSpace(meta.Trigger) + "\n")
 	}
+	if strings.TrimSpace(meta.SummarySource) != "" {
+		b.WriteString("Summary source: " + strings.TrimSpace(meta.SummarySource) + "\n")
+	}
 	if dropped > 0 {
 		b.WriteString(fmt.Sprintf("Dropped raw messages: %d\n", dropped))
+	}
+	if meta.RestoredAttachments > 0 {
+		b.WriteString(fmt.Sprintf("Restored attachments: %d\n", meta.RestoredAttachments))
 	}
 	b.WriteString("\n")
 	b.WriteString(summary)
