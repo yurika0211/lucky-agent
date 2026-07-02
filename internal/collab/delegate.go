@@ -25,6 +25,8 @@ const (
 	TaskTimeout   TaskState = "timeout"
 )
 
+const runtimeConstraintMarker = "LuckyAgent runtime constraints:"
+
 // SubTask 子任务
 type SubTask struct {
 	ID          string              `json:"id"`
@@ -926,6 +928,7 @@ func (dm *DelegateManager) executeSubTask(ctx context.Context, sub *SubTask) (st
 	dm.mu.Lock()
 	sub.State = TaskRunning
 	sub.StartedAt = time.Now()
+	applyRuntimeProfile(sub)
 	dm.mu.Unlock()
 
 	// 设置超时
@@ -957,6 +960,72 @@ func (dm *DelegateManager) executeSubTask(ctx context.Context, sub *SubTask) (st
 	dm.mu.Unlock()
 
 	return result, err
+}
+
+func applyRuntimeProfile(sub *SubTask) {
+	if sub == nil {
+		return
+	}
+	runtime := sub.Runtime
+	if runtime.Timeout > 0 && (sub.Timeout <= 0 || runtime.Timeout < sub.Timeout) {
+		sub.Timeout = runtime.Timeout
+	}
+	constraints := runtimeConstraintText(runtime)
+	if constraints == "" || strings.Contains(sub.Input, runtimeConstraintMarker) {
+		return
+	}
+	sub.Input = strings.TrimSpace(sub.Input)
+	if sub.Input == "" {
+		sub.Input = constraints
+		return
+	}
+	sub.Input += "\n\n" + constraints
+}
+
+func runtimeConstraintText(runtime AgentRuntimeProfile) string {
+	if !runtimeHasConstraints(runtime) {
+		return ""
+	}
+	var lines []string
+	if strings.TrimSpace(runtime.Provider) != "" || strings.TrimSpace(runtime.Model) != "" {
+		lines = append(lines, fmt.Sprintf("- Model: provider=%s model=%s", runtime.Provider, runtime.Model))
+	}
+	if len(runtime.ToolAllowlist) > 0 {
+		lines = append(lines, "- Tool allowlist: "+strings.Join(runtime.ToolAllowlist, ", "))
+	}
+	if strings.TrimSpace(runtime.CWD) != "" {
+		lines = append(lines, "- Working directory: "+strings.TrimSpace(runtime.CWD))
+	}
+	if strings.TrimSpace(runtime.MemoryNamespace) != "" {
+		lines = append(lines, "- Memory namespace: "+strings.TrimSpace(runtime.MemoryNamespace))
+	}
+	if strings.TrimSpace(runtime.ApprovalPolicy) != "" {
+		lines = append(lines, "- Approval policy: "+strings.TrimSpace(runtime.ApprovalPolicy))
+	}
+	if runtime.MaxIterations > 0 {
+		lines = append(lines, fmt.Sprintf("- Max iterations: %d", runtime.MaxIterations))
+	}
+	if runtime.Timeout > 0 {
+		lines = append(lines, fmt.Sprintf("- Timeout: %s", runtime.Timeout))
+	}
+	if !runtime.AllowDelegate {
+		lines = append(lines, "- Recursive delegation: disabled")
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return runtimeConstraintMarker + "\n" + strings.Join(lines, "\n")
+}
+
+func runtimeHasConstraints(runtime AgentRuntimeProfile) bool {
+	return strings.TrimSpace(runtime.Provider) != "" ||
+		strings.TrimSpace(runtime.Model) != "" ||
+		len(runtime.ToolAllowlist) > 0 ||
+		strings.TrimSpace(runtime.CWD) != "" ||
+		strings.TrimSpace(runtime.MemoryNamespace) != "" ||
+		strings.TrimSpace(runtime.ApprovalPolicy) != "" ||
+		runtime.MaxIterations > 0 ||
+		runtime.Timeout > 0
 }
 
 // Stats 委派统计

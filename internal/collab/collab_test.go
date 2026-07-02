@@ -304,6 +304,50 @@ func TestDelegateManagerPassesRuntimeProfileToSubTask(t *testing.T) {
 	}
 }
 
+func TestDelegateManagerAppliesRuntimeProfileConstraints(t *testing.T) {
+	cwd := filepath.Join(t.TempDir(), "runtime-cwd")
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("expected runtime timeout deadline")
+		}
+		if remaining := time.Until(deadline); remaining > 200*time.Millisecond {
+			t.Fatalf("expected runtime timeout to constrain deadline, remaining=%s", remaining)
+		}
+		for _, want := range []string{
+			runtimeConstraintMarker,
+			"Tool allowlist: read_file, grep",
+			"Working directory: " + cwd,
+			"Memory namespace: runtime-memory",
+			"Recursive delegation: disabled",
+		} {
+			if !strings.Contains(task.Input, want) {
+				t.Fatalf("expected runtime constraint %q in input:\n%s", want, task.Input)
+			}
+		}
+		return "ok", nil
+	})
+	dm := NewDelegateManager(NewRegistry(), handler)
+	sub := &SubTask{
+		ID:    "runtime-sub",
+		Input: "original input",
+		Runtime: AgentRuntimeProfile{
+			ToolAllowlist:   []string{"read_file", "grep"},
+			CWD:             cwd,
+			MemoryNamespace: "runtime-memory",
+			Timeout:         50 * time.Millisecond,
+			AllowDelegate:   false,
+		},
+		Timeout: time.Second,
+	}
+	if _, err := dm.executeSubTask(context.Background(), sub); err != nil {
+		t.Fatalf("executeSubTask: %v", err)
+	}
+	if sub.Timeout != 50*time.Millisecond {
+		t.Fatalf("expected runtime timeout on subtask, got %s", sub.Timeout)
+	}
+}
+
 func TestDelegateManagerPolicyDeniesTooManyChildren(t *testing.T) {
 	r := NewRegistry()
 	_ = r.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"})
