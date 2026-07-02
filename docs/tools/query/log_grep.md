@@ -36,6 +36,10 @@ ParallelSafe: true
 | `before` | 否 | `2` | 每个匹配行之前返回多少行，最小 0，最大 20。 |
 | `after` | 否 | `2` | 每个匹配行之后返回多少行，最小 0，最大 20。 |
 | `max_matches` | 否 | `20` | 最多返回多少个匹配块，最小 1，最大 100。 |
+| `ignore_case` | 否 | `false` | 是否忽略大小写。 |
+| `max_scan_lines` | 否 | `1000000` | 最多扫描多少行，最大 10000000。 |
+| `max_output_bytes` | 否 | `65536` | 最大输出字节数，最大 1048576。 |
+| `include_meta` | 否 | `false` | 是否返回 JSON metadata。 |
 
 示例参数：
 
@@ -58,12 +62,12 @@ ParallelSafe: true
 4. 调用 `validatePath(path)` 做路径校验。
 5. 读取 `regex`、`before`、`after`、`max_matches`。
 6. 如果 `regex=true`，调用 `regexp.Compile(pattern)` 编译正则。
-7. 使用 `os.ReadFile(path)` 读取整个日志文件。
-8. 将 CRLF 统一替换为 LF。
-9. 逐行查找匹配。
-10. 为每个匹配行计算上下文范围。
+7. 使用 `bufio.Scanner` 流式扫描日志文件，并设置较大的单行 buffer。
+8. 将每行末尾 CR 去掉，兼容 CRLF。
+9. 逐行查找匹配，并用 ring buffer 保存 `before` 上下文。
+10. 为每个匹配行输出上下文，直到达到 `max_matches`、`max_scan_lines` 或 `max_output_bytes`。
 11. 输出带行号的上下文块。
-12. 如果没有匹配，返回 `pattern not found in <path>`。
+12. 如果没有匹配，返回正常文本 `No matches for "<pattern>" in <path>`，不是工具错误。
 
 ## 匹配模式
 
@@ -72,6 +76,8 @@ ParallelSafe: true
 ```go
 strings.Contains(line, pattern)
 ```
+
+启用 `ignore_case=true` 时，普通字符串匹配会把行和 pattern 转为小写后比较。正则模式下会在 pattern 前加 `(?i)`。
 
 启用正则时：
 
@@ -116,6 +122,28 @@ compile regex: <error>
 
 如果上下文范围重叠，工具会通过 `lastIncluded` 跳过已经输出过的行，避免重复。
 
+如果启用 `include_meta=true`，返回 JSON：
+
+```json
+{
+  "output": "> 2| error first",
+  "meta": {
+    "matched": true,
+    "matches": 1,
+    "scanned_lines": 6,
+    "max_matches_reached": false,
+    "max_scan_reached": false,
+    "output_truncated": false
+  }
+}
+```
+
+没有匹配时：
+
+```text
+No matches for "panic" in /tmp/app.log
+```
+
 ## 参数边界
 
 `before`、`after`、`max_matches` 都通过 `boundedIntArg` 限制。
@@ -125,6 +153,8 @@ compile regex: <error>
 | `before` | `2` | `0` | `20` |
 | `after` | `2` | `0` | `20` |
 | `max_matches` | `20` | `1` | `100` |
+| `max_scan_lines` | `1000000` | `1` | `10000000` |
+| `max_output_bytes` | `65536` | `1024` | `1048576` |
 
 ## 适合使用的场景
 
@@ -152,7 +182,7 @@ compile regex: <error>
 不优先使用 `log_grep` 的场景：
 
 - 只想看日志末尾，应使用 `log_tail`。
-- 需要高性能搜索超大日志，应使用 `terminal` 调用 `rg`、`grep` 或 `awk`。
+- 需要复杂批量日志分析或多文件搜索，应使用 `terminal` 调用 `rg`、`grep` 或 `awk`。
 - 需要实时搜索流式日志，应使用 `terminal`。
 - 需要结构化查询 JSON/CSV/SQLite，应使用对应查询工具。
 
@@ -160,12 +190,13 @@ compile regex: <error>
 
 `log_grep` 的主要注意点：
 
-- 会一次性读取整个文件。
-- 普通匹配大小写敏感。
+- 流式扫描文件，不会一次性读取整个日志。
+- 普通匹配默认大小写敏感，可用 `ignore_case=true`。
 - 正则使用 Go 标准库 regexp 语法。
-- 没有匹配时以 error 形式返回。
+- 没有匹配时返回正常 no-match 文本。
 - 输出最多 100 个匹配块。
 - 上下文行最多前后各 20 行。
+- 输出受 `max_output_bytes` 限制。
 
 ## 维护注意事项
 
@@ -174,6 +205,6 @@ compile regex: <error>
 - 参数表是否仍与 `LogGrepTool()` 一致。
 - 默认上下文是否仍是前后各 2 行。
 - `max_matches` 默认值和最大值是否变化。
-- 是否仍使用整文件读取。
+- 是否仍使用流式扫描。
 - 输出行号格式是否变化。
-- 没有匹配时的错误文案是否变化。
+- 没有匹配时是否仍不返回 error。

@@ -32,6 +32,9 @@ ParallelSafe: true
 | --- | --- | --- | --- |
 | `path` | 是 | 无 | 日志文件路径。 |
 | `lines` | 否 | `100` | 返回末尾多少行，最小 1，最大 500。 |
+| `max_bytes` | 否 | `65536` | 最多从文件尾部读取多少字节，最大 1048576。 |
+| `with_line_numbers` | 否 | `false` | 是否给返回行加原文件 1-based 行号。 |
+| `include_meta` | 否 | `false` | 是否返回 JSON metadata。 |
 
 示例参数：
 
@@ -50,11 +53,12 @@ ParallelSafe: true
 2. 如果 `path` 不是字符串，返回 `path is required`。
 3. 调用 `validatePath(path)` 做路径校验。
 4. 读取 `lines` 参数，并通过 `boundedIntArg(args, "lines", 100, 1, 500)` 限制范围。
-5. 使用 `os.ReadFile(path)` 读取整个日志文件。
-6. 将 CRLF 统一替换为 LF。
-7. 按 `\n` 分割行。
-8. 如果最后一行是空字符串，去掉末尾空行。
-9. 返回最后 `lines` 行。
+5. 读取 `max_bytes`、`with_line_numbers` 和 `include_meta`。
+6. 打开文件并从文件尾部按块反向读取，直到覆盖请求行数或达到 `max_bytes`。
+7. 对尾部片段做二进制 NUL 检测。
+8. 将 CRLF 统一替换为 LF。
+9. 按 `\n` 分割行并返回最后 `lines` 行。
+10. 如果 `with_line_numbers=true`，额外扫描文件统计总行数后加行号。
 
 ## 输出格式
 
@@ -65,6 +69,28 @@ ParallelSafe: true
 ```text
 error second
 four
+```
+
+如果启用 `with_line_numbers=true`，输出会加原文件行号：
+
+```text
+5| error second
+6| four
+```
+
+如果启用 `include_meta=true`，输出是 JSON：
+
+```json
+{
+  "lines": ["error second", "four"],
+  "meta": {
+    "path": "/tmp/app.log",
+    "file_size": 12345,
+    "max_bytes": 65536,
+    "returned_lines": 2,
+    "truncated": false
+  }
+}
 ```
 
 调用：
@@ -93,7 +119,7 @@ four
 | 小于 1 | 使用边界逻辑限制到有效范围 |
 | 大于 500 | 最多返回 `500` 行 |
 
-当前实现会读取整个文件后再截取末尾行，不是流式 tail。
+当前实现从文件尾部反向按块读取，不会为了返回尾部行而读取整个文件。
 
 ## 适合使用的场景
 
@@ -120,7 +146,6 @@ four
 
 - 需要搜索关键字，应使用 `log_grep`。
 - 需要实时跟踪日志，应使用 `terminal` 执行 `tail -f`。
-- 需要读取超大日志并避免整文件加载，应使用系统命令。
 - 需要解析结构化 JSON 日志，应使用 `json_query` 或专门脚本。
 
 ## 和 file_read 的关系
@@ -133,9 +158,10 @@ four
 
 `log_tail` 的主要注意点：
 
-- 会一次性读取整个文件。
+- 默认最多读取尾部 65536 字节，超出时返回尾部可用内容并在 metadata 中标记截断。
 - 只做尾部行截取，不识别日志级别。
-- 不返回行号。
+- 默认不返回行号，`with_line_numbers=true` 会额外扫描文件统计总行数。
+- 二进制文件会被拒绝。
 - `path` 会经过通用路径校验。
 - 最大返回 500 行。
 
@@ -146,6 +172,6 @@ four
 - 参数名是否仍是 `path` 和 `lines`。
 - `lines` 默认值是否仍是 100。
 - 最大行数是否仍是 500。
-- 是否仍使用 `os.ReadFile` 整文件读取。
+- 是否仍使用尾部块读取，避免整文件加载。
 - CRLF 到 LF 的规范化行为是否变化。
-- 输出是否仍不带行号。
+- 默认输出是否仍不带行号。

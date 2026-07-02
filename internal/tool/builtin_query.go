@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"database/sql"
@@ -20,6 +21,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	defaultLogTailMaxBytes   = 64 << 10
+	maxLogTailBytes          = 1 << 20
+	logTailReadBlockBytes    = 32 << 10
+	defaultLogGrepOutputByte = 64 << 10
+	maxLogGrepOutputBytes    = 1 << 20
+	defaultLogGrepScanLines  = 1_000_000
+	maxLogGrepScanLines      = 10_000_000
+	maxLogScannerTokenBytes  = 10 << 20
+)
+
 // LogTailTool returns the last N lines of a log file.
 func LogTailTool() *Tool {
 	return &Tool{
@@ -29,8 +41,11 @@ func LogTailTool() *Tool {
 		Source:      "builtin",
 		Permission:  PermAuto,
 		Parameters: map[string]Param{
-			"path":  {Type: "string", Description: "Path to the log file.", Required: true},
-			"lines": {Type: "number", Description: "Number of trailing lines to return (default 100, max 500).", Required: false, Default: 100},
+			"path":              {Type: "string", Description: "Path to the log file.", Required: true},
+			"lines":             {Type: "number", Description: "Number of trailing lines to return (default 100, max 500).", Required: false, Default: 100},
+			"max_bytes":         {Type: "number", Description: "Maximum bytes to read from the file tail (default 65536, max 1048576).", Required: false, Default: defaultLogTailMaxBytes},
+			"with_line_numbers": {Type: "boolean", Description: "Prefix returned lines with original 1-based line numbers.", Required: false, Default: false},
+			"include_meta":      {Type: "boolean", Description: "Return JSON with file size, returned line count, and truncation metadata.", Required: false, Default: false},
 		},
 		Handler:      handleLogTail,
 		ParallelSafe: true,
@@ -46,19 +61,51 @@ func handleLogTail(args map[string]any) (string, error) {
 		return "", err
 	}
 	lines := boundedIntArg(args, "lines", 100, 1, 500)
-	data, err := os.ReadFile(path)
+	maxBytes := boundedIntArg(args, "max_bytes", defaultLogTailMaxBytes, 1024, maxLogTailBytes)
+	withLineNumbers, _ := args["with_line_numbers"].(bool)
+	includeMeta, _ := args["include_meta"].(bool)
+
+	tail, meta, err := readLogTail(path, lines, maxBytes)
 	if err != nil {
-		return "", fmt.Errorf("read log file: %w", err)
+		return "", err
 	}
-	parts := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
-	if len(parts) > 0 && parts[len(parts)-1] == "" {
-		parts = parts[:len(parts)-1]
+
+	startLine := 0
+	if withLineNumbers {
+		totalLines, err := countTextFileLines(path)
+		if err != nil {
+			return "", err
+		}
+		startLine = maxInt(1, totalLines-len(tail)+1)
 	}
-	start := 0
-	if len(parts) > lines {
-		start = len(parts) - lines
+
+	if includeMeta {
+		result := map[string]any{
+			"meta": meta,
+		}
+		if withLineNumbers {
+			numbered := make([]map[string]any, 0, len(tail))
+			for i, line := range tail {
+				numbered = append(numbered, map[string]any{
+					"line": line,
+					"no":   startLine + i,
+				})
+			}
+			result["lines"] = numbered
+		} else {
+			result["lines"] = tail
+		}
+		return prettyStructuredValue(result)
 	}
-	return strings.Join(parts[start:], "\n"), nil
+
+	if withLineNumbers {
+		numbered := make([]string, 0, len(tail))
+		for i, line := range tail {
+			numbered = append(numbered, fmt.Sprintf("%d| %s", startLine+i, line))
+		}
+		return strings.Join(numbered, "\n"), nil
+	}
+	return strings.Join(tail, "\n"), nil
 }
 
 // LogGrepTool searches a log file and returns matching lines with context.
@@ -76,6 +123,20 @@ func LogGrepTool() *Tool {
 			"before":      {Type: "number", Description: "Lines of context before each match (default 2).", Required: false, Default: 2},
 			"after":       {Type: "number", Description: "Lines of context after each match (default 2).", Required: false, Default: 2},
 			"max_matches": {Type: "number", Description: "Maximum number of matches to return (default 20).", Required: false, Default: 20},
+			"ignore_case": {Type: "boolean", Description: "Match case-insensitively.", Required: false, Default: false},
+			"max_scan_lines": {
+				Type:        "number",
+				Description: "Maximum number of lines to scan (default 1000000, max 10000000).",
+				Required:    false,
+				Default:     defaultLogGrepScanLines,
+			},
+			"max_output_bytes": {
+				Type:        "number",
+				Description: "Maximum output bytes (default 65536, max 1048576).",
+				Required:    false,
+				Default:     defaultLogGrepOutputByte,
+			},
+			"include_meta": {Type: "boolean", Description: "Return JSON with output and scan metadata.", Required: false, Default: false},
 		},
 		Handler:      handleLogGrep,
 		ParallelSafe: true,
@@ -98,60 +159,244 @@ func handleLogGrep(args map[string]any) (string, error) {
 	before := boundedIntArg(args, "before", 2, 0, 20)
 	after := boundedIntArg(args, "after", 2, 0, 20)
 	maxMatches := boundedIntArg(args, "max_matches", 20, 1, 100)
+	ignoreCase, _ := args["ignore_case"].(bool)
+	maxScanLines := boundedIntArg(args, "max_scan_lines", defaultLogGrepScanLines, 1, maxLogGrepScanLines)
+	maxOutputBytes := boundedIntArg(args, "max_output_bytes", defaultLogGrepOutputByte, 1024, maxLogGrepOutputBytes)
+	includeMeta, _ := args["include_meta"].(bool)
+	displayPattern := pattern
 
 	var re *regexp.Regexp
 	var err error
 	if useRegex {
+		if ignoreCase {
+			pattern = "(?i)" + pattern
+		}
 		re, err = regexp.Compile(pattern)
 		if err != nil {
 			return "", fmt.Errorf("compile regex: %w", err)
 		}
 	}
-
-	data, err := os.ReadFile(path)
+	result, err := streamLogGrep(path, pattern, re, useRegex, ignoreCase, before, after, maxMatches, maxScanLines, maxOutputBytes)
 	if err != nil {
-		return "", fmt.Errorf("read log file: %w", err)
+		return "", err
 	}
-	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
+	if includeMeta {
+		return prettyStructuredValue(map[string]any{
+			"output": result.output,
+			"meta": map[string]any{
+				"matched":             result.matches > 0,
+				"matches":             result.matches,
+				"scanned_lines":       result.scannedLines,
+				"max_matches_reached": result.maxMatchesReached,
+				"max_scan_reached":    result.maxScanReached,
+				"output_truncated":    result.outputTruncated,
+			},
+		})
+	}
+	if result.matches == 0 {
+		return fmt.Sprintf("No matches for %q in %s", displayPattern, path), nil
+	}
+	return result.output, nil
+}
 
+func readLogTail(path string, lines, maxBytes int) ([]string, map[string]any, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open log file: %w", err)
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, fmt.Errorf("stat log file: %w", err)
+	}
+	if info.IsDir() {
+		return nil, nil, fmt.Errorf("log path is a directory: %s", path)
+	}
+
+	size := info.Size()
+	meta := map[string]any{
+		"path":           path,
+		"file_size":      size,
+		"max_bytes":      maxBytes,
+		"returned_lines": 0,
+		"truncated":      false,
+	}
+	if size == 0 {
+		return []string{}, meta, nil
+	}
+
+	var data []byte
+	pos := size
+	newlines := 0
+	for pos > 0 && newlines < lines && len(data) < maxBytes {
+		readSize := minInt(logTailReadBlockBytes, maxBytes-len(data))
+		if int64(readSize) > pos {
+			readSize = int(pos)
+		}
+		pos -= int64(readSize)
+		chunk := make([]byte, readSize)
+		if _, err := f.ReadAt(chunk, pos); err != nil && err != io.EOF {
+			return nil, nil, fmt.Errorf("read log tail: %w", err)
+		}
+		newlines += bytes.Count(chunk, []byte{'\n'})
+		data = append(chunk, data...)
+	}
+	if bytes.IndexByte(data, 0) >= 0 {
+		return nil, nil, fmt.Errorf("log file appears to be binary")
+	}
+
+	truncated := pos > 0 && len(data) >= maxBytes
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	parts := strings.Split(text, "\n")
+	if len(parts) > 0 && parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	if pos > 0 && len(parts) > lines {
+		parts = parts[1:]
+	}
+	if len(parts) > lines {
+		parts = parts[len(parts)-lines:]
+	}
+	meta["returned_lines"] = len(parts)
+	meta["truncated"] = truncated
+	return parts, meta, nil
+}
+
+func countTextFileLines(path string) (int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, fmt.Errorf("open log file for line count: %w", err)
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLogScannerTokenBytes)
+	lines := 0
+	for scanner.Scan() {
+		lines++
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, fmt.Errorf("count log lines: %w", err)
+	}
+	return lines, nil
+}
+
+type logLine struct {
+	no   int
+	text string
+}
+
+type logGrepResult struct {
+	output            string
+	matches           int
+	scannedLines      int
+	maxMatchesReached bool
+	maxScanReached    bool
+	outputTruncated   bool
+}
+
+func streamLogGrep(path, pattern string, re *regexp.Regexp, useRegex, ignoreCase bool, before, after, maxMatches, maxScanLines, maxOutputBytes int) (logGrepResult, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return logGrepResult{}, fmt.Errorf("open log file: %w", err)
+	}
+	defer f.Close()
+
+	var result logGrepResult
 	var b strings.Builder
-	matches := 0
-	lastIncluded := -1
-	for i, line := range lines {
-		matched := false
-		if useRegex {
-			matched = re.MatchString(line)
-		} else {
-			matched = strings.Contains(line, pattern)
+	beforeBuf := make([]logLine, 0, before)
+	lastIncluded := 0
+	afterUntil := 0
+	if !useRegex && ignoreCase {
+		pattern = strings.ToLower(pattern)
+	}
+
+	writeRaw := func(s string) bool {
+		if b.Len()+len(s) > maxOutputBytes {
+			result.outputTruncated = true
+			return false
 		}
-		if !matched {
-			continue
+		b.WriteString(s)
+		return true
+	}
+	writeLine := func(line logLine, prefix string) bool {
+		if line.no <= lastIncluded {
+			return true
 		}
-		matches++
-		if matches > maxMatches {
+		if b.Len() > 0 && line.no > lastIncluded+1 {
+			if !writeRaw("\n---\n") {
+				return false
+			}
+		}
+		if !writeRaw(fmt.Sprintf("%s%d| %s\n", prefix, line.no, line.text)) {
+			return false
+		}
+		lastIncluded = line.no
+		return true
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxLogScannerTokenBytes)
+	for scanner.Scan() {
+		result.scannedLines++
+		if result.scannedLines > maxScanLines {
+			result.maxScanReached = true
 			break
 		}
-		start := maxInt(0, i-before)
-		end := minInt(len(lines), i+after+1)
-		if b.Len() > 0 {
-			b.WriteString("\n---\n")
+
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		current := logLine{no: result.scannedLines, text: line}
+		matched := false
+		if result.matches < maxMatches {
+			if useRegex {
+				matched = re.MatchString(line)
+			} else if ignoreCase {
+				matched = strings.Contains(strings.ToLower(line), pattern)
+			} else {
+				matched = strings.Contains(line, pattern)
+			}
 		}
-		for j := start; j < end; j++ {
-			if j <= lastIncluded {
-				continue
+
+		if matched {
+			result.matches++
+			start := current.no - before
+			for _, prior := range beforeBuf {
+				if prior.no >= start && !writeLine(prior, "  ") {
+					result.output = strings.TrimRight(b.String(), "\n")
+					return result, nil
+				}
 			}
-			prefix := "  "
-			if j == i {
-				prefix = "> "
+			if !writeLine(current, "> ") {
+				result.output = strings.TrimRight(b.String(), "\n")
+				return result, nil
 			}
-			b.WriteString(fmt.Sprintf("%s%d| %s\n", prefix, j+1, lines[j]))
-			lastIncluded = j
+			afterUntil = maxInt(afterUntil, current.no+after)
+			if result.matches == maxMatches {
+				result.maxMatchesReached = true
+			}
+		} else if current.no <= afterUntil {
+			if !writeLine(current, "  ") {
+				result.output = strings.TrimRight(b.String(), "\n")
+				return result, nil
+			}
+		}
+
+		if before > 0 {
+			beforeBuf = append(beforeBuf, current)
+			if len(beforeBuf) > before {
+				beforeBuf = beforeBuf[len(beforeBuf)-before:]
+			}
+		}
+		if result.matches >= maxMatches && current.no >= afterUntil {
+			break
 		}
 	}
-	if matches == 0 {
-		return "", fmt.Errorf("pattern not found in %s", path)
+	if err := scanner.Err(); err != nil {
+		return logGrepResult{}, fmt.Errorf("scan log file: %w", err)
 	}
-	return strings.TrimRight(b.String(), "\n"), nil
+	result.output = strings.TrimRight(b.String(), "\n")
+	return result, nil
 }
 
 // HTTPRequestTool performs a controlled HTTP request and returns the response body.

@@ -246,6 +246,30 @@ func TestLogTailAndLogGrepTools(t *testing.T) {
 	if !strings.Contains(grep, "> 2| error first") || !strings.Contains(grep, "> 5| error second") {
 		t.Fatalf("unexpected grep output: %q", grep)
 	}
+
+	noMatch, err := r.Call("log_grep", map[string]any{"path": testFile, "pattern": "panic"})
+	if err != nil {
+		t.Fatalf("log_grep no match should not fail: %v", err)
+	}
+	if !strings.Contains(noMatch, "No matches") {
+		t.Fatalf("unexpected no-match output: %q", noMatch)
+	}
+
+	ignoreCase, err := r.Call("log_grep", map[string]any{"path": testFile, "pattern": "ERROR", "ignore_case": true, "max_matches": 1})
+	if err != nil {
+		t.Fatalf("log_grep ignore_case: %v", err)
+	}
+	if !strings.Contains(ignoreCase, "> 2| error first") {
+		t.Fatalf("unexpected ignore_case output: %q", ignoreCase)
+	}
+
+	numberedTail, err := r.Call("log_tail", map[string]any{"path": testFile, "lines": 2, "with_line_numbers": true})
+	if err != nil {
+		t.Fatalf("log_tail with line numbers: %v", err)
+	}
+	if !strings.Contains(numberedTail, "5| error second") || !strings.Contains(numberedTail, "6| four") {
+		t.Fatalf("unexpected numbered tail output: %q", numberedTail)
+	}
 }
 
 func TestHTTPRequestToolValidation(t *testing.T) {
