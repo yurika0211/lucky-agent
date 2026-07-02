@@ -1518,12 +1518,13 @@ func (a *Agent) buildContextMessagesForInput(ctx context.Context, sess *session.
 }
 
 type CompactSessionResult struct {
-	BoundaryID        string
-	Trigger           string
-	Summary           string
-	PreTokenEstimate  int
-	PostTokenEstimate int
-	DroppedMessages   int
+	BoundaryID          string
+	Trigger             string
+	Summary             string
+	PreTokenEstimate    int
+	PostTokenEstimate   int
+	DroppedMessages     int
+	RestoredAttachments int
 }
 
 // CompactSession summarizes raw session history since the latest compact
@@ -1565,6 +1566,7 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 		return nil, fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
 	}
 	postTokens := est.Estimate(summary)
+	attachments := buildPostCompactAttachments(sess, raw, est)
 	boundaryID := fmt.Sprintf("compact-%d", time.Now().UnixNano())
 	meta := session.CompactMetadata{
 		ID:                boundaryID,
@@ -1574,18 +1576,20 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 		PreTokenEstimate:  preTokens,
 		PostTokenEstimate: postTokens,
 		DroppedMessages:   len(raw),
+		Attachments:       attachments,
 	}
 	sess.AddCompactBoundary(meta)
 	if err := sess.Save(); err != nil {
 		return nil, fmt.Errorf("compact session: save boundary: %w", err)
 	}
 	return &CompactSessionResult{
-		BoundaryID:        boundaryID,
-		Trigger:           trigger,
-		Summary:           summary,
-		PreTokenEstimate:  preTokens,
-		PostTokenEstimate: postTokens,
-		DroppedMessages:   len(raw),
+		BoundaryID:          boundaryID,
+		Trigger:             trigger,
+		Summary:             summary,
+		PreTokenEstimate:    preTokens,
+		PostTokenEstimate:   postTokens,
+		DroppedMessages:     len(raw),
+		RestoredAttachments: len(attachments),
 	}, nil
 }
 

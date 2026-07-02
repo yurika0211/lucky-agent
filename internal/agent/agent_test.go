@@ -1479,12 +1479,17 @@ func TestCompactSessionAcceptsValidatedSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompactSession: %v", err)
 	}
-	if result.BoundaryID == "" || result.DroppedMessages != 2 {
+	if result.BoundaryID == "" || result.DroppedMessages != 2 || result.RestoredAttachments == 0 {
 		t.Fatalf("unexpected compact result: %+v", result)
 	}
 	messages := sess.GetMessages()
-	if !session.IsCompactBoundary(messages[len(messages)-1]) {
-		t.Fatalf("expected compact boundary as last message, got %+v", messages[len(messages)-1])
+	last := messages[len(messages)-1]
+	if !session.IsCompactBoundary(last) {
+		t.Fatalf("expected compact boundary as last message, got %+v", last)
+	}
+	meta, ok := session.ParseCompactMetadata(last)
+	if !ok || len(meta.Attachments) == 0 {
+		t.Fatalf("expected compact metadata attachments, got ok=%t meta=%+v", ok, meta)
 	}
 }
 

@@ -133,6 +133,10 @@ func TestBuildHistoryMessagesRespectsCompactBoundary(t *testing.T) {
 		ID:      "compact-test",
 		Trigger: "manual",
 		Summary: "compact summary says prior task touched internal/agent/context_planner.go",
+		Attachments: []session.CompactAttachment{
+			{Kind: "file_state", Source: "recent_history", Content: "internal/agent/context_planner.go"},
+			{Kind: "tool_result", Source: "terminal", Content: "go test ./internal/agent passed"},
+		},
 	})
 	sess.AddMessage("user", "new user request after compact")
 	sess.AddMessage("assistant", "new assistant response after compact")
@@ -154,7 +158,7 @@ func TestBuildHistoryMessagesRespectsCompactBoundary(t *testing.T) {
 	if strings.Contains(text, "old raw secret") || strings.Contains(text, "old raw assistant") {
 		t.Fatalf("expected raw pre-compact history to be dropped, got:\n%s", text)
 	}
-	for _, want := range []string{"[Compact Summary]", "context_planner.go", "new user request", "new assistant response"} {
+	for _, want := range []string{"[Compact Summary]", "[Post-Compact Restore]", "context_planner.go", "go test ./internal/agent passed", "new user request", "new assistant response"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected %q in compacted history, got:\n%s", want, text)
 		}

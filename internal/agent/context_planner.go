@@ -1067,7 +1067,41 @@ func (p *contextPlanner) compactBoundaryContext(messages []provider.Message) (pr
 	}
 	b.WriteString("\n")
 	b.WriteString(summary)
+	if restore := formatPostCompactRestore(meta.Attachments); restore != "" {
+		b.WriteString("\n\n")
+		b.WriteString(restore)
+	}
 	return provider.Message{Role: "system", Content: p.fitTextToBudget(b.String(), utils.MaxInt(128, p.budget.History/3))}, after
+}
+
+func formatPostCompactRestore(attachments []session.CompactAttachment) string {
+	if len(attachments) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[Post-Compact Restore]\n")
+	for _, att := range attachments {
+		content := strings.TrimSpace(att.Content)
+		if content == "" {
+			continue
+		}
+		label := strings.TrimSpace(att.Kind)
+		if label == "" {
+			label = "attachment"
+		}
+		if source := strings.TrimSpace(att.Source); source != "" {
+			label += "/" + source
+		}
+		b.WriteString("- ")
+		b.WriteString(label)
+		b.WriteString(": ")
+		b.WriteString(strings.ReplaceAll(truncate(content, 360), "\n", "; "))
+		b.WriteString("\n")
+	}
+	if b.String() == "[Post-Compact Restore]\n" {
+		return ""
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func (p *contextPlanner) summarizeIntentAwareConversationRange(ctx context.Context, sess *session.Session, messages []provider.Message, header string, tokenBudget int, terms []string) string {

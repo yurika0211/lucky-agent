@@ -18,13 +18,22 @@ const CompactBoundaryName = "compact_boundary"
 
 // CompactMetadata records a session compaction boundary.
 type CompactMetadata struct {
-	ID                string    `json:"id"`
-	Trigger           string    `json:"trigger"`
-	Summary           string    `json:"summary"`
-	CreatedAt         time.Time `json:"created_at"`
-	PreTokenEstimate  int       `json:"pre_token_estimate,omitempty"`
-	PostTokenEstimate int       `json:"post_token_estimate,omitempty"`
-	DroppedMessages   int       `json:"dropped_messages,omitempty"`
+	ID                string              `json:"id"`
+	Trigger           string              `json:"trigger"`
+	Summary           string              `json:"summary"`
+	CreatedAt         time.Time           `json:"created_at"`
+	PreTokenEstimate  int                 `json:"pre_token_estimate,omitempty"`
+	PostTokenEstimate int                 `json:"post_token_estimate,omitempty"`
+	DroppedMessages   int                 `json:"dropped_messages,omitempty"`
+	Attachments       []CompactAttachment `json:"attachments,omitempty"`
+}
+
+type CompactAttachment struct {
+	Kind     string `json:"kind"`
+	Source   string `json:"source,omitempty"`
+	Content  string `json:"content"`
+	Priority int    `json:"priority,omitempty"`
+	Tokens   int    `json:"tokens,omitempty"`
 }
 
 // Session 代表一次对话会话
