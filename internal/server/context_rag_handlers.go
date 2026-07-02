@@ -20,7 +20,7 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	cw := s.agent.ContextWindow()
 	cfg := cw.Config()
 
-	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"max_tokens":             cfg.MaxTokens,
 		"reserved_tokens":        cfg.ReservedTokens,
 		"available_tokens":       cfg.MaxTokens - cfg.ReservedTokens,
@@ -29,7 +29,16 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		"max_conversation_turns": cfg.MaxConversationTurns,
 		"memory_budget":          cfg.MemoryBudget,
 		"summarize_threshold":    cfg.SummarizeThreshold,
-	})
+	}
+	if sessionID := r.URL.Query().Get("session_id"); sessionID != "" {
+		if sess, ok := s.agent.Sessions().Get(sessionID); ok {
+			if trace, ok := sess.LatestCompactTrace(); ok {
+				resp["compact_trace"] = trace
+			}
+		}
+	}
+
+	s.sendJSON(w, http.StatusOK, resp)
 }
 
 // handleContextFit 上下文裁剪接口

@@ -904,23 +904,33 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSessionByID returns the full history for a single session.
-func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
-		return
-	}
+type compactSessionAPIRequest struct {
+	DryRun     bool `json:"dry_run,omitempty"`
+	ForceLocal bool `json:"force_local,omitempty"`
+}
 
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/")
-	id = strings.Trim(id, "/")
-	if id == "" {
+// handleSessionByID returns the full history for a single session or dispatches
+// session-scoped subresources.
+func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/"), "/"), "/")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
 		s.sendError(w, "session id is required", http.StatusBadRequest, "")
 		return
 	}
+	id := strings.TrimSpace(parts[0])
 
 	sess, ok := s.agent.Sessions().Get(id)
 	if !ok {
 		s.sendError(w, "session not found", http.StatusNotFound, id)
+		return
+	}
+
+	if len(parts) > 1 {
+		s.handleSessionSubresource(w, r, sess, parts[1:])
+		return
+	}
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
 		return
 	}
 
@@ -933,6 +943,67 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		"updated_at":    sess.UpdatedAt.Format(time.RFC3339),
 		"messages":      messages,
 	})
+}
+
+func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request, sess *session.Session, parts []string) {
+	if len(parts) == 1 && parts[0] == "compact" {
+		if r.Method != http.MethodPost {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		var req compactSessionAPIRequest
+		if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+		result, err := s.agent.CompactSessionWithOptions(r.Context(), sess, "manual-api", agent.CompactSessionOptions{
+			ForceLocal: req.ForceLocal,
+			DryRun:     req.DryRun,
+		})
+		if err != nil {
+			s.sendError(w, "compact session failed", http.StatusBadRequest, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusOK, compactSessionAPIResponse(result))
+		return
+	}
+
+	if len(parts) == 2 && parts[0] == "compact" && parts[1] == "latest" {
+		if r.Method != http.MethodGet {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		trace, ok := sess.LatestCompactTrace()
+		if !ok {
+			s.sendError(w, "compact trace not found", http.StatusNotFound, sess.ID)
+			return
+		}
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"session_id": sess.ID,
+			"trace":      trace,
+		})
+		return
+	}
+
+	s.sendError(w, "not found", http.StatusNotFound, "")
+}
+
+func compactSessionAPIResponse(result *agent.CompactSessionResult) map[string]interface{} {
+	if result == nil {
+		return map[string]interface{}{}
+	}
+	return map[string]interface{}{
+		"boundary_id":          result.BoundaryID,
+		"trigger":              result.Trigger,
+		"summary":              result.Summary,
+		"pre_token_estimate":   result.PreTokenEstimate,
+		"post_token_estimate":  result.PostTokenEstimate,
+		"summary_tokens":       result.SummaryTokens,
+		"dropped_messages":     result.DroppedMessages,
+		"restored_attachments": result.RestoredAttachments,
+		"summary_source":       result.SummarySource,
+		"dry_run":              result.DryRun,
+	}
 }
 
 // handleMemory 记忆管理

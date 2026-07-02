@@ -421,6 +421,68 @@ func TestHandleSessionsPagination(t *testing.T) {
 	}
 }
 
+func TestHandleSessionCompactDryRun(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	sess := a.Sessions().Ensure("compact-api-dry")
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and keep compact API dry-run safe.")
+	sess.AddToolMessage("terminal", "go test ./internal/server will verify dry-run compact behavior")
+	before := sess.MessageCount()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/compact-api-dry/compact", bytes.NewReader([]byte(`{"dry_run":true,"force_local":true}`)))
+	w := httptest.NewRecorder()
+	s.handleSessionByID(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := sess.MessageCount(); got != before {
+		t.Fatalf("dry-run must not append boundary: got %d messages, want %d", got, before)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["dry_run"] != true || resp["summary_source"] != "local" {
+		t.Fatalf("unexpected compact response: %+v", resp)
+	}
+}
+
+func TestHandleSessionCompactLatestTrace(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	sess := a.Sessions().Ensure("compact-api-write")
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and expose compact API trace.")
+	sess.AddToolMessage("terminal", "go test ./internal/server should pass for compact API trace")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/compact-api-write/compact", bytes.NewReader([]byte(`{"force_local":true}`)))
+	w := httptest.NewRecorder()
+	s.handleSessionByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/sessions/compact-api-write/compact/latest", nil)
+	w = httptest.NewRecorder()
+	s.handleSessionByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	trace, ok := resp["trace"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected trace object, got %+v", resp)
+	}
+	if trace["summary_source"] != "local" || trace["dropped_messages"] != float64(2) {
+		t.Fatalf("unexpected compact trace: %+v", trace)
+	}
+}
+
 func TestHandleChatSyncEmptyMessage(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())
