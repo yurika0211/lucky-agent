@@ -1,6 +1,6 @@
 # cron Tools
 
-LuckyAgent 的 cron 工具组用于管理定时任务。它包含一个统一入口 `cron`，以及多个细分工具：`cron_add`、`cron_list`、`cron_remove`、`cron_pause`、`cron_resume`、`cron_status`。
+LuckyAgent 的 cron 工具组用于管理定时任务。它包含一个统一入口 `cron`，以及多个细分工具：`cron_validate`、`cron_add`、`cron_list`、`cron_remove`、`cron_pause`、`cron_resume`、`cron_status`。
 
 cron 任务可以按 shell 模式执行命令，也可以按 agent 模式执行 prompt。调度表达式支持自然语言和 5 字段 cron 表达式。
 
@@ -19,7 +19,8 @@ cron 任务可以按 shell 模式执行命令，也可以按 agent 模式执行 
 
 | 工具 | 权限 | 说明 |
 | --- | --- | --- |
-| `cron` | `PermApprove` | 统一入口，通过 `action` 分发到 list/status/add/remove/pause/resume。 |
+| `cron` | `PermApprove` | 统一入口，通过 `action` 分发到 list/status/validate/add/remove/pause/resume。 |
+| `cron_validate` | `PermAuto` | 校验 schedule、预览 next runs 和 command risk，不创建任务。 |
 | `cron_add` | `PermApprove` | 添加定时任务。 |
 | `cron_list` | `PermAuto` | 列出所有定时任务。 |
 | `cron_remove` | `PermApprove` | 删除定时任务。 |
@@ -35,11 +36,14 @@ cron 任务可以按 shell 模式执行命令，也可以按 agent 模式执行 
 
 | 参数 | 必填 | 说明 |
 | --- | --- | --- |
-| `action` | 是 | `list`、`status`、`add`、`remove`、`pause`、`resume`。 |
+| `action` | 是 | `list`、`status`、`validate`、`add`、`remove`、`pause`、`resume`。 |
 | `id` | 否 | 任务 ID。 |
 | `schedule` | 否 | 自然语言 schedule 或 5 字段 cron 表达式。 |
 | `mode` | 否 | `shell` 或 `agent`，默认 `shell`。 |
 | `command` | 否 | shell 命令或 agent prompt。 |
+| `dry_run` | 否 | `add` 时只预览，不写入 engine、不启动、不持久化。 |
+| `start_engine` | 否 | `add` 后是否自动启动 cron engine，默认 `true`。 |
+| `next_runs` | 否 | `validate` 时返回的未来运行时间数量，默认 `3`。 |
 | `platform` | 否 | 通知平台，例如 telegram。 |
 | `chat_id` | 否 | 通知目标 chat ID。 |
 | `reply_to_message_id` | 否 | 回复目标消息 ID。 |
@@ -50,7 +54,40 @@ cron 任务可以按 shell 模式执行命令，也可以按 agent 模式执行 
 非法 action 返回：
 
 ```text
-invalid cron action "<action>" (use list, status, add, remove, pause, resume)
+invalid cron action "<action>" (use list, status, validate, add, remove, pause, resume)
+```
+
+## cron_validate
+
+`cron_validate` 用于在创建任务前校验调度和预览未来运行时间。它是只读工具，权限为 `PermAuto`。
+
+必填：
+
+- `schedule`
+
+可选：
+
+- `mode`
+- `command`
+- `next_runs`
+
+成功输出：
+
+```json
+{
+  "ok": true,
+  "valid": true,
+  "action": "validate",
+  "schedule": "daily at 09:00",
+  "schedule_text": "每天9点",
+  "parsed_by": "natural_language",
+  "timezone": "Asia/Shanghai",
+  "next_runs": ["2026-07-04T09:00:00+08:00"],
+  "mode": "shell",
+  "command": "echo hi",
+  "risk": {"level": "low"},
+  "warnings": []
+}
 ```
 
 ## cron_add
@@ -70,31 +107,57 @@ invalid cron action "<action>" (use list, status, add, remove, pause, resume)
 - `chat_id`
 - `reply_to_message_id`
 - `session_id`
+- `dry_run`
+- `start_engine`
 
 执行流程：
 
 1. 检查 cron service、engine、buildTask 是否初始化。
 2. 解析 schedule。
-3. 读取 mode，默认 `shell`。
+3. 严格校验 mode，默认 `shell`，只允许 `shell` 或 `agent`。
 4. 校验 command 非空。
 5. 如果 id 为空，根据 mode、command 和当前 Unix 时间生成 id。
 6. 构造 metadata。
 7. 调用 `buildTask(id, mode, command, meta)`。
-8. 调用 `engine.AddJobWithMeta`。
-9. 如果 engine 未运行，自动 `Start()`。
-10. 如果配置了 save 函数，调用 save 持久化。
-11. 返回 JSON。
+8. 如果 `dry_run=true`，返回创建计划、next run 和风险提示，不调用 `buildTask`、`engine.AddJobWithMeta`、`engine.Start` 或 `save`。
+9. 调用 `engine.AddJobWithMeta`。
+10. 如果 `start_engine=true` 且 engine 未运行，自动 `Start()`。
+11. 如果配置了 save 函数，调用 save 持久化。
+12. 返回 JSON。
 
 成功输出：
 
 ```json
 {
+  "ok": true,
+  "action": "add",
   "id": "shell-echo-hi-1780000000",
-  "schedule": "0 9 * * *",
+  "schedule": "daily at 09:00",
+  "schedule_text": "每天9点",
+  "parsed_by": "natural_language",
+  "timezone": "Asia/Shanghai",
+  "next_run": "2026-07-04T09:00:00+08:00",
   "mode": "shell",
   "command": "echo hi",
   "running": true,
+  "engine_running_before": false,
+  "engine_started_by_tool": true,
+  "risk": {"level": "low"},
+  "warnings": [],
   "message": "Scheduled job shell-echo-hi-1780000000 added"
+}
+```
+
+`dry_run=true` 时成功输出包含：
+
+```json
+{
+  "ok": true,
+  "action": "add",
+  "dry_run": true,
+  "would_start_engine": true,
+  "engine_running_before": false,
+  "message": "Dry run: scheduled job job-id was not added"
 }
 ```
 
@@ -122,14 +185,22 @@ parse schedule: schedule is required
 
 ## mode 行为
 
-`normalizeCronTaskMode` 只有两种结果：
+`cron_add` 和 `cron_validate` 使用严格 mode 校验：
 
 | 输入 | 实际 mode |
 | --- | --- |
+| 空字符串 | `shell` |
+| `shell` | `shell` |
 | `agent` | `agent` |
-| 其他 | `shell` |
+| 其他 | 报错 |
 
-这意味着拼错 mode 不会报错，而是回退到 shell。
+拼错 mode 会返回：
+
+```text
+invalid cron mode "agetn" (use shell or agent)
+```
+
+`normalizeCronTaskMode` 仍保留为兼容 helper，但新增路径不再用它静默回退。
 
 ## 自动生成 ID
 
@@ -158,6 +229,10 @@ cron-job-<unix>
 
 ```json
 {
+  "ok": true,
+  "action": "list",
+  "now": "...",
+  "timezone": "Asia/Shanghai",
   "running": true,
   "total": 1,
   "jobs": [
@@ -167,11 +242,13 @@ cron-job-<unix>
       "status": "running",
       "next_run": "...",
       "last_run": "...",
+      "last_error": "",
       "run_count": 0,
       "error_count": 0,
       "mode": "shell",
       "command": "echo hi",
-      "schedule_text": "每天9点"
+      "schedule_text": "每天9点",
+      "metadata": {}
     }
   ]
 }
@@ -187,6 +264,10 @@ cron-job-<unix>
 
 ```json
 {
+  "ok": true,
+  "action": "status",
+  "now": "...",
+  "timezone": "Asia/Shanghai",
   "running": true,
   "job_count": 3,
   "paused_jobs": 1,
