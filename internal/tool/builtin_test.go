@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -384,6 +385,95 @@ func TestImageAnalyzeToolUsesConfiguredDefaultProvider(t *testing.T) {
 	}
 	if !strings.Contains(result, "named provider summary") {
 		t.Fatalf("expected configured provider output, got %q", result)
+	}
+}
+
+func TestImageAnalyzeToolRejectsMultipleInputSources(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(multimodal.ModalityImage), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, ""))
+
+	_, err := r.Call("image_analyze", map[string]any{
+		"path":        "/tmp/example.png",
+		"base64_data": "ZmFrZS1pbWFnZS1ieXRlcw==",
+		"mime_type":   "image/png",
+	})
+	if err == nil {
+		t.Fatal("expected multiple input sources to be rejected")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageAnalyzeToolRejectsPrivateURL(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(multimodal.ModalityImage), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, ""))
+
+	_, err := r.Call("image_analyze", map[string]any{
+		"url":       "http://127.0.0.1/image.png",
+		"mime_type": "image/png",
+	})
+	if err == nil {
+		t.Fatal("expected private url to be rejected")
+	}
+	if !strings.Contains(err.Error(), "url validation failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageAnalyzeToolRejectsUnsupportedMIME(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(multimodal.ModalityImage), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, ""))
+
+	_, err := r.Call("image_analyze", map[string]any{
+		"base64_data": base64.StdEncoding.EncodeToString([]byte("not an image")),
+		"mime_type":   "text/plain",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported MIME to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported image_analyze MIME type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageAnalyzeToolSupportsJSONFormat(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(multimodal.ModalityImage), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, ""))
+
+	result, err := r.Call("image_analyze", map[string]any{
+		"base64_data": "ZmFrZS1pbWFnZS1ieXRlcw==",
+		"mime_type":   "image/png",
+		"format":      "json",
+	})
+	if err != nil {
+		t.Fatalf("image_analyze call: %v", err)
+	}
+	var payload struct {
+		Available bool   `json:"available"`
+		Modality  string `json:"modality"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal tool output: %v", err)
+	}
+	if !payload.Available || payload.Modality != "image" {
+		t.Fatalf("unexpected payload: %+v", payload)
 	}
 }
 
@@ -889,13 +979,15 @@ func TestDocumentReadToolReadsDocx(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sample.docx")
 	writeZipTestFile(t, path, map[string]string{
 		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p><w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p></w:body></w:document>`,
+		"word/header1.xml":  `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Header text</w:t></w:r></w:p></w:hdr>`,
+		"word/comments.xml": `<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment><w:p><w:r><w:t>Review comment</w:t></w:r></w:p></w:comment></w:comments>`,
 	})
 
 	result, err := r.Call("document_read", map[string]any{"path": path})
 	if err != nil {
 		t.Fatalf("document_read docx: %v", err)
 	}
-	if !strings.Contains(result, "Format: docx") || !strings.Contains(result, "Hello DOCX") || !strings.Contains(result, "Second paragraph") {
+	if !strings.Contains(result, "Format: docx") || !strings.Contains(result, "Hello DOCX") || !strings.Contains(result, "Header text") || !strings.Contains(result, "Review comment") {
 		t.Fatalf("unexpected docx extraction:\n%s", result)
 	}
 }
@@ -906,11 +998,13 @@ func TestDocumentReadToolReadsPptxWithLimit(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "slides.pptx")
 	writeZipTestFile(t, path, map[string]string{
-		"ppt/slides/slide2.xml": `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Second slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
-		"ppt/slides/slide1.xml": `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>First slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+		"ppt/presentation.xml":            `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>`,
+		"ppt/slides/slide2.xml":           `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Second slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+		"ppt/slides/slide1.xml":           `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>First slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+		"ppt/notesSlides/notesSlide1.xml": `<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Speaker note</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>`,
 	})
 
-	result, err := r.Call("document_read", map[string]any{"path": path, "limit": 3})
+	result, err := r.Call("document_read", map[string]any{"path": path, "limit": 4})
 	if err != nil {
 		t.Fatalf("document_read pptx: %v", err)
 	}
@@ -922,6 +1016,24 @@ func TestDocumentReadToolReadsPptxWithLimit(t *testing.T) {
 	}
 	if !strings.Contains(result, "use offset=") {
 		t.Fatalf("expected continuation hint for limited output:\n%s", result)
+	}
+}
+
+func TestDocumentReadToolDetectsOfficeFormatByContent(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "misnamed.bin")
+	writeZipTestFile(t, path, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Detected DOCX</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := r.Call("document_read", map[string]any{"path": path})
+	if err != nil {
+		t.Fatalf("document_read detected docx: %v", err)
+	}
+	if !strings.Contains(result, "Format: docx") || !strings.Contains(result, "Detected DOCX") {
+		t.Fatalf("unexpected detected docx extraction:\n%s", result)
 	}
 }
 
@@ -1356,6 +1468,65 @@ func TestRAGToolServiceSearchAndIndex(t *testing.T) {
 	}
 	if !strings.Contains(searchResult, "alpha") && !strings.Contains(searchResult, "Demo") {
 		t.Fatalf("unexpected search result: %q", searchResult)
+	}
+}
+
+func TestRAGToolServiceSearchOptionsArePerCall(t *testing.T) {
+	emb := embedder.NewMockEmbedder(8)
+	mgr := rag.NewRAGManager(emb, rag.DefaultRAGConfig())
+	mgr.UpdateRetrieverConfig(rag.RetrieverConfig{TopK: 9, MinScore: 0.1})
+	svc := NewRAGToolService(mgr)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(path, []byte("# Demo\n\nalpha beta gamma"), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if _, err := svc.HandleIndex(map[string]any{"path": path}); err != nil {
+		t.Fatalf("HandleIndex: %v", err)
+	}
+
+	out, err := svc.HandleSearch(map[string]any{
+		"query": "alpha",
+		"top_k": 1,
+		"format": "json",
+	})
+	if err != nil {
+		t.Fatalf("HandleSearch: %v", err)
+	}
+	var payload struct {
+		Query   string `json:"query"`
+		TopK    int    `json:"top_k"`
+		Count   int    `json:"count"`
+		Results []struct {
+			ChunkID string `json:"chunk_id"`
+			Source  string `json:"source"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("unmarshal search json: %v\n%s", err, out)
+	}
+	if payload.Query != "alpha" || payload.TopK != 1 || payload.Count > 1 {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	if len(payload.Results) > 0 && (payload.Results[0].ChunkID == "" || payload.Results[0].Source == "") {
+		t.Fatalf("expected chunk/source references: %+v", payload.Results[0])
+	}
+	if got := mgr.RetrieverConfig().TopK; got != 9 {
+		t.Fatalf("retriever top_k mutated to %d, want 9", got)
+	}
+}
+
+func TestRAGToolServiceSearchRejectsUnsafeBounds(t *testing.T) {
+	emb := embedder.NewMockEmbedder(8)
+	mgr := rag.NewRAGManager(emb, rag.DefaultRAGConfig())
+	svc := NewRAGToolService(mgr)
+
+	if _, err := svc.HandleSearch(map[string]any{"query": "alpha", "top_k": maxRAGSearchTopK + 1}); err == nil {
+		t.Fatal("expected top_k bound error")
+	}
+	if _, err := svc.HandleSearch(map[string]any{"query": strings.Repeat("x", maxRAGSearchQueryRunes+1)}); err == nil {
+		t.Fatal("expected query length error")
 	}
 }
 
