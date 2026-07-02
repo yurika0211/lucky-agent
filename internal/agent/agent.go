@@ -1517,6 +1517,148 @@ func (a *Agent) buildContextMessagesForInput(ctx context.Context, sess *session.
 	return planner.BuildInput(ctx, sess, input)
 }
 
+type CompactSessionResult struct {
+	BoundaryID        string
+	Trigger           string
+	Summary           string
+	PreTokenEstimate  int
+	PostTokenEstimate int
+	DroppedMessages   int
+}
+
+// CompactSession summarizes raw session history since the latest compact
+// boundary and appends a compact_boundary marker. The compaction call does not
+// expose tools; it is a plain text-only provider request.
+func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigger string) (*CompactSessionResult, error) {
+	if a == nil || a.provider == nil {
+		return nil, fmt.Errorf("compact session: provider is not initialized")
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("compact session: session is nil")
+	}
+	if strings.TrimSpace(trigger) == "" {
+		trigger = "manual"
+	}
+	all := sess.GetMessages()
+	if len(all) == 0 {
+		return nil, fmt.Errorf("compact session: no messages to compact")
+	}
+	raw, prior, _, hadPrior := session.MessagesAfterLastCompactBoundary(all)
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("compact session: nothing to compact after latest boundary")
+	}
+	compactInput := raw
+	if hadPrior && strings.TrimSpace(prior.Summary) != "" {
+		compactInput = append([]provider.Message{{Role: "system", Content: "[Prior Compact Summary]\n" + strings.TrimSpace(prior.Summary)}}, raw...)
+	}
+
+	est := a.contextEst
+	if est == nil {
+		est = contextx.NewTokenEstimator(4096)
+	}
+	preTokens := estimateProviderMessages(est, compactInput)
+	summary, err := a.generateCompactSummary(ctx, compactInput)
+	if err != nil {
+		return nil, err
+	}
+	postTokens := est.Estimate(summary)
+	boundaryID := fmt.Sprintf("compact-%d", time.Now().UnixNano())
+	meta := session.CompactMetadata{
+		ID:                boundaryID,
+		Trigger:           trigger,
+		Summary:           summary,
+		CreatedAt:         time.Now(),
+		PreTokenEstimate:  preTokens,
+		PostTokenEstimate: postTokens,
+		DroppedMessages:   len(raw),
+	}
+	sess.AddCompactBoundary(meta)
+	if err := sess.Save(); err != nil {
+		return nil, fmt.Errorf("compact session: save boundary: %w", err)
+	}
+	return &CompactSessionResult{
+		BoundaryID:        boundaryID,
+		Trigger:           trigger,
+		Summary:           summary,
+		PreTokenEstimate:  preTokens,
+		PostTokenEstimate: postTokens,
+		DroppedMessages:   len(raw),
+	}, nil
+}
+
+func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.Message) (string, error) {
+	transcript := compactTranscript(messages)
+	if strings.TrimSpace(transcript) == "" {
+		return "", fmt.Errorf("compact session: no textual content to summarize")
+	}
+	prompt := "Summarize the conversation below so another LuckyAgent instance can continue the current task.\n" +
+		"Output plain text only under these headings:\n" +
+		"Current user goal:\nCompleted work:\nPending work:\nKey files and functions:\nCommands and test results:\nUser constraints:\nUncertain facts:\n" +
+		"Rules:\n" +
+		"- Preserve exact file paths, commands, config keys, errors, decisions, and unresolved items.\n" +
+		"- Do not invent commands, test results, files, or user preferences.\n" +
+		"- Do not include generic advice or commentary.\n" +
+		"- Do not request or use tools; this compaction must only produce text.\n\n" +
+		"Conversation:\n" + transcript
+	sumCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	resp, err := a.provider.Chat(sumCtx, []provider.Message{
+		{Role: "system", Content: "You are a compaction agent. Tool use is not allowed. Produce only a factual text summary for future context."},
+		{Role: "user", Content: prompt},
+	})
+	if err != nil {
+		return "", fmt.Errorf("compact session: generate summary: %w", err)
+	}
+	if resp == nil || strings.TrimSpace(resp.Content) == "" {
+		return "", fmt.Errorf("compact session: empty summary")
+	}
+	return strings.TrimSpace(resp.Content), nil
+}
+
+func compactTranscript(messages []provider.Message) string {
+	var b strings.Builder
+	for _, msg := range messages {
+		if session.IsCompactBoundary(msg) {
+			continue
+		}
+		content := strings.TrimSpace(msg.Content)
+		if content == "" && len(msg.ToolCalls) == 0 {
+			continue
+		}
+		role := strings.ToUpper(strings.TrimSpace(msg.Role))
+		if role == "" {
+			role = "MESSAGE"
+		}
+		b.WriteString(role)
+		if msg.Name != "" {
+			b.WriteString("(" + msg.Name + ")")
+		}
+		b.WriteString(": ")
+		if content != "" {
+			b.WriteString(truncate(content, 1200))
+		}
+		if len(msg.ToolCalls) > 0 {
+			b.WriteString(fmt.Sprintf(" [tool_calls=%d]", len(msg.ToolCalls)))
+		}
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func estimateProviderMessages(est *contextx.TokenEstimator, messages []provider.Message) int {
+	if est == nil {
+		return 0
+	}
+	total := 0
+	for _, msg := range messages {
+		total += est.Estimate(msg.Content) + 4
+		if msg.ReasoningContent != "" {
+			total += est.Estimate(msg.ReasoningContent)
+		}
+	}
+	return total
+}
+
 // ChatEvent 是流式对话事件，包含思考过程和内容
 /*
 ChatEvent 描述面向上层流式 UI 的聊天事件。

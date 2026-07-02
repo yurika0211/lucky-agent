@@ -7,6 +7,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/contextx"
 	"github.com/yurika0211/luckyagent/internal/memory"
 	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/session"
 )
 
 func TestBuildTypedMemoryBodyIncludesTypedSections(t *testing.T) {
@@ -121,6 +122,42 @@ func TestSelectIntentAwareRecentHistoryPreservesLatestUserTurn(t *testing.T) {
 	}
 	if !strings.Contains(text, "继续当前九拍双线大纲") {
 		t.Fatalf("expected assistant response after latest user turn to be preserved, got:\n%s", text)
+	}
+}
+
+func TestBuildHistoryMessagesRespectsCompactBoundary(t *testing.T) {
+	sess := session.NewSession("compact-history", t.TempDir())
+	sess.AddMessage("user", "old raw secret before compact")
+	sess.AddMessage("assistant", "old raw assistant before compact")
+	sess.AddCompactBoundary(session.CompactMetadata{
+		ID:      "compact-test",
+		Trigger: "manual",
+		Summary: "compact summary says prior task touched internal/agent/context_planner.go",
+	})
+	sess.AddMessage("user", "new user request after compact")
+	sess.AddMessage("assistant", "new assistant response after compact")
+
+	planner := &contextPlanner{
+		est: contextx.NewTokenEstimator(4096),
+		budget: contextBudget{
+			History: 1200,
+			Memory:  400,
+		},
+		options: contextBuildOptions{
+			IncludeHistory: true,
+			HistoryRecent:  6,
+			HistoryMiddle:  12,
+		},
+	}
+	messages := planner.buildHistoryMessages(sess, "continue compact task")
+	text := messagesToTestText(messages)
+	if strings.Contains(text, "old raw secret") || strings.Contains(text, "old raw assistant") {
+		t.Fatalf("expected raw pre-compact history to be dropped, got:\n%s", text)
+	}
+	for _, want := range []string{"[Compact Summary]", "context_planner.go", "new user request", "new assistant response"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected %q in compacted history, got:\n%s", want, text)
+		}
 	}
 }
 

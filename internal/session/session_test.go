@@ -3,7 +3,9 @@ package session
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/yurika0211/luckyagent/internal/provider"
 )
@@ -82,6 +84,36 @@ func TestAddProviderMessagePreservesToolCallFields(t *testing.T) {
 	}
 	if msgs[0].ReasoningContent != "hidden reasoning" {
 		t.Fatalf("expected reasoning content to be preserved, got %q", msgs[0].ReasoningContent)
+	}
+}
+
+func TestCompactBoundarySplitsPriorRawHistory(t *testing.T) {
+	s := NewSession("test-compact", t.TempDir())
+	s.AddMessage("user", "old raw request")
+	s.AddMessage("assistant", "old raw answer")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:                "compact-test",
+		Trigger:           "manual",
+		Summary:           "summary replaces old raw request",
+		CreatedAt:         time.Now(),
+		PreTokenEstimate:  100,
+		PostTokenEstimate: 10,
+		DroppedMessages:   2,
+	})
+	s.AddMessage("user", "new request")
+
+	after, meta, dropped, ok := MessagesAfterLastCompactBoundary(s.GetMessages())
+	if !ok {
+		t.Fatal("expected compact boundary")
+	}
+	if dropped != 2 {
+		t.Fatalf("expected 2 dropped messages, got %d", dropped)
+	}
+	if meta.ID != "compact-test" || !strings.Contains(meta.Summary, "summary replaces") {
+		t.Fatalf("unexpected metadata: %+v", meta)
+	}
+	if len(after) != 1 || after[0].Content != "new request" {
+		t.Fatalf("unexpected messages after boundary: %+v", after)
 	}
 }
 

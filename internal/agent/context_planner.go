@@ -986,6 +986,7 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session, query strin
 	if len(all) == 0 {
 		return nil
 	}
+	compactSummary, all := p.compactBoundaryContext(all)
 	intentTerms := historyIntentTerms(query+" "+sess.Title, all)
 
 	recentCount := p.options.HistoryRecent
@@ -1007,6 +1008,9 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session, query strin
 	}
 
 	var messages []provider.Message
+	if compactSummary.Content != "" {
+		messages = append(messages, compactSummary)
+	}
 	if recentStart > 0 {
 		middleStart := recentStart - middleCount
 		if middleStart < 0 {
@@ -1043,6 +1047,29 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session, query strin
 	return messages
 }
 
+func (p *contextPlanner) compactBoundaryContext(messages []provider.Message) (provider.Message, []provider.Message) {
+	after, meta, dropped, ok := session.MessagesAfterLastCompactBoundary(messages)
+	if !ok {
+		return provider.Message{}, messages
+	}
+	summary := strings.TrimSpace(meta.Summary)
+	if summary == "" {
+		return provider.Message{}, after
+	}
+	var b strings.Builder
+	b.WriteString("[Compact Summary]\n")
+	b.WriteString("This summary replaces earlier raw session history before the latest compact boundary. Treat it as prior evidence, not the current user request.\n")
+	if strings.TrimSpace(meta.Trigger) != "" {
+		b.WriteString("Trigger: " + strings.TrimSpace(meta.Trigger) + "\n")
+	}
+	if dropped > 0 {
+		b.WriteString(fmt.Sprintf("Dropped raw messages: %d\n", dropped))
+	}
+	b.WriteString("\n")
+	b.WriteString(summary)
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(b.String(), utils.MaxInt(128, p.budget.History/3))}, after
+}
+
 func (p *contextPlanner) summarizeIntentAwareConversationRange(ctx context.Context, sess *session.Session, messages []provider.Message, header string, tokenBudget int, terms []string) string {
 	filtered := filterIntentAwareHistory(messages, terms)
 	if len(filtered) == 0 {
@@ -1066,7 +1093,7 @@ func filterIntentAwareHistory(messages []provider.Message, terms []string) []pro
 
 func (p *contextPlanner) selectIntentAwareRecentHistory(messages []provider.Message, terms []string) []provider.Message {
 	if len(messages) <= 2 {
-		return filterIntentAwareHistory(messages, terms)
+		return append([]provider.Message(nil), messages...)
 	}
 	latestUserIdx := latestUserMessageIndex(messages)
 	selected := make([]provider.Message, 0, len(messages))

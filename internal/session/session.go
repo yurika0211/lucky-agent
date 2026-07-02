@@ -14,6 +14,19 @@ import (
 	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
+const CompactBoundaryName = "compact_boundary"
+
+// CompactMetadata records a session compaction boundary.
+type CompactMetadata struct {
+	ID                string    `json:"id"`
+	Trigger           string    `json:"trigger"`
+	Summary           string    `json:"summary"`
+	CreatedAt         time.Time `json:"created_at"`
+	PreTokenEstimate  int       `json:"pre_token_estimate,omitempty"`
+	PostTokenEstimate int       `json:"post_token_estimate,omitempty"`
+	DroppedMessages   int       `json:"dropped_messages,omitempty"`
+}
+
 // Session 代表一次对话会话
 type Session struct {
 	mu        sync.RWMutex
@@ -161,6 +174,75 @@ func (s *Session) AddToolMessageWithCallID(callID, toolName, result string) {
 		ToolCallID: callID,
 		Name:       toolName,
 	})
+}
+
+// AddCompactBoundary appends a compact boundary marker. The marker summary
+// represents prior raw history for future context construction.
+func (s *Session) AddCompactBoundary(meta CompactMetadata) provider.Message {
+	if strings.TrimSpace(meta.ID) == "" {
+		meta.ID = fmt.Sprintf("compact-%d", time.Now().UnixNano())
+	}
+	if strings.TrimSpace(meta.Trigger) == "" {
+		meta.Trigger = "manual"
+	}
+	if meta.CreatedAt.IsZero() {
+		meta.CreatedAt = time.Now()
+	}
+	msg := CompactBoundaryMessage(meta)
+	s.AddProviderMessage(msg)
+	return msg
+}
+
+// CompactBoundaryMessage converts metadata to a system marker message.
+func CompactBoundaryMessage(meta CompactMetadata) provider.Message {
+	meta.Summary = strings.TrimSpace(meta.Summary)
+	data, err := json.Marshal(meta)
+	content := meta.Summary
+	if err == nil {
+		content = string(data)
+	}
+	return provider.Message{
+		Role:    "system",
+		Name:    CompactBoundaryName,
+		Content: content,
+	}
+}
+
+func IsCompactBoundary(msg provider.Message) bool {
+	return msg.Role == "system" && msg.Name == CompactBoundaryName
+}
+
+func ParseCompactMetadata(msg provider.Message) (CompactMetadata, bool) {
+	if !IsCompactBoundary(msg) {
+		return CompactMetadata{}, false
+	}
+	var meta CompactMetadata
+	if err := json.Unmarshal([]byte(strings.TrimSpace(msg.Content)), &meta); err == nil {
+		return meta, true
+	}
+	summary := strings.TrimSpace(msg.Content)
+	if summary == "" {
+		return CompactMetadata{}, false
+	}
+	return CompactMetadata{Summary: summary}, true
+}
+
+// MessagesAfterLastCompactBoundary returns raw messages after the latest
+// boundary, the boundary metadata, and the number of raw messages represented
+// by the compact summary.
+func MessagesAfterLastCompactBoundary(messages []provider.Message) ([]provider.Message, CompactMetadata, int, bool) {
+	last := -1
+	for i, msg := range messages {
+		if IsCompactBoundary(msg) {
+			last = i
+		}
+	}
+	if last < 0 {
+		return messages, CompactMetadata{}, 0, false
+	}
+	meta, _ := ParseCompactMetadata(messages[last])
+	after := messages[last+1:]
+	return after, meta, last, true
 }
 
 // GetMessages 获取消息（懒加载 + 滑动窗口）
