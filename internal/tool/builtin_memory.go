@@ -210,7 +210,7 @@ func MemoryHygieneTool(handler func(args map[string]any) (string, error)) *Tool 
 		Parameters: map[string]Param{
 			"action": {
 				Type:        "string",
-				Description: "Action: audit, quarantine, or delete. Use audit first unless the user explicitly asks to clean.",
+				Description: "Action: audit, quarantine, delete, or restore. Use audit first unless the user explicitly asks to clean.",
 				Required:    false,
 				Default:     "audit",
 			},
@@ -228,9 +228,32 @@ func MemoryHygieneTool(handler func(args map[string]any) (string, error)) *Tool 
 			},
 			"limit": {
 				Type:        "number",
-				Description: "Maximum number of findings to return or apply.",
+				Description: "Maximum number of findings to return or apply. Use 0 only with allow_unlimited=true.",
 				Required:    false,
 				Default:     50,
+			},
+			"dry_run": {
+				Type:        "boolean",
+				Description: "Preview quarantine or delete without modifying memory.",
+				Required:    false,
+				Default:     false,
+			},
+			"confirm_delete": {
+				Type:        "boolean",
+				Description: "Required true for action=delete because delete physically removes memory files.",
+				Required:    false,
+				Default:     false,
+			},
+			"ids": {
+				Type:        "array",
+				Description: "Optional memory IDs to audit, quarantine, delete, or restore precisely.",
+				Required:    false,
+			},
+			"allow_unlimited": {
+				Type:        "boolean",
+				Description: "Required true to allow limit=0 unlimited scans.",
+				Required:    false,
+				Default:     false,
 			},
 		},
 		Handler:      handler,

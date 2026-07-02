@@ -20,6 +20,8 @@ const (
 	maxRecallQueryRunes        = 1000
 	defaultRecallGraphDepth    = 1
 	maxRecallGraphDepth        = 3
+	defaultHygieneLimit        = 50
+	maxHygieneLimit            = 200
 )
 
 // MemoryToolService implements remember/recall handlers in the tool layer.
@@ -467,32 +469,43 @@ func (s *MemoryToolService) HandleHygiene(args map[string]any) (string, error) {
 	if s == nil || s.store == nil {
 		return "", fmt.Errorf("memory store not initialized")
 	}
-	action := strings.ToLower(strings.TrimSpace(stringArg(args["action"])))
-	if action == "" {
-		action = "audit"
-	}
-	limit := 50
-	if rawLimit, ok := numberArg(args["limit"]); ok {
-		limit = int(rawLimit)
-	}
-	opts := memory.HygieneOptions{
-		MinSeverity:     stringArg(args["min_severity"]),
-		IncludeInactive: boolArg(args["include_inactive"]),
-		MaxFindings:     limit,
+	opts, action, dryRun, err := parseHygieneToolOptions(args)
+	if err != nil {
+		return "", err
 	}
 	var (
 		report memory.HygieneReport
-		err    error
 	)
 	switch action {
 	case "audit", "scan", "dry_run", "dry-run":
 		report = s.store.AuditHygiene(opts)
 	case "quarantine", "archive":
-		report, err = s.store.QuarantineDirty(opts)
+		if dryRun {
+			report = s.store.AuditHygiene(opts)
+			report.Action = "quarantine"
+			report.DryRun = true
+		} else {
+			report, err = s.store.QuarantineDirty(opts)
+		}
 	case "delete", "purge":
-		report, err = s.store.DeleteDirty(opts)
+		if !boolArg(args["confirm_delete"]) {
+			return "", fmt.Errorf("delete requires confirm_delete=true; run audit first and prefer quarantine")
+		}
+		if dryRun {
+			report = s.store.AuditHygiene(opts)
+			report.Action = "delete"
+			report.DryRun = true
+		} else {
+			report, err = s.store.DeleteDirty(opts)
+		}
+	case "restore":
+		if dryRun {
+			report = memory.HygieneReport{Action: "restore", DryRun: true}
+		} else {
+			report, err = s.store.RestoreHygiene(opts)
+		}
 	default:
-		return "", fmt.Errorf("invalid memory_hygiene action %q (use audit, quarantine, or delete)", action)
+		return "", fmt.Errorf("invalid memory_hygiene action %q (use audit, quarantine, delete, or restore)", action)
 	}
 	if err != nil {
 		return "", err
@@ -502,6 +515,41 @@ func (s *MemoryToolService) HandleHygiene(args map[string]any) (string, error) {
 		return "", err
 	}
 	return string(payload), nil
+}
+
+func parseHygieneToolOptions(args map[string]any) (memory.HygieneOptions, string, bool, error) {
+	action := strings.ToLower(strings.TrimSpace(stringArg(args["action"])))
+	if action == "" {
+		action = "audit"
+	}
+	minSeverity := strings.ToLower(strings.TrimSpace(stringArg(args["min_severity"])))
+	if minSeverity == "" {
+		minSeverity = "medium"
+	}
+	switch minSeverity {
+	case "low", "medium", "high", "critical":
+	default:
+		return memory.HygieneOptions{}, "", false, fmt.Errorf("min_severity must be low, medium, high, or critical")
+	}
+	limit := defaultHygieneLimit
+	if rawLimit, ok := numberArg(args["limit"]); ok {
+		limit = int(rawLimit)
+	}
+	if limit < 0 {
+		return memory.HygieneOptions{}, "", false, fmt.Errorf("limit must be >= 0")
+	}
+	if limit == 0 && !boolArg(args["allow_unlimited"]) {
+		return memory.HygieneOptions{}, "", false, fmt.Errorf("limit=0 requires allow_unlimited=true")
+	}
+	if limit > maxHygieneLimit {
+		return memory.HygieneOptions{}, "", false, fmt.Errorf("limit exceeds maximum %d", maxHygieneLimit)
+	}
+	return memory.HygieneOptions{
+		MinSeverity:     minSeverity,
+		IncludeInactive: boolArg(args["include_inactive"]),
+		MaxFindings:     limit,
+		IDs:             stringSliceArg(args["ids"]),
+	}, action, boolArg(args["dry_run"]), nil
 }
 
 func memorySourceNotice(store *memory.Store) string {
