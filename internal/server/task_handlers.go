@@ -2,12 +2,30 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
+
+type taskFeedbackRequest struct {
+	Status          taskstore.Status       `json:"status"`
+	Verified        bool                   `json:"verified"`
+	Verifier        string                 `json:"verifier"`
+	UserFeedback    string                 `json:"user_feedback"`
+	Score           float64                `json:"score"`
+	Cost            taskstore.CostSnapshot `json:"cost"`
+	RecommendedNext string                 `json:"recommended_next"`
+}
+
+type taskCancelRequest struct {
+	Reason string `json:"reason"`
+}
 
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -122,9 +140,129 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.sendJSON(w, http.StatusOK, taskstore.ReduceObservation(record, events))
+	case "feedback":
+		if r.Method != http.MethodPost {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		s.handleTaskFeedback(w, r, store, taskID)
+	case "cancel":
+		if r.Method != http.MethodPost {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		s.handleTaskCancel(w, r, store, taskID)
 	default:
 		s.sendError(w, "not found", http.StatusNotFound, "")
 	}
+}
+
+func (s *Server) handleTaskFeedback(w http.ResponseWriter, r *http.Request, store taskstore.Store, taskID string) {
+	var req taskFeedbackRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			s.sendError(w, "invalid feedback body", http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	record, ok, err := store.Get(taskID)
+	if err != nil {
+		s.sendError(w, "get task failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		s.sendError(w, "task not found", http.StatusNotFound, taskID)
+		return
+	}
+	record.Outcome = taskstore.Outcome{
+		Status:          firstStatus(req.Status, record.Status),
+		Verified:        req.Verified,
+		Verifier:        strings.TrimSpace(req.Verifier),
+		UserFeedback:    strings.TrimSpace(req.UserFeedback),
+		Score:           req.Score,
+		Cost:            req.Cost,
+		RecommendedNext: strings.TrimSpace(req.RecommendedNext),
+	}
+	if err := store.Update(record); err != nil {
+		s.sendError(w, "record task feedback failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := store.AppendEvent(taskstore.Event{
+		Type:    taskstore.EventOutcomeRecorded,
+		TaskID:  record.ID,
+		Time:    time.Now(),
+		Status:  record.Outcome.Status,
+		Message: record.Outcome.UserFeedback,
+		Cost:    record.Outcome.Cost,
+		Metadata: map[string]string{
+			"verified":         fmt.Sprintf("%t", record.Outcome.Verified),
+			"verifier":         record.Outcome.Verifier,
+			"score":            fmt.Sprintf("%.4f", record.Outcome.Score),
+			"recommended_next": record.Outcome.RecommendedNext,
+		},
+	}); err != nil {
+		s.sendError(w, "append task feedback event failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.sendJSON(w, http.StatusOK, record)
+}
+
+func (s *Server) handleTaskCancel(w http.ResponseWriter, r *http.Request, store taskstore.Store, taskID string) {
+	var req taskCancelRequest
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			s.sendError(w, "invalid cancel body", http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	record, ok, err := store.Get(taskID)
+	if err != nil {
+		s.sendError(w, "get task failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		s.sendError(w, "task not found", http.StatusNotFound, taskID)
+		return
+	}
+	switch record.Status {
+	case taskstore.StatusCompleted, taskstore.StatusFailed, taskstore.StatusCancelled:
+		s.sendError(w, "task cannot be cancelled from current status", http.StatusConflict, string(record.Status))
+		return
+	}
+	reason := strings.TrimSpace(req.Reason)
+	if reason == "" {
+		reason = "cancelled by user"
+	}
+	if s.delegateManager != nil && record.Source == taskstore.SourceHTTP {
+		_ = s.delegateManager.CancelTask(record.ID)
+	}
+	record.Status = taskstore.StatusCancelled
+	now := time.Now()
+	record.CompletedAt = now
+	record.Outcome.Status = taskstore.StatusCancelled
+	record.Outcome.UserFeedback = reason
+	if err := store.Update(record); err != nil {
+		s.sendError(w, "cancel task failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := store.AppendEvent(taskstore.Event{
+		Type:    taskstore.EventCancelled,
+		TaskID:  record.ID,
+		Time:    now,
+		Status:  taskstore.StatusCancelled,
+		Message: reason,
+	}); err != nil {
+		s.sendError(w, "append task cancellation event failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.sendJSON(w, http.StatusOK, record)
+}
+
+func firstStatus(primary, fallback taskstore.Status) taskstore.Status {
+	if primary != "" {
+		return primary
+	}
+	return fallback
 }
 
 func boundedTasksLimit(raw string) int {

@@ -527,6 +527,51 @@ func TestHandleTasksAPI(t *testing.T) {
 	if obs["recommended_next"] != "verify" {
 		t.Fatalf("expected verify recommendation, got %+v", obs)
 	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-api-test/feedback", bytes.NewBufferString(`{"status":"completed","verified":true,"verifier":"test","user_feedback":"accepted","score":0.9,"recommended_next":"finalize"}`))
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 feedback, got %d: %s", w.Code, w.Body.String())
+	}
+	updated, ok, err := a.TaskStore().Get(record.ID)
+	if err != nil || !ok {
+		t.Fatalf("get feedback task: ok=%t err=%v", ok, err)
+	}
+	if !updated.Outcome.Verified || updated.Outcome.UserFeedback != "accepted" || updated.Outcome.RecommendedNext != "finalize" {
+		t.Fatalf("unexpected outcome: %+v", updated.Outcome)
+	}
+	events, err := a.TaskStore().Events(record.ID)
+	if err != nil {
+		t.Fatalf("events after feedback: %v", err)
+	}
+	if events[len(events)-1].Type != taskstore.EventOutcomeRecorded {
+		t.Fatalf("expected outcome event, got %+v", events[len(events)-1])
+	}
+
+	cancelRecord, err := a.TaskStore().Create(taskstore.Record{
+		ID:          "task-cancel-test",
+		Source:      taskstore.SourceTool,
+		Mode:        taskstore.ModeSingle,
+		Status:      taskstore.StatusRunning,
+		Description: "cancel me",
+	})
+	if err != nil {
+		t.Fatalf("create cancel task: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-cancel-test/cancel", bytes.NewBufferString(`{"reason":"stop now"}`))
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 cancel, got %d: %s", w.Code, w.Body.String())
+	}
+	cancelled, ok, err := a.TaskStore().Get(cancelRecord.ID)
+	if err != nil || !ok {
+		t.Fatalf("get cancel task: ok=%t err=%v", ok, err)
+	}
+	if cancelled.Status != taskstore.StatusCancelled || cancelled.Outcome.UserFeedback != "stop now" {
+		t.Fatalf("unexpected cancelled task: %+v", cancelled)
+	}
 }
 
 func TestHandleSessionCompactDryRun(t *testing.T) {
