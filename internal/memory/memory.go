@@ -540,6 +540,141 @@ func (s *Store) Search(query string) []Entry {
 	return activationScoresToEntries(s.Activate(query, DefaultActivationOptions()))
 }
 
+// SearchOptions controls durable memory search from tool/API callers.
+type SearchOptions struct {
+	Limit           int
+	Category        string
+	Tier            *Tier
+	IncludeInactive bool
+	IncludeExpired  bool
+	AsOf            time.Time
+	IncludeGraph    bool
+	GraphDepth      int
+	Explain         bool
+}
+
+// SearchResult contains a memory entry plus ranking/explanation signals.
+type SearchResult struct {
+	Entry       Entry            `json:"entry"`
+	Score       float64          `json:"score"`
+	DirectScore float64          `json:"direct_score,omitempty"`
+	GraphScore  float64          `json:"graph_score,omitempty"`
+	Paths       []ActivationPath `json:"paths,omitempty"`
+}
+
+// SearchWithOptions searches memory with bounded filters and structured scores.
+func (s *Store) SearchWithOptions(query string, opts SearchOptions) []SearchResult {
+	if s == nil {
+		return nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	customAsOf := !opts.AsOf.IsZero()
+	if opts.AsOf.IsZero() {
+		opts.AsOf = time.Now()
+	}
+	if opts.GraphDepth < 0 {
+		opts.GraphDepth = 0
+	}
+	if opts.GraphDepth == 0 {
+		opts.IncludeGraph = false
+	}
+	if opts.IncludeGraph && opts.GraphDepth == 0 {
+		opts.GraphDepth = 1
+	}
+	activationLimit := opts.Limit
+	if activationLimit > 0 {
+		activationLimit *= 3
+	}
+	if opts.IncludeInactive || opts.IncludeExpired || customAsOf {
+		return s.searchEntriesWithOptions(query, opts)
+	}
+	scores := s.Activate(query, ActivationOptions{
+		Limit:             activationLimit,
+		IncludeGraph:      opts.IncludeGraph,
+		MaxGraphDepth:     opts.GraphDepth,
+		MaxGraphBoost:     0.45,
+		MaxGraphSeeds:     12,
+		UpdateAccessStats: true,
+		Explain:           opts.Explain,
+	})
+	results := make([]SearchResult, 0, len(scores))
+	for _, score := range scores {
+		if !memorySearchResultAllowed(score.Entry, opts) {
+			continue
+		}
+		result := SearchResult{
+			Entry:       score.Entry,
+			Score:       score.Score,
+			DirectScore: score.DirectScore,
+			GraphScore:  score.Components.GraphBoost,
+		}
+		if opts.Explain {
+			result.Paths = score.Paths
+		}
+		results = append(results, result)
+		if opts.Limit > 0 && len(results) >= opts.Limit {
+			break
+		}
+	}
+	return results
+}
+
+func (s *Store) searchEntriesWithOptions(query string, opts SearchOptions) []SearchResult {
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+	queryTerms := extractQueryTerms(queryLower)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	results := make([]SearchResult, 0, len(s.entries))
+	for _, e := range s.entries {
+		if e == nil || isConceptEntry(e) {
+			continue
+		}
+		if !opts.IncludeInactive && !entryIsActive(e, opts.AsOf) {
+			continue
+		}
+		if !opts.IncludeExpired && e.ExpiresAt != nil && !e.ExpiresAt.After(opts.AsOf) {
+			continue
+		}
+		if !memorySearchResultAllowed(*e, opts) {
+			continue
+		}
+		components := matchActivation(e, queryLower, queryTerms)
+		matchScore := components.MatchScore()
+		if matchScore <= 0 {
+			continue
+		}
+		score := matchScore * e.Weight(opts.AsOf) * tierActivationMultiplier(e.Tier)
+		results = append(results, SearchResult{
+			Entry:       *e,
+			Score:       score,
+			DirectScore: score,
+		})
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			return results[i].Entry.CreatedAt.After(results[j].Entry.CreatedAt)
+		}
+		return results[i].Score > results[j].Score
+	})
+	if opts.Limit > 0 && len(results) > opts.Limit {
+		results = results[:opts.Limit]
+	}
+	return results
+}
+
+func memorySearchResultAllowed(e Entry, opts SearchOptions) bool {
+	if strings.TrimSpace(opts.Category) != "" && !strings.EqualFold(e.Category, opts.Category) {
+		return false
+	}
+	if opts.Tier != nil && e.Tier != *opts.Tier {
+		return false
+	}
+	return true
+}
+
 // SetActivationReranker installs an optional post-recall reranker. Passing nil
 // restores the default activation ordering.
 func (s *Store) SetActivationReranker(reranker ActivationReranker) {

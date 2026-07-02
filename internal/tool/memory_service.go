@@ -14,6 +14,12 @@ import (
 const (
 	maxMemoryToolMetadataItems = 20
 	maxMemoryToolMetadataRunes = 80
+	defaultRecallSearchLimit   = 10
+	defaultRecallRecentLimit   = 5
+	maxRecallLimit             = 50
+	maxRecallQueryRunes        = 1000
+	defaultRecallGraphDepth    = 1
+	maxRecallGraphDepth        = 3
 )
 
 // MemoryToolService implements remember/recall handlers in the tool layer.
@@ -245,8 +251,66 @@ func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {
 		return "", fmt.Errorf("memory store not initialized")
 	}
 	query, _ := args["query"].(string)
+	query = strings.TrimSpace(query)
+	if len([]rune(query)) > maxRecallQueryRunes {
+		return "", fmt.Errorf("query exceeds %d rune limit", maxRecallQueryRunes)
+	}
+	mode := strings.ToLower(strings.TrimSpace(stringArg(args["mode"])))
+	if mode == "" {
+		if query == "" {
+			mode = "recent"
+		} else {
+			mode = "search"
+		}
+	}
+	if mode != "recent" && mode != "search" {
+		return "", fmt.Errorf("mode must be recent or search")
+	}
+	if mode == "search" && query == "" {
+		return "", fmt.Errorf("query is required when mode=search")
+	}
+	limitDefault := defaultRecallSearchLimit
+	if mode == "recent" {
+		limitDefault = defaultRecallRecentLimit
+	}
+	limit, err := boundedIntArg(args["limit"], limitDefault, 1, maxRecallLimit, "limit")
+	if err != nil {
+		return "", err
+	}
+	format := strings.ToLower(strings.TrimSpace(stringArg(args["format"])))
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return "", fmt.Errorf("format must be text or json")
+	}
+	var tierPtr *memory.Tier
+	if rawTier := stringArg(args["tier"]); rawTier != "" {
+		tier, err := parseMemoryToolTierStrict(rawTier)
+		if err != nil {
+			return "", err
+		}
+		tierPtr = &tier
+	}
+	var asOf time.Time
+	if parsed, ok, err := timeArg(args["as_of"]); err != nil {
+		return "", err
+	} else if ok {
+		asOf = parsed
+	}
+	graphDepth, err := boundedIntArg(args["graph_depth"], defaultRecallGraphDepth, 0, maxRecallGraphDepth, "graph_depth")
+	if err != nil {
+		return "", err
+	}
 	if query == "" {
-		recent := s.store.Recent(5)
+		recent := s.store.Recent(limit)
+		recent = filterRecallEntries(recent, stringArg(args["category"]), tierPtr)
+		if len(recent) > limit {
+			recent = recent[:limit]
+		}
+		if format == "json" {
+			return formatRecallRecentJSON(memoryVaultPathForTool(s.store), recent)
+		}
 		if len(recent) == 0 {
 			return "没有找到记忆", nil
 		}
@@ -258,19 +322,29 @@ func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {
 		}
 		return sb.String(), nil
 	}
-	results := s.store.Search(query)
+	results := s.store.SearchWithOptions(query, memory.SearchOptions{
+		Limit:           limit,
+		Category:        stringArg(args["category"]),
+		Tier:            tierPtr,
+		IncludeInactive: boolArg(args["include_inactive"]),
+		IncludeExpired:  boolArg(args["include_expired"]),
+		AsOf:            asOf,
+		IncludeGraph:    graphDepth > 0,
+		GraphDepth:      graphDepth,
+		Explain:         boolArg(args["explain_graph"]),
+	})
+	if format == "json" {
+		return formatRecallSearchJSON(memoryVaultPathForTool(s.store), query, graphDepth, results)
+	}
 	if len(results) == 0 {
 		return fmt.Sprintf("没有找到关于「%s」的记忆", query), nil
 	}
 	var sb strings.Builder
 	sb.WriteString(memorySourceNotice(s.store))
 	sb.WriteString(fmt.Sprintf("找到 %d 条关于「%s」的记忆：\n", len(results), query))
-	limit := 10
-	if len(results) < limit {
-		limit = len(results)
-	}
-	for i := 0; i < limit; i++ {
-		e := results[i]
+	for i := 0; i < len(results); i++ {
+		result := results[i]
+		e := result.Entry
 		ref := ""
 		if e.Path != "" {
 			ref = " @" + e.Path
@@ -282,9 +356,111 @@ func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {
 		if len(e.Links) > 0 {
 			graph = " links=" + strings.Join(limitStrings(e.Links, 4), ",")
 		}
-		sb.WriteString(fmt.Sprintf("- [%s/%s%s%s] %s\n", e.Category, e.Tier.String(), graph, ref, utils.Truncate(e.Content, 100)))
+		score := ""
+		if result.Score > 0 {
+			score = fmt.Sprintf(" score=%0.2f", result.Score)
+		}
+		sb.WriteString(fmt.Sprintf("- [%s/%s%s%s%s] %s\n", e.Category, e.Tier.String(), score, graph, ref, utils.Truncate(e.Content, 100)))
 	}
 	return sb.String(), nil
+}
+
+type recallEntryJSON struct {
+	ID          string                  `json:"id"`
+	Category    string                  `json:"category"`
+	Tier        string                  `json:"tier"`
+	Content     string                  `json:"content"`
+	Path        string                  `json:"path,omitempty"`
+	BlockID     string                  `json:"block_id,omitempty"`
+	Links       []string                `json:"links,omitempty"`
+	Status      string                  `json:"status,omitempty"`
+	Confidence  float64                 `json:"confidence,omitempty"`
+	Score       float64                 `json:"score,omitempty"`
+	DirectScore float64                 `json:"direct_score,omitempty"`
+	GraphScore  float64                 `json:"graph_score,omitempty"`
+	Paths       []memory.ActivationPath `json:"paths,omitempty"`
+}
+
+func formatRecallSearchJSON(source, query string, graphDepth int, results []memory.SearchResult) (string, error) {
+	payload := struct {
+		Source     string            `json:"source"`
+		Query      string            `json:"query"`
+		GraphDepth int               `json:"graph_depth"`
+		Count      int               `json:"count"`
+		Results    []recallEntryJSON `json:"results"`
+	}{
+		Source:     source,
+		Query:      query,
+		GraphDepth: graphDepth,
+		Count:      len(results),
+		Results:    make([]recallEntryJSON, 0, len(results)),
+	}
+	for _, result := range results {
+		payload.Results = append(payload.Results, recallEntryToJSON(result.Entry, result))
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func formatRecallRecentJSON(source string, entries []memory.Entry) (string, error) {
+	payload := struct {
+		Source  string            `json:"source"`
+		Mode    string            `json:"mode"`
+		Count   int               `json:"count"`
+		Results []recallEntryJSON `json:"results"`
+	}{
+		Source:  source,
+		Mode:    "recent",
+		Count:   len(entries),
+		Results: make([]recallEntryJSON, 0, len(entries)),
+	}
+	for _, entry := range entries {
+		payload.Results = append(payload.Results, recallEntryToJSON(entry, memory.SearchResult{}))
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func recallEntryToJSON(entry memory.Entry, result memory.SearchResult) recallEntryJSON {
+	return recallEntryJSON{
+		ID:          entry.ID,
+		Category:    entry.Category,
+		Tier:        entry.Tier.String(),
+		Content:     entry.Content,
+		Path:        entry.Path,
+		BlockID:     entry.BlockID,
+		Links:       entry.Links,
+		Status:      entry.Status,
+		Confidence:  entry.Confidence,
+		Score:       result.Score,
+		DirectScore: result.DirectScore,
+		GraphScore:  result.GraphScore,
+		Paths:       result.Paths,
+	}
+}
+
+func filterRecallEntries(entries []memory.Entry, category string, tier *memory.Tier) []memory.Entry {
+	category = strings.TrimSpace(category)
+	if category == "" && tier == nil {
+		return entries
+	}
+	out := make([]memory.Entry, 0, len(entries))
+	for _, entry := range entries {
+		if category != "" && !strings.EqualFold(entry.Category, category) {
+			continue
+		}
+		if tier != nil && entry.Tier != *tier {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func (s *MemoryToolService) HandleHygiene(args map[string]any) (string, error) {
@@ -350,6 +526,19 @@ func parseMemoryToolTier(raw string) memory.Tier {
 	}
 }
 
+func parseMemoryToolTierStrict(raw string) (memory.Tier, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "short", "短期":
+		return memory.TierShort, nil
+	case "medium", "中期":
+		return memory.TierMedium, nil
+	case "long", "长期":
+		return memory.TierLong, nil
+	default:
+		return memory.TierMedium, fmt.Errorf("tier must be short, medium, or long")
+	}
+}
+
 func defaultImportanceForTier(t memory.Tier) float64 {
 	switch t {
 	case memory.TierShort:
@@ -388,6 +577,17 @@ func numberArg(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func boundedIntArg(v any, defaultValue, minValue, maxValue int, name string) (int, error) {
+	value := defaultValue
+	if raw, ok := numberArg(v); ok {
+		value = int(raw)
+	}
+	if value < minValue || value > maxValue {
+		return 0, fmt.Errorf("%s must be between %d and %d", name, minValue, maxValue)
+	}
+	return value, nil
 }
 
 func stringArg(v any) string {
