@@ -2,10 +2,13 @@ package collab
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
 
 func TestPlannerChoosesParallelForIndependentWork(t *testing.T) {
@@ -172,6 +175,11 @@ func TestDelegateManagerAutoModeUsesPlanner(t *testing.T) {
 		return "result_from_" + task.AgentID, nil
 	})
 	dm := NewDelegateManager(r, handler)
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	dm.SetTaskStore(store)
 
 	task, err := dm.Delegate(context.Background(), ModeAuto, "分别检查三个独立模块", "input", []string{"agent-1", "agent-2", "agent-3"}, 10*time.Second)
 	if err != nil {
@@ -197,5 +205,25 @@ func TestDelegateManagerAutoModeUsesPlanner(t *testing.T) {
 	}
 	if updated.Metadata["mdp_state"] == "" {
 		t.Fatalf("missing mdp state metadata: %+v", updated.Metadata)
+	}
+	record, ok, err := store.Get(task.ID)
+	if err != nil || !ok {
+		t.Fatalf("expected unified task record, ok=%t err=%v", ok, err)
+	}
+	if record.Status != taskstore.StatusCompleted || record.Mode != taskstore.ModeParallel {
+		t.Fatalf("unexpected unified task record: %+v", record)
+	}
+	events, err := store.Events(task.ID)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) < 6 {
+		t.Fatalf("expected lifecycle and child events, got %+v", events)
+	}
+	if _, err := os.Stat(filepath.Join(store.Root(), task.ID, "planner_trace.json")); err != nil {
+		t.Fatalf("missing planner trace artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.Root(), task.ID, "result.md")); err != nil {
+		t.Fatalf("missing result artifact: %v", err)
 	}
 }
