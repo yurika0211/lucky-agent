@@ -15,6 +15,7 @@ LuckyAgent 的 delegate 工具组用于把任务委派给子代理、查询任�
 - `delegate_task`
 - `task_status`
 - `list_tasks`
+- `delegate_cancel`
 
 代码中还定义：
 
@@ -29,6 +30,7 @@ LuckyAgent 的 delegate 工具组用于把任务委派给子代理、查询任�
 | `delegate_task` | `PermApprove` | 委派单个任务给子代理异步执行。 |
 | `task_status` | `PermAuto` | 查询指定委派任务状态。 |
 | `list_tasks` | `PermAuto` | 列出所有委派任务。 |
+| `delegate_cancel` | `PermApprove` | 取消 pending/running 委派任务。 |
 | `delegate_parallel` | `PermApprove` | 并行委派多个任务并汇总结果。 |
 | `delegate_to_skill` | `PermApprove` | 委派任务给指定 skill。 |
 | `delegate_to_mcp` | `PermApprove` | 委派任务给指定 MCP server/tool。 |
@@ -41,7 +43,7 @@ LuckyAgent 的 delegate 工具组用于把任务委派给子代理、查询任�
 | --- | --- | --- | --- |
 | `description` | 是 | 无 | 要委派的任务描述。 |
 | `context` | 否 | 空字符串 | 额外上下文或子代理指令。 |
-| `timeout` | 否 | `120` | 超时时间，单位秒。 |
+| `timeout` | 否 | `120` | 超时时间，单位秒；当前会限制在 5-1800 秒之间。 |
 
 执行流程：
 
@@ -52,7 +54,7 @@ LuckyAgent 的 delegate 工具组用于把任务委派给子代理、查询任�
 5. 调用 `prepareDelegateExecutionContext` 准备 workspace 和增强上下文。
 6. 将任务记录到 manager 内存 map。
 7. 启动 goroutine 异步执行。
-8. 返回 task id、running 状态和 workspace。
+8. 返回 task id、running 状态、workspace 和实际 timeout。
 
 成功输出：
 
@@ -61,6 +63,7 @@ LuckyAgent 的 delegate 工具组用于把任务委派给子代理、查询任�
   "task_id": "task-1",
   "status": "running",
   "workspace": "...",
+  "timeout_seconds": 120,
   "message": "Task 'task-1' delegated. Use task_status to check progress."
 }
 ```
@@ -75,9 +78,10 @@ Sub-agent task completed (no executor): <description>
 
 参数：
 
-| 参数 | 必填 | 说明 |
-| --- | --- | --- |
-| `task_id` | 是 | 要查询的任务 ID。 |
+| 参数 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `task_id` | 是 | 无 | 要查询的任务 ID。 |
+| `include_result` | 否 | `true` | 是否返回内联结果文本。 |
 
 输出：
 
@@ -87,12 +91,16 @@ Sub-agent task completed (no executor): <description>
   "description": "...",
   "workspace": "...",
   "status": "completed",
+  "result_summary": "...",
   "result": "...",
-  "error": "",
+  "result_bytes": 123,
+  "result_truncated": false,
   "started_at": "2026-07-03T00:00:00+08:00",
   "completed_at": "2026-07-03T00:01:00+08:00"
 }
 ```
+
+结果会按 `DelegateConfig.MaxResultBytesInline` 截断，默认内联上限为 4000 字节。未完成任务的 `completed_at` 返回空字符串。`include_result=false` 时仍返回 `result_summary`、`result_bytes` 和 `result_truncated`，但不返回 `result` 字段。
 
 任务不存在时返回：
 
@@ -104,9 +112,12 @@ task not found: <task_id>
 
 参数：
 
-```json
-{}
-```
+| 参数 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `status` | 否 | 空 | 按状态过滤：`pending`、`running`、`completed`、`failed`、`cancelled`。 |
+| `limit` | 否 | `20` | 返回数量上限，最大 `100`。 |
+| `order` | 否 | `desc` | 按 `started_at` 排序：`desc` 或 `asc`。 |
+| `include_result` | 否 | `false` | 是否包含每个任务的结果摘要字段。 |
 
 输出：
 
@@ -121,9 +132,44 @@ task not found: <task_id>
       "started_at": "2026-07-03T00:00:00+08:00"
     }
   ],
-  "count": 1
+  "count": 1,
+  "total": 1,
+  "by_status": {
+    "pending": 0,
+    "running": 1,
+    "completed": 0,
+    "failed": 0,
+    "cancelled": 0
+  }
 }
 ```
+
+`list_tasks` 会锁内复制任务快照，锁外过滤、排序和格式化，避免长期持有 manager 锁。默认按 `started_at` 倒序，同一时间下按 task id 保持稳定顺序。
+
+## delegate_cancel
+
+参数：
+
+| 参数 | 必填 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `task_id` | 是 | 无 | 要取消的委派任务 ID。 |
+| `reason` | 否 | `cancelled by user` | 取消原因，会写入任务 `error` 字段。 |
+
+成功输出：
+
+```json
+{
+  "task_id": "task-1",
+  "status": "cancelled",
+  "message": "Task 'task-1' cancelled."
+}
+```
+
+行为：
+
+- `pending` / `running`：标记为 `cancelled`，记录 `completed_at`，并调用该任务的 cancel func。
+- `completed` / `failed` / `cancelled`：返回不可取消错误。
+- unknown task：返回 `task not found: <task_id>`。
 
 ## delegate_parallel
 
@@ -227,17 +273,20 @@ delegate 工具的主要注意点：
 - 委派类写入/执行入口多为 `PermApprove`。
 - task 数据存在 `DelegateManager` 的内存 map 中。
 - `delegate_task` 是异步执行，需要用 `task_status` 查询结果。
+- `delegate_cancel` 依赖子代理 executor 尊重 context；如果外部调用不响应 context，取消状态会先记录，但底层工作可能仍需等 executor 返回。
 - 没有 `agentExecutor` 时会返回占位结果，不代表真的完成了复杂任务。
-- `task_status` 的 `completed_at` 对未完成任务可能是零值时间格式。
-- 输出 JSON 当前不是 pretty JSON。
+- `task_status` 对未完成任务返回空 `completed_at`，不再暴露零值时间。
+- 当前任务状态仍未持久化，进程重启后内存任务会丢失。
 
 ## 维护注意事项
 
 如果后续修改 delegate 工具，需要同步检查：
 
 - 默认注册工具是否变化。
+- `delegate_cancel` 的取消状态转换是否变化。
 - `delegate_parallel`、`delegate_to_skill`、`delegate_to_mcp` 的注册路径是否变化。
 - 任务 ID 格式是否变化。
 - 并发限制逻辑是否变化。
+- timeout 边界和结果截断上限是否变化。
 - fallback executor 行为是否变化。
 - 输出 JSON 字段是否变化。

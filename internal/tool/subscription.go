@@ -11,10 +11,10 @@ import (
 type SubTier int
 
 const (
-	SubFree    SubTier = iota // 免费级：基础工具
-	SubBasic                  // 基础级：常用工具
-	SubPro                    // 专业级：全部工具
-	SubEnterprise             // 企业级：全部工具 + 优先级
+	SubFree       SubTier = iota // 免费级：基础工具
+	SubBasic                     // 基础级：常用工具
+	SubPro                       // 专业级：全部工具
+	SubEnterprise                // 企业级：全部工具 + 优先级
 )
 
 func (t SubTier) String() string {
@@ -50,43 +50,43 @@ func ParseSubTier(s string) (SubTier, error) {
 
 // TierConfig 订阅等级配置
 type TierConfig struct {
-	Tier            SubTier
+	Tier              SubTier
 	AllowedCategories []Category // 允许的工具分类
-	MaxCallsPerDay  int          // 每日最大调用次数 (0 = 无限)
-	MaxCallsPerHour int          // 每小时最大调用次数 (0 = 无限)
-	Priority        int         // 优先级 (越高越优先)
+	MaxCallsPerDay    int        // 每日最大调用次数 (0 = 无限)
+	MaxCallsPerHour   int        // 每小时最大调用次数 (0 = 无限)
+	Priority          int        // 优先级 (越高越优先)
 }
 
 // DefaultTierConfigs 默认订阅等级配置
 func DefaultTierConfigs() map[SubTier]TierConfig {
 	return map[SubTier]TierConfig{
 		SubFree: {
-			Tier:            SubFree,
+			Tier:              SubFree,
 			AllowedCategories: []Category{CatBuiltin},
-			MaxCallsPerDay:  100,
-			MaxCallsPerHour: 20,
-			Priority:        0,
+			MaxCallsPerDay:    100,
+			MaxCallsPerHour:   20,
+			Priority:          0,
 		},
 		SubBasic: {
-			Tier:            SubBasic,
+			Tier:              SubBasic,
 			AllowedCategories: []Category{CatBuiltin, CatSkill},
-			MaxCallsPerDay:  500,
-			MaxCallsPerHour: 100,
-			Priority:        1,
+			MaxCallsPerDay:    500,
+			MaxCallsPerHour:   100,
+			Priority:          1,
 		},
 		SubPro: {
-			Tier:            SubPro,
+			Tier:              SubPro,
 			AllowedCategories: []Category{CatBuiltin, CatSkill, CatMCP, CatDelegate},
-			MaxCallsPerDay:  0, // 无限
-			MaxCallsPerHour: 0,
-			Priority:        2,
+			MaxCallsPerDay:    0, // 无限
+			MaxCallsPerHour:   0,
+			Priority:          2,
 		},
 		SubEnterprise: {
-			Tier:            SubEnterprise,
+			Tier:              SubEnterprise,
 			AllowedCategories: []Category{CatBuiltin, CatSkill, CatMCP, CatDelegate},
-			MaxCallsPerDay:  0,
-			MaxCallsPerHour: 0,
-			Priority:        3,
+			MaxCallsPerDay:    0,
+			MaxCallsPerHour:   0,
+			Priority:          3,
 		},
 	}
 }
@@ -109,8 +109,8 @@ func (s *UserSubscription) IsActive() bool {
 type SubscriptionManager struct {
 	mu      sync.RWMutex
 	subs    map[string]*UserSubscription // userID -> subscription
-	configs map[SubTier]TierConfig        // tier -> config
-	usage   map[string]*subUsage          // userID -> usage counter
+	configs map[SubTier]TierConfig       // tier -> config
+	usage   map[string]*subUsage         // userID -> usage counter
 }
 
 // subUsage 订阅使用计数
@@ -293,7 +293,7 @@ func inferCategory(toolName string) Category {
 	if len(toolName) >= 6 && toolName[:6] == "skill_" {
 		return CatSkill
 	}
-	if toolName == "delegate_task" || toolName == "task_status" || toolName == "list_tasks" {
+	if toolName == "delegate_task" || toolName == "task_status" || toolName == "list_tasks" || toolName == "delegate_cancel" {
 		return CatDelegate
 	}
 	return CatBuiltin

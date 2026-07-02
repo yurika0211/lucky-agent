@@ -346,6 +346,18 @@ func TestApplyIntentToolGatingDelegateListBlocksNewTask(t *testing.T) {
 	assertDisabledTools(t, loopCfg.DisabledTools, "delegate_task")
 }
 
+func TestApplyIntentToolGatingDelegateCancel(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	a.applyIntentToolGating(&loopCfg, "取消子代理任务 task-1。")
+	opts := a.buildLoopCallOptions("取消子代理任务 task-1。", loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "task_status", "list_tasks", "delegate_cancel")
+}
+
 func TestApplyIntentToolGatingDelegateToolInspectionKeepsReadOnly(t *testing.T) {
 	a := agentWithIntentGateTools(t)
 	loopCfg := DefaultLoopConfig()
@@ -372,7 +384,7 @@ func agentWithIntentGateTools(t *testing.T) *Agent {
 		"skill_obsidian_run", "cron", "cron_add", "cron_list", "cron_status",
 		"cron_remove", "cron_pause", "cron_resume", "autonomy", "autonomy_status",
 		"autonomy_queue_add", "autonomy_worker_spawn", "heartbeat_status",
-		"heartbeat_trigger", "delegate_task", "task_status", "list_tasks",
+		"heartbeat_trigger", "delegate_task", "task_status", "list_tasks", "delegate_cancel",
 	} {
 		reg.Register(&tool.Tool{
 			Name:        name,

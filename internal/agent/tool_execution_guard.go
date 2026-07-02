@@ -139,6 +139,10 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 		if g.noDelegateMutation {
 			return "the user requested delegate task inspection without creating a new task"
 		}
+	case "delegate_cancel":
+		if g.noDelegateMutation || g.readOnly {
+			return "the user requested delegate task inspection without changing tasks"
+		}
 	}
 
 	if strings.HasPrefix(name, "skill_") && strings.HasSuffix(name, "_run") && g.noSkillRun {

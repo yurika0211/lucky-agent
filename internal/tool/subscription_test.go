@@ -197,6 +197,7 @@ func TestInferCategory(t *testing.T) {
 		{"delegate_task", CatDelegate},
 		{"task_status", CatDelegate},
 		{"list_tasks", CatDelegate},
+		{"delegate_cancel", CatDelegate},
 	}
 
 	for _, tt := range tests {

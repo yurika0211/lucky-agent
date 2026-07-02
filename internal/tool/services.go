@@ -55,6 +55,7 @@ func (s *Services) RegisterCoreTools(r *Registry) {
 		r.Register(DelegateTaskTool(s.Delegate))
 		r.Register(TaskStatusTool(s.Delegate))
 		r.Register(ListTasksTool(s.Delegate))
+		r.Register(DelegateCancelTool(s.Delegate))
 	}
 	if s.Cron != nil {
 		s.Cron.RegisterTools(r)
