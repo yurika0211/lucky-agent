@@ -145,6 +145,61 @@ func TestDelegateTaskWritesUnifiedTaskEvents(t *testing.T) {
 	t.Fatalf("timed out waiting for unified task completion: %s", taskID)
 }
 
+func TestDelegateTaskAutoModeWritesPlannerTrace(t *testing.T) {
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	dm.SetTaskStore(store)
+	dm.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
+		return "planned result", nil
+	})
+
+	result, err := dm.handleDelegate(map[string]any{
+		"description":   "Compare independent modules A, B, and C and report risks for each module",
+		"mode":          "auto",
+		"max_children":  3,
+		"include_trace": true,
+	})
+	if err != nil {
+		t.Fatalf("handleDelegate: %v", err)
+	}
+	var start map[string]any
+	if err := json.Unmarshal([]byte(result), &start); err != nil {
+		t.Fatalf("parse start: %v", err)
+	}
+	taskID, _ := start["task_id"].(string)
+	if taskID == "" || start["planner_summary"] == "" || start["trace_available"] != true {
+		t.Fatalf("unexpected start response: %+v", start)
+	}
+	if _, ok, err := store.PlannerTrace(taskID); err != nil || !ok {
+		t.Fatalf("expected planner trace artifact: ok=%t err=%v", ok, err)
+	}
+	record, ok, err := store.Get(taskID)
+	if err != nil || !ok {
+		t.Fatalf("get task record: ok=%t err=%v", ok, err)
+	}
+	if record.Mode == "" || record.Metadata["planner_summary"] == "" {
+		t.Fatalf("expected planned task metadata, got %+v", record)
+	}
+
+	statusResult, err := dm.handleStatus(map[string]any{
+		"task_id":       taskID,
+		"include_trace": true,
+	})
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	var status map[string]any
+	if err := json.Unmarshal([]byte(statusResult), &status); err != nil {
+		t.Fatalf("parse status: %v", err)
+	}
+	if _, ok := status["planner_trace"].(map[string]any); !ok {
+		t.Fatalf("expected planner trace in status: %+v", status)
+	}
+}
+
 func TestTaskStatusReadsUnifiedTaskEvents(t *testing.T) {
 	store, err := taskstore.NewFileStore(t.TempDir())
 	if err != nil {

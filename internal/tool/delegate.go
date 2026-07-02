@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yurika0211/luckyagent/internal/collab"
 	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
 
@@ -225,20 +226,27 @@ func (s TaskStatus) String() string {
 
 // DelegateTask 子代理任务
 type DelegateTask struct {
-	ID          string
-	Description string
-	Context     string
-	Workspace   string
-	Status      TaskStatus
-	Result      string
-	Error       string
-	StartedAt   time.Time
-	CompletedAt time.Time
+	ID             string
+	Description    string
+	Context        string
+	Workspace      string
+	Mode           taskstore.Mode
+	PlannedMode    taskstore.Mode
+	PlannerSummary string
+	Status         TaskStatus
+	Result         string
+	Error          string
+	StartedAt      time.Time
+	CompletedAt    time.Time
 }
 
 type delegateStartResponse struct {
 	TaskID         string `json:"task_id"`
 	Status         string `json:"status"`
+	Mode           string `json:"mode"`
+	PlannedMode    string `json:"planned_mode,omitempty"`
+	PlannerSummary string `json:"planner_summary,omitempty"`
+	TraceAvailable bool   `json:"trace_available,omitempty"`
 	Workspace      string `json:"workspace"`
 	TimeoutSeconds int    `json:"timeout_seconds"`
 	Message        string `json:"message"`
@@ -261,6 +269,7 @@ type delegateStatusResponse struct {
 	CompletedAt     string                          `json:"completed_at"`
 	Observation     *taskstore.MainAgentObservation `json:"observation,omitempty"`
 	Events          []taskstore.Event               `json:"events,omitempty"`
+	PlannerTrace    json.RawMessage                 `json:"planner_trace,omitempty"`
 }
 
 type delegateListItem struct {
@@ -407,6 +416,104 @@ func delegateStringArg(args map[string]any, key string) string {
 	return ""
 }
 
+func delegateModeArg(args map[string]any) (taskstore.Mode, error) {
+	mode := strings.ToLower(strings.TrimSpace(delegateStringArg(args, "mode")))
+	if mode == "" {
+		mode = string(taskstore.ModeSingle)
+	}
+	switch taskstore.Mode(mode) {
+	case taskstore.ModeSingle, taskstore.ModeAuto, taskstore.ModeParallel, taskstore.ModePipeline, taskstore.ModeDebate, taskstore.ModeAutonomyQueue:
+		return taskstore.Mode(mode), nil
+	default:
+		return "", fmt.Errorf("unsupported delegate mode %q", mode)
+	}
+}
+
+func planDelegateTaskMode(description, contextStr string, requested taskstore.Mode, timeout time.Duration, maxChildren int) (taskstore.Mode, taskstore.Mode, string, any) {
+	if requested == "" {
+		requested = taskstore.ModeSingle
+	}
+	if maxChildren <= 0 {
+		maxChildren = 3
+	}
+	if requested != taskstore.ModeAuto {
+		summary := "Using explicit " + string(requested) + " mode."
+		return requested, requested, summary, map[string]any{
+			"planner":        "explicit",
+			"requested_mode": requested,
+			"selected_mode":  requested,
+			"summary":        summary,
+		}
+	}
+	if isSimpleDelegateTask(description, contextStr) {
+		summary := "Kept single mode because the task appears simple and does not need multi-agent coordination."
+		return taskstore.ModeSingle, taskstore.ModeSingle, summary, map[string]any{
+			"planner":        "delegate-auto-guard",
+			"requested_mode": requested,
+			"selected_mode":  taskstore.ModeSingle,
+			"summary":        summary,
+			"simple_guard":   true,
+		}
+	}
+
+	planner := collab.NewPlanner(nil)
+	allowed := []collab.CollabMode{collab.ModePipeline, collab.ModeParallel, collab.ModeDebate}
+	plan := planner.Plan(collab.PlanRequest{
+		Description:  description,
+		Input:        contextStr,
+		AgentIDs:     syntheticAgentIDs(maxChildren),
+		Timeout:      timeout,
+		AllowedModes: allowed,
+	})
+	selected := taskModeFromCollab(plan.Mode)
+	if selected == "" {
+		selected = taskstore.ModeSingle
+	}
+	summary := fmt.Sprintf("Selected %s mode with %s.", selected, strings.TrimSpace(plan.DecisionBasis))
+	return selected, selected, summary, plan
+}
+
+func isSimpleDelegateTask(description, contextStr string) bool {
+	text := strings.ToLower(description + "\n" + contextStr)
+	if len(strings.Fields(text)) <= 18 &&
+		!strings.Contains(text, "\n-") &&
+		!strings.Contains(text, "\n1.") &&
+		!strings.Contains(text, " and ") &&
+		!strings.Contains(text, "、") &&
+		!strings.Contains(text, "多个") &&
+		!strings.Contains(text, "multi") {
+		return true
+	}
+	return false
+}
+
+func syntheticAgentIDs(maxChildren int) []string {
+	if maxChildren <= 0 {
+		maxChildren = 3
+	}
+	if maxChildren > 8 {
+		maxChildren = 8
+	}
+	ids := make([]string, 0, maxChildren)
+	for i := 1; i <= maxChildren; i++ {
+		ids = append(ids, fmt.Sprintf("delegate-%d", i))
+	}
+	return ids
+}
+
+func taskModeFromCollab(mode collab.CollabMode) taskstore.Mode {
+	switch mode {
+	case collab.ModeParallel:
+		return taskstore.ModeParallel
+	case collab.ModePipeline:
+		return taskstore.ModePipeline
+	case collab.ModeDebate:
+		return taskstore.ModeDebate
+	default:
+		return ""
+	}
+}
+
 func isValidDelegateStatus(status string) bool {
 	switch status {
 	case StatusPending.String(), StatusRunning.String(), StatusCompleted.String(), StatusFailed.String(), StatusCancelled.String():
@@ -480,6 +587,30 @@ func DelegateTaskTool(dm *DelegateManager) *Tool {
 				Required:    false,
 				Default:     120,
 			},
+			"mode": {
+				Type:        "string",
+				Description: "Execution planning mode: single, auto, parallel, pipeline, debate, or autonomy_queue. Default single.",
+				Required:    false,
+				Default:     "single",
+			},
+			"max_children": {
+				Type:        "number",
+				Description: "Maximum child tasks allowed when planning multi-agent execution. Default 3.",
+				Required:    false,
+				Default:     3,
+			},
+			"include_trace": {
+				Type:        "boolean",
+				Description: "Whether task_status may return the stored planner trace when requested.",
+				Required:    false,
+				Default:     false,
+			},
+			"allow_recursive_delegate": {
+				Type:        "boolean",
+				Description: "Whether delegated child agents may create more delegate tasks. Default false.",
+				Required:    false,
+				Default:     false,
+			},
 		},
 		Handler: dm.handleDelegate,
 	}
@@ -508,6 +639,12 @@ func TaskStatusTool(dm *DelegateManager) *Tool {
 			"include_events": {
 				Type:        "boolean",
 				Description: "Whether to include unified task events and reduced observation",
+				Required:    false,
+				Default:     false,
+			},
+			"include_trace": {
+				Type:        "boolean",
+				Description: "Whether to include the stored planner trace artifact",
 				Required:    false,
 				Default:     false,
 			},
@@ -596,6 +733,19 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 	}
 
 	timeout := dm.delegateTimeoutFromArgs(args)
+	requestedMode, err := delegateModeArg(args)
+	if err != nil {
+		return "", err
+	}
+	maxChildren := 3
+	if n, ok := delegateIntArg(args["max_children"]); ok {
+		maxChildren = n
+	}
+	if maxChildren <= 0 {
+		maxChildren = 1
+	}
+	mode, plannedMode, plannerSummary, plannerTrace := planDelegateTaskMode(description, contextStr, requestedMode, timeout, maxChildren)
+	allowRecursive := delegateBoolArg(args, "allow_recursive_delegate", false)
 
 	// 检查并发限制
 	dm.mu.RLock()
@@ -621,19 +771,22 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 		return "", err
 	}
 	task := &DelegateTask{
-		ID:          taskID,
-		Description: description,
-		Context:     contextStr,
-		Workspace:   workspace,
-		Status:      StatusPending,
-		StartedAt:   time.Now(),
+		ID:             taskID,
+		Description:    description,
+		Context:        contextStr,
+		Workspace:      workspace,
+		Mode:           mode,
+		PlannedMode:    plannedMode,
+		PlannerSummary: plannerSummary,
+		Status:         StatusPending,
+		StartedAt:      time.Now(),
 	}
 	dm.tasks[taskID] = task
 	store := dm.taskStore
 	events := dm.taskEvents
 	dm.mu.Unlock()
 
-	dm.recordDelegateTaskCreated(store, events, task, timeout)
+	dm.recordDelegateTaskCreated(store, events, task, timeout, maxChildren, allowRecursive, plannerTrace)
 
 	// 异步执行
 	go dm.executeTask(taskID, description, enrichedContext, timeout)
@@ -641,6 +794,10 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 	result, _ := json.Marshal(delegateStartResponse{
 		TaskID:         taskID,
 		Status:         StatusRunning.String(),
+		Mode:           string(mode),
+		PlannedMode:    string(plannedMode),
+		PlannerSummary: plannerSummary,
+		TraceAvailable: plannerTrace != nil,
 		Workspace:      workspace,
 		TimeoutSeconds: int(timeout.Seconds()),
 		Message:        fmt.Sprintf("Task '%s' delegated. Use task_status to check progress.", taskID),
@@ -727,6 +884,7 @@ func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
 	}
 	includeResult := delegateBoolArg(args, "include_result", true)
 	includeEvents := delegateBoolArg(args, "include_events", false)
+	includeTrace := delegateBoolArg(args, "include_trace", false)
 
 	dm.mu.RLock()
 	task, ok := dm.tasks[taskID]
@@ -736,16 +894,20 @@ func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
 
 	if !ok {
 		if store != nil {
-			return dm.handleUnifiedStatus(store, taskID, includeResult, includeEvents)
+			return dm.handleUnifiedStatus(store, taskID, includeResult, includeEvents, includeTrace)
 		}
 		return "", fmt.Errorf("task not found: %s", taskID)
 	}
 
 	summary, inline, resultBytes, truncated := summarizeDelegateResult(snapshot.Result, dm.config.MaxResultBytesInline)
+	mode := snapshot.Mode
+	if mode == "" {
+		mode = taskstore.ModeSingle
+	}
 	resp := delegateStatusResponse{
 		TaskID:          snapshot.ID,
 		Source:          string(taskstore.SourceTool),
-		Mode:            string(taskstore.ModeSingle),
+		Mode:            string(mode),
 		Description:     snapshot.Description,
 		Workspace:       snapshot.Workspace,
 		Status:          snapshot.Status.String(),
@@ -767,12 +929,17 @@ func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
 			resp.Events = events
 		}
 	}
+	if store != nil && includeTrace {
+		if trace, ok, err := store.PlannerTrace(snapshot.ID); err == nil && ok {
+			resp.PlannerTrace = json.RawMessage(trace)
+		}
+	}
 	result, _ := json.Marshal(resp)
 
 	return string(result), nil
 }
 
-func (dm *DelegateManager) handleUnifiedStatus(store taskstore.Store, taskID string, includeResult bool, includeEvents bool) (string, error) {
+func (dm *DelegateManager) handleUnifiedStatus(store taskstore.Store, taskID string, includeResult bool, includeEvents bool, includeTrace bool) (string, error) {
 	record, ok, err := store.Get(taskID)
 	if err != nil {
 		return "", err
@@ -804,6 +971,11 @@ func (dm *DelegateManager) handleUnifiedStatus(store taskstore.Store, taskID str
 		obs := taskstore.ReduceObservation(record, events)
 		resp.Observation = &obs
 		resp.Events = events
+	}
+	if includeTrace {
+		if trace, ok, err := store.PlannerTrace(taskID); err == nil && ok {
+			resp.PlannerTrace = json.RawMessage(trace)
+		}
 	}
 	out, _ := json.Marshal(resp)
 	return string(out), nil
@@ -885,10 +1057,14 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 	items := make([]delegateListItem, 0, len(filtered))
 	for _, t := range filtered {
 		summary, _, resultBytes, truncated := summarizeDelegateResult(t.Result, dm.config.MaxResultBytesInline)
+		mode := t.Mode
+		if mode == "" {
+			mode = taskstore.ModeSingle
+		}
 		item := delegateListItem{
 			TaskID:      t.ID,
 			Source:      string(taskstore.SourceTool),
-			Mode:        string(taskstore.ModeSingle),
+			Mode:        string(mode),
 			Description: t.Description,
 			Workspace:   t.Workspace,
 			Status:      t.Status.String(),
@@ -1011,14 +1187,18 @@ func (dm *DelegateManager) handleCancel(args map[string]any) (string, error) {
 	return string(result), nil
 }
 
-func (dm *DelegateManager) recordDelegateTaskCreated(store taskstore.Store, events *taskstore.EventBus, task *DelegateTask, timeout time.Duration) {
+func (dm *DelegateManager) recordDelegateTaskCreated(store taskstore.Store, events *taskstore.EventBus, task *DelegateTask, timeout time.Duration, maxChildren int, allowRecursive bool, plannerTrace any) {
 	if store == nil || events == nil || task == nil {
 		return
+	}
+	mode := task.Mode
+	if mode == "" {
+		mode = taskstore.ModeSingle
 	}
 	record := taskstore.Record{
 		ID:          task.ID,
 		Source:      taskstore.SourceTool,
-		Mode:        taskstore.ModeSingle,
+		Mode:        mode,
 		Status:      taskstore.StatusPending,
 		Description: task.Description,
 		Input:       task.Context,
@@ -1028,14 +1208,33 @@ func (dm *DelegateManager) recordDelegateTaskCreated(store taskstore.Store, even
 			Workspace: task.Workspace,
 		},
 		Budget: taskstore.Budget{
-			Timeout:       timeout,
-			MaxConcurrent: dm.config.MaxConcurrent,
+			Timeout:        timeout,
+			MaxChildren:    maxChildren,
+			MaxConcurrent:  dm.config.MaxConcurrent,
+			AllowRecursive: allowRecursive,
+		},
+		Metadata: map[string]string{
+			"planned_mode":    string(task.PlannedMode),
+			"planner_summary": task.PlannerSummary,
 		},
 	}
 	if _, err := store.Create(record); err != nil {
 		return
 	}
 	_ = events.Created(record)
+	if plannerTrace != nil {
+		_ = store.SavePlannerTrace(task.ID, plannerTrace)
+		_ = events.Emit(taskstore.Event{
+			Type:    taskstore.EventPlanned,
+			TaskID:  task.ID,
+			Status:  taskstore.StatusPending,
+			Mode:    mode,
+			Message: task.PlannerSummary,
+			Metadata: map[string]string{
+				"planned_mode": string(task.PlannedMode),
+			},
+		})
+	}
 }
 
 func (dm *DelegateManager) recordDelegateTaskStarted(store taskstore.Store, events *taskstore.EventBus, task *DelegateTask) {
