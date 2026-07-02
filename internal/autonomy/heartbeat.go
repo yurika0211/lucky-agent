@@ -455,6 +455,11 @@ func (ak *AutonomyKit) AddTaskWithError(title, description string, priority Task
 	return ak.queue.AddWithError(title, description, priority, tags)
 }
 
+// AddTaskWithMetadata adds a task with caller-supplied metadata.
+func (ak *AutonomyKit) AddTaskWithMetadata(title, description string, priority TaskPriority, tags []string, metadata map[string]string) (*QueueTask, error) {
+	return ak.queue.AddWithMetadata(title, description, priority, tags, metadata)
+}
+
 /**
  * ScaleUp 添加工作线程到工作池。
  */

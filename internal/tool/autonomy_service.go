@@ -49,19 +49,22 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
-			"action":      {Type: "string", Description: "Action: status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers", Required: true},
-			"title":       {Type: "string", Description: "Task title for action=add", Required: false},
-			"description": {Type: "string", Description: "Task details for action=add", Required: false},
-			"priority":    {Type: "string", Description: "Task priority for action=add: low, normal, high, critical", Required: false, Default: "normal"},
-			"tags":        {Type: "array", Description: "Tags for action=add", Required: false},
-			"state":       {Type: "string", Description: "Filter for action=list: ready, in_progress, blocked, done", Required: false},
-			"task_id":     {Type: "string", Description: "Task ID for update, complete, fail, block, unblock, or spawn", Required: false},
-			"count":       {Type: "number", Description: "Worker count for scale_up, scale_down, or set_workers", Required: false},
-			"limit":       {Type: "number", Description: "Maximum tasks to return for action=report", Required: false},
-			"result":      {Type: "string", Description: "Completion result for action=complete", Required: false},
-			"error":       {Type: "string", Description: "Error message for action=fail", Required: false},
-			"reason":      {Type: "string", Description: "Block reason for action=block", Required: false},
-			"retry":       {Type: "boolean", Description: "Whether action=fail should retry the task", Required: false},
+			"action":          {Type: "string", Description: "Action: status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers", Required: true},
+			"title":           {Type: "string", Description: "Task title for action=add", Required: false},
+			"description":     {Type: "string", Description: "Task details for action=add", Required: false},
+			"priority":        {Type: "string", Description: "Task priority for action=add: low, normal, high, critical", Required: false, Default: "normal"},
+			"tags":            {Type: "array", Description: "Tags for action=add", Required: false},
+			"dry_run":         {Type: "boolean", Description: "Preview add/spawn/scale/set_workers/heartbeat without mutating runtime state", Required: false, Default: false},
+			"start_if_needed": {Type: "boolean", Description: "Allow write actions to start the autonomy runtime when it is stopped", Required: false, Default: true},
+			"idempotency_key": {Type: "string", Description: "Optional key for action=add duplicate detection", Required: false},
+			"state":           {Type: "string", Description: "Filter for action=list: ready, in_progress, blocked, done", Required: false},
+			"task_id":         {Type: "string", Description: "Task ID for update, complete, fail, block, unblock, or spawn", Required: false},
+			"count":           {Type: "number", Description: "Worker count for scale_up, scale_down, or set_workers", Required: false},
+			"limit":           {Type: "number", Description: "Maximum tasks to return for action=report", Required: false},
+			"result":          {Type: "string", Description: "Completion result for action=complete", Required: false},
+			"error":           {Type: "string", Description: "Error message for action=fail", Required: false},
+			"reason":          {Type: "string", Description: "Block reason for action=block", Required: false},
+			"retry":           {Type: "boolean", Description: "Whether action=fail should retry the task", Required: false},
 		},
 		Handler: s.HandleAutonomy,
 	})
@@ -73,10 +76,13 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 		Permission:      PermAuto,
 		HiddenFromModel: true,
 		Parameters: map[string]Param{
-			"title":       {Type: "string", Description: "Task title", Required: true},
-			"description": {Type: "string", Description: "Detailed task description", Required: false},
-			"priority":    {Type: "string", Description: "Priority: low, normal, high, critical", Required: false, Default: "normal"},
-			"tags":        {Type: "array", Description: "Tags for categorization", Required: false},
+			"title":           {Type: "string", Description: "Task title", Required: true},
+			"description":     {Type: "string", Description: "Detailed task description", Required: false},
+			"priority":        {Type: "string", Description: "Priority: low, normal, high, critical", Required: false, Default: "normal"},
+			"tags":            {Type: "array", Description: "Tags for categorization", Required: false},
+			"dry_run":         {Type: "boolean", Description: "Preview the queue add without adding or starting runtime", Required: false, Default: false},
+			"start_if_needed": {Type: "boolean", Description: "Allow this call to start the autonomy runtime when it is stopped", Required: false, Default: true},
+			"idempotency_key": {Type: "string", Description: "Optional key for duplicate detection", Required: false},
 		},
 		Handler: s.HandleQueueAdd,
 	})
@@ -117,7 +123,9 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 		Permission:      PermApprove,
 		HiddenFromModel: true,
 		Parameters: map[string]Param{
-			"task_id": {Type: "string", Description: "Task ID to execute", Required: true},
+			"task_id":         {Type: "string", Description: "Task ID to execute", Required: true},
+			"dry_run":         {Type: "boolean", Description: "Preview dispatch without spawning", Required: false, Default: false},
+			"start_if_needed": {Type: "boolean", Description: "Allow this call to start the autonomy runtime when it is stopped", Required: false, Default: true},
 		},
 		Handler: s.HandleWorkerSpawn,
 	})
@@ -138,8 +146,11 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 		Source:          "builtin",
 		Permission:      PermAuto,
 		HiddenFromModel: true,
-		Parameters:      map[string]Param{},
-		Handler:         s.HandleHeartbeatTrigger,
+		Parameters: map[string]Param{
+			"dry_run":         {Type: "boolean", Description: "Preview heartbeat without triggering it", Required: false, Default: false},
+			"start_if_needed": {Type: "boolean", Description: "Allow this call to start the autonomy runtime when it is stopped", Required: false, Default: true},
+		},
+		Handler: s.HandleHeartbeatTrigger,
 	})
 	r.Register(&Tool{
 		Name:            "autonomy_status",
@@ -161,44 +172,81 @@ func (s *AutonomyToolService) HandleAutonomy(args map[string]any) (string, error
 	}
 	action, _ := args["action"].(string)
 	action = strings.ToLower(strings.TrimSpace(action))
+	canonical, err := canonicalAutonomyAction(action)
+	if err != nil {
+		return "", err
+	}
 
-	switch action {
-	case "", "status":
-		return s.HandleStatus(args)
-	case "add", "enqueue", "queue_add":
-		return s.HandleQueueAdd(args)
-	case "list", "queue", "queue_list":
-		return s.HandleQueueList(args)
-	case "report", "outputs", "results":
-		return s.HandleReport(args)
-	case "update", "queue_update":
-		return s.HandleQueueUpdate(args)
+	var (
+		out     string
+		callErr error
+	)
+	switch canonical {
+	case "status":
+		out, callErr = s.HandleStatus(args)
+	case "add":
+		out, callErr = s.HandleQueueAdd(args)
+	case "list":
+		out, callErr = s.HandleQueueList(args)
+	case "report":
+		out, callErr = s.HandleReport(args)
+	case "update":
+		out, callErr = s.HandleQueueUpdate(args)
 	case "complete", "fail", "block", "unblock":
 		next := cloneToolArgs(args)
-		next["action"] = action
-		return s.HandleQueueUpdate(next)
-	case "workers", "worker_list":
-		return s.HandleWorkerList(args)
-	case "spawn", "worker_spawn", "run":
-		return s.HandleWorkerSpawn(args)
-	case "heartbeat", "trigger", "heartbeat_trigger":
-		return s.HandleHeartbeatTrigger(args)
-	case "scale_up", "scaleup", "workers_add":
-		return s.HandleScaleUp(args)
-	case "scale_down", "scaledown", "workers_remove":
-		return s.HandleScaleDown(args)
-	case "set_workers", "workers_set":
-		return s.HandleSetWorkers(args)
-	default:
-		return "", fmt.Errorf("invalid autonomy action %q (use status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers)", action)
+		next["action"] = canonical
+		out, callErr = s.HandleQueueUpdate(next)
+	case "workers":
+		out, callErr = s.HandleWorkerList(args)
+	case "spawn":
+		out, callErr = s.HandleWorkerSpawn(args)
+	case "heartbeat":
+		out, callErr = s.HandleHeartbeatTrigger(args)
+	case "scale_up":
+		out, callErr = s.HandleScaleUp(args)
+	case "scale_down":
+		out, callErr = s.HandleScaleDown(args)
+	case "set_workers":
+		out, callErr = s.HandleSetWorkers(args)
 	}
+	return s.withCanonicalAction(out, callErr, action, canonical)
 }
 
 func (s *AutonomyToolService) HandleQueueAdd(args map[string]any) (string, error) {
-	if err := s.ensureStarted(); err != nil {
+	runtimeStartedBefore := s.runtimeStarted()
+	existing := s.findTaskByIdempotencyKey(args)
+	if existing != nil {
+		out, _ := json.Marshal(map[string]any{
+			"ok":                      true,
+			"action":                  "add",
+			"task_id":                 existing.ID,
+			"title":                   existing.Title,
+			"priority":                existing.Priority.String(),
+			"state":                   existing.State,
+			"tags":                    existing.Tags,
+			"deduped":                 true,
+			"idempotency_key":         strings.TrimSpace(fmt.Sprint(args["idempotency_key"])),
+			"runtime_started_before":  runtimeStartedBefore,
+			"runtime_started_by_tool": false,
+			"message":                 fmt.Sprintf("Task '%s' already exists for idempotency key", existing.Title),
+		})
+		return string(out), nil
+	}
+	if autonomyBoolArg(args, "dry_run", false) {
+		return s.queueAddDryRun(args, runtimeStartedBefore)
+	}
+	_, startedByTool, err := s.ensureStarted(autonomyBoolArg(args, "start_if_needed", true))
+	if err != nil {
 		return "", err
 	}
-	return s.tools.HandleQueueAdd(args)
+	out, err := s.tools.HandleQueueAdd(args)
+	if err != nil {
+		return "", err
+	}
+	return augmentJSONFields(out, map[string]any{
+		"runtime_started_before":  runtimeStartedBefore,
+		"runtime_started_by_tool": startedByTool,
+	})
 }
 
 func (s *AutonomyToolService) HandleQueueList(args map[string]any) (string, error) {
@@ -214,10 +262,22 @@ func (s *AutonomyToolService) HandleQueueUpdate(args map[string]any) (string, er
 }
 
 func (s *AutonomyToolService) HandleWorkerSpawn(args map[string]any) (string, error) {
-	if err := s.ensureStarted(); err != nil {
+	runtimeStartedBefore := s.runtimeStarted()
+	if autonomyBoolArg(args, "dry_run", false) {
+		return s.workerSpawnDryRun(args, runtimeStartedBefore)
+	}
+	_, startedByTool, err := s.ensureStarted(autonomyBoolArg(args, "start_if_needed", true))
+	if err != nil {
 		return "", err
 	}
-	return s.tools.HandleWorkerSpawn(args)
+	out, err := s.tools.HandleWorkerSpawn(args)
+	if err != nil {
+		return "", err
+	}
+	return augmentJSONFields(out, map[string]any{
+		"runtime_started_before":  runtimeStartedBefore,
+		"runtime_started_by_tool": startedByTool,
+	})
 }
 
 func (s *AutonomyToolService) HandleWorkerList(args map[string]any) (string, error) {
@@ -225,10 +285,35 @@ func (s *AutonomyToolService) HandleWorkerList(args map[string]any) (string, err
 }
 
 func (s *AutonomyToolService) HandleHeartbeatTrigger(args map[string]any) (string, error) {
-	if err := s.ensureStarted(); err != nil {
+	runtimeStartedBefore := s.runtimeStarted()
+	if autonomyBoolArg(args, "dry_run", false) {
+		status := s.kit.Status()
+		out, _ := json.Marshal(map[string]any{
+			"ok":                      true,
+			"action":                  "heartbeat",
+			"dry_run":                 true,
+			"would_start_runtime":     !runtimeStartedBefore && autonomyBoolArg(args, "start_if_needed", true),
+			"runtime_started_before":  runtimeStartedBefore,
+			"runtime_started_by_tool": false,
+			"queue_ready":             status.QueueReady,
+			"queue_blocked":           status.QueueBlocked,
+			"worker_count":            status.PoolStats.WorkerCount,
+			"warnings":                []string{"dry_run=true; heartbeat was not triggered"},
+		})
+		return string(out), nil
+	}
+	_, startedByTool, err := s.ensureStarted(autonomyBoolArg(args, "start_if_needed", true))
+	if err != nil {
 		return "", err
 	}
-	return s.tools.HandleHeartbeatTrigger(args)
+	out, err := s.tools.HandleHeartbeatTrigger(args)
+	if err != nil {
+		return "", err
+	}
+	return augmentJSONFields(out, map[string]any{
+		"runtime_started_before":  runtimeStartedBefore,
+		"runtime_started_by_tool": startedByTool,
+	})
 }
 
 func (s *AutonomyToolService) HandleStatus(args map[string]any) (string, error) {
@@ -236,17 +321,29 @@ func (s *AutonomyToolService) HandleStatus(args map[string]any) (string, error) 
 }
 
 func (s *AutonomyToolService) HandleScaleUp(args map[string]any) (string, error) {
-	if err := s.ensureStarted(); err != nil {
+	runtimeStartedBefore := s.runtimeStarted()
+	count, err := parsePositiveCountArg(args, "count", 1)
+	if err != nil {
 		return "", err
 	}
-	count, err := parsePositiveCountArg(args, "count", 1)
+	if autonomyBoolArg(args, "dry_run", false) {
+		return s.workerScaleDryRun("scale_up", count, runtimeStartedBefore)
+	}
+	_, startedByTool, err := s.ensureStarted(autonomyBoolArg(args, "start_if_needed", true))
 	if err != nil {
 		return "", err
 	}
 	if err := s.kit.ScaleUp(context.Background(), count); err != nil {
 		return "", err
 	}
-	return s.workerScaleResult("scale_up", count, 0)
+	out, err := s.workerScaleResult("scale_up", count, 0)
+	if err != nil {
+		return "", err
+	}
+	return augmentJSONFields(out, map[string]any{
+		"runtime_started_before":  runtimeStartedBefore,
+		"runtime_started_by_tool": startedByTool,
+	})
 }
 
 func (s *AutonomyToolService) HandleScaleDown(args map[string]any) (string, error) {
@@ -254,15 +351,23 @@ func (s *AutonomyToolService) HandleScaleDown(args map[string]any) (string, erro
 	if err != nil {
 		return "", err
 	}
+	if autonomyBoolArg(args, "dry_run", false) {
+		return s.workerScaleDryRun("scale_down", count, s.runtimeStarted())
+	}
 	removed := s.kit.ScaleDown(count)
 	return s.workerScaleResult("scale_down", count, removed)
 }
 
 func (s *AutonomyToolService) HandleSetWorkers(args map[string]any) (string, error) {
-	if err := s.ensureStarted(); err != nil {
+	runtimeStartedBefore := s.runtimeStarted()
+	count, err := parsePositiveCountArg(args, "count", 1)
+	if err != nil {
 		return "", err
 	}
-	count, err := parsePositiveCountArg(args, "count", 1)
+	if autonomyBoolArg(args, "dry_run", false) {
+		return s.workerScaleDryRun("set_workers", count, runtimeStartedBefore)
+	}
+	_, startedByTool, err := s.ensureStarted(autonomyBoolArg(args, "start_if_needed", true))
 	if err != nil {
 		return "", err
 	}
@@ -278,25 +383,33 @@ func (s *AutonomyToolService) HandleSetWorkers(args map[string]any) (string, err
 		"queue_ready":   s.kit.Status().QueueReady,
 		"queue_blocked": s.kit.Status().QueueBlocked,
 	})
-	return string(out), nil
+	return augmentJSONFields(string(out), map[string]any{
+		"runtime_started_before":  runtimeStartedBefore,
+		"runtime_started_by_tool": startedByTool,
+	})
 }
 
-func (s *AutonomyToolService) ensureStarted() error {
+func (s *AutonomyToolService) ensureStarted(startIfNeeded bool) (bool, bool, error) {
 	if s == nil || s.tools == nil {
-		return fmt.Errorf("autonomy service not initialized")
+		return false, false, fmt.Errorf("autonomy service not initialized")
 	}
+	startedBefore := s.runtimeStarted()
 	if s.ensureStart == nil {
-		return nil
+		return startedBefore, false, nil
 	}
-	if s.kit != nil && s.kit.Status().Started {
-		return nil
+	if startedBefore {
+		return true, false, nil
 	}
-	return s.ensureStart()
+	if !startIfNeeded {
+		return false, false, fmt.Errorf("autonomy runtime is not started; set start_if_needed=true or start autonomy explicitly")
+	}
+	return false, true, s.ensureStart()
 }
 
 func (s *AutonomyToolService) workerScaleResult(action string, requested int, removed int) (string, error) {
 	status := s.kit.Status()
 	out, _ := json.Marshal(map[string]any{
+		"ok":            true,
 		"action":        action,
 		"requested":     requested,
 		"removed":       removed,
@@ -307,6 +420,209 @@ func (s *AutonomyToolService) workerScaleResult(action string, requested int, re
 		"queue_blocked": status.QueueBlocked,
 	})
 	return string(out), nil
+}
+
+func (s *AutonomyToolService) runtimeStarted() bool {
+	return s != nil && s.kit != nil && s.kit.Status().Started
+}
+
+func (s *AutonomyToolService) withCanonicalAction(out string, err error, original, canonical string) (string, error) {
+	if err != nil {
+		return "", err
+	}
+	if original == "" {
+		original = canonical
+	}
+	return augmentJSONFields(out, map[string]any{
+		"input_action":     original,
+		"canonical_action": canonical,
+	})
+}
+
+func canonicalAutonomyAction(action string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", "status":
+		return "status", nil
+	case "add", "enqueue", "queue_add":
+		return "add", nil
+	case "list", "queue", "queue_list":
+		return "list", nil
+	case "report", "outputs", "results":
+		return "report", nil
+	case "update", "queue_update":
+		return "update", nil
+	case "complete":
+		return "complete", nil
+	case "fail":
+		return "fail", nil
+	case "block":
+		return "block", nil
+	case "unblock":
+		return "unblock", nil
+	case "workers", "worker_list":
+		return "workers", nil
+	case "spawn", "worker_spawn", "run":
+		return "spawn", nil
+	case "heartbeat", "trigger", "heartbeat_trigger":
+		return "heartbeat", nil
+	case "scale_up", "scaleup", "workers_add":
+		return "scale_up", nil
+	case "scale_down", "scaledown", "workers_remove":
+		return "scale_down", nil
+	case "set_workers", "workers_set":
+		return "set_workers", nil
+	default:
+		return "", fmt.Errorf("invalid autonomy action %q (use status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers)", action)
+	}
+}
+
+func (s *AutonomyToolService) findTaskByIdempotencyKey(args map[string]any) *autonomy.QueueTask {
+	key := strings.TrimSpace(fmt.Sprint(args["idempotency_key"]))
+	if key == "" || key == "<nil>" || s == nil || s.kit == nil || s.kit.Queue() == nil {
+		return nil
+	}
+	for _, task := range s.kit.Queue().ListAll() {
+		if task != nil && task.Metadata != nil && task.Metadata["idempotency_key"] == key {
+			return task
+		}
+	}
+	return nil
+}
+
+func (s *AutonomyToolService) queueAddDryRun(args map[string]any, runtimeStartedBefore bool) (string, error) {
+	title, _ := args["title"].(string)
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return "", fmt.Errorf("title is required")
+	}
+	description, _ := args["description"].(string)
+	priorityStr := "normal"
+	if p, ok := args["priority"].(string); ok && strings.TrimSpace(p) != "" {
+		priorityStr = strings.TrimSpace(p)
+	}
+	tags := autonomyTagsArg(args)
+	ready, inProgress, blocked, done := s.kit.Queue().Stats()
+	out, _ := json.Marshal(map[string]any{
+		"ok":                      true,
+		"action":                  "add",
+		"dry_run":                 true,
+		"would_start_runtime":     !runtimeStartedBefore && autonomyBoolArg(args, "start_if_needed", true),
+		"runtime_started_before":  runtimeStartedBefore,
+		"runtime_started_by_tool": false,
+		"task": map[string]any{
+			"title":       title,
+			"description": description,
+			"priority":    autonomy.ParseTaskPriority(priorityStr).String(),
+			"tags":        tags,
+		},
+		"idempotency_key":   strings.TrimSpace(fmt.Sprint(args["idempotency_key"])),
+		"queue_ready":       ready,
+		"queue_in_progress": inProgress,
+		"queue_blocked":     blocked,
+		"queue_done":        done,
+		"warnings":          []string{"dry_run=true; task was not queued"},
+	})
+	return string(out), nil
+}
+
+func (s *AutonomyToolService) workerSpawnDryRun(args map[string]any, runtimeStartedBefore bool) (string, error) {
+	taskID, _ := args["task_id"].(string)
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return "", fmt.Errorf("task_id is required")
+	}
+	task, ok := s.kit.Queue().Get(taskID)
+	if !ok {
+		return "", fmt.Errorf("task %s not found", taskID)
+	}
+	out, _ := json.Marshal(map[string]any{
+		"ok":                      true,
+		"action":                  "spawn",
+		"dry_run":                 true,
+		"task_id":                 task.ID,
+		"task_state":              task.State,
+		"would_spawn":             task.State == autonomy.TaskReady,
+		"would_start_runtime":     !runtimeStartedBefore && autonomyBoolArg(args, "start_if_needed", true),
+		"runtime_started_before":  runtimeStartedBefore,
+		"runtime_started_by_tool": false,
+		"warnings":                []string{"dry_run=true; worker was not spawned"},
+	})
+	return string(out), nil
+}
+
+func (s *AutonomyToolService) workerScaleDryRun(action string, requested int, runtimeStartedBefore bool) (string, error) {
+	status := s.kit.Status()
+	out, _ := json.Marshal(map[string]any{
+		"ok":                      true,
+		"action":                  action,
+		"dry_run":                 true,
+		"requested":               requested,
+		"would_start_runtime":     (action == "scale_up" || action == "set_workers") && !runtimeStartedBefore,
+		"runtime_started_before":  runtimeStartedBefore,
+		"runtime_started_by_tool": false,
+		"worker_count":            status.PoolStats.WorkerCount,
+		"idle_workers":            status.PoolStats.IdleWorkers,
+		"busy_workers":            status.PoolStats.BusyWorkers,
+		"queue_ready":             status.QueueReady,
+		"queue_blocked":           status.QueueBlocked,
+		"warnings":                []string{"dry_run=true; worker count was not changed"},
+	})
+	return string(out), nil
+}
+
+func autonomyTagsArg(args map[string]any) []string {
+	var tags []string
+	switch raw := args["tags"].(type) {
+	case []string:
+		tags = append(tags, raw...)
+	case []any:
+		for _, item := range raw {
+			if s, ok := item.(string); ok && strings.TrimSpace(s) != "" {
+				tags = append(tags, strings.TrimSpace(s))
+			}
+		}
+	}
+	return tags
+}
+
+func augmentJSONFields(out string, fields map[string]any) (string, error) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		return out, nil
+	}
+	for k, v := range fields {
+		payload[k] = v
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func autonomyBoolArg(args map[string]any, key string, fallback bool) bool {
+	if args == nil {
+		return fallback
+	}
+	raw, ok := args[key]
+	if !ok || raw == nil {
+		return fallback
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "y", "on":
+			return true
+		case "false", "0", "no", "n", "off":
+			return false
+		default:
+			return fallback
+		}
+	default:
+		return fallback
+	}
 }
 
 func parsePositiveCountArg(args map[string]any, name string, fallback int) (int, error) {

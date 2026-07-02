@@ -41,6 +41,9 @@ LuckyAgent 的 autonomy 工具组用于管理后台任务队列、worker、heart
 | `description` | `add` 时的任务详情。 |
 | `priority` | `add` 时的优先级：`low`、`normal`、`high`、`critical`。 |
 | `tags` | `add` 时的标签。 |
+| `dry_run` | `add`、`spawn`、`heartbeat`、`scale_up`、`scale_down`、`set_workers` 时只预览，不改变 runtime。 |
+| `start_if_needed` | 写类动作是否允许隐式启动 autonomy runtime，默认 `true`。 |
+| `idempotency_key` | `add` 时的幂等键，用于防止重复入队。 |
 | `state` | `list` 时过滤状态：`ready`、`in_progress`、`blocked`、`done`。 |
 | `task_id` | update/complete/fail/block/unblock/spawn 目标任务 ID。 |
 | `count` | scale_up/scale_down/set_workers 的 worker 数。 |
@@ -75,6 +78,17 @@ LuckyAgent 的 autonomy 工具组用于管理后台任务队列、worker、heart
 invalid autonomy action "<action>" (use status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers)
 ```
 
+统一入口输出会额外包含：
+
+```json
+{
+  "input_action": "enqueue",
+  "canonical_action": "add"
+}
+```
+
+底层 handler 输出仍保留自身 `action` 字段；`canonical_action` 用于日志、TUI 和网关侧稳定聚合。
+
 ## ensureStarted 行为
 
 部分操作会调用 `ensureStarted()`：
@@ -93,6 +107,79 @@ invalid autonomy action "<action>" (use status, add, list, report, update, compl
 4. 否则调用 `ensureStart()`。
 
 这意味着部分动作会自动启动 runtime autonomy kit。
+
+写类动作支持：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `dry_run` | `false` | 返回计划，不入队、不 spawn、不触发 heartbeat、不扩缩容。 |
+| `start_if_needed` | `true` | runtime 未启动时是否允许工具隐式启动。 |
+
+当工具可能启动 runtime 时，输出包含：
+
+```json
+{
+  "runtime_started_before": false,
+  "runtime_started_by_tool": true
+}
+```
+
+如果传入 `start_if_needed=false` 且 runtime 未启动，写类动作返回：
+
+```text
+autonomy runtime is not started; set start_if_needed=true or start autonomy explicitly
+```
+
+`dry_run=true` 时不会调用 `ensureStart`，输出中的 `would_start_runtime` 表示如果真实执行是否会启动 runtime。
+
+## add dry-run 和幂等
+
+`add` 支持 `dry_run`：
+
+```json
+{
+  "action": "add",
+  "title": "整理项目工具文档",
+  "dry_run": true
+}
+```
+
+返回示例：
+
+```json
+{
+  "ok": true,
+  "action": "add",
+  "canonical_action": "add",
+  "dry_run": true,
+  "would_start_runtime": true,
+  "runtime_started_before": false,
+  "runtime_started_by_tool": false,
+  "task": {
+    "title": "整理项目工具文档",
+    "priority": "normal",
+    "tags": []
+  },
+  "queue_ready": 0,
+  "warnings": ["dry_run=true; task was not queued"]
+}
+```
+
+`add` 也支持 `idempotency_key`。如果已有任务 metadata 中存在相同 key，工具直接返回已有 task：
+
+```json
+{
+  "ok": true,
+  "action": "add",
+  "canonical_action": "add",
+  "task_id": "tq-1",
+  "deduped": true,
+  "idempotency_key": "gateway-retry-1",
+  "runtime_started_by_tool": false
+}
+```
+
+幂等命中时不会重复入队，也不会为了重复请求启动 runtime。
 
 ## worker 数量参数
 
