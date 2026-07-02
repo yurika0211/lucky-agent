@@ -5,17 +5,20 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/yurika0211/luckyagent/internal/utils"
@@ -38,6 +41,10 @@ const (
 	maxStructuredQueryChars  = 2048
 	defaultCSVMaxScanRows    = 100_000
 	maxCSVMaxScanRows        = 1_000_000
+	defaultSQLTimeoutSeconds = 10
+	maxSQLTimeoutSeconds     = 60
+	defaultDBSchemaTableMax  = 100
+	maxDBSchemaTableMax      = 1000
 )
 
 // LogTailTool returns the last N lines of a log file.
@@ -1051,9 +1058,11 @@ func SQLQueryTool() *Tool {
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
-			"path":  {Type: "string", Description: "Path to the SQLite database file.", Required: true},
-			"query": {Type: "string", Description: "Read-only SQL query (SELECT, WITH, PRAGMA, EXPLAIN).", Required: true},
-			"limit": {Type: "number", Description: "Maximum number of rows to return (default 50, max 200).", Required: false, Default: 50},
+			"path":            {Type: "string", Description: "Path to the SQLite database file.", Required: true},
+			"query":           {Type: "string", Description: "Read-only SQL query (SELECT, WITH, allowlisted PRAGMA, EXPLAIN read query).", Required: true},
+			"limit":           {Type: "number", Description: "Maximum number of rows to return (default 50, max 200).", Required: false, Default: 50},
+			"timeout_seconds": {Type: "number", Description: "Query timeout in seconds (default 10, max 60).", Required: false, Default: defaultSQLTimeoutSeconds},
+			"include_meta":    {Type: "boolean", Description: "Return rows with columns, row count, truncation, and duration metadata.", Required: false, Default: false},
 		},
 		Handler:      handleSQLQuery,
 		ParallelSafe: true,
@@ -1072,26 +1081,46 @@ func handleSQLQuery(args map[string]any) (string, error) {
 	if err := validatePath(path); err != nil {
 		return "", err
 	}
-	if !isReadOnlySQL(query) {
-		return "", fmt.Errorf("only read-only queries are allowed")
+	if err := validateReadOnlySQL(query); err != nil {
+		return "", err
 	}
 	limit := boundedIntArg(args, "limit", 50, 1, 200)
+	timeoutSeconds := boundedIntArg(args, "timeout_seconds", defaultSQLTimeoutSeconds, 1, maxSQLTimeoutSeconds)
+	includeMeta, _ := args["include_meta"].(bool)
 
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open("sqlite3", sqliteReadOnlyDSN(path))
 	if err != nil {
 		return "", fmt.Errorf("open sqlite database: %w", err)
 	}
 	defer db.Close()
+	if _, err := db.Exec("PRAGMA query_only = ON"); err != nil {
+		return "", fmt.Errorf("enable sqlite query_only: %w", err)
+	}
 
-	rows, err := db.Query(query)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+	defer cancel()
+	start := time.Now()
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return "", fmt.Errorf("query sqlite database: %w", err)
 	}
 	defer rows.Close()
 
-	result, err := scanSQLRows(rows, limit)
+	result, columns, truncated, err := scanSQLRows(rows, limit)
 	if err != nil {
 		return "", err
+	}
+	if includeMeta {
+		return prettyStructuredValue(map[string]any{
+			"rows": result,
+			"meta": map[string]any{
+				"columns":       columns,
+				"returned_rows": len(result),
+				"limit":         limit,
+				"truncated":     truncated,
+				"duration_ms":   time.Since(start).Milliseconds(),
+			},
+		})
 	}
 	return prettyStructuredValue(result)
 }
@@ -1105,8 +1134,12 @@ func DBSchemaTool() *Tool {
 		Source:      "builtin",
 		Permission:  PermAuto,
 		Parameters: map[string]Param{
-			"path":  {Type: "string", Description: "Path to the SQLite database file.", Required: true},
-			"table": {Type: "string", Description: "Optional specific table name.", Required: false},
+			"path":             {Type: "string", Description: "Path to the SQLite database file.", Required: true},
+			"table":            {Type: "string", Description: "Optional specific table name.", Required: false},
+			"include":          {Type: "string", Description: "Comma-separated sections to include: columns,indexes,foreign_keys,views,triggers. Default columns.", Required: false, Default: "columns"},
+			"limit_tables":     {Type: "number", Description: "Maximum tables to return when table is omitted (default 100, max 1000).", Required: false, Default: defaultDBSchemaTableMax},
+			"include_internal": {Type: "boolean", Description: "Include sqlite_% internal tables.", Required: false, Default: false},
+			"include_sql":      {Type: "boolean", Description: "Include raw SQL for views and triggers.", Required: false, Default: false},
 		},
 		Handler:      handleDBSchema,
 		ParallelSafe: true,
@@ -1122,25 +1155,50 @@ func handleDBSchema(args map[string]any) (string, error) {
 		return "", err
 	}
 	table, _ := args["table"].(string)
+	include, err := dbSchemaIncludes(args["include"])
+	if err != nil {
+		return "", err
+	}
+	limitTables := boundedIntArg(args, "limit_tables", defaultDBSchemaTableMax, 1, maxDBSchemaTableMax)
+	includeInternal, _ := args["include_internal"].(bool)
+	includeSQL, _ := args["include_sql"].(bool)
 
-	db, err := sql.Open("sqlite3", path)
+	db, err := sql.Open("sqlite3", sqliteReadOnlyDSN(path))
 	if err != nil {
 		return "", fmt.Errorf("open sqlite database: %w", err)
 	}
 	defer db.Close()
+	if _, err := db.Exec("PRAGMA query_only = ON"); err != nil {
+		return "", fmt.Errorf("enable sqlite query_only: %w", err)
+	}
 
 	if strings.TrimSpace(table) != "" {
-		cols, err := sqliteTableSchema(db, table)
+		schema, err := sqliteTableDetails(db, table, include)
 		if err != nil {
 			return "", err
 		}
-		return prettyStructuredValue(map[string]any{
-			"table":   table,
-			"columns": cols,
-		})
+		if include["triggers"] {
+			triggers, err := sqliteObjects(db, "trigger", table, includeInternal, includeSQL, 0)
+			if err != nil {
+				return "", err
+			}
+			schema["triggers"] = triggers
+		}
+		result := map[string]any{
+			"table": table,
+		}
+		for k, v := range schema {
+			result[k] = v
+		}
+		return prettyStructuredValue(result)
 	}
 
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	tableQuery := `SELECT name FROM sqlite_master WHERE type='table'`
+	if !includeInternal {
+		tableQuery += ` AND name NOT LIKE 'sqlite_%'`
+	}
+	tableQuery += ` ORDER BY name LIMIT ?`
+	rows, err := db.Query(tableQuery, limitTables)
 	if err != nil {
 		return "", fmt.Errorf("list tables: %w", err)
 	}
@@ -1152,18 +1210,34 @@ func handleDBSchema(args map[string]any) (string, error) {
 		if err := rows.Scan(&name); err != nil {
 			return "", fmt.Errorf("scan table name: %w", err)
 		}
-		cols, err := sqliteTableSchema(db, name)
+		schema, err := sqliteTableDetails(db, name, include)
 		if err != nil {
 			return "", err
 		}
-		tables = append(tables, map[string]any{
-			"name":    name,
-			"columns": cols,
-		})
+		entry := map[string]any{"name": name}
+		for k, v := range schema {
+			entry[k] = v
+		}
+		tables = append(tables, entry)
 	}
-	return prettyStructuredValue(map[string]any{
+	result := map[string]any{
 		"tables": tables,
-	})
+	}
+	if include["views"] {
+		views, err := sqliteObjects(db, "view", "", includeInternal, includeSQL, limitTables)
+		if err != nil {
+			return "", err
+		}
+		result["views"] = views
+	}
+	if include["triggers"] {
+		triggers, err := sqliteObjects(db, "trigger", "", includeInternal, includeSQL, limitTables)
+		if err != nil {
+			return "", err
+		}
+		result["triggers"] = triggers
+	}
+	return prettyStructuredValue(result)
 }
 
 type structuredQueryOptions struct {
@@ -1545,52 +1619,199 @@ func appendPathKey(base, key string) string {
 }
 
 func isReadOnlySQL(query string) bool {
-	q := strings.TrimSpace(strings.ToLower(query))
+	return validateReadOnlySQL(query) == nil
+}
+
+func validateReadOnlySQL(query string) error {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return fmt.Errorf("query is required")
+	}
+	if hasMultipleSQLStatements(q) {
+		return fmt.Errorf("only one SQL statement is allowed")
+	}
+	q = strings.TrimSpace(strings.TrimSuffix(q, ";"))
+	lower := strings.ToLower(q)
 	switch {
-	case strings.HasPrefix(q, "select "),
-		strings.HasPrefix(q, "with "),
-		strings.HasPrefix(q, "pragma "),
-		strings.HasPrefix(q, "explain "):
+	case strings.HasPrefix(lower, "select "):
+		return nil
+	case strings.HasPrefix(lower, "with "):
+		if containsSQLWriteKeyword(lower) {
+			return fmt.Errorf("WITH query contains a non-read-only keyword")
+		}
+		return nil
+	case strings.HasPrefix(lower, "pragma "):
+		if !isAllowedReadOnlyPragma(lower) {
+			return fmt.Errorf("pragma is not allowlisted for read-only sql_query")
+		}
+		return nil
+	case strings.HasPrefix(lower, "explain "):
+		return validateExplainSQL(q)
+	default:
+		return fmt.Errorf("only read-only queries are allowed")
+	}
+}
+
+func hasMultipleSQLStatements(query string) bool {
+	inSingle := false
+	inDouble := false
+	inLineComment := false
+	inBlockComment := false
+	for i := 0; i < len(query); i++ {
+		ch := query[i]
+		next := byte(0)
+		if i+1 < len(query) {
+			next = query[i+1]
+		}
+		if inLineComment {
+			if ch == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			if ch == '*' && next == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
+		if inSingle {
+			if ch == '\'' {
+				if next == '\'' {
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			if ch == '"' {
+				if next == '"' {
+					i++
+					continue
+				}
+				inDouble = false
+			}
+			continue
+		}
+		switch {
+		case ch == '-' && next == '-':
+			inLineComment = true
+			i++
+		case ch == '/' && next == '*':
+			inBlockComment = true
+			i++
+		case ch == '\'':
+			inSingle = true
+		case ch == '"':
+			inDouble = true
+		case ch == ';':
+			if strings.TrimSpace(query[i+1:]) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsSQLWriteKeyword(lower string) bool {
+	writeKeywords := []string{"insert", "update", "delete", "replace", "create", "drop", "alter", "attach", "detach", "vacuum", "reindex"}
+	for _, keyword := range writeKeywords {
+		if regexp.MustCompile(`\b` + keyword + `\b`).MatchString(lower) {
+			return true
+		}
+	}
+	return false
+}
+
+func isAllowedReadOnlyPragma(lower string) bool {
+	body := strings.TrimSpace(strings.TrimPrefix(lower, "pragma"))
+	body = strings.TrimSpace(strings.TrimSuffix(body, ";"))
+	for _, sep := range []string{"(", "=", " "} {
+		if idx := strings.Index(body, sep); idx >= 0 {
+			body = body[:idx]
+		}
+	}
+	body = strings.TrimSpace(body)
+	if dot := strings.LastIndex(body, "."); dot >= 0 {
+		body = body[dot+1:]
+	}
+	switch body {
+	case "table_info", "table_xinfo", "index_list", "index_info", "index_xinfo", "foreign_key_list", "database_list", "integrity_check", "quick_check":
 		return true
 	default:
 		return false
 	}
 }
 
-func scanSQLRows(rows *sql.Rows, limit int) ([]map[string]any, error) {
+func validateExplainSQL(query string) error {
+	rest := strings.TrimSpace(query[len("explain "):])
+	lower := strings.ToLower(rest)
+	if strings.HasPrefix(lower, "query plan ") {
+		rest = strings.TrimSpace(rest[len("query plan "):])
+	}
+	if err := validateReadOnlySQL(rest); err != nil {
+		return fmt.Errorf("EXPLAIN target is not read-only: %w", err)
+	}
+	return nil
+}
+
+func scanSQLRows(rows *sql.Rows, limit int) ([]map[string]any, []string, bool, error) {
 	columns, err := rows.Columns()
 	if err != nil {
-		return nil, fmt.Errorf("read columns: %w", err)
+		return nil, nil, false, fmt.Errorf("read columns: %w", err)
 	}
 	result := make([]map[string]any, 0, limit)
+	truncated := false
 	for rows.Next() {
+		if len(result) >= limit {
+			truncated = true
+			break
+		}
 		values := make([]any, len(columns))
 		dest := make([]any, len(columns))
 		for i := range values {
 			dest[i] = &values[i]
 		}
 		if err := rows.Scan(dest...); err != nil {
-			return nil, fmt.Errorf("scan row: %w", err)
+			return nil, nil, false, fmt.Errorf("scan row: %w", err)
 		}
 		entry := make(map[string]any, len(columns))
 		for i, col := range columns {
 			entry[col] = normalizeSQLValue(values[i])
 		}
 		result = append(result, entry)
-		if len(result) >= limit {
-			break
-		}
 	}
-	return result, nil
+	if err := rows.Err(); err != nil {
+		return nil, nil, false, fmt.Errorf("iterate rows: %w", err)
+	}
+	return result, columns, truncated, nil
 }
 
 func normalizeSQLValue(v any) any {
 	switch x := v.(type) {
 	case []byte:
-		return string(x)
+		if utf8.Valid(x) {
+			return string(x)
+		}
+		return map[string]any{
+			"type":   "blob",
+			"bytes":  len(x),
+			"base64": base64.StdEncoding.EncodeToString(x),
+		}
 	default:
 		return x
 	}
+}
+
+func sqliteReadOnlyDSN(path string) string {
+	u := url.URL{Scheme: "file", Path: path}
+	q := u.Query()
+	q.Set("mode", "ro")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func sqliteTableSchema(db *sql.DB, table string) ([]map[string]any, error) {
@@ -1609,19 +1830,217 @@ func sqliteTableSchema(db *sql.DB, table string) ([]map[string]any, error) {
 		if err := rows.Scan(&cid, &name, &colType, &notNull, &dflt, &pk); err != nil {
 			return nil, fmt.Errorf("scan schema row: %w", err)
 		}
+		var defaultValue any
+		if dflt.Valid {
+			defaultValue = dflt.String
+		}
 		cols = append(cols, map[string]any{
-			"cid":      cid,
-			"name":     name,
-			"type":     colType,
-			"not_null": notNull == 1,
-			"default":  dflt.String,
-			"primary":  pk == 1,
+			"cid":         cid,
+			"name":        name,
+			"type":        colType,
+			"not_null":    notNull == 1,
+			"default":     defaultValue,
+			"has_default": dflt.Valid,
+			"primary":     pk == 1,
 		})
 	}
 	if len(cols) == 0 {
 		return nil, fmt.Errorf("table %q not found or has no visible columns", table)
 	}
 	return cols, nil
+}
+
+func dbSchemaIncludes(raw any) (map[string]bool, error) {
+	values, err := stringListArg(raw)
+	if err != nil {
+		return nil, fmt.Errorf("include: %w", err)
+	}
+	if len(values) == 0 {
+		values = []string{"columns"}
+	}
+	include := make(map[string]bool, len(values))
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		switch value {
+		case "columns", "indexes", "foreign_keys", "views", "triggers":
+			include[value] = true
+		default:
+			return nil, fmt.Errorf("unsupported include section %q", value)
+		}
+	}
+	return include, nil
+}
+
+func sqliteTableDetails(db *sql.DB, table string, include map[string]bool) (map[string]any, error) {
+	result := make(map[string]any)
+	if include["columns"] {
+		cols, err := sqliteTableSchema(db, table)
+		if err != nil {
+			return nil, err
+		}
+		result["columns"] = cols
+	} else if err := sqliteTableExists(db, table); err != nil {
+		return nil, err
+	}
+	if include["indexes"] {
+		indexes, err := sqliteTableIndexes(db, table)
+		if err != nil {
+			return nil, err
+		}
+		result["indexes"] = indexes
+	}
+	if include["foreign_keys"] {
+		foreignKeys, err := sqliteTableForeignKeys(db, table)
+		if err != nil {
+			return nil, err
+		}
+		result["foreign_keys"] = foreignKeys
+	}
+	return result, nil
+}
+
+func sqliteTableExists(db *sql.DB, table string) error {
+	var name string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("table %q not found or has no visible columns", table)
+	}
+	if err != nil {
+		return fmt.Errorf("check table %s: %w", table, err)
+	}
+	return nil
+}
+
+func sqliteTableIndexes(db *sql.DB, table string) ([]map[string]any, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%s)", sqliteQuoteIdentifier(table)))
+	if err != nil {
+		return nil, fmt.Errorf("list indexes for %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	var indexes []map[string]any
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return nil, fmt.Errorf("scan index list: %w", err)
+		}
+		columns, err := sqliteIndexColumns(db, name)
+		if err != nil {
+			return nil, err
+		}
+		indexes = append(indexes, map[string]any{
+			"seq":     seq,
+			"name":    name,
+			"unique":  unique == 1,
+			"origin":  origin,
+			"partial": partial == 1,
+			"columns": columns,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate index list: %w", err)
+	}
+	return indexes, nil
+}
+
+func sqliteIndexColumns(db *sql.DB, indexName string) ([]string, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA index_info(%s)", sqliteQuoteIdentifier(indexName)))
+	if err != nil {
+		return nil, fmt.Errorf("read index %s columns: %w", indexName, err)
+	}
+	defer rows.Close()
+
+	var columns []string
+	for rows.Next() {
+		var seqno, cid int
+		var name string
+		if err := rows.Scan(&seqno, &cid, &name); err != nil {
+			return nil, fmt.Errorf("scan index columns: %w", err)
+		}
+		columns = append(columns, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate index columns: %w", err)
+	}
+	return columns, nil
+}
+
+func sqliteTableForeignKeys(db *sql.DB, table string) ([]map[string]any, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA foreign_key_list(%s)", sqliteQuoteIdentifier(table)))
+	if err != nil {
+		return nil, fmt.Errorf("list foreign keys for %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	var out []map[string]any
+	for rows.Next() {
+		var id, seq int
+		var refTable, from, to, onUpdate, onDelete, match string
+		if err := rows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			return nil, fmt.Errorf("scan foreign key: %w", err)
+		}
+		out = append(out, map[string]any{
+			"id":        id,
+			"seq":       seq,
+			"table":     refTable,
+			"from":      from,
+			"to":        to,
+			"on_update": onUpdate,
+			"on_delete": onDelete,
+			"match":     match,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate foreign keys: %w", err)
+	}
+	return out, nil
+}
+
+func sqliteObjects(db *sql.DB, objectType, table string, includeInternal, includeSQL bool, limit int) ([]map[string]any, error) {
+	query := `SELECT name, tbl_name, sql FROM sqlite_master WHERE type=?`
+	args := []any{objectType}
+	if strings.TrimSpace(table) != "" {
+		query += ` AND tbl_name=?`
+		args = append(args, table)
+	}
+	if !includeInternal {
+		query += ` AND name NOT LIKE 'sqlite_%'`
+	}
+	query += ` ORDER BY name`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list sqlite %s objects: %w", objectType, err)
+	}
+	defer rows.Close()
+
+	var out []map[string]any
+	for rows.Next() {
+		var name, tblName string
+		var sqlText sql.NullString
+		if err := rows.Scan(&name, &tblName, &sqlText); err != nil {
+			return nil, fmt.Errorf("scan sqlite %s object: %w", objectType, err)
+		}
+		item := map[string]any{
+			"name":  name,
+			"table": tblName,
+		}
+		if includeSQL && sqlText.Valid {
+			item["sql"] = sqlText.String
+		}
+		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite %s objects: %w", objectType, err)
+	}
+	return out, nil
 }
 
 func sqliteQuoteIdentifier(name string) string {
