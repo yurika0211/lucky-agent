@@ -1458,6 +1458,77 @@ func TestFileMkdirMoveDeleteTools(t *testing.T) {
 	}
 }
 
+func TestFileDeleteToolDryRunLimitTrashAndSymlink(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tmpDir := t.TempDir()
+	root := filepath.Join(tmpDir, "tree")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir tree: %v", err)
+	}
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+			t.Fatalf("write tree file: %v", err)
+		}
+	}
+	dryRun, err := r.Call("file_delete", map[string]any{
+		"path":      root,
+		"recursive": true,
+		"dry_run":   true,
+	})
+	if err != nil {
+		t.Fatalf("file_delete dry_run: %v", err)
+	}
+	if !strings.Contains(dryRun, "Dry run") || !strings.Contains(dryRun, `"kind": "directory"`) {
+		t.Fatalf("unexpected dry_run result: %q", dryRun)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("dry_run should keep tree: %v", err)
+	}
+
+	_, err = r.Call("file_delete", map[string]any{
+		"path":        root,
+		"recursive":   true,
+		"max_entries": 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "max_entries") {
+		t.Fatalf("expected recursive limit error, got %v", err)
+	}
+
+	trashResult, err := r.Call("file_delete", map[string]any{
+		"path":      root,
+		"recursive": true,
+		"trash":     true,
+	})
+	if err != nil {
+		t.Fatalf("file_delete trash: %v", err)
+	}
+	if !strings.Contains(trashResult, "Moved") || !strings.Contains(trashResult, ".luckyagent") {
+		t.Fatalf("unexpected trash result: %q", trashResult)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("trash should remove original path, got %v", err)
+	}
+
+	target := filepath.Join(tmpDir, "target.txt")
+	link := filepath.Join(tmpDir, "target-link")
+	if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := r.Call("file_delete", map[string]any{"path": link}); err != nil {
+		t.Fatalf("file_delete symlink: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("deleting symlink should keep target: %v", err)
+	}
+}
+
 func TestFileMkdirToolDryRunAndParentErrors(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)

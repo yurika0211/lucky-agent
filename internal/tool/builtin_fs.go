@@ -21,6 +21,7 @@ const (
 	maxFileReadLimit     = 5000
 	binarySniffBytes     = 8192
 	maxFileWriteBytes    = 25 * 1024 * 1024
+	defaultDeleteMax     = 1000
 )
 
 func TerminalTool() *Tool {
@@ -581,18 +582,32 @@ func handleFileMove(args map[string]any) (string, error) {
 func FileDeleteTool() *Tool {
 	return &Tool{
 		Name:        "file_delete",
-		Description: "Delete a file or directory. Set recursive=true to remove a non-empty directory. Set missing_ok=true to ignore absent paths.",
+		Description: "Delete a file or directory. Use dry_run=true to preview recursive deletion, trash=true to quarantine instead of permanent deletion, and missing_ok=true to ignore absent paths.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
 		ShellAware:  true,
 		Parameters: map[string]Param{
-			"path":       {Type: "string", Description: "File or directory path to delete.", Required: true},
-			"recursive":  {Type: "boolean", Description: "Remove a directory tree instead of only a single file or empty directory. Default false.", Required: false, Default: false},
-			"missing_ok": {Type: "boolean", Description: "Succeed when the target path does not exist. Default false.", Required: false, Default: false},
+			"path":        {Type: "string", Description: "File or directory path to delete.", Required: true},
+			"recursive":   {Type: "boolean", Description: "Remove a directory tree instead of only a single file or empty directory. Default false.", Required: false, Default: false},
+			"missing_ok":  {Type: "boolean", Description: "Succeed when the target path does not exist. Default false.", Required: false, Default: false},
+			"dry_run":     {Type: "boolean", Description: "Preview the delete plan without changing the filesystem. Default false.", Required: false, Default: false},
+			"trash":       {Type: "boolean", Description: "Move the target to ~/.luckyagent/trash instead of deleting permanently. Default false.", Required: false, Default: false},
+			"max_entries": {Type: "number", Description: "Maximum entries allowed for recursive permanent deletion. Default 1000.", Required: false, Default: defaultDeleteMax},
 		},
 		Handler: handleFileDelete,
 	}
+}
+
+type deletePlan struct {
+	Path       string `json:"path"`
+	Exists     bool   `json:"exists"`
+	Kind       string `json:"kind,omitempty"`
+	Recursive  bool   `json:"recursive"`
+	EntryCount int    `json:"entry_count,omitempty"`
+	Bytes      int64  `json:"bytes,omitempty"`
+	Action     string `json:"action"`
+	TrashPath  string `json:"trash_path,omitempty"`
 }
 
 func handleFileDelete(args map[string]any) (string, error) {
@@ -608,39 +623,160 @@ func handleFileDelete(args map[string]any) (string, error) {
 	if v, ok := args["missing_ok"].(bool); ok {
 		missingOK = v
 	}
-	if err := removePath(path, recursive); err != nil {
+	dryRun := false
+	if v, ok := args["dry_run"].(bool); ok {
+		dryRun = v
+	}
+	trash := false
+	if v, ok := args["trash"].(bool); ok {
+		trash = v
+	}
+	maxEntries := boundedIntArg(args, "max_entries", defaultDeleteMax, 1, int(^uint(0)>>1))
+
+	plan, err := buildDeletePlan(path, recursive, trash, maxEntries)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && missingOK {
 			return fmt.Sprintf("Path already absent: %s", path), nil
 		}
 		return "", err
 	}
-	return fmt.Sprintf("Deleted %s", path), nil
+	if dryRun {
+		out, err := prettyStructuredValue(plan)
+		if err != nil {
+			return "", err
+		}
+		return "Dry run: file delete plan\n" + out, nil
+	}
+	if err := executeDeletePlan(plan); err != nil {
+		return "", err
+	}
+	if trash {
+		return fmt.Sprintf("Moved %s to trash: %s", path, plan.TrashPath), nil
+	}
+	return fmt.Sprintf("Deleted %s (%s, %d entr%s)", path, plan.Kind, plan.EntryCount, entrySuffix(plan.EntryCount)), nil
 }
 
 func removePath(path string, recursive bool) error {
-	info, err := os.Stat(path)
+	plan, err := buildDeletePlan(path, recursive, false, int(^uint(0)>>1))
+	if err != nil {
+		return err
+	}
+	return executeDeletePlan(plan)
+}
+
+func buildDeletePlan(path string, recursive, trash bool, maxEntries int) (deletePlan, error) {
+	plan := deletePlan{Path: path, Recursive: recursive, Exists: true}
+	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return os.ErrNotExist
+			plan.Exists = false
+			plan.Action = "absent"
+			return plan, os.ErrNotExist
 		}
-		return fmt.Errorf("stat path: %w", err)
+		return plan, fmt.Errorf("stat path: %w", err)
 	}
-	if info.IsDir() {
-		if recursive {
-			if err := os.RemoveAll(path); err != nil {
+	plan.Kind = fileKind(info)
+	plan.Action = "delete"
+	if trash {
+		trashPath, err := allocateTrashPath(path)
+		if err != nil {
+			return plan, err
+		}
+		plan.Action = "trash"
+		plan.TrashPath = trashPath
+	}
+	if !info.IsDir() {
+		plan.EntryCount = 1
+		plan.Bytes = info.Size()
+		return plan, nil
+	}
+	if !recursive {
+		entries, err := os.ReadDir(path)
+		if err != nil {
+			return plan, fmt.Errorf("read directory: %w", err)
+		}
+		plan.EntryCount = len(entries) + 1
+		if len(entries) > 0 {
+			return plan, fmt.Errorf("directory is not empty: %s; set recursive=true to delete the tree", path)
+		}
+		return plan, nil
+	}
+	err = filepath.WalkDir(path, func(_ string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		plan.EntryCount++
+		if !d.IsDir() {
+			if info, err := d.Info(); err == nil {
+				plan.Bytes += info.Size()
+			}
+		}
+		if !trash && plan.EntryCount > maxEntries {
+			return fmt.Errorf("recursive delete exceeds max_entries=%d", maxEntries)
+		}
+		return nil
+	})
+	if err != nil {
+		return plan, fmt.Errorf("scan directory tree: %w", err)
+	}
+	return plan, nil
+}
+
+func executeDeletePlan(plan deletePlan) error {
+	if plan.Action == "trash" {
+		if err := os.MkdirAll(filepath.Dir(plan.TrashPath), 0o755); err != nil {
+			return fmt.Errorf("create trash directory: %w", err)
+		}
+		if err := os.Rename(plan.Path, plan.TrashPath); err != nil {
+			return fmt.Errorf("move to trash: %w", err)
+		}
+		return nil
+	}
+	if plan.Kind == "directory" {
+		if plan.Recursive {
+			if err := os.RemoveAll(plan.Path); err != nil {
 				return fmt.Errorf("delete directory tree: %w", err)
 			}
 			return nil
 		}
-		if err := os.Remove(path); err != nil {
+		if err := os.Remove(plan.Path); err != nil {
 			return fmt.Errorf("delete directory: %w", err)
 		}
 		return nil
 	}
-	if err := os.Remove(path); err != nil {
+	if err := os.Remove(plan.Path); err != nil {
 		return fmt.Errorf("delete file: %w", err)
 	}
 	return nil
+}
+
+func fileKind(info os.FileInfo) string {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "symlink"
+	}
+	if info.IsDir() {
+		return "directory"
+	}
+	return "file"
+}
+
+func allocateTrashPath(path string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	name := filepath.Base(path)
+	if name == "." || name == string(filepath.Separator) || strings.TrimSpace(name) == "" {
+		name = "deleted"
+	}
+	return filepath.Join(home, ".luckyagent", "trash", fmt.Sprintf("%s-%d", name, time.Now().UnixNano())), nil
+}
+
+func entrySuffix(count int) string {
+	if count == 1 {
+		return "y"
+	}
+	return "ies"
 }
 
 func sameFilePath(a, b string) bool { return filepath.Clean(a) == filepath.Clean(b) }
