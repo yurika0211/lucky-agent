@@ -1084,6 +1084,46 @@ func TestAgent_ProviderWithMock(t *testing.T) {
 	}
 }
 
+func TestRetryPredicateFromConfigHonorsServerErrorFlag(t *testing.T) {
+	err502 := fmt.Errorf("API error 502: upstream unavailable")
+	noServerRetry := retryPredicateFromConfig(config.RetryConfig{
+		Enabled:            true,
+		RetryOnServerError: false,
+		RetryOnTimeout:     true,
+		RetryOnRateLimit:   true,
+	})
+	if noServerRetry(err502) {
+		t.Fatal("expected retry_on_server_error=false to block 502 retries")
+	}
+
+	withServerRetry := retryPredicateFromConfig(config.RetryConfig{
+		Enabled:            true,
+		RetryOnServerError: true,
+	})
+	if !withServerRetry(err502) {
+		t.Fatal("expected retry_on_server_error=true to allow 502 retries")
+	}
+}
+
+func TestRetryPredicateFromConfigHonorsTimeoutFlag(t *testing.T) {
+	timeoutErr := context.DeadlineExceeded
+	noTimeoutRetry := retryPredicateFromConfig(config.RetryConfig{
+		Enabled:        true,
+		RetryOnTimeout: false,
+	})
+	if noTimeoutRetry(timeoutErr) {
+		t.Fatal("expected retry_on_timeout=false to block timeout retries")
+	}
+
+	withTimeoutRetry := retryPredicateFromConfig(config.RetryConfig{
+		Enabled:        true,
+		RetryOnTimeout: true,
+	})
+	if !withTimeoutRetry(timeoutErr) {
+		t.Fatal("expected retry_on_timeout=true to allow timeout retries")
+	}
+}
+
 // mockProvider 用于测试的 mock provider
 type mockProvider struct {
 	name string

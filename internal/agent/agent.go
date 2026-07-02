@@ -265,7 +265,7 @@ func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.
 		if c.Retry.MaxDelayMs > 0 {
 			retryCfg.MaxDelay = time.Duration(c.Retry.MaxDelayMs) * time.Millisecond
 		}
-		chain.Use(middleware.NewRetryMiddleware(retryCfg))
+		chain.Use(middleware.NewRetryMiddlewareWithPredicate(retryCfg, retryPredicateFromConfig(c.Retry)))
 	}
 
 	if c.CircuitBreaker.Enabled {
@@ -294,6 +294,42 @@ func wrapProviderWithMiddleware(p provider.Provider, c *config.Config) provider.
 		return p
 	}
 	return middleware.NewMiddlewareProvider(p, chain)
+}
+
+func retryPredicateFromConfig(cfg config.RetryConfig) resilience.IsRetryableFunc {
+	return func(err error) bool {
+		if err == nil {
+			return false
+		}
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "context canceled") {
+			return false
+		}
+		if strings.Contains(msg, "context deadline exceeded") ||
+			strings.Contains(msg, "timeout") {
+			return cfg.RetryOnTimeout
+		}
+		if strings.Contains(msg, "429") ||
+			strings.Contains(msg, "rate limit") ||
+			strings.Contains(msg, "too many requests") {
+			return cfg.RetryOnRateLimit
+		}
+		if strings.Contains(msg, "500") ||
+			strings.Contains(msg, "502") ||
+			strings.Contains(msg, "503") ||
+			strings.Contains(msg, "504") {
+			return cfg.RetryOnServerError
+		}
+		if strings.Contains(msg, "connection refused") ||
+			strings.Contains(msg, "connection reset") ||
+			strings.Contains(msg, "broken pipe") ||
+			strings.Contains(msg, "unexpected eof") ||
+			strings.Contains(msg, "http2: client connection lost") ||
+			strings.Contains(msg, "use of closed network connection") {
+			return cfg.RetryOnTimeout
+		}
+		return false
+	}
 }
 
 /**

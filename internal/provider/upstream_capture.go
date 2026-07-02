@@ -38,7 +38,7 @@ func newUpstreamCapture(kind string, cfg Config, requestBody []byte) *upstreamCa
 		"kind":        kind,
 		"LlmProvider": LlmProvider{
 			Name:        cfg.LlmProvider.Name,
-			APIKey:      cfg.LlmProvider.APIKey,
+			APIKey:      maskedKeySuffix(cfg.LlmProvider.APIKey),
 			BaseURL:     cfg.LlmProvider.BaseURL,
 			Model:       cfg.LlmProvider.Model,
 			Temperature: cfg.LlmProvider.Temperature,
