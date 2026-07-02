@@ -45,6 +45,9 @@ const (
 	maxSQLTimeoutSeconds     = 60
 	defaultDBSchemaTableMax  = 100
 	maxDBSchemaTableMax      = 1000
+	maxHTTPRequestBodyBytes  = 1 << 20
+	defaultHTTPResponseBytes = 32 << 10
+	maxHTTPResponseBytes     = 1 << 20
 )
 
 // LogTailTool returns the last N lines of a log file.
@@ -423,11 +426,16 @@ func HTTPRequestTool() *Tool {
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
-			"url":          {Type: "string", Description: "HTTP or HTTPS URL to request.", Required: true},
-			"method":       {Type: "string", Description: "HTTP method such as GET, POST, PUT, PATCH, DELETE. Default GET.", Required: false, Default: "GET"},
-			"headers_json": {Type: "string", Description: "Optional JSON object of request headers.", Required: false},
-			"body":         {Type: "string", Description: "Optional request body.", Required: false},
-			"timeout":      {Type: "number", Description: "Timeout in seconds (default 15, max 60).", Required: false, Default: 15},
+			"url":                {Type: "string", Description: "HTTP or HTTPS URL to request.", Required: true},
+			"method":             {Type: "string", Description: "HTTP method. GET, HEAD, and OPTIONS are allowed by default; mutation methods require allow_mutation=true.", Required: false, Default: "GET"},
+			"headers_json":       {Type: "string", Description: "Optional JSON object of request headers.", Required: false},
+			"body":               {Type: "string", Description: "Optional request body, max 1 MiB.", Required: false},
+			"timeout":            {Type: "number", Description: "Timeout in seconds (default 15, max 60).", Required: false, Default: 15},
+			"allow_mutation":     {Type: "boolean", Description: "Allow POST, PUT, PATCH, or DELETE.", Required: false, Default: false},
+			"max_response_bytes": {Type: "number", Description: "Maximum response bytes to read (default 32768, max 1048576).", Required: false, Default: defaultHTTPResponseBytes},
+			"format":             {Type: "string", Description: "Output format: text or json. Default text.", Required: false, Default: "text"},
+			"include_headers":    {Type: "boolean", Description: "Include response headers in output.", Required: false, Default: false},
+			"redact_headers":     {Type: "boolean", Description: "Redact sensitive response headers when include_headers=true.", Required: false, Default: true},
 		},
 		Handler:      handleHTTPRequest,
 		ParallelSafe: true,
@@ -446,8 +454,28 @@ func handleHTTPRequest(args map[string]any) (string, error) {
 	if m, ok := args["method"].(string); ok && strings.TrimSpace(m) != "" {
 		method = strings.ToUpper(strings.TrimSpace(m))
 	}
+	allowMutation, _ := args["allow_mutation"].(bool)
+	if err := validateHTTPMethod(method, allowMutation); err != nil {
+		return "", err
+	}
 	timeout := boundedIntArg(args, "timeout", 15, 1, 60)
+	maxResponseBytes := boundedIntArg(args, "max_response_bytes", defaultHTTPResponseBytes, 1, maxHTTPResponseBytes)
+	format := strings.ToLower(strings.TrimSpace(stringValue(args["format"])))
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return "", fmt.Errorf("format must be text or json")
+	}
+	includeHeaders, _ := args["include_headers"].(bool)
+	redactHeaders := true
+	if raw, ok := args["redact_headers"].(bool); ok {
+		redactHeaders = raw
+	}
 	body, _ := args["body"].(string)
+	if len(body) > maxHTTPRequestBodyBytes {
+		return "", fmt.Errorf("request body is %d bytes, above max %d", len(body), maxHTTPRequestBodyBytes)
+	}
 
 	req, err := http.NewRequestWithContext(context.Background(), method, rawURL, strings.NewReader(body))
 	if err != nil {
@@ -461,27 +489,68 @@ func handleHTTPRequest(args map[string]any) (string, error) {
 			return "", fmt.Errorf("parse headers_json: %w", err)
 		}
 		for k, v := range headers {
+			if err := validateRequestHeader(k, v); err != nil {
+				return "", err
+			}
 			req.Header.Set(k, v)
 		}
 	}
 
-	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	client := &http.Client{
+		Timeout: time.Duration(timeout) * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if err := validateFetchURL(req.URL.String()); err != nil {
+				return fmt.Errorf("redirect url validation failed: %w", err)
+			}
+			return nil
+		},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("send request: %w", err)
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxResponseBytes)+1))
 	if err != nil {
 		return "", fmt.Errorf("read response: %w", err)
 	}
-	bodyText := strings.TrimSpace(string(data))
-	if json.Valid(data) {
+	truncated := len(data) > maxResponseBytes
+	if truncated {
+		data = data[:maxResponseBytes]
+	}
+	trimmedData := bytes.TrimSpace(data)
+	bodyText := string(trimmedData)
+	var jsonBody any
+	bodyIsJSON := len(trimmedData) > 0 && json.Valid(trimmedData)
+	if bodyIsJSON {
+		_ = json.Unmarshal(trimmedData, &jsonBody)
 		var pretty bytes.Buffer
-		if err := json.Indent(&pretty, data, "", "  "); err == nil {
+		if err := json.Indent(&pretty, trimmedData, "", "  "); err == nil {
 			bodyText = pretty.String()
 		}
+	}
+	if format == "json" {
+		result := map[string]any{
+			"status":         resp.Status,
+			"status_code":    resp.StatusCode,
+			"content_type":   resp.Header.Get("Content-Type"),
+			"bytes_read":     len(data),
+			"response_limit": maxResponseBytes,
+			"truncated":      truncated,
+		}
+		if bodyIsJSON {
+			result["body"] = jsonBody
+		} else {
+			result["body"] = bodyText
+		}
+		if includeHeaders {
+			result["headers"] = responseHeaders(resp.Header, redactHeaders)
+		}
+		return prettyStructuredValue(result)
 	}
 
 	var b strings.Builder
@@ -489,11 +558,87 @@ func handleHTTPRequest(args map[string]any) (string, error) {
 	if ct := strings.TrimSpace(resp.Header.Get("Content-Type")); ct != "" {
 		b.WriteString("Content-Type: " + ct + "\n")
 	}
+	b.WriteString(fmt.Sprintf("Bytes-Read: %d\n", len(data)))
+	if truncated {
+		b.WriteString(fmt.Sprintf("Truncated: true (limit %d bytes)\n", maxResponseBytes))
+	}
+	if includeHeaders {
+		b.WriteString("Headers:\n")
+		headers := responseHeaders(resp.Header, redactHeaders)
+		names := make([]string, 0, len(headers))
+		for name := range headers {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			b.WriteString(fmt.Sprintf("  %s: %s\n", name, strings.Join(headers[name], ", ")))
+		}
+	}
 	if bodyText != "" {
 		b.WriteString("\n")
 		b.WriteString(utils.Truncate(bodyText, 12000))
 	}
 	return strings.TrimSpace(b.String()), nil
+}
+
+func validateHTTPMethod(method string, allowMutation bool) error {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return nil
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		if allowMutation {
+			return nil
+		}
+		return fmt.Errorf("%s requires allow_mutation=true", method)
+	default:
+		return fmt.Errorf("unsupported HTTP method %q", method)
+	}
+}
+
+func validateRequestHeader(name, value string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("header name is required")
+	}
+	for _, r := range name {
+		if r <= 31 || r == 127 || r == ':' {
+			return fmt.Errorf("header %q contains invalid characters", name)
+		}
+	}
+	for _, r := range value {
+		if r == '\r' || r == '\n' {
+			return fmt.Errorf("header %q contains newline characters", name)
+		}
+	}
+	switch strings.ToLower(name) {
+	case "host", "connection", "content-length", "transfer-encoding":
+		return fmt.Errorf("header %q cannot be overridden", name)
+	default:
+		return nil
+	}
+}
+
+func responseHeaders(headers http.Header, redact bool) map[string][]string {
+	out := make(map[string][]string, len(headers))
+	for name, values := range headers {
+		copied := append([]string(nil), values...)
+		if redact && isSensitiveHeader(name) {
+			for i := range copied {
+				copied[i] = "[REDACTED]"
+			}
+		}
+		out[name] = copied
+	}
+	return out
+}
+
+func isSensitiveHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization", "proxy-authorization", "cookie", "set-cookie", "x-api-key", "x-auth-token":
+		return true
+	default:
+		return false
+	}
 }
 
 // JSONQueryTool extracts a nested field from a JSON document using dot-path syntax.

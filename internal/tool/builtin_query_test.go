@@ -10,6 +10,34 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+func TestHTTPRequestRejectsMutationBodyAndUnsafeHeaders(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	if _, err := r.Call("http_request", map[string]any{
+		"url":    "https://93.184.216.34/api",
+		"method": "POST",
+	}); err == nil || !strings.Contains(err.Error(), "allow_mutation") {
+		t.Fatalf("expected mutation gate error, got %v", err)
+	}
+
+	if _, err := r.Call("http_request", map[string]any{
+		"url":            "https://93.184.216.34/api",
+		"method":         "POST",
+		"allow_mutation": true,
+		"body":           strings.Repeat("x", maxHTTPRequestBodyBytes+1),
+	}); err == nil || !strings.Contains(err.Error(), "request body") {
+		t.Fatalf("expected body size error, got %v", err)
+	}
+
+	if _, err := r.Call("http_request", map[string]any{
+		"url":          "https://93.184.216.34/api",
+		"headers_json": `{"Host":"evil.example"}`,
+	}); err == nil || !strings.Contains(err.Error(), "cannot be overridden") {
+		t.Fatalf("expected unsafe header error, got %v", err)
+	}
+}
+
 func TestCSVQueryStreamingProjectionFiltersAndMeta(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
