@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,11 @@ const (
 	defaultLogGrepScanLines  = 1_000_000
 	maxLogGrepScanLines      = 10_000_000
 	maxLogScannerTokenBytes  = 10 << 20
+	defaultStructuredMaxFile = 20 << 20
+	maxStructuredFileBytes   = 100 << 20
+	defaultStructuredOutput  = 12000
+	maxStructuredOutput      = 1 << 20
+	maxStructuredQueryChars  = 2048
 )
 
 // LogTailTool returns the last N lines of a log file.
@@ -490,8 +496,11 @@ func JSONQueryTool() *Tool {
 		Source:      "builtin",
 		Permission:  PermAuto,
 		Parameters: map[string]Param{
-			"path":  {Type: "string", Description: "Path to the JSON file.", Required: true},
-			"query": {Type: "string", Description: "Dot-path query such as user.name or items[0].id. Leave empty to pretty-print the full document.", Required: false},
+			"path":             {Type: "string", Description: "Path to the JSON file.", Required: true},
+			"query":            {Type: "string", Description: "Dot-path query such as user.name, items[0].id, metadata[\"app.name\"], or items[*].id. Leave empty to pretty-print the full document.", Required: false},
+			"max_file_bytes":   {Type: "number", Description: "Maximum JSON file size to read (default 20 MiB, max 100 MiB).", Required: false, Default: defaultStructuredMaxFile},
+			"max_output_chars": {Type: "number", Description: "Maximum output characters before returning truncation metadata (default 12000, max 1048576).", Required: false, Default: defaultStructuredOutput},
+			"summary":          {Type: "boolean", Description: "Return a top-level summary when query is empty.", Required: false, Default: false},
 		},
 		Handler:      handleJSONQuery,
 		ParallelSafe: true,
@@ -506,16 +515,23 @@ func handleJSONQuery(args map[string]any) (string, error) {
 	if err := validatePath(path); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(path)
+	maxFileBytes := boundedIntArg(args, "max_file_bytes", defaultStructuredMaxFile, 1, maxStructuredFileBytes)
+	maxOutputChars := boundedIntArg(args, "max_output_chars", defaultStructuredOutput, 100, maxStructuredOutput)
+	data, size, err := readBoundedFile(path, maxFileBytes, "json")
 	if err != nil {
-		return "", fmt.Errorf("read json file: %w", err)
+		return "", err
 	}
 	var doc any
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return "", fmt.Errorf("parse json: %w", err)
 	}
 	query, _ := args["query"].(string)
-	return queryStructuredValue(doc, query)
+	summary, _ := args["summary"].(bool)
+	return queryStructuredValue(doc, query, structuredQueryOptions{
+		MaxOutputChars: maxOutputChars,
+		Summary:        summary,
+		SizeBytes:      size,
+	})
 }
 
 // YAMLQueryTool extracts a nested field from a YAML document using dot-path syntax.
@@ -527,8 +543,13 @@ func YAMLQueryTool() *Tool {
 		Source:      "builtin",
 		Permission:  PermAuto,
 		Parameters: map[string]Param{
-			"path":  {Type: "string", Description: "Path to the YAML file.", Required: true},
-			"query": {Type: "string", Description: "Dot-path query such as metadata.name or items[0].id. Leave empty to pretty-print the full document.", Required: false},
+			"path":             {Type: "string", Description: "Path to the YAML file.", Required: true},
+			"query":            {Type: "string", Description: "Dot-path query such as metadata.name, items[0].id, metadata.labels[\"app.kubernetes.io/name\"], or items[*].metadata.name. Leave empty to pretty-print the selected document.", Required: false},
+			"document":         {Type: "number", Description: "Zero-based YAML document index to query (default 0).", Required: false, Default: 0},
+			"all_documents":    {Type: "boolean", Description: "Apply the query to all YAML documents and return an array.", Required: false, Default: false},
+			"max_file_bytes":   {Type: "number", Description: "Maximum YAML file size to read (default 20 MiB, max 100 MiB).", Required: false, Default: defaultStructuredMaxFile},
+			"max_output_chars": {Type: "number", Description: "Maximum output characters before returning truncation metadata (default 12000, max 1048576).", Required: false, Default: defaultStructuredOutput},
+			"summary":          {Type: "boolean", Description: "Return a document summary when query is empty.", Required: false, Default: false},
 		},
 		Handler:      handleYAMLQuery,
 		ParallelSafe: true,
@@ -543,15 +564,48 @@ func handleYAMLQuery(args map[string]any) (string, error) {
 	if err := validatePath(path); err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(path)
+	maxFileBytes := boundedIntArg(args, "max_file_bytes", defaultStructuredMaxFile, 1, maxStructuredFileBytes)
+	maxOutputChars := boundedIntArg(args, "max_output_chars", defaultStructuredOutput, 100, maxStructuredOutput)
+	data, size, err := readBoundedFile(path, maxFileBytes, "yaml")
 	if err != nil {
-		return "", fmt.Errorf("read yaml file: %w", err)
+		return "", err
 	}
-	var doc any
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return "", fmt.Errorf("parse yaml: %w", err)
+	docs, err := decodeYAMLDocuments(data)
+	if err != nil {
+		return "", err
 	}
-	return queryStructuredValue(normalizeYAMLValue(doc), args["query"])
+	if len(docs) == 0 {
+		return "", fmt.Errorf("yaml file has no documents")
+	}
+
+	query, _ := args["query"].(string)
+	allDocuments, _ := args["all_documents"].(bool)
+	summary, _ := args["summary"].(bool)
+	if allDocuments {
+		if strings.TrimSpace(query) == "" && summary {
+			return formatStructuredValue(yamlDocumentsSummary(docs, size), maxOutputChars)
+		}
+		values := make([]any, 0, len(docs))
+		for i, doc := range docs {
+			value, err := queryStructuredRaw(doc, query, structuredQueryOptions{})
+			if err != nil {
+				return "", fmt.Errorf("document %d: %w", i, err)
+			}
+			values = append(values, value)
+		}
+		return formatStructuredValue(values, maxOutputChars)
+	}
+
+	document, _ := intArg(args, "document", 0)
+	if document < 0 || document >= len(docs) {
+		return "", fmt.Errorf("document index %d out of range; yaml file has %d documents", document, len(docs))
+	}
+	return queryStructuredValue(docs[document], query, structuredQueryOptions{
+		MaxOutputChars: maxOutputChars,
+		Summary:        summary,
+		SizeBytes:      size,
+		YAMLDocuments:  docs,
+	})
 }
 
 // CSVQueryTool returns rows from a CSV file, optionally filtered by one column.
@@ -760,17 +814,179 @@ func handleDBSchema(args map[string]any) (string, error) {
 	})
 }
 
-func queryStructuredValue(doc any, query any) (string, error) {
-	queryText, _ := query.(string)
-	queryText = strings.TrimSpace(queryText)
-	if queryText == "" {
-		return prettyStructuredValue(doc)
+type structuredQueryOptions struct {
+	MaxOutputChars int
+	Summary        bool
+	SizeBytes      int64
+	YAMLDocuments  []any
+}
+
+func readBoundedFile(path string, maxBytes int, kind string) ([]byte, int64, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("stat %s file: %w", kind, err)
 	}
-	value, err := walkStructuredPath(doc, queryText)
+	if info.IsDir() {
+		return nil, 0, fmt.Errorf("%s path is a directory: %s", kind, path)
+	}
+	if info.Size() > int64(maxBytes) {
+		return nil, info.Size(), fmt.Errorf("%s file is %d bytes, above max_file_bytes %d", kind, info.Size(), maxBytes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, info.Size(), fmt.Errorf("read %s file: %w", kind, err)
+	}
+	return data, info.Size(), nil
+}
+
+func decodeYAMLDocuments(data []byte) ([]any, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var docs []any
+	for {
+		var doc any
+		err := decoder.Decode(&doc)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parse yaml: %w", err)
+		}
+		docs = append(docs, normalizeYAMLValue(doc))
+	}
+	return docs, nil
+}
+
+func queryStructuredValue(doc any, query any, opts structuredQueryOptions) (string, error) {
+	value, err := queryStructuredRaw(doc, query, opts)
 	if err != nil {
 		return "", err
 	}
-	return prettyStructuredValue(value)
+	return formatStructuredValue(value, opts.MaxOutputChars)
+}
+
+func queryStructuredRaw(doc any, query any, opts structuredQueryOptions) (any, error) {
+	queryText, _ := query.(string)
+	queryText = strings.TrimSpace(queryText)
+	if len(queryText) > maxStructuredQueryChars {
+		return nil, fmt.Errorf("query is too long: %d characters exceeds %d", len(queryText), maxStructuredQueryChars)
+	}
+	if queryText == "" {
+		if opts.Summary {
+			if len(opts.YAMLDocuments) > 0 {
+				return yamlDocumentsSummary(opts.YAMLDocuments, opts.SizeBytes), nil
+			}
+			return structuredValueSummary(doc, opts.SizeBytes), nil
+		}
+		return doc, nil
+	}
+	value, err := walkStructuredPath(doc, queryText)
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func formatStructuredValue(v any, maxOutputChars int) (string, error) {
+	if maxOutputChars <= 0 {
+		maxOutputChars = defaultStructuredOutput
+	}
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("marshal result: %w", err)
+	}
+	if len(data) <= maxOutputChars {
+		return string(data), nil
+	}
+	truncated := truncateUTF8String(string(data), maxOutputChars)
+	return prettyStructuredValue(map[string]any{
+		"value": truncated,
+		"_meta": map[string]any{
+			"truncated":        true,
+			"max_output_chars": maxOutputChars,
+			"original_chars":   len(string(data)),
+		},
+	})
+}
+
+func truncateUTF8String(s string, maxChars int) string {
+	if maxChars <= 0 || len(s) <= maxChars {
+		return s
+	}
+	cut := maxChars
+	for cut > 0 && (s[cut]&0xc0) == 0x80 {
+		cut--
+	}
+	if cut <= 0 {
+		return ""
+	}
+	return s[:cut]
+}
+
+func structuredValueSummary(v any, sizeBytes int64) map[string]any {
+	summary := map[string]any{
+		"type":       structuredValueType(v),
+		"size_bytes": sizeBytes,
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(x))
+		for k := range x {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		summary["keys"] = keys
+		summary["key_count"] = len(keys)
+	case []any:
+		summary["length"] = len(x)
+	case string:
+		summary["length"] = len(x)
+	}
+	return summary
+}
+
+func yamlDocumentsSummary(docs []any, sizeBytes int64) map[string]any {
+	items := make([]map[string]any, 0, len(docs))
+	for i, doc := range docs {
+		item := map[string]any{
+			"index": i,
+			"type":  structuredValueType(doc),
+		}
+		if obj, ok := doc.(map[string]any); ok {
+			if kind, ok := obj["kind"].(string); ok {
+				item["kind"] = kind
+			}
+			if metadata, ok := obj["metadata"].(map[string]any); ok {
+				if name, ok := metadata["name"].(string); ok {
+					item["name"] = name
+				}
+			}
+		}
+		items = append(items, item)
+	}
+	return map[string]any{
+		"type":       "yaml_documents",
+		"size_bytes": sizeBytes,
+		"documents":  items,
+	}
+}
+
+func structuredValueType(v any) string {
+	switch v.(type) {
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	case string:
+		return "string"
+	case float64, float32, int, int64, int32, uint, uint64, uint32:
+		return "number"
+	case bool:
+		return "boolean"
+	case nil:
+		return "null"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
 }
 
 func normalizeYAMLValue(v any) any {
@@ -799,65 +1015,181 @@ func normalizeYAMLValue(v any) any {
 }
 
 func walkStructuredPath(doc any, query string) (any, error) {
-	current := doc
-	for _, token := range parseStructuredPath(query) {
-		if token.key != "" {
-			obj, ok := current.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("path %q expected object", token.key)
-			}
-			next, ok := obj[token.key]
-			if !ok {
-				return nil, fmt.Errorf("path key %q not found", token.key)
-			}
-			current = next
-		}
-		if token.hasIndex {
-			arr, ok := current.([]any)
-			if !ok {
-				return nil, fmt.Errorf("path index %d expected array", token.index)
-			}
-			if token.index < 0 || token.index >= len(arr) {
-				return nil, fmt.Errorf("path index %d out of range", token.index)
-			}
-			current = arr[token.index]
-		}
+	ops, err := parseStructuredPath(query)
+	if err != nil {
+		return nil, err
 	}
-	return current, nil
+	return walkStructuredOps(doc, ops, "")
 }
 
-type structuredPathToken struct {
-	key      string
-	index    int
-	hasIndex bool
+type structuredPathOpKind int
+
+const (
+	structuredPathKey structuredPathOpKind = iota
+	structuredPathIndex
+	structuredPathWildcard
+)
+
+type structuredPathOp struct {
+	kind  structuredPathOpKind
+	key   string
+	index int
 }
 
-func parseStructuredPath(query string) []structuredPathToken {
+func parseStructuredPath(query string) ([]structuredPathOp, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil
+		return nil, nil
 	}
-	parts := strings.Split(query, ".")
-	out := make([]structuredPathToken, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
+	var ops []structuredPathOp
+	for i := 0; i < len(query); {
+		switch query[i] {
+		case '.':
+			i++
 			continue
-		}
-		token := structuredPathToken{}
-		if idx := strings.Index(part, "["); idx >= 0 && strings.HasSuffix(part, "]") {
-			token.key = part[:idx]
-			rawIndex := part[idx+1 : len(part)-1]
-			if n, err := strconv.Atoi(rawIndex); err == nil {
-				token.index = n
-				token.hasIndex = true
+		case '[':
+			op, next, err := parseStructuredBracket(query, i)
+			if err != nil {
+				return nil, err
 			}
-		} else {
-			token.key = part
+			ops = append(ops, op)
+			i = next
+		default:
+			start := i
+			for i < len(query) && query[i] != '.' && query[i] != '[' {
+				i++
+			}
+			key := strings.TrimSpace(query[start:i])
+			if key == "" {
+				return nil, fmt.Errorf("empty path token near %q", query[start:])
+			}
+			ops = append(ops, structuredPathOp{kind: structuredPathKey, key: key})
 		}
-		out = append(out, token)
 	}
-	return out
+	return ops, nil
+}
+
+func parseStructuredBracket(query string, start int) (structuredPathOp, int, error) {
+	i := start + 1
+	if i >= len(query) {
+		return structuredPathOp{}, 0, fmt.Errorf("unterminated bracket in query")
+	}
+	if query[i] == '"' || query[i] == '\'' {
+		quote := query[i]
+		i++
+		var b strings.Builder
+		for i < len(query) {
+			ch := query[i]
+			if ch == '\\' && i+1 < len(query) {
+				b.WriteByte(query[i+1])
+				i += 2
+				continue
+			}
+			if ch == quote {
+				i++
+				if i >= len(query) || query[i] != ']' {
+					return structuredPathOp{}, 0, fmt.Errorf("expected ] after bracket key")
+				}
+				return structuredPathOp{kind: structuredPathKey, key: b.String()}, i + 1, nil
+			}
+			b.WriteByte(ch)
+			i++
+		}
+		return structuredPathOp{}, 0, fmt.Errorf("unterminated quoted key in query")
+	}
+	end := strings.IndexByte(query[i:], ']')
+	if end < 0 {
+		return structuredPathOp{}, 0, fmt.Errorf("unterminated bracket in query")
+	}
+	raw := strings.TrimSpace(query[i : i+end])
+	next := i + end + 1
+	if raw == "*" {
+		return structuredPathOp{kind: structuredPathWildcard}, next, nil
+	}
+	index, err := strconv.Atoi(raw)
+	if err != nil {
+		return structuredPathOp{}, 0, fmt.Errorf("invalid array index %q", raw)
+	}
+	return structuredPathOp{kind: structuredPathIndex, index: index}, next, nil
+}
+
+func walkStructuredOps(current any, ops []structuredPathOp, at string) (any, error) {
+	if len(ops) == 0 {
+		return current, nil
+	}
+	op := ops[0]
+	switch op.kind {
+	case structuredPathKey:
+		if op.key == "length" {
+			if length, ok := structuredLength(current); ok {
+				return walkStructuredOps(length, ops[1:], appendPathKey(at, op.key))
+			}
+		}
+		obj, ok := current.(map[string]any)
+		if !ok {
+			return nil, structuredPathError(at, "path %q expected object", op.key)
+		}
+		next, ok := obj[op.key]
+		if !ok {
+			return nil, structuredPathError(at, "path key %q not found", op.key)
+		}
+		return walkStructuredOps(next, ops[1:], appendPathKey(at, op.key))
+	case structuredPathIndex:
+		arr, ok := current.([]any)
+		if !ok {
+			return nil, structuredPathError(at, "path index %d expected array", op.index)
+		}
+		if op.index < 0 || op.index >= len(arr) {
+			return nil, structuredPathError(at, "path index %d out of range", op.index)
+		}
+		return walkStructuredOps(arr[op.index], ops[1:], fmt.Sprintf("%s[%d]", at, op.index))
+	case structuredPathWildcard:
+		arr, ok := current.([]any)
+		if !ok {
+			return nil, structuredPathError(at, "path wildcard expected array")
+		}
+		out := make([]any, 0, len(arr))
+		for i, item := range arr {
+			value, err := walkStructuredOps(item, ops[1:], fmt.Sprintf("%s[%d]", at, i))
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, value)
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("unknown structured path operation")
+	}
+}
+
+func structuredLength(v any) (int, bool) {
+	switch x := v.(type) {
+	case []any:
+		return len(x), true
+	case map[string]any:
+		return len(x), true
+	case string:
+		return len(x), true
+	default:
+		return 0, false
+	}
+}
+
+func structuredPathError(at, format string, args ...any) error {
+	if at == "" {
+		at = "<root>"
+	}
+	return fmt.Errorf("%s at %q", fmt.Sprintf(format, args...), at)
+}
+
+func appendPathKey(base, key string) string {
+	if base == "" {
+		return key
+	}
+	if strings.ContainsAny(key, ".[]\"'") {
+		return base + "[" + strconv.Quote(key) + "]"
+	}
+	return base + "." + key
 }
 
 func isReadOnlySQL(query string) bool {

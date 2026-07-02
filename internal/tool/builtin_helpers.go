@@ -24,6 +24,21 @@ func boundedIntArg(args map[string]any, key string, def, minValue, maxValue int)
 	return value
 }
 
+func intArg(args map[string]any, key string, def int) (int, bool) {
+	raw, ok := args[key]
+	if !ok {
+		return def, false
+	}
+	switch v := raw.(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	default:
+		return def, false
+	}
+}
+
 func prettyStructuredValue(v any) (string, error) {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
