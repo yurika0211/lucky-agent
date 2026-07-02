@@ -1105,6 +1105,14 @@ func New(cfg *config.Manager) (*Agent, error) {
 		Description:  "The primary local agent",
 		Capabilities: []string{"chat", "code", "analysis", "research"},
 		Status:       collab.StatusOnline,
+		Runtime: collab.AgentRuntimeProfile{
+			AgentID:       "local-agent",
+			Provider:      c.Provider,
+			Model:         c.Model,
+			MaxIterations: c.Agent.MaxIterations,
+			Timeout:       time.Duration(c.Agent.TimeoutSeconds) * time.Second,
+			AllowDelegate: false,
+		},
 	})
 	a.collabMgr = collab.NewDelegateManager(a.collabReg, nil)
 	a.collabMgr.SetTaskStore(taskStore)

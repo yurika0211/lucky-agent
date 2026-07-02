@@ -2,6 +2,7 @@ package collab
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -35,6 +36,39 @@ func TestMessageEncodeDecode(t *testing.T) {
 	}
 	if decoded.Priority != PriorityHigh {
 		t.Errorf("Priority mismatch: got %d, want %d", decoded.Priority, PriorityHigh)
+	}
+}
+
+func TestRegistryRuntimeProfileIsolation(t *testing.T) {
+	r := NewRegistry()
+	profile := &AgentProfile{
+		ID:           "runtime-agent",
+		Name:         "Runtime Agent",
+		Capabilities: []string{"code"},
+		Runtime: AgentRuntimeProfile{
+			Provider:      "openai",
+			Model:         "gpt-test",
+			ToolAllowlist: []string{"read_file"},
+			CWD:           "/tmp/runtime-agent",
+			AllowDelegate: false,
+		},
+		Metadata: map[string]string{"tier": "test"},
+	}
+	if err := r.Register(profile); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got, ok := r.Get("runtime-agent")
+	if !ok {
+		t.Fatal("expected runtime-agent")
+	}
+	got.Runtime.ToolAllowlist[0] = "write_file"
+	got.Metadata["tier"] = "mutated"
+	again, _ := r.Get("runtime-agent")
+	if again.Runtime.ToolAllowlist[0] != "read_file" || again.Metadata["tier"] != "test" {
+		t.Fatalf("registry returned mutable profile: %+v", again)
+	}
+	if again.Runtime.AgentID != "runtime-agent" {
+		t.Fatalf("expected runtime agent id to default, got %+v", again.Runtime)
 	}
 }
 
@@ -230,6 +264,41 @@ func TestDelegateManagerPipeline(t *testing.T) {
 	expected := "input->processed_by_agent-1->processed_by_agent-2"
 	if updated.Result != expected {
 		t.Errorf("result: got %s, want %s", updated.Result, expected)
+	}
+}
+
+func TestDelegateManagerPassesRuntimeProfileToSubTask(t *testing.T) {
+	r := NewRegistry()
+	cwd := filepath.Join(t.TempDir(), "runtime-agent")
+	_ = r.Register(&AgentProfile{
+		ID:   "agent-runtime",
+		Name: "Runtime Agent",
+		Runtime: AgentRuntimeProfile{
+			Provider:        "openai",
+			Model:           "gpt-test",
+			ToolAllowlist:   []string{"read_file"},
+			CWD:             cwd,
+			MemoryNamespace: "runtime-agent-memory",
+			ApprovalPolicy:  "readonly",
+			AllowDelegate:   false,
+		},
+	})
+	seen := make(chan AgentRuntimeProfile, 1)
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		seen <- task.Runtime
+		return "ok", nil
+	})
+	dm := NewDelegateManager(r, handler)
+	if _, err := dm.Delegate(context.Background(), ModeParallel, "test runtime", "input", []string{"agent-runtime"}, time.Second); err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	select {
+	case runtime := <-seen:
+		if runtime.Provider != "openai" || runtime.Model != "gpt-test" || runtime.CWD != cwd || runtime.AllowDelegate {
+			t.Fatalf("unexpected runtime profile: %+v", runtime)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler did not receive runtime profile")
 	}
 }
 

@@ -25,17 +25,18 @@ const (
 
 // SubTask 子任务
 type SubTask struct {
-	ID          string        `json:"id"`
-	ParentID    string        `json:"parent_id"`
-	AgentID     string        `json:"agent_id"` // 被委派的 Agent
-	Description string        `json:"description"`
-	Input       string        `json:"input"`  // 子任务输入
-	Output      string        `json:"output"` // 子任务输出
-	State       TaskState     `json:"state"`
-	Error       string        `json:"error,omitempty"`
-	StartedAt   time.Time     `json:"started_at"`
-	CompletedAt time.Time     `json:"completed_at,omitempty"`
-	Timeout     time.Duration `json:"timeout"`
+	ID          string              `json:"id"`
+	ParentID    string              `json:"parent_id"`
+	AgentID     string              `json:"agent_id"` // 被委派的 Agent
+	Description string              `json:"description"`
+	Input       string              `json:"input"`  // 子任务输入
+	Output      string              `json:"output"` // 子任务输出
+	State       TaskState           `json:"state"`
+	Error       string              `json:"error,omitempty"`
+	Runtime     AgentRuntimeProfile `json:"runtime,omitempty"`
+	StartedAt   time.Time           `json:"started_at"`
+	CompletedAt time.Time           `json:"completed_at,omitempty"`
+	Timeout     time.Duration       `json:"timeout"`
 }
 
 // CollabTask 协作任务（包含多个子任务）
@@ -144,6 +145,7 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 			Description: description,
 			Input:       input,
 			State:       TaskPending,
+			Runtime:     profile.Runtime,
 			Timeout:     timeout,
 		})
 	}
@@ -339,7 +341,13 @@ func (dm *DelegateManager) recordCollabTaskCreated(store taskstore.Store, events
 			ChildID: sub.ID,
 			Message: sub.Description,
 			Metadata: map[string]string{
-				"agent_id": sub.AgentID,
+				"agent_id":         sub.AgentID,
+				"provider":         sub.Runtime.Provider,
+				"model":            sub.Runtime.Model,
+				"cwd":              sub.Runtime.CWD,
+				"memory_namespace": sub.Runtime.MemoryNamespace,
+				"approval_policy":  sub.Runtime.ApprovalPolicy,
+				"allow_delegate":   fmt.Sprintf("%t", sub.Runtime.AllowDelegate),
 			},
 		})
 	}
