@@ -128,7 +128,9 @@ type Store interface {
 	AppendEvent(event Event) error
 	Events(taskID string) ([]Event, error)
 	SaveResult(taskID, markdown string) error
+	Result(taskID string) (string, bool, error)
 	SavePlannerTrace(taskID string, trace any) error
+	PlannerTrace(taskID string) ([]byte, bool, error)
 }
 
 type ListFilter struct {

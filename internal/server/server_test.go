@@ -446,6 +446,74 @@ func TestHandleSessionsPagination(t *testing.T) {
 	}
 }
 
+func TestHandleTasksAPI(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	record, err := a.TaskStore().Create(taskstore.Record{
+		ID:          "task-api-test",
+		Source:      taskstore.SourceHTTP,
+		Mode:        taskstore.ModeParallel,
+		Status:      taskstore.StatusCompleted,
+		Description: "test task api",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := a.TaskStore().AppendEvent(taskstore.Event{
+		Type:    taskstore.EventCompleted,
+		TaskID:  record.ID,
+		Status:  taskstore.StatusCompleted,
+		Message: "done",
+	}); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	if err := a.TaskStore().SavePlannerTrace(record.ID, map[string]any{"planner": "test"}); err != nil {
+		t.Fatalf("save trace: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks?source=http", nil)
+	w := httptest.NewRecorder()
+	s.handleTasks(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 list, got %d: %s", w.Code, w.Body.String())
+	}
+	var listResp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if listResp["count"] != float64(1) {
+		t.Fatalf("expected one task, got %+v", listResp)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 detail, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/events", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 events, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/trace", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 trace, got %d: %s", w.Code, w.Body.String())
+	}
+	var trace map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&trace); err != nil {
+		t.Fatalf("decode trace: %v", err)
+	}
+	if trace["planner"] != "test" {
+		t.Fatalf("unexpected trace: %+v", trace)
+	}
+}
+
 func TestHandleSessionCompactDryRun(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())

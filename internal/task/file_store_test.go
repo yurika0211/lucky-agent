@@ -3,6 +3,7 @@ package task
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -74,6 +75,14 @@ func TestFileStorePersistsRecordEventsAndArtifacts(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(store.Root(), record.ID, "planner_trace.json")); err != nil {
 		t.Fatalf("missing planner trace artifact: %v", err)
+	}
+	resultText, ok, err := store.Result(record.ID)
+	if err != nil || !ok || resultText != "# Result\nok\n" {
+		t.Fatalf("unexpected result read: ok=%t err=%v result=%q", ok, err, resultText)
+	}
+	trace, ok, err := store.PlannerTrace(record.ID)
+	if err != nil || !ok || !strings.Contains(string(trace), `"planner": "test"`) {
+		t.Fatalf("unexpected planner trace read: ok=%t err=%v trace=%s", ok, err, trace)
 	}
 }
 

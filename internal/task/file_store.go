@@ -230,12 +230,24 @@ func (s *FileStore) SaveResult(taskID, markdown string) error {
 	return s.writeArtifact(taskID, resultFileName, []byte(markdown))
 }
 
+func (s *FileStore) Result(taskID string) (string, bool, error) {
+	data, ok, err := s.readArtifact(taskID, resultFileName)
+	if err != nil || !ok {
+		return "", ok, err
+	}
+	return string(data), true, nil
+}
+
 func (s *FileStore) SavePlannerTrace(taskID string, trace any) error {
 	data, err := json.MarshalIndent(trace, "", "  ")
 	if err != nil {
 		return err
 	}
 	return s.writeArtifact(taskID, plannerTraceFileName, data)
+}
+
+func (s *FileStore) PlannerTrace(taskID string) ([]byte, bool, error) {
+	return s.readArtifact(taskID, plannerTraceFileName)
 }
 
 func (s *FileStore) writeArtifact(taskID, name string, data []byte) error {
@@ -252,6 +264,24 @@ func (s *FileStore) writeArtifact(taskID, name string, data []byte) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(s.taskDir(taskID), name), data, 0o600)
+}
+
+func (s *FileStore) readArtifact(taskID, name string) ([]byte, bool, error) {
+	if s == nil {
+		return nil, false, fmt.Errorf("task store is nil")
+	}
+	taskID = sanitizeID(taskID)
+	if taskID == "" {
+		return nil, false, fmt.Errorf("task id is required")
+	}
+	data, err := os.ReadFile(filepath.Join(s.taskDir(taskID), name))
+	if os.IsNotExist(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
 }
 
 func (s *FileStore) taskDir(id string) string {

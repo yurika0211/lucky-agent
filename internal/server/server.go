@@ -324,6 +324,8 @@ func (s *Server) Start() error {
 		{path: "/api/v1/chat/sync", handler: s.handleChatSync},
 		{path: "/api/v1/sessions", handler: s.handleSessions},
 		{path: "/api/v1/sessions/", handler: s.handleSessionByID},
+		{path: "/api/v1/tasks", handler: s.handleTasks},
+		{path: "/api/v1/tasks/", handler: s.handleTaskByID},
 		{path: "/api/v1/memory", handler: s.handleMemory},
 		{path: "/api/v1/memory/recall", handler: s.handleMemoryRecall},
 		{path: "/api/v1/memory/stats", handler: s.handleMemoryStats},
