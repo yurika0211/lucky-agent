@@ -1116,6 +1116,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	})
 	a.collabMgr = collab.NewDelegateManager(a.collabReg, nil)
 	a.collabMgr.SetTaskStore(taskStore)
+	_ = a.collabMgr.SetMDPSnapshotPath(filepath.Join(cfg.HomeDir(), "planner", "mdp.json"))
 	if a.proactiveRuntime != nil {
 		if err := a.proactiveRuntime.Start(context.Background()); err != nil {
 			fmt.Printf("[proactive] start failed: %v\n", err)

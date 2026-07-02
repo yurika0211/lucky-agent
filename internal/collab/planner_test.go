@@ -227,3 +227,34 @@ func TestDelegateManagerAutoModeUsesPlanner(t *testing.T) {
 		t.Fatalf("missing result artifact: %v", err)
 	}
 }
+
+func TestDelegateManagerPersistsMDPSnapshot(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"})
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		return "result", nil
+	})
+	path := filepath.Join(t.TempDir(), "mdp.json")
+	dm := NewDelegateManager(r, handler)
+	if err := dm.SetMDPSnapshotPath(path); err != nil {
+		t.Fatalf("SetMDPSnapshotPath: %v", err)
+	}
+	if _, err := dm.Delegate(context.Background(), ModeParallel, "single runtime task", "input", []string{"agent-1"}, time.Second); err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			restored := NewDelegateManager(r, handler)
+			if err := restored.SetMDPSnapshotPath(path); err != nil {
+				t.Fatalf("restore mdp snapshot: %v", err)
+			}
+			if restored.planner.MDPModel() == nil {
+				t.Fatal("expected restored MDP model")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for mdp snapshot")
+}

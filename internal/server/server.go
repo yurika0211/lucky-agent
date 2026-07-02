@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -250,6 +251,9 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	}))
 	if a != nil && a.TaskStore() != nil {
 		delegateManager.SetTaskStore(a.TaskStore())
+	}
+	if a != nil && a.Config() != nil {
+		_ = delegateManager.SetMDPSnapshotPath(filepath.Join(a.Config().HomeDir(), "planner", "mdp.json"))
 	}
 
 	// v0.24.0: Workflow Engine

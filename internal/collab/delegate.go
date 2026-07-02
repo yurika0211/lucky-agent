@@ -3,7 +3,9 @@ package collab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +67,7 @@ type DelegateManager struct {
 	taskStore  taskstore.Store
 	taskEvents *taskstore.EventBus
 	policy     *taskstore.Policy
+	mdpPath    string
 }
 
 // TaskHandler 子任务执行处理器接口
@@ -120,6 +123,24 @@ func (dm *DelegateManager) SetPolicy(policy taskstore.Policy) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.policy = &policy
+}
+
+func (dm *DelegateManager) SetMDPSnapshotPath(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("mdp snapshot path is required")
+	}
+	dm.mu.Lock()
+	planner := dm.planner
+	dm.mdpPath = path
+	dm.mu.Unlock()
+	if planner == nil {
+		return nil
+	}
+	if err := planner.LoadMDP(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // Delegate 创建并执行协作任务
@@ -781,6 +802,7 @@ func (dm *DelegateManager) observePlannedOutcome(task *CollabTask) {
 		outcome = "partial"
 	}
 	planner := dm.planner
+	mdpPath := dm.mdpPath
 	req := PlanRequest{
 		Description: task.Description,
 		Input:       task.Input,
@@ -794,6 +816,9 @@ func (dm *DelegateManager) observePlannedOutcome(task *CollabTask) {
 	dm.mu.RUnlock()
 	if planner != nil {
 		planner.ObserveExecution(req, mode, outcome, duration)
+		if mdpPath != "" {
+			_ = planner.SaveMDP(mdpPath)
+		}
 	}
 }
 
