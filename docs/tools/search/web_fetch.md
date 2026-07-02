@@ -30,12 +30,14 @@ ParallelSafe: true
 
 ## 参数
 
-`web_fetch` 接收两个参数：
+`web_fetch` 接收四个参数：
 
 | 参数 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `url` | 是 | 无 | 要抓取并转换为可读文本的明确 URL。 |
-| `max_chars` | 否 | `50000` | 最多返回多少字符的正文。 |
+| `max_chars` | 否 | `50000` | 最多返回多少字符的正文；`<=0` 回退默认值，最大限制为 `100000`。 |
+| `format` | 否 | `text` | 返回格式：`text` 或 `json`。 |
+| `verbose` | 否 | `false` | 在 text 输出中包含 URL、source、title 和失败诊断。 |
 
 示例参数：
 
@@ -50,22 +52,24 @@ ParallelSafe: true
 
 `web_fetch` 的执行过程是：
 
-1. 读取必填参数 `url`，没有提供时返回 `url is required`。
+1. 读取必填参数 `url`，没有提供时返回 `url is required`，空白字符串返回 `url must not be empty`。
 2. 调用 `validateFetchURL(url)` 做 URL 安全校验。
-3. 解析 `max_chars`，没有提供时默认为 `50000`。
-4. 先尝试 Defuddle 提取。
-5. Defuddle 失败或返回空结果时，尝试 Jina Reader。
-6. Jina 失败或返回空结果时，尝试 curl + HTML stripping。
-7. 任一方法成功且结果非空时，立即返回。
-8. 全部失败时，返回失败消息。
+3. 解析 `max_chars`，没有提供时默认为 `50000`，最大限制为 `100000`。
+4. 构造 search manager，并复用 `SearchConfig.BuildFetchEngines()` 的 fetch engine 链。
+5. 默认先尝试 Defuddle 提取。
+6. Defuddle 失败或返回空结果时，尝试 Jina Reader。
+7. Jina 失败或返回空结果时，尝试 curl + HTML stripping。
+8. 任一方法成功且结果非空时，立即返回。
+9. 全部失败时，返回失败消息。
 
 全部失败时输出：
 
 ```text
-Failed to fetch <url> (all methods failed)
+Failed to fetch <url>
+Tried: defuddle, jina, curl
 ```
 
-注意：当前 handler 会吞掉单个 fetch engine 的具体错误，只返回最终失败消息。调试具体原因时，需要用 `terminal` 单独检查 `defuddle`、`curl`、网络或代理。
+`verbose=true` 时会追加每个 fetch engine 的失败原因。页面需要 JavaScript 或登录态时，失败输出会提示改用 `opencli`。
 
 ## URL 安全校验
 
@@ -79,6 +83,7 @@ Failed to fetch <url> (all methods failed)
 会拒绝：
 
 - 空 host
+- URL userinfo，例如 `https://user:pass@example.com`
 - `localhost`
 - `127.*`
 - `10.*`
@@ -90,6 +95,7 @@ Failed to fetch <url> (all methods failed)
 - `fc*`
 - `fd*`
 - `fe80*`
+- DNS 解析到上述内网、loopback、link-local、unspecified 或 multicast 地址的域名
 
 这意味着 `web_fetch` 不能用来访问本机服务、内网地址、link-local metadata 地址或非 HTTP(S) URL。
 
@@ -101,7 +107,7 @@ url validation failed: <reason>
 
 ## 提取顺序
 
-当前 `web_fetch` 工具固定按以下顺序尝试，不走 `SearchConfig.BuildFetchEngines()` 的 preferred fetch 配置：
+`web_fetch` 复用 `SearchConfig.BuildFetchEngines()`。当前配置默认顺序是：
 
 1. Defuddle
 2. Jina Reader
@@ -196,12 +202,12 @@ curl fallback 是最后兜底路径，适合简单 HTML 页面，不适合复杂
 50000
 ```
 
-`max_chars` 传给每个 fetch engine。不同 engine 的处理点略有差异，但都会限制最终返回内容长度。
+`max_chars` 传给每个 fetch engine，handler 最终也会按该值统一截断。
 
 超过限制时，会追加：
 
 ```text
-... (truncated)
+... (truncated; increase max_chars to continue)
 ```
 
 当只需要快速确认页面主题或抽取一小段内容时，应调低 `max_chars`，避免把大量正文塞进上下文。
@@ -221,12 +227,13 @@ curl fallback 是最后兜底路径，适合简单 HTML 页面，不适合复杂
 当前直接影响 `web_fetch` 的配置：
 
 - `web_search.proxy`：传给 Jina 和 curl fallback。
+- `SearchConfig.PreferredFetch`：决定 Defuddle、Jina、curl 的首选顺序；当前 `WebSearchConfig` 尚未暴露单独配置键，默认是 `defuddle`。
 
 相关环境变量：
 
 - `JINA_API_KEY`：用于 Jina Reader 授权。
 
-注意：`SearchConfig` 中的 `PreferredFetch` 和 `BuildFetchEngines()` 在当前 `web_fetch` handler 中没有直接使用。当前顺序固定为 Defuddle、Jina、curl。
+`web_fetch` handler 走 `Manager.FetchURLWithDiagnostics`，因此 fetch cache、engine fallback 和失败诊断都在 Manager 路径集中处理。
 
 ## 输出内容
 
@@ -238,7 +245,7 @@ curl fallback 是最后兜底路径，适合简单 HTML 页面，不适合复杂
 - Jina：如果有标题，会以 `# Title` 开头。
 - curl fallback：HTML strip 后的普通文本。
 
-`web_fetch` 不返回 HTTP 状态码、响应头或结构化 metadata。如果需要 API 状态、headers 或 JSON 响应，应使用 `http_request`。
+默认 text 输出只返回正文。`verbose=true` 会在正文前增加 URL、source、title 等 metadata；`format=json` 会返回 URL、title、source、attempts、content、truncated/error 等结构化字段。如果需要 HTTP 状态、headers 或 JSON API 响应，应使用 `http_request`。
 
 ## 适合使用的场景
 
@@ -356,11 +363,10 @@ curl fallback 是最后兜底路径，适合简单 HTML 页面，不适合复杂
 - 参数说明是否仍与 `WebFetchTool()` 一致。
 - 默认 `max_chars` 是否仍是 `50000`。
 - URL 校验规则是否变化。
-- fetch 顺序是否仍是 Defuddle、Jina、curl。
-- 是否改为使用 `BuildFetchEngines()`。
+- fetch 顺序是否仍由 `BuildFetchEngines()` 决定。
+- `FetchURLWithDiagnostics` 的 attempts/error 输出是否变化。
 - Defuddle 命令参数是否变化。
 - Jina Reader 请求方式和 `JINA_API_KEY` 是否变化。
 - curl fallback 的 User-Agent、timeout、proxy、最小文本长度是否变化。
 - 输出是否仍是纯文本/Markdown。
 - 与 `web_search`、`opencli`、`http_request` 的职责边界是否变化。
-

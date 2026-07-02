@@ -29,13 +29,15 @@ ParallelSafe: true
 
 ## 参数
 
-`web_search` 接收三个参数：
+`web_search` 接收五个参数：
 
 | 参数 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `query` | 是 | 无 | 搜索查询。应围绕要验证的事实、实体或概念编写。 |
 | `count` | 否 | `5` | 返回结果数量，范围会被限制到 1-10。 |
 | `mode` | 否 | `quick` | 搜索模式：`quick` 或 `deep`。 |
+| `format` | 否 | `text` | 返回格式：`text` 或 `json`。 |
+| `verbose` | 否 | `false` | 显示 engine 尝试顺序和失败诊断。 |
 
 示例参数：
 
@@ -51,29 +53,30 @@ ParallelSafe: true
 
 `web_search` 的执行过程是：
 
-1. 读取必填参数 `query`，没有提供时返回 `query is required`。
+1. 读取必填参数 `query`，没有提供时返回 `query is required`，空白字符串返回 `query must not be empty`。
 2. 解析 `count`。
 3. 如果 `count<1`，改为 1。
 4. 如果 `count>10`，改为 10。
-5. 解析 `mode`，默认 `quick`。
+5. 解析 `mode`，默认 `quick`；只接受 `quick` 或 `deep`。
 6. 读取 `web_search.provider` 配置，空值回退到 `brave`。
 7. 构造 search manager。
 8. 使用 8 秒上下文超时执行搜索。
 9. 如果 `mode=deep`，执行多来源并发搜索和合并。
 10. 否则执行 quick 搜索。
-11. 格式化搜索结果。
+11. 格式化搜索结果；`format=json` 时返回结构化结果、tried/errors 和 next 提示。
 
 如果所有搜索来源失败或没有结果，会返回：
 
 ```text
-No results found for '<query>' (all search sources failed)
+No results found for '<query>'
+Tried: exa, ddgs, ddg-lite, brave
 ```
 
 ## quick 模式
 
 `quick` 是默认模式，适合快速查找候选页面。
 
-quick 模式会按 search manager 的 engine 顺序尝试搜索来源，拿到第一个成功且非空的结果后返回。
+quick 模式会按 search manager 的 engine 顺序尝试搜索来源，拿到第一个成功且非空的结果后返回。`web_search.provider` 会被移动到 engine 顺序最前面，其余 engine 按 `exa`、`ddgs`、`searxng`、`ddg-lite`、`brave` 的 fallback 顺序补齐。
 
 输出格式类似：
 
@@ -167,7 +170,7 @@ MaxResults: 5
 
 ## API Key 和环境变量
 
-按当前 `web_search` 调用路径，相关 key 来源包括：
+按当前 `web_search` 调用路径，显式 LuckyAgent 配置会先进入 search manager，然后 `SearchConfigFromEnv` 应用 `LH_SEARCH_*` 环境变量覆盖。相关 key 来源包括：
 
 - Brave：`web_search.api_key`，或环境变量 `BRAVE_API_KEY`。
 - Exa：当 provider 是 `exa` 时可用 `web_search.api_key`，也可用 `LH_SEARCH_EXA_KEY` 或 `EXA_API_KEY`。
@@ -176,7 +179,7 @@ MaxResults: 5
 
 `web_search.proxy` 会传给支持代理的 engine。
 
-注意：`internal/tool/search/search.go` 里还有 `SearchConfigFromEnv` 支持一些 `LH_SEARCH_*` 变量，但 `web_search` 工具当前主要通过 `buildSearchManagerConfig` 构造配置，不是直接调用 `SearchConfigFromEnv`。
+`web_search.provider` 表示首选搜索来源；如果该来源不可用或失败，工具会继续按 fallback 顺序尝试其他来源。
 
 ## 输出内容
 
@@ -321,6 +324,5 @@ MaxResults: 5
 - deep 输出截断是否仍是 12000 字符。
 - 支持的 engine 列表是否变化。
 - API key 和环境变量解析是否变化。
-- 是否改为直接使用 `SearchConfigFromEnv`。
+- `buildSearchManagerConfig` 和 `SearchConfigFromEnv` 的覆盖优先级是否变化。
 - `web_search` 与 `web_fetch` / `opencli` 的职责边界是否变化。
-

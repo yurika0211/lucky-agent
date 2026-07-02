@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"strings"
 	"sync"
@@ -351,16 +352,16 @@ func TestBuildEnginesBrave(t *testing.T) {
 	if len(engines) < 2 {
 		t.Errorf("expected at least 2 engines, got %d", len(engines))
 	}
-	if engines[0].Name() != "exa" {
-		t.Errorf("expected first engine 'exa', got '%s'", engines[0].Name())
+	if engines[0].Name() != "brave" {
+		t.Errorf("expected first engine 'brave', got '%s'", engines[0].Name())
 	}
 }
 
 func TestBuildEnginesDDGS(t *testing.T) {
 	cfg := &SearchConfig{DefaultProvider: "ddgs", ExaAPIKey: "test-exa"}
 	engines := cfg.BuildEngines()
-	if engines[0].Name() != "exa" {
-		t.Errorf("expected first engine 'exa', got '%s'", engines[0].Name())
+	if engines[0].Name() != "ddgs" {
+		t.Errorf("expected first engine 'ddgs', got '%s'", engines[0].Name())
 	}
 }
 
@@ -478,6 +479,26 @@ func TestManagerQuickSearchFallback(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Title != "Fallback" {
 		t.Errorf("expected fallback result, got %v", results)
+	}
+}
+
+func TestManagerQuickSearchDiagnosticsAllFail(t *testing.T) {
+	cfg := DefaultSearchConfig()
+	mgr := NewManager(cfg)
+	mgr.searchEngines = []SearchEngine{
+		&mockSearchEngine{name: "bad1", err: fmt.Errorf("fail1")},
+		&mockSearchEngine{name: "empty", results: []SearchResult{}},
+	}
+
+	result := mgr.QuickSearchDiagnostics(context.Background(), "test", 5)
+	if len(result.Results) != 0 {
+		t.Fatalf("expected no results, got %v", result.Results)
+	}
+	if strings.Join(result.Tried, ",") != "bad1,empty" {
+		t.Fatalf("unexpected tried engines: %v", result.Tried)
+	}
+	if len(result.Errors) != 2 || !strings.Contains(result.Errors[0], "fail1") || !strings.Contains(result.Errors[1], "no results") {
+		t.Fatalf("unexpected errors: %v", result.Errors)
 	}
 }
 
@@ -637,6 +658,27 @@ func TestManagerFetchURLFallback(t *testing.T) {
 	}
 }
 
+func TestManagerFetchURLWithDiagnostics(t *testing.T) {
+	cfg := DefaultSearchConfig()
+	mgr := NewManager(cfg)
+	mgr.fetchEngines = []FetchEngine{
+		&mockFetchEngine{name: "bad", err: fmt.Errorf("fail")},
+		&mockFetchEngine{name: "empty", result: &FetchResult{}},
+		&mockFetchEngine{name: "good", result: &FetchResult{URL: "https://example.com", Content: "body"}},
+	}
+
+	result, attempts, err := mgr.FetchURLWithDiagnostics(context.Background(), "https://example.com", 1000)
+	if err != nil {
+		t.Fatalf("FetchURLWithDiagnostics: %v", err)
+	}
+	if result == nil || result.Source != "good" || result.Content != "body" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(attempts) != 2 || attempts[0].Engine != "bad" || attempts[1].Engine != "empty" {
+		t.Fatalf("unexpected attempts: %#v", attempts)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // URL Validation Tests
 // ---------------------------------------------------------------------------
@@ -659,7 +701,7 @@ func TestValidateFetchURL(t *testing.T) {
 		{"http://172.32.0.1", true, ""}, // outside 172.16-31
 		{"http://169.254.169.254", false, "link-local"},
 		{"http://localhost", false, "localhost"},
-		{"", false, "not allowed"},
+		{"", false, "url is required"},
 	}
 
 	for _, tt := range tests {
@@ -670,6 +712,22 @@ func TestValidateFetchURL(t *testing.T) {
 		if !tt.valid && (err == nil || !strings.Contains(err.Error(), tt.errMsg)) {
 			t.Errorf("expected %q to fail with %q, got: %v", tt.url, tt.errMsg, err)
 		}
+	}
+}
+
+func TestValidateFetchURLRejectsDNSPrivateAddress(t *testing.T) {
+	original := fetchURLLookupIP
+	fetchURLLookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
+		if host != "internal.example.com" {
+			return nil, fmt.Errorf("unexpected host %q", host)
+		}
+		return []netip.Addr{netip.MustParseAddr("10.0.0.2")}, nil
+	}
+	t.Cleanup(func() { fetchURLLookupIP = original })
+
+	err := ValidateFetchURL("https://internal.example.com/path")
+	if err == nil || !strings.Contains(err.Error(), "private") {
+		t.Fatalf("expected private DNS address to be rejected, got %v", err)
 	}
 }
 
@@ -1031,8 +1089,8 @@ func TestSearchConfigFromEnvWithBase(t *testing.T) {
 func TestBuildEnginesSearXNG(t *testing.T) {
 	cfg := &SearchConfig{DefaultProvider: "searxng", SearXNGBaseURL: "http://searxng:8080", ExaAPIKey: "test-exa"}
 	engines := cfg.BuildEngines()
-	if engines[0].Name() != "exa" {
-		t.Errorf("expected first engine 'exa', got '%s'", engines[0].Name())
+	if engines[0].Name() != "searxng" {
+		t.Errorf("expected first engine 'searxng', got '%s'", engines[0].Name())
 	}
 }
 
@@ -1236,8 +1294,8 @@ func TestValidateFetchURLIPv6(t *testing.T) {
 		errMsg string
 	}{
 		{"http://[::1]/path", false, "loopback"},
-		{"http://[fc00::1]/path", false, "unique-local"},
-		{"http://[fd00::1]/path", false, "unique-local"},
+		{"http://[fc00::1]/path", false, "private"},
+		{"http://[fd00::1]/path", false, "private"},
 		{"http://[fe80::1]/path", false, "link-local"},
 		{"http://[2001:db8::1]/path", true, ""},
 	}

@@ -42,8 +42,11 @@ Permission: PermApprove
 | `feed_type` | 否 | `following` | Twitter timeline 类型。 |
 | `browser_session` | 否 | `luckyagent` | browser 模式的会话名。 |
 | `download_dir` | 否 | `~/.luckyagent/workspace/downloads/opencli` | OpenCLI 工作/下载目录。必须位于 `~/.luckyagent/workspace` 下。 |
-| `max_chars` | 否 | 配置默认，通常 `50000` | 返回给模型的最大字符数。 |
-| `timeout_seconds` | 否 | 配置默认，通常 `20` | 单次 OpenCLI 命令超时。 |
+| `max_chars` | 否 | 配置默认，通常 `50000` | 返回给模型的最大字符数，最大限制为 `200000`。 |
+| `timeout_seconds` | 否 | 配置默认，通常 `20` | 单次 OpenCLI 命令超时，最大限制为 `120`。 |
+| `dry_run` | 否 | `false` | 只预览 OpenCLI invocation plan，不执行命令。 |
+| `verbose` | 否 | `false` | 输出 action、risk、workdir、source、fallback 等 metadata。 |
+| `format_result` | 否 | `text` | LuckyAgent tool 返回格式：`text` 或 `json`。 |
 
 ## action 推断
 
@@ -88,7 +91,11 @@ LuckyAgent 配置项：
 - `opencli.max_chars`
 - `opencli.fallback_to_web_fetch`
 
-注意：按当前实现，`opencli.enabled` 会被读取进配置，但 `opencli` tool handler 没有根据它阻断调用。也就是说，只要工具已注册且 `opencli.command` 可执行，调用时仍会尝试运行 OpenCLI。
+`opencli.enabled=false` 时，`opencli` tool handler 会拒绝执行并返回：
+
+```text
+opencli is disabled by config: opencli.enabled=false
+```
 
 ## 默认配置规范化
 
@@ -128,10 +135,29 @@ LuckyAgent 配置项：
 5. 确保参数包含 `--download-images false`。
 6. 如果没有 `-f` 或 `--format`，追加 `-f <format>`。
 7. 追加用户传入的额外 `args`。
+8. 标注 invocation risk，常见值包括 `network_read`、`authenticated_read`、`browser_state`、`filesystem_download`、`external_mutation`、`raw_opencli`。
 
 如果 OpenCLI 输出中包含指向 `.md` 文件的 Markdown 表格路径，工具会尝试读取这个保存的 Markdown 文件，并优先返回文件内容。
 
-如果 `web_read` 失败且 `opencli.fallback_to_web_fetch=true`，会回退调用 `web_fetch`。
+如果 `web_read` 失败且 `opencli.fallback_to_web_fetch=true`，会回退调用 `web_fetch`。默认 text 输出保持正文兼容；`verbose=true` 或 `format_result=json` 会标注 `source=web_fetch_fallback` 和 OpenCLI 失败摘要。
+
+## dry-run
+
+`dry_run=true` 会完成 URL 校验、download_dir 校验、raw 参数校验和 action 推断，但不会执行 OpenCLI。
+
+输出示例：
+
+```text
+Would run OpenCLI
+Action: web_read
+Command: opencli
+Args: web read --url https://example.com --stdout true --download-images false -f md
+WorkDir: ~/.luckyagent/workspace/downloads/opencli
+Timeout: 20s
+MaxChars: 50000
+Risk: network_read
+Fallback: web_fetch
+```
 
 ## site 模式
 
@@ -450,6 +476,8 @@ opencli returned empty output
 
 如果 `opencli action=web_read` 失败，且配置 `opencli.fallback_to_web_fetch=true`，工具会自动尝试 `web_fetch`。
 
+`verbose=true` 或 `format_result=json` 会显示最终内容来自 OpenCLI、saved Markdown，还是 `web_fetch` fallback。
+
 ## 和 terminal 的关系
 
 `opencli` 只接受 OpenCLI 参数。
@@ -478,7 +506,8 @@ opencli returned empty output
 - `download_dir` 在 `~/.luckyagent/workspace` 下。
 - 需要登录态的站点是否已经配置好。
 - `max_chars` 不会把过大内容塞进上下文。
-- `opencli.enabled=false` 当前不会阻止 handler 执行。
+- `opencli.enabled=false` 会阻止 handler 执行。
+- `dry_run=true` 可先审计最终 command、args、workdir、timeout 和 risk。
 - 对站点 adapter 的写入或关注、发布类操作需要额外谨慎。
 
 ## 维护注意事项
@@ -486,9 +515,10 @@ opencli returned empty output
 如果后续修改 `opencli`，需要同步检查：
 
 - 参数说明是否仍与 `OpenCLITool()` 一致。
-- `opencli.enabled` 是否开始真正控制调用。
+- `opencli.enabled` 是否仍真正控制调用。
 - action 列表和别名是否变化。
 - 默认 `opencli.args` 是否变化。
+- risk 分类规则是否变化。
 - `web_read` 是否仍强制 `--stdout true` 和 `--download-images false`。
 - `twitter_timeline` 默认 `feed_type` 和 `limit` 是否变化。
 - `download_dir` workspace 限制是否变化。
@@ -496,4 +526,3 @@ opencli returned empty output
 - 输出清理和截断规则是否变化。
 - `fallback_to_web_fetch` 行为是否变化。
 - shell wrapper 拆解和拒绝规则是否变化。
-

@@ -5,6 +5,8 @@ package search
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"sort"
@@ -392,6 +394,27 @@ type DeepSearchResult struct {
 	Errors  []string // per-source errors
 }
 
+// SearchAttempt records one engine attempt for diagnostics.
+type SearchAttempt struct {
+	Engine string
+	Error  string
+}
+
+// QuickSearchResult contains quick search results plus engine diagnostics.
+type QuickSearchResult struct {
+	Results   []SearchResult
+	Source    string
+	Tried     []string
+	Errors    []string
+	FromCache bool
+}
+
+// FetchAttempt records one fetch engine attempt for diagnostics.
+type FetchAttempt struct {
+	Engine string
+	Error  string
+}
+
 // DeepSearch performs concurrent searches across multiple engines and merges results.
 func DeepSearch(ctx context.Context, engines []SearchEngine, query string, count int) *DeepSearchResult {
 	type engineResult struct {
@@ -563,7 +586,7 @@ func SearchConfigFromEnv(base *SearchConfig) *SearchConfig {
 
 // BuildEngines creates the search engine chain from config.
 func (c *SearchConfig) BuildEngines() []SearchEngine {
-	order := []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
+	order := searchEngineOrder(c.DefaultProvider)
 	engines := make([]SearchEngine, 0, len(order))
 	seen := make(map[string]bool, len(order))
 
@@ -591,6 +614,27 @@ func (c *SearchConfig) BuildEngines() []SearchEngine {
 	}
 
 	return engines
+}
+
+func searchEngineOrder(provider string) []string {
+	base := []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return base
+	}
+	out := make([]string, 0, len(base))
+	for _, name := range base {
+		if name == provider {
+			out = append(out, name)
+			break
+		}
+	}
+	for _, name := range base {
+		if name != provider {
+			out = append(out, name)
+		}
+	}
+	return out
 }
 
 // BuildFetchEngines creates the fetch engine chain from config.
@@ -644,25 +688,54 @@ func NewManager(cfg *SearchConfig) *Manager {
 
 // QuickSearch performs a quick search using the first available engine.
 func (m *Manager) QuickSearch(ctx context.Context, query string, count int) ([]SearchResult, error) {
+	result := m.QuickSearchDiagnostics(ctx, query, count)
+	if len(result.Results) > 0 {
+		return result.Results, nil
+	}
+	return nil, fmt.Errorf("all search engines failed for query: %s", query)
+}
+
+// QuickSearchDiagnostics performs a quick search and returns attempted engines
+// and per-engine failures for user-facing diagnostics.
+func (m *Manager) QuickSearchDiagnostics(ctx context.Context, query string, count int) *QuickSearchResult {
 	if count <= 0 {
 		count = m.config.MaxResults
 	}
 
 	// Check cache first
 	if cached, ok := m.cache.Get(query); ok {
-		return cached, nil
+		source := ""
+		if len(cached) > 0 {
+			source = cached[0].Source
+		}
+		return &QuickSearchResult{Results: cached, Source: source, FromCache: true}
 	}
 
+	result := &QuickSearchResult{}
 	// Try engines in order
 	for _, eng := range m.searchEngines {
+		name := eng.Name()
+		result.Tried = append(result.Tried, name)
 		results, err := eng.Search(ctx, query, count)
 		if err == nil && len(results) > 0 {
+			for i := range results {
+				if strings.TrimSpace(results[i].Source) == "" {
+					results[i].Source = name
+				}
+			}
 			m.cache.Set(query, results)
-			return results, nil
+			result.Results = results
+			result.Source = name
+			return result
+		}
+		if err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", name, err))
+		} else {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: no results", name))
 		}
 	}
 
-	return nil, fmt.Errorf("all search engines failed for query: %s", query)
+	return result
 }
 
 // DeepSearch performs a concurrent multi-source search.
@@ -679,32 +752,52 @@ func (m *Manager) DeepSearch(ctx context.Context, query string, count int) (*Dee
 
 // FetchURL fetches and extracts content from a URL using the engine chain.
 func (m *Manager) FetchURL(ctx context.Context, rawURL string, maxChars int) (*FetchResult, error) {
+	result, _, err := m.FetchURLWithDiagnostics(ctx, rawURL, maxChars)
+	return result, err
+}
+
+// FetchURLWithDiagnostics fetches a URL and reports per-engine failures.
+func (m *Manager) FetchURLWithDiagnostics(ctx context.Context, rawURL string, maxChars int) (*FetchResult, []FetchAttempt, error) {
 	if maxChars <= 0 {
 		maxChars = 50000
 	}
 
 	// Validate URL (SSRF protection)
 	if err := ValidateFetchURL(rawURL); err != nil {
-		return nil, fmt.Errorf("url validation failed: %w", err)
+		return nil, nil, fmt.Errorf("url validation failed: %w", err)
 	}
 
 	if cached, ok := m.fetchCache.Get(rawURL, maxChars); ok {
-		return cached, nil
+		return cached, nil, nil
 	}
 
+	var attempts []FetchAttempt
 	for _, eng := range m.fetchEngines {
+		name := eng.Name()
 		result, err := eng.Fetch(ctx, rawURL, maxChars)
-		if err == nil && result != nil {
+		if err == nil && result != nil && strings.TrimSpace(result.Content) != "" {
+			if strings.TrimSpace(result.Source) == "" {
+				result.Source = name
+			}
 			m.fetchCache.Set(rawURL, maxChars, result)
-			return result, nil
+			return result, attempts, nil
+		}
+		if err != nil {
+			attempts = append(attempts, FetchAttempt{Engine: name, Error: err.Error()})
+		} else {
+			attempts = append(attempts, FetchAttempt{Engine: name, Error: "empty content"})
 		}
 	}
 
-	return nil, fmt.Errorf("all fetch engines failed for URL: %s", rawURL)
+	return nil, attempts, fmt.Errorf("all fetch engines failed for URL: %s", rawURL)
 }
 
 // ValidateFetchURL validates a URL for safe fetching (SSRF protection).
 func ValidateFetchURL(rawURL string) error {
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return fmt.Errorf("url is required")
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid url: %w", err)
@@ -718,41 +811,85 @@ func ValidateFetchURL(rawURL string) error {
 	if host == "" {
 		return fmt.Errorf("empty host")
 	}
-
-	privateRanges := []struct {
-		prefix string
-		name   string
-	}{
-		{"127.", "loopback"},
-		{"10.", "private"},
-		{"192.168.", "private"},
-		{"169.254.", "link-local/metadata"},
-		{"0.", "unspecified"},
-		{"::1", "loopback"},
-		{"fc", "unique-local"},
-		{"fd", "unique-local"},
-		{"fe80", "link-local"},
+	if u.User != nil {
+		return fmt.Errorf("userinfo in URL is not allowed")
 	}
+
 	lowerHost := strings.ToLower(host)
-	for _, r := range privateRanges {
-		if strings.HasPrefix(lowerHost, r.prefix) {
-			return fmt.Errorf("host %q is %s address (not allowed)", host, r.name)
-		}
-	}
-
-	if strings.HasPrefix(host, "172.") {
-		parts := strings.SplitN(host, ".", 3)
-		if len(parts) >= 2 {
-			if second, err := parseUint(parts[1]); err == nil && second >= 16 && second <= 31 {
-				return fmt.Errorf("host %q is private address (not allowed)", host)
-			}
-		}
-	}
-
 	if lowerHost == "localhost" {
 		return fmt.Errorf("localhost not allowed")
 	}
+	if addr, ok, err := parseHostIP(host); err != nil {
+		return err
+	} else if ok {
+		if err := validatePublicAddr(addr, host); err != nil {
+			return err
+		}
+		return nil
+	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	addrs, err := fetchURLLookupIP(ctx, host)
+	if err != nil {
+		return nil
+	}
+	for _, addr := range addrs {
+		if err := validatePublicAddr(addr, host); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+var fetchURLLookupIP = func(ctx context.Context, host string) ([]netip.Addr, error) {
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
+func parseHostIP(host string) (netip.Addr, bool, error) {
+	addr, err := netip.ParseAddr(host)
+	if err == nil {
+		return addr.Unmap(), true, nil
+	}
+	if looksLikeNumericHost(host) {
+		return netip.Addr{}, false, fmt.Errorf("host %q looks like a non-standard IP literal (not allowed)", host)
+	}
+	return netip.Addr{}, false, nil
+}
+
+func looksLikeNumericHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	hasDigit := false
+	for _, r := range host {
+		switch {
+		case r >= '0' && r <= '9':
+			hasDigit = true
+		case r == '.' || r == 'x' || r == 'X':
+		default:
+			return false
+		}
+	}
+	return hasDigit
+}
+
+func validatePublicAddr(addr netip.Addr, host string) error {
+	addr = addr.Unmap()
+	switch {
+	case !addr.IsValid():
+		return fmt.Errorf("host %q resolved to invalid address (not allowed)", host)
+	case addr.IsLoopback():
+		return fmt.Errorf("host %q is loopback address (not allowed)", host)
+	case addr.IsPrivate():
+		return fmt.Errorf("host %q is private address (not allowed)", host)
+	case addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast():
+		return fmt.Errorf("host %q is link-local address (not allowed)", host)
+	case addr.IsUnspecified():
+		return fmt.Errorf("host %q is unspecified address (not allowed)", host)
+	case addr.IsMulticast() || addr.IsInterfaceLocalMulticast():
+		return fmt.Errorf("host %q is multicast address (not allowed)", host)
+	}
 	return nil
 }
 

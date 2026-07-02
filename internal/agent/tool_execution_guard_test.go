@@ -25,6 +25,8 @@ func TestToolExecutionGuardBlocksReadOnlyWrites(t *testing.T) {
 	for _, call := range []provider.ToolCall{
 		{Name: "file_patch", Arguments: `{"path":"config.yaml","match":"a","replace":"b"}`},
 		{Name: "terminal", Arguments: `{"command":"sed -i s/a/b/ config.yaml"}`},
+		{Name: "terminal", Arguments: `{"command":"printf hi > config.yaml"}`},
+		{Name: "terminal", Arguments: `{"command":"python gen.py | tee config.yaml"}`},
 	} {
 		if reason := guard.blockReason(call); reason == "" {
 			t.Fatalf("expected %s to be blocked", call.Name)
@@ -32,6 +34,39 @@ func TestToolExecutionGuardBlocksReadOnlyWrites(t *testing.T) {
 	}
 	if reason := guard.blockReason(provider.ToolCall{Name: "file_read", Arguments: `{"path":"config.yaml"}`}); reason != "" {
 		t.Fatalf("file_read should remain allowed, got %q", reason)
+	}
+}
+
+func TestShellCommandClassifierAvoidsQuotedFalsePositives(t *testing.T) {
+	for _, command := range []string{
+		`echo "git push origin main"`,
+		`printf 'rm -rf /tmp/example'`,
+		`grep ">" README.md`,
+	} {
+		finding := classifyShellCommand(command)
+		if finding.Writes || finding.Deletes || finding.Pushes {
+			t.Fatalf("expected quoted command to be non-mutating: %q => %#v", command, finding)
+		}
+	}
+}
+
+func TestShellCommandClassifierDetectsHighConfidenceMutations(t *testing.T) {
+	cases := []struct {
+		command string
+		write   bool
+		delete  bool
+		push    bool
+	}{
+		{command: `cat input.txt >> output.txt`, write: true},
+		{command: `perl -pi -e 's/a/b/' file.txt`, write: true},
+		{command: `rm -rf build`, delete: true},
+		{command: `git push origin main`, push: true},
+	}
+	for _, tc := range cases {
+		got := classifyShellCommand(tc.command)
+		if got.Writes != tc.write || got.Deletes != tc.delete || got.Pushes != tc.push {
+			t.Fatalf("classify %q => %#v", tc.command, got)
+		}
 	}
 }
 
