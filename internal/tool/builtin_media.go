@@ -19,6 +19,11 @@ import (
 const (
 	maxImageAnalyzeImageBytes = 20 << 20
 	maxImageAnalyzeDocBytes   = 50 << 20
+
+	maxImagePromptChars              = 8000
+	maxImageGenerateInputs           = 8
+	maxImageGenerateInputBytes int64 = 20 << 20
+	maxImageGenerateTotalBytes int64 = 50 << 20
 )
 
 // ImageGenerationDefaults captures configurable defaults for the image_generate tool.
@@ -405,18 +410,74 @@ func ImageGenerateTool(generator multimodal.ImageGenerator, defaults ImageGenera
 			"output_path":        {Type: "string", Description: "Optional destination file path for a single generated image. Must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
 			"output_dir":         {Type: "string", Description: "Optional destination directory. Defaults to ~/.luckyagent/workspace/generated-images. Explicit values must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
 			"filename_prefix":    {Type: "string", Description: "Optional output filename prefix when output_dir is used.", Required: false},
+			"overwrite":          {Type: "boolean", Description: "Allow replacing an existing output_path. Defaults to false.", Required: false},
+			"dry_run":            {Type: "boolean", Description: "Return the generation plan without calling the provider or writing files.", Required: false},
 		},
 		Handler: handleImageGenerate(generator, defaults),
 	}
 }
 
+type imageGenerationOptions struct {
+	Prompt            string
+	InputPaths        []string
+	InputURLs         []string
+	InputBase64s      []string
+	InputMIMETypes    []string
+	Model             string
+	Size              string
+	Quality           string
+	Background        string
+	OutputFormat      string
+	OutputCompression int
+	Count             int
+	OutputPath        string
+	OutputDir         string
+	FilenamePrefix    string
+	Overwrite         bool
+	DryRun            bool
+	BaseDir           string
+}
+
+type imageGenerationPlan struct {
+	Provider      string   `json:"provider,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	Size          string   `json:"size,omitempty"`
+	Quality       string   `json:"quality,omitempty"`
+	Background    string   `json:"background,omitempty"`
+	OutputFormat  string   `json:"output_format,omitempty"`
+	Count         int      `json:"count"`
+	InputCount    int      `json:"input_count"`
+	InputBytes    int64    `json:"input_bytes"`
+	OutputTargets []string `json:"output_targets"`
+	Overwrite     bool     `json:"overwrite"`
+	DryRun        bool     `json:"dry_run"`
+}
+
 func handleImageGenerate(generator multimodal.ImageGenerator, defaults ImageGenerationDefaults) func(args map[string]any) (string, error) {
 	return func(args map[string]any) (string, error) {
+		opts, err := parseImageGenerationOptions(args, defaults)
+		if err != nil {
+			return "", err
+		}
+		providerName := ""
+		if generator != nil {
+			providerName = generator.Name()
+		}
+		plan, err := buildImageGenerationPlan(opts, providerName)
+		if err != nil {
+			return "", err
+		}
+		if opts.DryRun {
+			return prettyStructuredValue(plan)
+		}
 		if generator == nil {
 			return "", fmt.Errorf("image generation is not configured")
 		}
+		if err := validateImageOutputConflicts(opts); err != nil {
+			return "", err
+		}
 
-		req, outputPath, outputDir, filenamePrefix, baseDir, err := buildImageGenerationRequest(args, defaults)
+		req, err := buildImageGenerationRequest(opts)
 		if err != nil {
 			return "", err
 		}
@@ -432,7 +493,7 @@ func handleImageGenerate(generator multimodal.ImageGenerator, defaults ImageGene
 			return "", fmt.Errorf("image generation returned no images")
 		}
 
-		savedPaths, err := saveGeneratedImages(result.Images, outputPath, outputDir, filenamePrefix, baseDir)
+		savedPaths, err := saveGeneratedImages(result.Images, opts)
 		if err != nil {
 			return "", err
 		}
@@ -454,16 +515,22 @@ func handleImageGenerate(generator multimodal.ImageGenerator, defaults ImageGene
 	}
 }
 
-func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDefaults) (*multimodal.ImageGenerationRequest, string, string, string, string, error) {
+func parseImageGenerationOptions(args map[string]any, defaults ImageGenerationDefaults) (imageGenerationOptions, error) {
 	prompt, _ := args["prompt"].(string)
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
-		return nil, "", "", "", "", fmt.Errorf("prompt is required")
+		return imageGenerationOptions{}, fmt.Errorf("prompt is required")
+	}
+	if len([]rune(prompt)) > maxImagePromptChars {
+		return imageGenerationOptions{}, fmt.Errorf("prompt exceeds %d character limit", maxImagePromptChars)
 	}
 
 	inputPaths := collectStringArgs(args, "input_path", "input_paths")
 	inputURLs := collectStringArgs(args, "input_url", "input_urls")
 	inputBase64s := collectStringArgs(args, "input_base64_data", "input_base64_datas")
+	if len(inputPaths)+len(inputURLs)+len(inputBase64s) > maxImageGenerateInputs {
+		return imageGenerationOptions{}, fmt.Errorf("image_generate supports at most %d input images", maxImageGenerateInputs)
+	}
 	inputMimeType, _ := args["input_mime_type"].(string)
 	inputMimeTypes := collectStringArgs(args, "input_mime_types")
 	inputMimeType = strings.TrimSpace(inputMimeType)
@@ -486,32 +553,105 @@ func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDe
 	}
 	count := boundedIntArg(args, "count", defaultCount, 1, 10)
 	if outputPath != "" && count > 1 {
-		return nil, "", "", "", "", fmt.Errorf("output_path can only be used when count is 1")
+		return imageGenerationOptions{}, fmt.Errorf("output_path can only be used when count is 1")
 	}
 
-	req := &multimodal.ImageGenerationRequest{
+	outputFormat, err := validateImageOutputFormat(firstNonEmptyString(asString(args["output_format"]), defaults.OutputFormat))
+	if err != nil {
+		return imageGenerationOptions{}, err
+	}
+	if filenamePrefix != "" {
+		if err := validateFilenamePrefix(filenamePrefix, "filename_prefix"); err != nil {
+			return imageGenerationOptions{}, err
+		}
+	}
+
+	return imageGenerationOptions{
 		Prompt:            prompt,
+		InputPaths:        inputPaths,
+		InputURLs:         inputURLs,
+		InputBase64s:      inputBase64s,
+		InputMIMETypes:    inputMimeTypes,
 		Model:             firstNonEmptyString(asString(args["model"]), defaults.Model),
 		Size:              firstNonEmptyString(asString(args["size"]), defaults.Size),
 		Quality:           firstNonEmptyString(asString(args["quality"]), defaults.Quality),
 		Background:        firstNonEmptyString(asString(args["background"]), defaults.Background),
-		OutputFormat:      normalizeOutputFormat(firstNonEmptyString(asString(args["output_format"]), defaults.OutputFormat)),
+		OutputFormat:      outputFormat,
 		OutputCompression: boundedIntArg(args, "output_compression", defaults.OutputCompression, 0, 100),
 		Count:             count,
+		OutputPath:        outputPath,
+		OutputDir:         outputDir,
+		FilenamePrefix:    filenamePrefix,
+		Overwrite:         mediaBoolArg(args, "overwrite", false),
+		DryRun:            mediaBoolArg(args, "dry_run", false),
+		BaseDir:           baseDir,
+	}, nil
+}
+
+func buildImageGenerationPlan(opts imageGenerationOptions, providerName string) (imageGenerationPlan, error) {
+	targets, err := plannedImageOutputTargets(opts)
+	if err != nil {
+		return imageGenerationPlan{}, err
+	}
+	inputBytes, err := estimateImageInputBytes(opts)
+	if err != nil {
+		return imageGenerationPlan{}, err
+	}
+	return imageGenerationPlan{
+		Provider:      providerName,
+		Model:         opts.Model,
+		Size:          opts.Size,
+		Quality:       opts.Quality,
+		Background:    opts.Background,
+		OutputFormat:  opts.OutputFormat,
+		Count:         opts.Count,
+		InputCount:    len(opts.InputPaths) + len(opts.InputURLs) + len(opts.InputBase64s),
+		InputBytes:    inputBytes,
+		OutputTargets: targets,
+		Overwrite:     opts.Overwrite,
+		DryRun:        opts.DryRun,
+	}, nil
+}
+
+func buildImageGenerationRequest(opts imageGenerationOptions) (*multimodal.ImageGenerationRequest, error) {
+	req := &multimodal.ImageGenerationRequest{
+		Prompt:            opts.Prompt,
+		Model:             opts.Model,
+		Size:              opts.Size,
+		Quality:           opts.Quality,
+		Background:        opts.Background,
+		OutputFormat:      opts.OutputFormat,
+		OutputCompression: opts.OutputCompression,
+		Count:             opts.Count,
 	}
 
-	for _, inputPath := range inputPaths {
-		inputPath = resolveToolPath(baseDir, inputPath)
+	var totalBytes int64
+	for _, inputPath := range opts.InputPaths {
+		inputPath = resolveToolPath(opts.BaseDir, inputPath)
 		if err := validatePath(inputPath); err != nil {
-			return nil, "", "", "", "", err
+			return nil, err
+		}
+		info, err := os.Stat(inputPath)
+		if err != nil {
+			return nil, fmt.Errorf("stat input_path: %w", err)
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("input_path is a directory: %s", inputPath)
+		}
+		if err := validateImageGenerateInputSize(info.Size(), &totalBytes); err != nil {
+			return nil, err
 		}
 		data, err := os.ReadFile(inputPath)
 		if err != nil {
-			return nil, "", "", "", "", fmt.Errorf("read input_path: %w", err)
+			return nil, fmt.Errorf("read input_path: %w", err)
 		}
 		pathMimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(inputPath)))
 		if pathMimeType == "" {
 			pathMimeType = http.DetectContentType(data)
+		}
+		pathMimeType = normalizeMediaMIME(pathMimeType)
+		if err := validateImageGenerateMIME(pathMimeType); err != nil {
+			return nil, err
 		}
 		req.InputImages = append(req.InputImages, multimodal.ImageInput{
 			Data:     data,
@@ -520,10 +660,16 @@ func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDe
 		})
 	}
 
-	for _, inputURL := range inputURLs {
+	for _, inputURL := range opts.InputURLs {
 		data, detectedMimeType, err := downloadImageInput(inputURL)
 		if err != nil {
-			return nil, "", "", "", "", err
+			return nil, err
+		}
+		if err := validateImageGenerateInputSize(int64(len(data)), &totalBytes); err != nil {
+			return nil, err
+		}
+		if err := validateImageGenerateMIME(detectedMimeType); err != nil {
+			return nil, err
 		}
 		req.InputImages = append(req.InputImages, multimodal.ImageInput{
 			Data:     data,
@@ -532,17 +678,24 @@ func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDe
 		})
 	}
 
-	for i, inputBase64 := range inputBase64s {
+	for i, inputBase64 := range opts.InputBase64s {
 		data, err := base64.StdEncoding.DecodeString(inputBase64)
 		if err != nil {
-			return nil, "", "", "", "", fmt.Errorf("decode input_base64_data: %w", err)
+			return nil, fmt.Errorf("decode input_base64_data: %w", err)
+		}
+		if err := validateImageGenerateInputSize(int64(len(data)), &totalBytes); err != nil {
+			return nil, err
 		}
 		currentMimeType := ""
-		if i < len(inputMimeTypes) {
-			currentMimeType = strings.TrimSpace(inputMimeTypes[i])
+		if i < len(opts.InputMIMETypes) {
+			currentMimeType = strings.TrimSpace(opts.InputMIMETypes[i])
 		}
 		if currentMimeType == "" {
 			currentMimeType = http.DetectContentType(data)
+		}
+		currentMimeType = normalizeMediaMIME(currentMimeType)
+		if err := validateImageGenerateMIME(currentMimeType); err != nil {
+			return nil, err
 		}
 		req.InputImages = append(req.InputImages, multimodal.ImageInput{
 			Data:     data,
@@ -551,33 +704,41 @@ func buildImageGenerationRequest(args map[string]any, defaults ImageGenerationDe
 		})
 	}
 
-	return req, outputPath, outputDir, filenamePrefix, baseDir, nil
+	return req, nil
 }
 
-func saveGeneratedImages(images []multimodal.GeneratedImage, outputPath, outputDir, filenamePrefix, baseDir string) ([]string, error) {
+func saveGeneratedImages(images []multimodal.GeneratedImage, opts imageGenerationOptions) ([]string, error) {
 	if len(images) == 0 {
 		return nil, fmt.Errorf("no images to save")
 	}
 
+	filenamePrefix := opts.FilenamePrefix
 	if filenamePrefix == "" {
 		filenamePrefix = "generated-image"
 	}
 
-	if outputPath != "" {
-		resolved, err := validateResolvedOutputPath(baseDir, outputPath)
+	if opts.OutputPath != "" {
+		resolved, err := validateResolvedOutputPath(opts.BaseDir, opts.OutputPath)
 		if err != nil {
 			return nil, err
 		}
 		if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
 			return nil, fmt.Errorf("create output directory: %w", err)
 		}
-		if err := os.WriteFile(resolved, images[0].Data, 0o644); err != nil {
+		if !opts.Overwrite {
+			if _, err := os.Stat(resolved); err == nil {
+				return nil, fmt.Errorf("output_path already exists: %s", resolved)
+			} else if !os.IsNotExist(err) {
+				return nil, fmt.Errorf("stat output_path: %w", err)
+			}
+		}
+		if err := writeFileAtomic(resolved, images[0].Data, 0o644); err != nil {
 			return nil, fmt.Errorf("write output file: %w", err)
 		}
 		return []string{resolved}, nil
 	}
 
-	dir, err := resolveImageOutputDir(baseDir, outputDir)
+	dir, err := resolveImageOutputDir(opts.BaseDir, opts.OutputDir)
 	if err != nil {
 		return nil, err
 	}
@@ -593,7 +754,13 @@ func saveGeneratedImages(images []multimodal.GeneratedImage, outputPath, outputD
 		if err != nil {
 			return nil, err
 		}
-		if err := os.WriteFile(resolved, image.Data, 0o644); err != nil {
+		if !opts.Overwrite {
+			resolved, err = uniqueOutputPath(resolved)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if err := writeFileAtomic(resolved, image.Data, 0o644); err != nil {
 			return nil, fmt.Errorf("write generated image: %w", err)
 		}
 		saved = append(saved, resolved)
@@ -615,6 +782,77 @@ func resolveImageOutputDir(baseDir, outputDir string) (string, error) {
 
 	dir := filepath.Join(sandboxWorkspaceDir(), "generated-images")
 	return resolveWorkspacePath(dir)
+}
+
+func plannedImageOutputTargets(opts imageGenerationOptions) ([]string, error) {
+	if opts.OutputPath != "" {
+		resolved, err := validateResolvedOutputPath(opts.BaseDir, opts.OutputPath)
+		if err != nil {
+			return nil, err
+		}
+		return []string{resolved}, nil
+	}
+	dir, err := resolveImageOutputDir(opts.BaseDir, opts.OutputDir)
+	if err != nil {
+		return nil, err
+	}
+	filenamePrefix := opts.FilenamePrefix
+	if filenamePrefix == "" {
+		filenamePrefix = "generated-image"
+	}
+	ext := extensionForOutputFormat(opts.OutputFormat)
+	targets := make([]string, 0, opts.Count)
+	for i := 0; i < opts.Count; i++ {
+		resolved, err := resolveWorkspacePath(filepath.Join(dir, fmt.Sprintf("%s-%02d%s", filenamePrefix, i+1, ext)))
+		if err != nil {
+			return nil, err
+		}
+		targets = append(targets, resolved)
+	}
+	return targets, nil
+}
+
+func validateImageOutputConflicts(opts imageGenerationOptions) error {
+	if opts.OutputPath == "" || opts.Overwrite {
+		return nil
+	}
+	resolved, err := validateResolvedOutputPath(opts.BaseDir, opts.OutputPath)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(resolved); err == nil {
+		return fmt.Errorf("output_path already exists: %s", resolved)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat output_path: %w", err)
+	}
+	return nil
+}
+
+func estimateImageInputBytes(opts imageGenerationOptions) (int64, error) {
+	var total int64
+	for _, inputPath := range opts.InputPaths {
+		resolved := resolveToolPath(opts.BaseDir, inputPath)
+		if err := validatePath(resolved); err != nil {
+			return 0, err
+		}
+		info, err := os.Stat(resolved)
+		if err != nil {
+			return 0, fmt.Errorf("stat input_path: %w", err)
+		}
+		if info.IsDir() {
+			return 0, fmt.Errorf("input_path is a directory: %s", resolved)
+		}
+		if err := validateImageGenerateInputSize(info.Size(), &total); err != nil {
+			return 0, err
+		}
+	}
+	for _, inputBase64 := range opts.InputBase64s {
+		size := int64(base64.StdEncoding.DecodedLen(len(inputBase64)))
+		if err := validateImageGenerateInputSize(size, &total); err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
 }
 
 func resolveToolPath(baseDir, path string) string {
@@ -641,15 +879,41 @@ func downloadImageInput(rawURL string) ([]byte, string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, "", fmt.Errorf("download input_url failed with status %d", resp.StatusCode)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 20<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxImageGenerateInputBytes+1))
 	if err != nil {
 		return nil, "", fmt.Errorf("read input_url response: %w", err)
+	}
+	if int64(len(data)) > maxImageGenerateInputBytes {
+		return nil, "", fmt.Errorf("input image exceeds %d MiB limit", maxImageGenerateInputBytes>>20)
 	}
 	mimeType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if mimeType == "" {
 		mimeType = http.DetectContentType(data)
 	}
+	mimeType = normalizeMediaMIME(mimeType)
 	return data, mimeType, nil
+}
+
+func validateImageGenerateInputSize(size int64, total *int64) error {
+	if size > maxImageGenerateInputBytes {
+		return fmt.Errorf("input image exceeds %d MiB limit", maxImageGenerateInputBytes>>20)
+	}
+	if total != nil {
+		*total += size
+		if *total > maxImageGenerateTotalBytes {
+			return fmt.Errorf("input images exceed %d MiB total limit", maxImageGenerateTotalBytes>>20)
+		}
+	}
+	return nil
+}
+
+func validateImageGenerateMIME(mimeType string) error {
+	switch normalizeMediaMIME(mimeType) {
+	case "image/png", "image/jpeg", "image/webp", "image/gif":
+		return nil
+	default:
+		return fmt.Errorf("unsupported image input MIME type %q; supported types: image/png, image/jpeg, image/webp, image/gif", mimeType)
+	}
 }
 
 func normalizeOutputFormat(format string) string {
@@ -662,6 +926,16 @@ func normalizeOutputFormat(format string) string {
 		return "webp"
 	default:
 		return format
+	}
+}
+
+func validateImageOutputFormat(format string) (string, error) {
+	normalized := normalizeOutputFormat(format)
+	switch normalized {
+	case "png", "jpeg", "webp":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("unsupported output_format %q; supported formats: png, jpeg, webp", format)
 	}
 }
 
@@ -721,6 +995,66 @@ func collectStringArgs(args map[string]any, keys ...string) []string {
 		}
 	}
 	return out
+}
+
+func mediaBoolArg(args map[string]any, key string, def bool) bool {
+	raw, ok := args[key]
+	if !ok {
+		return def
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "1", "yes", "y":
+			return true
+		case "false", "0", "no", "n":
+			return false
+		}
+	}
+	return def
+}
+
+func validateFilenamePrefix(prefix, param string) error {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return fmt.Errorf("%s is empty", param)
+	}
+	if prefix == "." || prefix == ".." || strings.Contains(prefix, "..") {
+		return fmt.Errorf("%s must be a filename fragment, not a relative path", param)
+	}
+	if strings.ContainsAny(prefix, `/\`) {
+		return fmt.Errorf("%s must not contain path separators", param)
+	}
+	if len([]rune(prefix)) > 80 {
+		return fmt.Errorf("%s exceeds 80 character limit", param)
+	}
+	for _, r := range prefix {
+		if r < 32 || r == 127 {
+			return fmt.Errorf("%s must not contain control characters", param)
+		}
+	}
+	return nil
+}
+
+func uniqueOutputPath(path string) (string, error) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path, nil
+	} else if err != nil {
+		return "", fmt.Errorf("stat output path: %w", err)
+	}
+	ext := filepath.Ext(path)
+	stem := strings.TrimSuffix(path, ext)
+	for i := 0; i < 1000; i++ {
+		candidate := fmt.Sprintf("%s-%d-%03d%s", stem, time.Now().UnixNano(), i, ext)
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate, nil
+		} else if err != nil {
+			return "", fmt.Errorf("stat output path: %w", err)
+		}
+	}
+	return "", fmt.Errorf("failed to allocate unique output path for %s", path)
 }
 
 // TextToSpeechTool synthesizes speech audio from text and saves it to disk.

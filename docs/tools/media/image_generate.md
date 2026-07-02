@@ -52,6 +52,8 @@ ParallelSafe: false
 | `output_path` | 否 | 无 | 单张图片目标路径，必须在 `~/.luckyagent/workspace` 下。 |
 | `output_dir` | 否 | `~/.luckyagent/workspace/generated-images` | 输出目录，必须在 workspace 下。 |
 | `filename_prefix` | 否 | `generated-image` | 使用 `output_dir` 时的文件名前缀。 |
+| `overwrite` | 否 | `false` | 是否允许覆盖显式 `output_path`。 |
+| `dry_run` | 否 | `false` | 只返回生成计划，不调用 provider，不写文件。 |
 
 示例参数：
 
@@ -67,19 +69,19 @@ ParallelSafe: false
 
 `image_generate` 的执行过程是：
 
-1. 检查 image generator 是否已配置。
-2. 读取并校验必填参数 `prompt`。
-3. 收集本地路径、远程 URL 和 Base64 输入图片。
-4. 解析输出路径参数和 `_cwd`。
-5. 根据配置默认值和调用参数构造 `ImageGenerationRequest`。
-6. 限制 `count` 在 1 到 10。
-7. 如果设置了 `output_path` 且 `count > 1`，返回错误。
-8. 读取本地输入图片，并推断 MIME。
-9. 下载远程输入图片，并推断 MIME。
-10. 解码 Base64 输入图片，并推断 MIME。
+1. 读取并校验必填参数 `prompt`，最长 8000 字符。
+2. 收集本地路径、远程 URL 和 Base64 输入图片，并限制最多 8 张。
+3. 解析输出路径参数、`filename_prefix`、`overwrite`、`dry_run` 和 `_cwd`。
+4. 根据配置默认值和调用参数构造生成计划。
+5. 限制 `count` 在 1 到 10。
+6. 如果设置了 `output_path` 且 `count > 1`，返回错误。
+7. 如果 `dry_run=true`，返回计划，不调用 provider，也不写文件。
+8. 检查 image generator 是否已配置。
+9. 对显式 `output_path` 做生成前冲突检查。
+10. 读取本地输入图片、下载远程输入图片或解码 Base64 输入，并校验大小和 MIME。
 11. 创建 2 分钟超时的 context。
 12. 调用 `generator.GenerateImage`。
-13. 将返回图片写入 workspace。
+13. 将返回图片原子写入 workspace。
 14. 返回 JSON 格式的生成结果摘要。
 
 如果 generator 没有配置，返回：
@@ -139,6 +141,13 @@ Base64 输入支持：
 
 当 `input_mime_type` 存在且 `input_mime_types` 为空时，会自动转成单元素 MIME 列表。
 
+输入图片限制：
+
+- 总数量最多 8 张。
+- 单张最大 20 MiB。
+- 所有输入合计最大 50 MiB。
+- 支持 MIME：`image/png`、`image/jpeg`、`image/webp`、`image/gif`。
+
 ## 输出路径
 
 所有输出必须在：
@@ -178,6 +187,15 @@ generated-image
 
 `output_path` 和 `output_dir` 都会通过 `resolveWorkspacePath` 校验。绝对路径或相对路径最终都不能逃出 `~/.luckyagent/workspace`。
 
+覆盖策略：
+
+- 默认 `overwrite=false`。
+- 显式 `output_path` 已存在时会报错；只有 `overwrite=true` 才会覆盖。
+- 使用 `output_dir` 时，如果目标文件名已存在，会自动追加唯一后缀，避免覆盖旧文件。
+- 写文件使用临时文件加 rename 的原子写入流程。
+
+`filename_prefix` 必须是文件名片段，不能包含路径分隔符、`..` 或控制字符。
+
 ## 格式和扩展名
 
 `output_format` 会规范化：
@@ -189,7 +207,7 @@ generated-image
 | `jpg` | `jpeg` |
 | `jpeg` | `jpeg` |
 | `webp` | `webp` |
-| 其他 | 原样传给 provider |
+| 其他 | 返回错误 |
 
 保存文件时根据生成结果 MIME 决定扩展名：
 
