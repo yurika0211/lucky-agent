@@ -1187,6 +1187,46 @@ func TestSet_ContextMemoryHygieneOptions(t *testing.T) {
 	}
 }
 
+func TestSet_ContextAutoCompactOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	if err := mgr.Set("context.auto_compact", "true"); err != nil {
+		t.Fatalf("set auto_compact: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_threshold", "0.75"); err != nil {
+		t.Fatalf("set auto_compact_threshold: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_min_messages", "12"); err != nil {
+		t.Fatalf("set auto_compact_min_messages: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_cooldown_turns", "4"); err != nil {
+		t.Fatalf("set auto_compact_cooldown_turns: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_reserved_summary_tokens", "900"); err != nil {
+		t.Fatalf("set auto_compact_reserved_summary_tokens: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if !cfg.Context.AutoCompact {
+		t.Fatal("expected auto compact to be enabled")
+	}
+	if cfg.Context.AutoCompactThreshold != 0.75 {
+		t.Fatalf("unexpected auto compact threshold: %v", cfg.Context.AutoCompactThreshold)
+	}
+	if cfg.Context.AutoCompactMinMessages != 12 {
+		t.Fatalf("unexpected auto compact min messages: %d", cfg.Context.AutoCompactMinMessages)
+	}
+	if cfg.Context.AutoCompactCooldownTurns != 4 {
+		t.Fatalf("unexpected auto compact cooldown turns: %d", cfg.Context.AutoCompactCooldownTurns)
+	}
+	if cfg.Context.AutoCompactReservedSummaryTokens != 900 {
+		t.Fatalf("unexpected auto compact reserved tokens: %d", cfg.Context.AutoCompactReservedSummaryTokens)
+	}
+}
+
 // TestSet_StreamMode 测试 stream_mode
 func TestSet_StreamMode(t *testing.T) {
 	mgr, err := NewManagerWithDir(t.TempDir())

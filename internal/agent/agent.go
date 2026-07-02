@@ -145,6 +145,8 @@ type Agent struct {
 	externalReplyAnchors  map[string]externalReplyAnchor
 	contextCache          *contextMessageCache
 	mediaProcessor        *multimodal.Processor
+	autoCompactMu         sync.Mutex
+	autoCompactFailures   map[string]int
 	chatCount             int // 对话计数，用于触发自动摘要
 	activeModel           string
 	activeAPIBase         string
@@ -1051,41 +1053,42 @@ func New(cfg *config.Manager) (*Agent, error) {
 	proactiveRuntime := initProactiveRuntimeService(cfg.HomeDir(), c.Proactive, proactiveStore)
 
 	a := &Agent{
-		cfg:              cfg,
-		soul:             soulRT.soul,
-		tmplMgr:          soulRT.tmplMgr,
-		provider:         providerRT.provider,
-		registry:         providerRT.registry,
-		catalog:          providerRT.catalog,
-		tokenStore:       providerRT.tokenStore,
-		memory:           memoryRT.store,
-		shortTerm:        memoryRT.short,
-		midTerm:          memoryRT.mid,
-		sessions:         memoryRT.sessions,
-		tools:            supportRT.tools,
-		gateway:          supportRT.toolGateway,
-		hooks:            hook.NewRunner(buildHookRuntimeConfig(c)),
-		msgGateway:       gateway.NewGatewayManager(),
-		mcpClient:        supportRT.mcpClient,
-		delegate:         supportRT.delegateMgr,
-		contextWin:       supportRT.contextWin,
-		contextEst:       supportRT.contextEst,
-		ragManager:       ragRT.manager,
-		ragPersist:       ragRT.persist,
-		streamIndexer:    ragRT.streamIndexer,
-		embedderReg:      ragRT.embedderReg,
-		collabReg:        collab.NewRegistry(),
-		collabMgr:        nil,
-		metrics:          supportRT.metrics,
-		proactiveStore:   proactiveStore,
-		proactiveRuntime: proactiveRuntime,
-		cronEngine:       supportRT.cronEngine,
-		cronStore:        cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
-		autonomy:         supportRT.autonomyKit,
-		contextCache:     newContextMessageCache(64),
-		mediaProcessor:   supportRT.mediaProcessor,
-		activeModel:      c.Model,
-		activeAPIBase:    c.APIBase,
+		cfg:                 cfg,
+		soul:                soulRT.soul,
+		tmplMgr:             soulRT.tmplMgr,
+		provider:            providerRT.provider,
+		registry:            providerRT.registry,
+		catalog:             providerRT.catalog,
+		tokenStore:          providerRT.tokenStore,
+		memory:              memoryRT.store,
+		shortTerm:           memoryRT.short,
+		midTerm:             memoryRT.mid,
+		sessions:            memoryRT.sessions,
+		tools:               supportRT.tools,
+		gateway:             supportRT.toolGateway,
+		hooks:               hook.NewRunner(buildHookRuntimeConfig(c)),
+		msgGateway:          gateway.NewGatewayManager(),
+		mcpClient:           supportRT.mcpClient,
+		delegate:            supportRT.delegateMgr,
+		contextWin:          supportRT.contextWin,
+		contextEst:          supportRT.contextEst,
+		ragManager:          ragRT.manager,
+		ragPersist:          ragRT.persist,
+		streamIndexer:       ragRT.streamIndexer,
+		embedderReg:         ragRT.embedderReg,
+		collabReg:           collab.NewRegistry(),
+		collabMgr:           nil,
+		metrics:             supportRT.metrics,
+		proactiveStore:      proactiveStore,
+		proactiveRuntime:    proactiveRuntime,
+		cronEngine:          supportRT.cronEngine,
+		cronStore:           cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
+		autonomy:            supportRT.autonomyKit,
+		contextCache:        newContextMessageCache(64),
+		mediaProcessor:      supportRT.mediaProcessor,
+		autoCompactFailures: make(map[string]int),
+		activeModel:         c.Model,
+		activeAPIBase:       c.APIBase,
 	}
 
 	a.collabReg.Register(&collab.AgentProfile{
@@ -1942,6 +1945,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 
 		buildOpts := defaultContextBuildOptions()
 		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
+		a.maybeAutoCompactSession(ctx, sess, routingText, loopCfg.Ephemeral)
 		messages := a.buildContextMessagesForInput(ctx, sess, input, buildOpts)
 		sess.AddProviderMessage(input.Message)
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)

@@ -212,13 +212,18 @@ type RateLimitConfig struct {
 
 // ContextConfig 上下文配置
 type ContextConfig struct {
-	MaxHistoryTurns            int     `json:"max_history_turns"`
-	MaxContextTokens           int     `json:"max_context_tokens"`
-	CompressionThreshold       float64 `json:"compression_threshold"`
-	MemoryHygieneBeforeContext bool    `json:"memory_hygiene_before_context,omitempty"`
-	MemoryHygieneAction        string  `json:"memory_hygiene_action,omitempty"`
-	MemoryHygieneMinSeverity   string  `json:"memory_hygiene_min_severity,omitempty"`
-	MemoryHygieneMaxFindings   int     `json:"memory_hygiene_max_findings,omitempty"`
+	MaxHistoryTurns                  int     `json:"max_history_turns"`
+	MaxContextTokens                 int     `json:"max_context_tokens"`
+	CompressionThreshold             float64 `json:"compression_threshold"`
+	AutoCompact                      bool    `json:"auto_compact,omitempty"`
+	AutoCompactThreshold             float64 `json:"auto_compact_threshold,omitempty"`
+	AutoCompactMinMessages           int     `json:"auto_compact_min_messages,omitempty"`
+	AutoCompactCooldownTurns         int     `json:"auto_compact_cooldown_turns,omitempty"`
+	AutoCompactReservedSummaryTokens int     `json:"auto_compact_reserved_summary_tokens,omitempty"`
+	MemoryHygieneBeforeContext       bool    `json:"memory_hygiene_before_context,omitempty"`
+	MemoryHygieneAction              string  `json:"memory_hygiene_action,omitempty"`
+	MemoryHygieneMinSeverity         string  `json:"memory_hygiene_min_severity,omitempty"`
+	MemoryHygieneMaxFindings         int     `json:"memory_hygiene_max_findings,omitempty"`
 }
 
 // AgentLoopConfig Agent Loop 配置
@@ -623,13 +628,17 @@ func DefaultConfig() *Config {
 			BurstSize:         10,
 		},
 		Context: ContextConfig{
-			MaxHistoryTurns:            50,
-			MaxContextTokens:           8000,
-			CompressionThreshold:       0.8,
-			MemoryHygieneBeforeContext: false,
-			MemoryHygieneAction:        "quarantine",
-			MemoryHygieneMinSeverity:   "high",
-			MemoryHygieneMaxFindings:   25,
+			MaxHistoryTurns:                  50,
+			MaxContextTokens:                 8000,
+			CompressionThreshold:             0.8,
+			AutoCompactThreshold:             0.82,
+			AutoCompactMinMessages:           24,
+			AutoCompactCooldownTurns:         8,
+			AutoCompactReservedSummaryTokens: 1200,
+			MemoryHygieneBeforeContext:       false,
+			MemoryHygieneAction:              "quarantine",
+			MemoryHygieneMinSeverity:         "high",
+			MemoryHygieneMaxFindings:         25,
 		},
 		Agent: AgentLoopConfig{
 			MaxIterations:          10,
@@ -921,6 +930,18 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Context.CompressionThreshold <= 0 {
 		cfg.Context.CompressionThreshold = def.Context.CompressionThreshold
+	}
+	if cfg.Context.AutoCompactThreshold <= 0 {
+		cfg.Context.AutoCompactThreshold = def.Context.AutoCompactThreshold
+	}
+	if cfg.Context.AutoCompactMinMessages <= 0 {
+		cfg.Context.AutoCompactMinMessages = def.Context.AutoCompactMinMessages
+	}
+	if cfg.Context.AutoCompactCooldownTurns <= 0 {
+		cfg.Context.AutoCompactCooldownTurns = def.Context.AutoCompactCooldownTurns
+	}
+	if cfg.Context.AutoCompactReservedSummaryTokens <= 0 {
+		cfg.Context.AutoCompactReservedSummaryTokens = def.Context.AutoCompactReservedSummaryTokens
 	}
 	if strings.TrimSpace(cfg.Context.MemoryHygieneAction) == "" {
 		cfg.Context.MemoryHygieneAction = def.Context.MemoryHygieneAction
@@ -1678,6 +1699,24 @@ func (m *Manager) Set(key, value string) error {
 		var f float64
 		fmt.Sscanf(value, "%f", &f)
 		m.config.Context.CompressionThreshold = f
+	case "context.auto_compact":
+		m.config.Context.AutoCompact = parseBool(value)
+	case "context.auto_compact_threshold":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Context.AutoCompactThreshold = f
+	case "context.auto_compact_min_messages":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.AutoCompactMinMessages = n
+	case "context.auto_compact_cooldown_turns":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.AutoCompactCooldownTurns = n
+	case "context.auto_compact_reserved_summary_tokens":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.AutoCompactReservedSummaryTokens = n
 	case "context.memory_hygiene_before_context":
 		m.config.Context.MemoryHygieneBeforeContext = parseBool(value)
 	case "context.memory_hygiene_action":

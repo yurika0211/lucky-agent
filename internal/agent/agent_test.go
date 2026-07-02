@@ -1565,6 +1565,80 @@ func TestCompactSessionDryRunDoesNotWriteBoundary(t *testing.T) {
 	}
 }
 
+func TestMaybeAutoCompactSessionWritesBoundary(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	_ = cfg.Set("context.auto_compact", "true")
+	_ = cfg.Set("context.max_context_tokens", "50")
+	_ = cfg.Set("context.auto_compact_threshold", "0.1")
+	_ = cfg.Set("context.auto_compact_min_messages", "2")
+	_ = cfg.Set("context.auto_compact_cooldown_turns", "1")
+
+	sess := session.NewSession("auto-compact", t.TempDir())
+	longText := strings.Repeat("Fix internal/agent/context_planner.go and verify go test ./internal/agent. ", 20)
+	sess.AddMessage("user", longText)
+	sess.AddToolMessage("terminal", "go test ./internal/agent passed for auto compact behavior")
+	summary := strings.Join([]string{
+		"Current user goal:",
+		"Continue implementing LuckyAgent auto compact for internal/agent/context_planner.go and session compact boundaries.",
+		"Completed work:",
+		"Prepared the automatic compact trigger and verified go test ./internal/agent covers compact behavior.",
+		"Pending work:",
+		"Keep the latest user turn outside the compacted range and commit small chunks.",
+		"Key files and functions:",
+		"internal/agent/compact_auto.go, internal/agent/loop.go, Agent.CompactSession.",
+		"Commands and test results:",
+		"go test ./internal/agent passed for compact tests.",
+		"User constraints:",
+		"Commit one small optimization phase at a time.",
+		"Uncertain facts:",
+		"No provider-specific behavior was verified.",
+	}, "\n")
+	a := &Agent{
+		cfg:                 cfg,
+		provider:            &staticChatProvider{name: "static", content: summary},
+		contextEst:          contextx.NewTokenEstimator(4096),
+		autoCompactFailures: make(map[string]int),
+	}
+
+	a.maybeAutoCompactSession(context.Background(), sess, "continue", false)
+
+	trace, ok := sess.LatestCompactTrace()
+	if !ok {
+		t.Fatal("expected auto compact boundary")
+	}
+	if trace.Trigger != "auto" || trace.SummarySource != "llm" || trace.DroppedMessages != 2 {
+		t.Fatalf("unexpected auto compact trace: %+v", trace)
+	}
+}
+
+func TestMaybeAutoCompactSessionSkipsShortSession(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	_ = cfg.Set("context.auto_compact", "true")
+	_ = cfg.Set("context.max_context_tokens", "50")
+	_ = cfg.Set("context.auto_compact_threshold", "0.1")
+	_ = cfg.Set("context.auto_compact_min_messages", "10")
+
+	sess := session.NewSession("auto-compact-short", t.TempDir())
+	sess.AddMessage("user", strings.Repeat("Fix internal/agent/context_planner.go. ", 20))
+	a := &Agent{
+		cfg:                 cfg,
+		provider:            &staticChatProvider{name: "static", content: "should not be called"},
+		contextEst:          contextx.NewTokenEstimator(4096),
+		autoCompactFailures: make(map[string]int),
+	}
+
+	a.maybeAutoCompactSession(context.Background(), sess, "continue", false)
+	if _, ok := sess.LatestCompactTrace(); ok {
+		t.Fatal("short session must not auto compact")
+	}
+}
+
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
 func TestAgent_Tools(t *testing.T) {

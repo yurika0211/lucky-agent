@@ -398,6 +398,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	memoryGate := a.buildMemoryToolGate(routingText, loopCfg.DisabledTools)
 
 	// 构建初始消息
+	a.maybeAutoCompactSession(ctx, sess, routingText, loopCfg.Ephemeral)
 	buildOpts := defaultContextBuildOptions()
 	buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 	messages := a.buildContextMessagesForInput(ctx, sess, turnInput, buildOpts)
