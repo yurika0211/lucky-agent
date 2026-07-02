@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
 
 const delegateWorkspaceMarker = "LuckyAgent delegate workspace:"
@@ -294,6 +296,8 @@ type DelegateManager struct {
 	cancels       map[string]context.CancelFunc
 	nextID        int
 	agentExecutor AgentExecutorFunc // v0.38.0: 真正的 Agent 执行器
+	taskStore     taskstore.Store
+	taskEvents    *taskstore.EventBus
 }
 
 // NewDelegateManager 创建子代理委派管理器
@@ -311,6 +315,17 @@ func (dm *DelegateManager) SetAgentExecutor(fn AgentExecutorFunc) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.agentExecutor = fn
+}
+
+func (dm *DelegateManager) SetTaskStore(store taskstore.Store) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.taskStore = store
+	if store == nil {
+		dm.taskEvents = nil
+		return
+	}
+	dm.taskEvents = taskstore.NewEventBus(store)
 }
 
 func (dm *DelegateManager) delegateTimeoutFromArgs(args map[string]any) time.Duration {
@@ -595,7 +610,11 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 		StartedAt:   time.Now(),
 	}
 	dm.tasks[taskID] = task
+	store := dm.taskStore
+	events := dm.taskEvents
 	dm.mu.Unlock()
+
+	dm.recordDelegateTaskCreated(store, events, task, timeout)
 
 	// 异步执行
 	go dm.executeTask(taskID, description, enrichedContext, timeout)
@@ -620,7 +639,10 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	dm.cancels[taskID] = cancel
 	executor := dm.agentExecutor
+	store := dm.taskStore
+	events := dm.taskEvents
 	dm.mu.Unlock()
+	dm.recordDelegateTaskStarted(store, events, task)
 	defer func() {
 		cancel()
 		dm.mu.Lock()
@@ -644,7 +666,9 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 		if task.CompletedAt.IsZero() {
 			task.CompletedAt = time.Now()
 		}
+		snapshot := cloneDelegateTask(task)
 		dm.mu.Unlock()
+		dm.recordDelegateTaskFinished(store, events, snapshot)
 		return
 	}
 
@@ -657,7 +681,9 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 			task.Error = "timeout"
 			task.CompletedAt = time.Now()
 		}
+		snapshot := cloneDelegateTask(task)
 		dm.mu.Unlock()
+		dm.recordDelegateTaskFinished(store, events, snapshot)
 		return
 	default:
 	}
@@ -668,7 +694,9 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 		task.Result = fmt.Sprintf("Sub-agent task completed (no executor): %s", description)
 		task.CompletedAt = time.Now()
 	}
+	snapshot := cloneDelegateTask(task)
 	dm.mu.Unlock()
+	dm.recordDelegateTaskFinished(store, events, snapshot)
 }
 
 // handleStatus 处理状态查询
@@ -833,11 +861,15 @@ func (dm *DelegateManager) handleCancel(args map[string]any) (string, error) {
 	task.Error = reason
 	task.CompletedAt = time.Now()
 	cancel := dm.cancels[taskID]
+	store := dm.taskStore
+	events := dm.taskEvents
+	snapshot := cloneDelegateTask(task)
 	dm.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
+	dm.recordDelegateTaskFinished(store, events, snapshot)
 
 	result, _ := json.Marshal(delegateCancelResponse{
 		TaskID:  taskID,
@@ -845,6 +877,99 @@ func (dm *DelegateManager) handleCancel(args map[string]any) (string, error) {
 		Message: fmt.Sprintf("Task '%s' cancelled.", taskID),
 	})
 	return string(result), nil
+}
+
+func (dm *DelegateManager) recordDelegateTaskCreated(store taskstore.Store, events *taskstore.EventBus, task *DelegateTask, timeout time.Duration) {
+	if store == nil || events == nil || task == nil {
+		return
+	}
+	record := taskstore.Record{
+		ID:          task.ID,
+		Source:      taskstore.SourceTool,
+		Mode:        taskstore.ModeSingle,
+		Status:      taskstore.StatusPending,
+		Description: task.Description,
+		Input:       task.Context,
+		CreatedAt:   task.StartedAt,
+		Runtime: taskstore.RuntimeRef{
+			Type:      "delegate",
+			Workspace: task.Workspace,
+		},
+		Budget: taskstore.Budget{
+			Timeout:       timeout,
+			MaxConcurrent: dm.config.MaxConcurrent,
+		},
+	}
+	if _, err := store.Create(record); err != nil {
+		return
+	}
+	_ = events.Created(record)
+}
+
+func (dm *DelegateManager) recordDelegateTaskStarted(store taskstore.Store, events *taskstore.EventBus, task *DelegateTask) {
+	if store == nil || events == nil || task == nil {
+		return
+	}
+	record, ok, err := store.Get(task.ID)
+	if err != nil || !ok {
+		return
+	}
+	record.Status = taskstore.StatusRunning
+	record.StartedAt = task.StartedAt
+	if err := store.Update(record); err != nil {
+		return
+	}
+	_ = events.Started(record)
+}
+
+func (dm *DelegateManager) recordDelegateTaskFinished(store taskstore.Store, events *taskstore.EventBus, task DelegateTask) {
+	if store == nil || events == nil || strings.TrimSpace(task.ID) == "" {
+		return
+	}
+	record, ok, err := store.Get(task.ID)
+	if err != nil || !ok {
+		return
+	}
+	record.Status = delegateStatusToUnified(task.Status)
+	record.CompletedAt = task.CompletedAt
+	record.Outcome.Status = record.Status
+	if task.Error != "" {
+		record.Outcome.UserFeedback = task.Error
+	}
+	if err := store.Update(record); err != nil {
+		return
+	}
+	switch task.Status {
+	case StatusCompleted:
+		_ = store.SaveResult(task.ID, task.Result)
+		_ = events.Completed(record, "delegate task completed")
+	case StatusFailed:
+		_ = events.Failed(record, task.Error)
+	case StatusCancelled:
+		_ = events.Emit(taskstore.Event{
+			Type:    taskstore.EventCancelled,
+			TaskID:  task.ID,
+			Status:  taskstore.StatusCancelled,
+			Message: task.Error,
+		})
+	}
+}
+
+func delegateStatusToUnified(status TaskStatus) taskstore.Status {
+	switch status {
+	case StatusPending:
+		return taskstore.StatusPending
+	case StatusRunning:
+		return taskstore.StatusRunning
+	case StatusCompleted:
+		return taskstore.StatusCompleted
+	case StatusFailed:
+		return taskstore.StatusFailed
+	case StatusCancelled:
+		return taskstore.StatusCancelled
+	default:
+		return ""
+	}
 }
 
 // --- 并行委派支持 ---

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
 
 func TestDelegateManagerCreate(t *testing.T) {
@@ -88,6 +90,59 @@ func TestDelegateTaskCall(t *testing.T) {
 	if status["status"] != "completed" {
 		t.Errorf("expected completed, got %v", status["status"])
 	}
+}
+
+func TestDelegateTaskWritesUnifiedTaskEvents(t *testing.T) {
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	dm.SetTaskStore(store)
+	dm.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
+		return "delegate result", nil
+	})
+
+	r := NewRegistry()
+	r.Register(DelegateTaskTool(dm))
+	result, err := r.Call("delegate_task", map[string]any{
+		"description": "Write unified task events",
+	})
+	if err != nil {
+		t.Fatalf("delegate_task: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	taskID, _ := resp["task_id"].(string)
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		record, ok, err := store.Get(taskID)
+		if err != nil {
+			t.Fatalf("Get unified task: %v", err)
+		}
+		if ok && record.Status == taskstore.StatusCompleted {
+			events, err := store.Events(taskID)
+			if err != nil {
+				t.Fatalf("Events: %v", err)
+			}
+			if len(events) < 3 {
+				t.Fatalf("expected created/started/completed events, got %+v", events)
+			}
+			resultBytes, err := os.ReadFile(filepath.Join(store.Root(), taskID, "result.md"))
+			if err != nil {
+				t.Fatalf("read result artifact: %v", err)
+			}
+			if string(resultBytes) != "delegate result" {
+				t.Fatalf("unexpected result artifact: %q", string(resultBytes))
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for unified task completion: %s", taskID)
 }
 
 func TestDelegateTaskInjectsWritableWorkspace(t *testing.T) {
