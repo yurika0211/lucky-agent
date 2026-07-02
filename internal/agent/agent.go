@@ -1529,15 +1529,23 @@ type CompactSessionResult struct {
 	SummarySource       string
 }
 
+type CompactSessionOptions struct {
+	ForceLocal bool
+}
+
 // CompactSession summarizes raw session history since the latest compact
 // boundary and appends a compact_boundary marker. The compaction call does not
 // expose tools; it is a plain text-only provider request.
 func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigger string) (*CompactSessionResult, error) {
-	if a == nil || a.provider == nil {
-		return nil, fmt.Errorf("compact session: provider is not initialized")
-	}
+	return a.CompactSessionWithOptions(ctx, sess, trigger, CompactSessionOptions{})
+}
+
+func (a *Agent) CompactSessionWithOptions(ctx context.Context, sess *session.Session, trigger string, opts CompactSessionOptions) (*CompactSessionResult, error) {
 	if sess == nil {
 		return nil, fmt.Errorf("compact session: session is nil")
+	}
+	if !opts.ForceLocal && (a == nil || a.provider == nil) {
+		return nil, fmt.Errorf("compact session: provider is not initialized")
 	}
 	if strings.TrimSpace(trigger) == "" {
 		trigger = "manual"
@@ -1560,9 +1568,20 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 		est = contextx.NewTokenEstimator(4096)
 	}
 	preTokens := estimateProviderMessages(est, compactInput)
-	summary, err := a.generateCompactSummary(ctx, compactInput)
-	if err != nil {
-		return nil, err
+	summarySource := "llm"
+	var summary string
+	if opts.ForceLocal {
+		summarySource = "local"
+		summary = generateLocalCompactSummary(compactInput, est)
+		if strings.TrimSpace(summary) == "" {
+			return nil, fmt.Errorf("compact session: local summary is empty")
+		}
+	} else {
+		var err error
+		summary, err = a.generateCompactSummary(ctx, compactInput)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if validation := validateCompactSummary(summary, compactInput); !validation.Valid {
 		return nil, fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
@@ -1580,7 +1599,7 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 		SummaryTokens:       postTokens,
 		DroppedMessages:     len(raw),
 		RestoredAttachments: len(attachments),
-		SummarySource:       "llm",
+		SummarySource:       summarySource,
 		Attachments:         attachments,
 	}
 	sess.AddCompactBoundary(meta)
@@ -1596,7 +1615,7 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 		SummaryTokens:       postTokens,
 		DroppedMessages:     len(raw),
 		RestoredAttachments: len(attachments),
-		SummarySource:       "llm",
+		SummarySource:       summarySource,
 	}, nil
 }
 

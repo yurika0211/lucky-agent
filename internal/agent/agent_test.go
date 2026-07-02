@@ -1496,6 +1496,50 @@ func TestCompactSessionAcceptsValidatedSummary(t *testing.T) {
 	}
 }
 
+func TestCompactSessionProviderFailureDoesNotWriteBoundary(t *testing.T) {
+	sess := session.NewSession("compact-provider-fail", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and run go test ./internal/agent.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent failed: provider compact summary timed out")
+	before := sess.MessageCount()
+
+	a := &Agent{
+		provider:   &staticChatProvider{name: "static", err: fmt.Errorf("timeout")},
+		contextEst: contextx.NewTokenEstimator(4096),
+	}
+	_, err := a.CompactSession(context.Background(), sess, "manual")
+	if err == nil || !strings.Contains(err.Error(), "generate summary") {
+		t.Fatalf("expected provider summary error, got %v", err)
+	}
+	if got := sess.MessageCount(); got != before {
+		t.Fatalf("provider failure must not append boundary: got %d messages, want %d", got, before)
+	}
+}
+
+func TestCompactSessionForceLocalWritesFallbackBoundary(t *testing.T) {
+	sess := session.NewSession("compact-local", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks.")
+	sess.AddMessage("assistant", "Updated Agent.CompactSession options and prepared local fallback handling.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent failed before fallback validation was implemented")
+
+	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
+	result, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
+	if err != nil {
+		t.Fatalf("CompactSessionWithOptions force local: %v", err)
+	}
+	if result.SummarySource != "local" || result.BoundaryID == "" || result.SummaryTokens == 0 {
+		t.Fatalf("unexpected force-local result: %+v", result)
+	}
+	messages := sess.GetMessages()
+	last := messages[len(messages)-1]
+	meta, ok := session.ParseCompactMetadata(last)
+	if !ok || meta.SummarySource != "local" {
+		t.Fatalf("expected local compact metadata, got ok=%t meta=%+v", ok, meta)
+	}
+	if !strings.Contains(meta.Summary, "Current user goal:") || !strings.Contains(meta.Summary, "Pending work:") {
+		t.Fatalf("expected structured local summary, got:\n%s", meta.Summary)
+	}
+}
+
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
 func TestAgent_Tools(t *testing.T) {
