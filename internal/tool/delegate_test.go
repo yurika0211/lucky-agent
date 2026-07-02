@@ -145,6 +145,93 @@ func TestDelegateTaskWritesUnifiedTaskEvents(t *testing.T) {
 	t.Fatalf("timed out waiting for unified task completion: %s", taskID)
 }
 
+func TestTaskStatusReadsUnifiedTaskEvents(t *testing.T) {
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	record, err := store.Create(taskstore.Record{
+		ID:          "collab-42",
+		Source:      taskstore.SourceHTTP,
+		Mode:        taskstore.ModeParallel,
+		Status:      taskstore.StatusCompleted,
+		Description: "collab task",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.AppendEvent(taskstore.Event{
+		Type:     taskstore.EventCompleted,
+		TaskID:   record.ID,
+		Status:   taskstore.StatusCompleted,
+		Evidence: []string{"collab completed"},
+	}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if err := store.SaveResult(record.ID, "collab result"); err != nil {
+		t.Fatalf("SaveResult: %v", err)
+	}
+
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	dm.SetTaskStore(store)
+	result, err := dm.handleStatus(map[string]any{
+		"task_id":        record.ID,
+		"include_events": true,
+	})
+	if err != nil {
+		t.Fatalf("handleStatus: %v", err)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		t.Fatalf("parse status: %v", err)
+	}
+	if resp["source"] != "http" || resp["mode"] != "parallel" || resp["result"] != "collab result" {
+		t.Fatalf("unexpected unified status: %+v", resp)
+	}
+	if _, ok := resp["observation"].(map[string]any); !ok {
+		t.Fatalf("expected observation in status: %+v", resp)
+	}
+	events, ok := resp["events"].([]any)
+	if !ok || len(events) != 1 {
+		t.Fatalf("expected one event, got %+v", resp["events"])
+	}
+}
+
+func TestListTasksIncludesUnifiedStoreRecords(t *testing.T) {
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	_, err = store.Create(taskstore.Record{
+		ID:          "collab-43",
+		Source:      taskstore.SourceHTTP,
+		Mode:        taskstore.ModeParallel,
+		Status:      taskstore.StatusCompleted,
+		Description: "collab list task",
+		CreatedAt:   time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	dm.SetTaskStore(store)
+	result, err := dm.handleList(map[string]any{"source": "http"})
+	if err != nil {
+		t.Fatalf("handleList: %v", err)
+	}
+	var resp delegateListResponse
+	if err := json.Unmarshal([]byte(result), &resp); err != nil {
+		t.Fatalf("parse list: %v", err)
+	}
+	if resp.Count != 1 || len(resp.Tasks) != 1 || resp.Tasks[0].TaskID != "collab-43" {
+		t.Fatalf("expected unified collab task, got %+v", resp)
+	}
+	if resp.Tasks[0].Source != "http" || resp.Tasks[0].Mode != "parallel" {
+		t.Fatalf("unexpected unified list item: %+v", resp.Tasks[0])
+	}
+}
+
 func TestDelegateTaskInjectsWritableWorkspace(t *testing.T) {
 	dm := NewDelegateManager(DefaultDelegateConfig())
 	capturedContext := make(chan string, 1)

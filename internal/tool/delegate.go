@@ -245,21 +245,29 @@ type delegateStartResponse struct {
 }
 
 type delegateStatusResponse struct {
-	TaskID          string `json:"task_id"`
-	Description     string `json:"description"`
-	Workspace       string `json:"workspace"`
-	Status          string `json:"status"`
-	ResultSummary   string `json:"result_summary,omitempty"`
-	Result          string `json:"result,omitempty"`
-	ResultBytes     int    `json:"result_bytes"`
-	ResultTruncated bool   `json:"result_truncated"`
-	Error           string `json:"error,omitempty"`
-	StartedAt       string `json:"started_at"`
-	CompletedAt     string `json:"completed_at"`
+	TaskID          string                          `json:"task_id"`
+	Source          string                          `json:"source,omitempty"`
+	Mode            string                          `json:"mode,omitempty"`
+	ParentID        string                          `json:"parent_id,omitempty"`
+	Description     string                          `json:"description"`
+	Workspace       string                          `json:"workspace"`
+	Status          string                          `json:"status"`
+	ResultSummary   string                          `json:"result_summary,omitempty"`
+	Result          string                          `json:"result,omitempty"`
+	ResultBytes     int                             `json:"result_bytes"`
+	ResultTruncated bool                            `json:"result_truncated"`
+	Error           string                          `json:"error,omitempty"`
+	StartedAt       string                          `json:"started_at"`
+	CompletedAt     string                          `json:"completed_at"`
+	Observation     *taskstore.MainAgentObservation `json:"observation,omitempty"`
+	Events          []taskstore.Event               `json:"events,omitempty"`
 }
 
 type delegateListItem struct {
 	TaskID          string `json:"task_id"`
+	Source          string `json:"source,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	ParentID        string `json:"parent_id,omitempty"`
 	Description     string `json:"description"`
 	Workspace       string `json:"workspace"`
 	Status          string `json:"status"`
@@ -497,6 +505,12 @@ func TaskStatusTool(dm *DelegateManager) *Tool {
 				Required:    false,
 				Default:     true,
 			},
+			"include_events": {
+				Type:        "boolean",
+				Description: "Whether to include unified task events and reduced observation",
+				Required:    false,
+				Default:     false,
+			},
 		},
 		Handler: dm.handleStatus,
 	}
@@ -533,6 +547,11 @@ func ListTasksTool(dm *DelegateManager) *Tool {
 				Description: "Whether to include result summaries for each listed task",
 				Required:    false,
 				Default:     false,
+			},
+			"source": {
+				Type:        "string",
+				Description: "Optional unified task source filter: tool, http, autonomy, or gateway",
+				Required:    false,
 			},
 		},
 		Handler: dm.handleList,
@@ -707,19 +726,26 @@ func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
 		return "", fmt.Errorf("task_id is required")
 	}
 	includeResult := delegateBoolArg(args, "include_result", true)
+	includeEvents := delegateBoolArg(args, "include_events", false)
 
 	dm.mu.RLock()
 	task, ok := dm.tasks[taskID]
 	snapshot := cloneDelegateTask(task)
+	store := dm.taskStore
 	dm.mu.RUnlock()
 
 	if !ok {
+		if store != nil {
+			return dm.handleUnifiedStatus(store, taskID, includeResult, includeEvents)
+		}
 		return "", fmt.Errorf("task not found: %s", taskID)
 	}
 
 	summary, inline, resultBytes, truncated := summarizeDelegateResult(snapshot.Result, dm.config.MaxResultBytesInline)
 	resp := delegateStatusResponse{
 		TaskID:          snapshot.ID,
+		Source:          string(taskstore.SourceTool),
+		Mode:            string(taskstore.ModeSingle),
 		Description:     snapshot.Description,
 		Workspace:       snapshot.Workspace,
 		Status:          snapshot.Status.String(),
@@ -733,9 +759,54 @@ func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
 	if includeResult {
 		resp.Result = inline
 	}
+	if store != nil && includeEvents {
+		if record, ok, err := store.Get(snapshot.ID); err == nil && ok {
+			events, _ := store.Events(snapshot.ID)
+			obs := taskstore.ReduceObservation(record, events)
+			resp.Observation = &obs
+			resp.Events = events
+		}
+	}
 	result, _ := json.Marshal(resp)
 
 	return string(result), nil
+}
+
+func (dm *DelegateManager) handleUnifiedStatus(store taskstore.Store, taskID string, includeResult bool, includeEvents bool) (string, error) {
+	record, ok, err := store.Get(taskID)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("task not found: %s", taskID)
+	}
+	resultText, _, _ := store.Result(taskID)
+	summary, inline, resultBytes, truncated := summarizeDelegateResult(resultText, dm.config.MaxResultBytesInline)
+	resp := delegateStatusResponse{
+		TaskID:          record.ID,
+		Source:          string(record.Source),
+		Mode:            string(record.Mode),
+		ParentID:        record.ParentID,
+		Description:     record.Description,
+		Workspace:       record.Runtime.Workspace,
+		Status:          string(record.Status),
+		ResultSummary:   summary,
+		ResultBytes:     resultBytes,
+		ResultTruncated: truncated,
+		StartedAt:       formatDelegateCompletedAt(record.StartedAt),
+		CompletedAt:     formatDelegateCompletedAt(record.CompletedAt),
+	}
+	if includeResult {
+		resp.Result = inline
+	}
+	if includeEvents {
+		events, _ := store.Events(taskID)
+		obs := taskstore.ReduceObservation(record, events)
+		resp.Observation = &obs
+		resp.Events = events
+	}
+	out, _ := json.Marshal(resp)
+	return string(out), nil
 }
 
 // handleList 处理任务列表
@@ -762,12 +833,16 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 		return "", fmt.Errorf("unsupported order %q (expected asc or desc)", order)
 	}
 	includeResult := delegateBoolArg(args, "include_result", false)
+	sourceFilter := strings.ToLower(strings.TrimSpace(delegateStringArg(args, "source")))
 
 	dm.mu.RLock()
 	snapshots := make([]DelegateTask, 0, len(dm.tasks))
+	seenIDs := make(map[string]struct{}, len(dm.tasks))
 	for _, t := range dm.tasks {
 		snapshots = append(snapshots, cloneDelegateTask(t))
+		seenIDs[t.ID] = struct{}{}
 	}
+	store := dm.taskStore
 	dm.mu.RUnlock()
 
 	byStatus := map[string]int{
@@ -781,6 +856,9 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 	for _, t := range snapshots {
 		status := t.Status.String()
 		byStatus[status]++
+		if sourceFilter != "" && sourceFilter != string(taskstore.SourceTool) {
+			continue
+		}
 		if statusFilter != "" && status != statusFilter {
 			continue
 		}
@@ -809,6 +887,8 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 		summary, _, resultBytes, truncated := summarizeDelegateResult(t.Result, dm.config.MaxResultBytesInline)
 		item := delegateListItem{
 			TaskID:      t.ID,
+			Source:      string(taskstore.SourceTool),
+			Mode:        string(taskstore.ModeSingle),
 			Description: t.Description,
 			Workspace:   t.Workspace,
 			Status:      t.Status.String(),
@@ -822,6 +902,58 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 			item.ResultTruncated = truncated
 		}
 		items = append(items, item)
+	}
+	if store != nil {
+		filter := taskstore.ListFilter{
+			Source: taskstore.Source(sourceFilter),
+			Status: taskstore.Status(statusFilter),
+			Limit:  maxDelegateListLimit,
+		}
+		records, err := store.List(filter)
+		if err == nil {
+			for _, record := range records {
+				if _, seen := seenIDs[record.ID]; seen {
+					continue
+				}
+				resultText, _, _ := store.Result(record.ID)
+				summary, _, resultBytes, truncated := summarizeDelegateResult(resultText, dm.config.MaxResultBytesInline)
+				item := delegateListItem{
+					TaskID:      record.ID,
+					Source:      string(record.Source),
+					Mode:        string(record.Mode),
+					ParentID:    record.ParentID,
+					Description: record.Description,
+					Workspace:   record.Runtime.Workspace,
+					Status:      string(record.Status),
+					Error:       record.Outcome.UserFeedback,
+					StartedAt:   formatDelegateCompletedAt(record.StartedAt),
+					CompletedAt: formatDelegateCompletedAt(record.CompletedAt),
+				}
+				if includeResult {
+					item.ResultSummary = summary
+					item.ResultBytes = resultBytes
+					item.ResultTruncated = truncated
+				}
+				items = append(items, item)
+				total++
+				byStatus[string(record.Status)]++
+			}
+		}
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].StartedAt == items[j].StartedAt {
+			if order == "asc" {
+				return items[i].TaskID < items[j].TaskID
+			}
+			return items[i].TaskID > items[j].TaskID
+		}
+		if order == "asc" {
+			return items[i].StartedAt < items[j].StartedAt
+		}
+		return items[i].StartedAt > items[j].StartedAt
+	})
+	if len(items) > limit {
+		items = items[:limit]
 	}
 
 	result, _ := json.Marshal(delegateListResponse{
