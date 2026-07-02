@@ -127,6 +127,55 @@ func TestCompactBoundarySplitsPriorRawHistory(t *testing.T) {
 	}
 }
 
+func TestUndoLatestCompactBoundary(t *testing.T) {
+	s := NewSession("test-compact-undo", t.TempDir())
+	s.AddMessage("user", "old raw request")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:        "compact-undo",
+		Trigger:   "manual",
+		Summary:   "summary replaces old raw request",
+		CreatedAt: time.Now(),
+	})
+
+	meta, err := s.UndoLatestCompactBoundary(false)
+	if err != nil {
+		t.Fatalf("UndoLatestCompactBoundary: %v", err)
+	}
+	if meta.ID != "compact-undo" {
+		t.Fatalf("unexpected undo metadata: %+v", meta)
+	}
+	if _, ok := s.LatestCompactTrace(); ok {
+		t.Fatal("expected compact trace to be removed")
+	}
+	msgs := s.GetMessages()
+	if len(msgs) != 1 || msgs[0].Content != "old raw request" {
+		t.Fatalf("expected raw history to remain, got %+v", msgs)
+	}
+}
+
+func TestUndoLatestCompactBoundaryRejectsNewerMessagesUnlessKept(t *testing.T) {
+	s := NewSession("test-compact-undo-keep", t.TempDir())
+	s.AddMessage("user", "old raw request")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:        "compact-undo-keep",
+		Trigger:   "manual",
+		Summary:   "summary replaces old raw request",
+		CreatedAt: time.Now(),
+	})
+	s.AddMessage("user", "new request")
+
+	if _, err := s.UndoLatestCompactBoundary(false); err == nil {
+		t.Fatal("expected undo without keepAfter to fail when newer messages exist")
+	}
+	if _, err := s.UndoLatestCompactBoundary(true); err != nil {
+		t.Fatalf("UndoLatestCompactBoundary keepAfter: %v", err)
+	}
+	msgs := s.GetMessages()
+	if len(msgs) != 2 || msgs[0].Content != "old raw request" || msgs[1].Content != "new request" {
+		t.Fatalf("expected raw and newer messages to remain, got %+v", msgs)
+	}
+}
+
 func TestLastMessage(t *testing.T) {
 	s := NewSession("test-3", t.TempDir())
 	if last := s.LastMessage(); last != nil {

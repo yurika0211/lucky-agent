@@ -217,6 +217,33 @@ func (s *Session) AddCompactBoundary(meta CompactMetadata) provider.Message {
 	return msg
 }
 
+func (s *Session) UndoLatestCompactBoundary(keepAfter bool) (CompactMetadata, error) {
+	if err := s.loadMessages(); err != nil {
+		return CompactMetadata{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	last := -1
+	for i, msg := range s.Messages {
+		if IsCompactBoundary(msg) {
+			last = i
+		}
+	}
+	if last < 0 {
+		return CompactMetadata{}, fmt.Errorf("compact boundary not found")
+	}
+	if last < len(s.Messages)-1 && !keepAfter {
+		return CompactMetadata{}, fmt.Errorf("compact boundary has newer messages; pass keepAfter to preserve them while removing the boundary")
+	}
+	meta, _ := ParseCompactMetadata(s.Messages[last])
+	s.Messages = append(s.Messages[:last], s.Messages[last+1:]...)
+	s.messageCount = len(s.Messages)
+	s.UpdatedAt = time.Now()
+	return meta, nil
+}
+
 // CompactBoundaryMessage converts metadata to a system marker message.
 func CompactBoundaryMessage(meta CompactMetadata) provider.Message {
 	meta.Summary = strings.TrimSpace(meta.Summary)

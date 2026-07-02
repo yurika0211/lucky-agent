@@ -20,6 +20,7 @@ func newSessionCmd() *cobra.Command {
 
 	var dryRun bool
 	var forceLocal bool
+	var keepAfter bool
 	compactCmd := &cobra.Command{
 		Use:   "compact <session-id>",
 		Short: "压缩指定会话历史",
@@ -30,6 +31,16 @@ func newSessionCmd() *cobra.Command {
 	}
 	compactCmd.Flags().BoolVar(&dryRun, "dry-run", false, "生成 compact 结果但不写入会话")
 	compactCmd.Flags().BoolVar(&forceLocal, "force-local", false, "使用本地 fallback summary 写入 compact boundary")
+	compactUndoCmd := &cobra.Command{
+		Use:   "undo <session-id>",
+		Short: "撤销指定会话最近一次 compact boundary",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSessionCompactUndo(args[0], keepAfter)
+		},
+	}
+	compactUndoCmd.Flags().BoolVar(&keepAfter, "keep-after", false, "boundary 后已有新消息时仍保留后续消息并删除 boundary")
+	compactCmd.AddCommand(compactUndoCmd)
 
 	sessionCmd.AddCommand(compactCmd)
 	return sessionCmd
@@ -78,6 +89,44 @@ func runSessionCompact(ctx context.Context, sessionID string, dryRun bool, force
 	fmt.Printf("summary source: %s\n", result.SummarySource)
 	fmt.Printf("summary tokens: %d\n", result.SummaryTokens)
 	fmt.Printf("tokens: %d -> %d\n", result.PreTokenEstimate, result.PostTokenEstimate)
+	return nil
+}
+
+func runSessionCompactUndo(sessionID string, keepAfter bool) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+	defer a.Close()
+
+	sessionMgr := a.Sessions()
+	if sessionMgr == nil {
+		return fmt.Errorf("session manager is not initialized")
+	}
+	sess, err := resolveSessionByIDPrefix(sessionMgr, sessionID)
+	if err != nil {
+		return err
+	}
+	meta, err := sess.UndoLatestCompactBoundary(keepAfter)
+	if err != nil {
+		return err
+	}
+	if err := sess.Save(); err != nil {
+		return fmt.Errorf("save session: %w", err)
+	}
+	fmt.Printf("compact boundary undone: %s\n", sess.ID)
+	fmt.Printf("boundary: %s\n", meta.ID)
+	if meta.Trigger != "" {
+		fmt.Printf("trigger: %s\n", meta.Trigger)
+	}
 	return nil
 }
 
