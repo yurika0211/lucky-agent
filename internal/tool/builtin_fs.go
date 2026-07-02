@@ -285,7 +285,7 @@ func handleFileWrite(args map[string]any) (string, error) {
 func FileMkdirTool() *Tool {
 	return &Tool{
 		Name:        "file_mkdir",
-		Description: "Create a directory on disk. Use this before writing files into a new folder hierarchy.",
+		Description: "Create a directory on disk. Use dry_run=true to preview the directory creation plan before changing the filesystem.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
@@ -293,9 +293,17 @@ func FileMkdirTool() *Tool {
 		Parameters: map[string]Param{
 			"path":      {Type: "string", Description: "Directory path to create.", Required: true},
 			"recursive": {Type: "boolean", Description: "Create parent directories when needed. Default true.", Required: false, Default: true},
+			"dry_run":   {Type: "boolean", Description: "Preview what would be created without changing the filesystem. Default false.", Required: false, Default: false},
 		},
 		Handler: handleFileMkdir,
 	}
+}
+
+type mkdirPlan struct {
+	Path       string   `json:"path"`
+	Recursive  bool     `json:"recursive"`
+	Exists     bool     `json:"exists"`
+	CreateDirs []string `json:"create_dirs"`
 }
 
 func handleFileMkdir(args map[string]any) (string, error) {
@@ -307,23 +315,93 @@ func handleFileMkdir(args map[string]any) (string, error) {
 	if v, ok := args["recursive"].(bool); ok {
 		recursive = v
 	}
-	info, err := os.Stat(path)
-	switch {
-	case err == nil && info.IsDir():
+	dryRun := false
+	if v, ok := args["dry_run"].(bool); ok {
+		dryRun = v
+	}
+	plan, err := buildMkdirPlan(path, recursive)
+	if err != nil {
+		return "", err
+	}
+	if dryRun {
+		out, err := prettyStructuredValue(plan)
+		if err != nil {
+			return "", err
+		}
+		return "Dry run: directory creation plan\n" + out, nil
+	}
+	if plan.Exists {
 		return fmt.Sprintf("Directory already exists: %s", path), nil
-	case err == nil:
-		return "", fmt.Errorf("path exists and is not a directory: %s", path)
-	case !errors.Is(err, os.ErrNotExist):
-		return "", fmt.Errorf("stat path: %w", err)
 	}
 	if recursive {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return "", fmt.Errorf("create directory: %w", err)
 		}
 	} else if err := os.Mkdir(path, 0o755); err != nil {
+		if errors.Is(err, os.ErrExist) {
+			if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+				return fmt.Sprintf("Directory already exists: %s", path), nil
+			}
+		}
 		return "", fmt.Errorf("create directory: %w", err)
 	}
-	return fmt.Sprintf("Created directory %s", path), nil
+	return fmt.Sprintf("Created directory %s (%d new %s)", path, len(plan.CreateDirs), directoryWord(len(plan.CreateDirs))), nil
+}
+
+func buildMkdirPlan(path string, recursive bool) (mkdirPlan, error) {
+	plan := mkdirPlan{Path: path, Recursive: recursive}
+	info, err := os.Stat(path)
+	switch {
+	case err == nil && info.IsDir():
+		plan.Exists = true
+		return plan, nil
+	case err == nil:
+		return plan, fmt.Errorf("path exists and is not a directory: %s", path)
+	case !errors.Is(err, os.ErrNotExist):
+		return plan, fmt.Errorf("stat path: %w", err)
+	}
+
+	if !recursive {
+		parent := filepath.Dir(path)
+		parentInfo, err := os.Stat(parent)
+		switch {
+		case err == nil && parentInfo.IsDir():
+			plan.CreateDirs = []string{path}
+			return plan, nil
+		case err == nil:
+			return plan, fmt.Errorf("parent path exists and is not a directory: %s", parent)
+		case errors.Is(err, os.ErrNotExist):
+			return plan, fmt.Errorf("parent directory does not exist: %s; set recursive=true to create parents", parent)
+		default:
+			return plan, fmt.Errorf("stat parent directory: %w", err)
+		}
+	}
+
+	for cur := filepath.Clean(path); ; cur = filepath.Dir(cur) {
+		info, err := os.Stat(cur)
+		switch {
+		case err == nil && info.IsDir():
+			reverseStrings(plan.CreateDirs)
+			return plan, nil
+		case err == nil:
+			return plan, fmt.Errorf("path component exists and is not a directory: %s", cur)
+		case errors.Is(err, os.ErrNotExist):
+			plan.CreateDirs = append(plan.CreateDirs, cur)
+		default:
+			return plan, fmt.Errorf("stat path component: %w", err)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			reverseStrings(plan.CreateDirs)
+			return plan, nil
+		}
+	}
+}
+
+func reverseStrings(values []string) {
+	for i, j := 0, len(values)-1; i < j; i, j = i+1, j-1 {
+		values[i], values[j] = values[j], values[i]
+	}
 }
 
 func FileMoveTool() *Tool {
@@ -713,6 +791,13 @@ func pluralSuffix(count int) string {
 		return ""
 	}
 	return "s"
+}
+
+func directoryWord(count int) string {
+	if count == 1 {
+		return "directory"
+	}
+	return "directories"
 }
 
 func FileListTool() *Tool {
