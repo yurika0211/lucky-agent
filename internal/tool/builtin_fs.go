@@ -388,33 +388,6 @@ func buildFileWritePlan(path string, content []byte, mode, expectedSHA string) (
 	return plan, existingPerm, nil
 }
 
-func writeFileAtomic(path string, content []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
-}
-
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return fmt.Sprintf("%x", sum)
@@ -675,21 +648,34 @@ func sameFilePath(a, b string) bool { return filepath.Clean(a) == filepath.Clean
 func FilePatchTool() *Tool {
 	return &Tool{
 		Name:        "file_patch",
-		Description: "Apply an in-place edit to an existing file. Supports exact text replacement for simple changes and line-oriented diff hunks for more complex edits.",
+		Description: "Apply an in-place edit to an existing text file. Supports dry_run preview, expected_sha256 protection, exact replacement, and line-oriented diff hunks.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
 		ShellAware:  true,
 		Parameters: map[string]Param{
-			"path":        {Type: "string", Description: "Path to the file that should be patched.", Required: true},
-			"match":       {Type: "string", Description: "Exact text to find in the file before applying the patch.", Required: false},
-			"replace":     {Type: "string", Description: "Replacement text for the matched block.", Required: false},
-			"diff":        {Type: "string", Description: "Optional line-oriented diff hunk. Use unified-diff style lines starting with space, +, -, and optional @@ headers. When provided, diff mode is used instead of match/replace mode.", Required: false},
-			"occurrence":  {Type: "number", Description: "1-based occurrence to replace when the same text appears multiple times. Default 1.", Required: false, Default: 1},
-			"replace_all": {Type: "boolean", Description: "Replace every exact occurrence instead of a single targeted one.", Required: false, Default: false},
+			"path":            {Type: "string", Description: "Path to the file that should be patched.", Required: true},
+			"match":           {Type: "string", Description: "Exact text to find in the file before applying the patch.", Required: false},
+			"replace":         {Type: "string", Description: "Replacement text for the matched block.", Required: false},
+			"diff":            {Type: "string", Description: "Optional line-oriented diff hunk. Use unified-diff style lines starting with space, +, -, and optional @@ headers. When provided, diff mode is used instead of match/replace mode.", Required: false},
+			"occurrence":      {Type: "number", Description: "1-based occurrence to replace when the same text appears multiple times. Default 1.", Required: false, Default: 1},
+			"replace_all":     {Type: "boolean", Description: "Replace every exact occurrence instead of a single targeted one.", Required: false, Default: false},
+			"dry_run":         {Type: "boolean", Description: "Preview the patch plan without changing the filesystem. Default false.", Required: false, Default: false},
+			"expected_sha256": {Type: "string", Description: "Optional SHA-256 hash the existing file must match before patching.", Required: false},
 		},
 		Handler: handleFilePatch,
 	}
+}
+
+type filePatchPlan struct {
+	Path          string `json:"path"`
+	Kind          string `json:"kind"`
+	ChangeCount   int    `json:"change_count"`
+	OldSize       int    `json:"old_size"`
+	NewSize       int    `json:"new_size"`
+	OldSHA256     string `json:"old_sha256"`
+	NewSHA256     string `json:"new_sha256"`
+	AtomicReplace bool   `json:"atomic_replace"`
 }
 
 func handleFilePatch(args map[string]any) (string, error) {
@@ -718,10 +704,32 @@ func handleFilePatch(args map[string]any) (string, error) {
 	if pathErr != nil {
 		return "", pathErr
 	}
+	dryRun := false
+	if v, ok := args["dry_run"].(bool); ok {
+		dryRun = v
+	}
+	expectedSHA := strings.ToLower(strings.TrimSpace(stringArg(args["expected_sha256"])))
 
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("stat file: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("file_patch expects a file, got directory: %s", path)
+	}
+	if info.Size() > maxFileWriteBytes {
+		return "", fmt.Errorf("file is too large to patch (%d bytes, max %d)", info.Size(), maxFileWriteBytes)
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read file: %w", err)
+	}
+	if textLooksBinary(data) {
+		return "", fmt.Errorf("file appears to be binary; refusing to patch: %s", path)
+	}
+	oldSHA := sha256Hex(data)
+	if expectedSHA != "" && oldSHA != expectedSHA {
+		return "", fmt.Errorf("existing file sha256 mismatch: got %s, expected %s", oldSHA, expectedSHA)
 	}
 	content := string(data)
 	if strings.TrimSpace(diffText) != "" {
@@ -729,10 +737,7 @@ func handleFilePatch(args map[string]any) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(path, []byte(patched), 0o644); err != nil {
-			return "", fmt.Errorf("write file: %w", err)
-		}
-		return fmt.Sprintf("Patched %s (%d hunk%s)", path, hunkCount, pluralSuffix(hunkCount)), nil
+		return finishFilePatch(path, data, []byte(patched), info.Mode().Perm(), dryRun, "diff", hunkCount)
 	}
 	if !replaceProvided {
 		return "", fmt.Errorf("replace is required")
@@ -758,10 +763,44 @@ func handleFilePatch(args map[string]any) (string, error) {
 	if replacedCount == 0 {
 		return "", fmt.Errorf("no patch applied to %s", path)
 	}
-	if err := os.WriteFile(path, []byte(patched), 0o644); err != nil {
+	return finishFilePatch(path, data, []byte(patched), info.Mode().Perm(), dryRun, "replacement", replacedCount)
+}
+
+func finishFilePatch(path string, before, after []byte, perm os.FileMode, dryRun bool, kind string, count int) (string, error) {
+	if bytes.Equal(before, after) {
+		return "", fmt.Errorf("patch produced no changes for %s", path)
+	}
+	plan := filePatchPlan{
+		Path:          path,
+		Kind:          kind,
+		ChangeCount:   count,
+		OldSize:       len(before),
+		NewSize:       len(after),
+		OldSHA256:     sha256Hex(before),
+		NewSHA256:     sha256Hex(after),
+		AtomicReplace: true,
+	}
+	if dryRun {
+		out, err := prettyStructuredValue(plan)
+		if err != nil {
+			return "", err
+		}
+		return "Dry run: file patch plan\n" + out, nil
+	}
+	if err := writeFileAtomic(path, after, perm); err != nil {
 		return "", fmt.Errorf("write file: %w", err)
 	}
-	return fmt.Sprintf("Patched %s (%d replacement%s)", path, replacedCount, pluralSuffix(replacedCount)), nil
+	if kind == "diff" {
+		return fmt.Sprintf("Patched %s (%d hunk%s, sha256 %s)", path, count, pluralSuffix(count), plan.NewSHA256), nil
+	}
+	return fmt.Sprintf("Patched %s (%d replacement%s, sha256 %s)", path, count, pluralSuffix(count), plan.NewSHA256), nil
+}
+
+func textLooksBinary(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	return bytes.IndexByte(data, 0) >= 0 || !utf8.Valid(data)
 }
 
 type linePatchHunk struct {

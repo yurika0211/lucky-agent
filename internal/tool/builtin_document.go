@@ -385,26 +385,6 @@ func formatDocumentReadOutput(path, format, text string, offset, limit int) (str
 	return b.String(), nil
 }
 
-func intArg(args map[string]any, key string, def int) int {
-	raw, ok := args[key]
-	if !ok {
-		return def
-	}
-	switch v := raw.(type) {
-	case int:
-		return v
-	case int64:
-		return int(v)
-	case float64:
-		return int(v)
-	case string:
-		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
-			return n
-		}
-	}
-	return def
-}
-
 func slideNumber(name string) int {
 	base := filepath.Base(name)
 	base = strings.TrimSuffix(strings.TrimPrefix(base, "slide"), ".xml")

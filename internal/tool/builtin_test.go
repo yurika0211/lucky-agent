@@ -293,7 +293,7 @@ func TestStructuredQueryTools(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	jsonPath := filepath.Join(tmpDir, "sample.json")
-	if err := os.WriteFile(jsonPath, []byte(`{"user":{"name":"Ada"},"items":[{"id":1},{"id":2}]}`), 0644); err != nil {
+	if err := os.WriteFile(jsonPath, []byte(`{"user":{"name":"Ada"},"metadata":{"app.kubernetes.io/name":"api"},"items":[{"id":1},{"id":2}]}`), 0644); err != nil {
 		t.Fatalf("write json: %v", err)
 	}
 	jsonResult, err := r.Call("json_query", map[string]any{"path": jsonPath, "query": "items[1].id"})
@@ -303,9 +303,23 @@ func TestStructuredQueryTools(t *testing.T) {
 	if strings.TrimSpace(jsonResult) != "2" {
 		t.Fatalf("unexpected json_query output: %q", jsonResult)
 	}
+	jsonBracketResult, err := r.Call("json_query", map[string]any{"path": jsonPath, "query": `metadata["app.kubernetes.io/name"]`})
+	if err != nil {
+		t.Fatalf("json_query bracket key: %v", err)
+	}
+	if strings.TrimSpace(jsonBracketResult) != `"api"` {
+		t.Fatalf("unexpected json_query bracket output: %q", jsonBracketResult)
+	}
+	jsonWildcardResult, err := r.Call("json_query", map[string]any{"path": jsonPath, "query": "items[*].id"})
+	if err != nil {
+		t.Fatalf("json_query wildcard: %v", err)
+	}
+	if !strings.Contains(jsonWildcardResult, "1") || !strings.Contains(jsonWildcardResult, "2") {
+		t.Fatalf("unexpected json_query wildcard output: %q", jsonWildcardResult)
+	}
 
 	yamlPath := filepath.Join(tmpDir, "sample.yaml")
-	if err := os.WriteFile(yamlPath, []byte("service:\n  name: api\n"), 0644); err != nil {
+	if err := os.WriteFile(yamlPath, []byte("service:\n  name: api\n---\nservice:\n  name: worker\n"), 0644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
 	yamlResult, err := r.Call("yaml_query", map[string]any{"path": yamlPath, "query": "service.name"})
@@ -314,6 +328,20 @@ func TestStructuredQueryTools(t *testing.T) {
 	}
 	if strings.TrimSpace(yamlResult) != `"api"` {
 		t.Fatalf("unexpected yaml_query output: %q", yamlResult)
+	}
+	yamlDocResult, err := r.Call("yaml_query", map[string]any{"path": yamlPath, "query": "service.name", "document": 1})
+	if err != nil {
+		t.Fatalf("yaml_query document: %v", err)
+	}
+	if strings.TrimSpace(yamlDocResult) != `"worker"` {
+		t.Fatalf("unexpected yaml_query document output: %q", yamlDocResult)
+	}
+	yamlAllResult, err := r.Call("yaml_query", map[string]any{"path": yamlPath, "query": "service.name", "all_documents": true})
+	if err != nil {
+		t.Fatalf("yaml_query all_documents: %v", err)
+	}
+	if !strings.Contains(yamlAllResult, `"api"`) || !strings.Contains(yamlAllResult, `"worker"`) {
+		t.Fatalf("unexpected yaml_query all_documents output: %q", yamlAllResult)
 	}
 
 	csvPath := filepath.Join(tmpDir, "sample.csv")
@@ -730,8 +758,190 @@ func TestImageGenerateToolRejectsFilenamePrefixEscapingWorkspace(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected escaping filename_prefix to be rejected")
 	}
-	if !strings.Contains(err.Error(), "outside workspace") {
+	if !strings.Contains(err.Error(), "filename_prefix") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageGenerateToolDryRunReturnsPlanWithoutCallingProvider(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	gen := &fakeImageGenerator{}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{
+		Model:        "gpt-image-1.5",
+		Size:         "1024x1024",
+		Quality:      "high",
+		OutputFormat: "webp",
+	}))
+
+	result, err := r.Call("image_generate", map[string]any{
+		"prompt":     "plan an image",
+		"dry_run":    true,
+		"count":      2,
+		"output_dir": filepath.Join(workspace, "planned-images"),
+	})
+	if err != nil {
+		t.Fatalf("image_generate dry_run: %v", err)
+	}
+	if gen.calls != 0 {
+		t.Fatalf("expected provider not to be called, got %d calls", gen.calls)
+	}
+	var payload struct {
+		DryRun        bool     `json:"dry_run"`
+		Provider      string   `json:"provider"`
+		Model         string   `json:"model"`
+		Count         int      `json:"count"`
+		OutputTargets []string `json:"output_targets"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal dry_run payload: %v", err)
+	}
+	if !payload.DryRun || payload.Provider != "fake-image-generator" || payload.Model != "gpt-image-1.5" || payload.Count != 2 {
+		t.Fatalf("unexpected dry_run payload: %+v", payload)
+	}
+	if len(payload.OutputTargets) != 2 {
+		t.Fatalf("expected 2 output targets, got %d", len(payload.OutputTargets))
+	}
+}
+
+func TestImageGenerateToolRejectsTooManyInputs(t *testing.T) {
+	gen := &fakeImageGenerator{}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	inputs := make([]any, 0, maxImageGenerateInputs+1)
+	for i := 0; i < maxImageGenerateInputs+1; i++ {
+		inputs = append(inputs, base64.StdEncoding.EncodeToString([]byte("fake")))
+	}
+	_, err := r.Call("image_generate", map[string]any{
+		"prompt":              "too many references",
+		"input_base64_datas":  inputs,
+		"input_mime_types":    []any{"image/png", "image/png", "image/png", "image/png", "image/png", "image/png", "image/png", "image/png", "image/png"},
+		"filename_prefix":     "too-many",
+		"output_compression":  0,
+		"output_format":       "png",
+		"count":               1,
+		"allow_custom_format": false,
+	})
+	if err == nil {
+		t.Fatal("expected too many inputs to be rejected")
+	}
+	if !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageGenerateToolRejectsUnsupportedInputMIME(t *testing.T) {
+	gen := &fakeImageGenerator{}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	_, err := r.Call("image_generate", map[string]any{
+		"prompt":            "bad input",
+		"input_base64_data": base64.StdEncoding.EncodeToString([]byte("not an image")),
+		"input_mime_type":   "text/plain",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported input MIME to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported image input MIME type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageGenerateToolRejectsExistingOutputPathUnlessOverwrite(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	outputPath := filepath.Join(workspace, "generated-images", "existing.png")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		t.Fatalf("create output dir: %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider: "fake-image-generator",
+			Model:    "gpt-image-1.5",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("new"), MimeType: "image/png"},
+			},
+		},
+	}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	_, err := r.Call("image_generate", map[string]any{
+		"prompt":      "existing path",
+		"output_path": outputPath,
+	})
+	if err == nil {
+		t.Fatal("expected existing output_path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err = r.Call("image_generate", map[string]any{
+		"prompt":      "overwrite path",
+		"output_path": outputPath,
+		"overwrite":   true,
+	})
+	if err != nil {
+		t.Fatalf("image_generate overwrite: %v", err)
+	}
+	written, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(written) != "new" {
+		t.Fatalf("expected overwritten bytes, got %q", string(written))
+	}
+}
+
+func TestImageGenerateToolAllocatesUniquePathForOutputDirConflict(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	outputDir := filepath.Join(workspace, "generated-images")
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatalf("create output dir: %v", err)
+	}
+	existing := filepath.Join(outputDir, "generated-image-01.png")
+	if err := os.WriteFile(existing, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider: "fake-image-generator",
+			Model:    "gpt-image-1.5",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("new"), MimeType: "image/png"},
+			},
+		},
+	}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	result, err := r.Call("image_generate", map[string]any{
+		"prompt":     "avoid conflict",
+		"output_dir": outputDir,
+	})
+	if err != nil {
+		t.Fatalf("image_generate call: %v", err)
+	}
+	var payload struct {
+		Paths []string `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(payload.Paths) != 1 || payload.Paths[0] == existing {
+		t.Fatalf("expected unique path different from %q, got %+v", existing, payload.Paths)
+	}
+	original, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("read existing: %v", err)
+	}
+	if string(original) != "old" {
+		t.Fatalf("existing file was overwritten: %q", string(original))
 	}
 }
 
@@ -1453,6 +1663,72 @@ func TestFilePatchToolDiffModeErrors(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "did not match") {
 		t.Fatalf("expected missing hunk match error, got %v", err)
+	}
+}
+
+func TestFilePatchToolDryRunHashNoopAndPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bit preservation is platform-specific on Windows")
+	}
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "patch-plan.sh")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o755); err != nil {
+		t.Fatalf("write patch target: %v", err)
+	}
+	oldHash := sha256Hex([]byte("alpha\nbeta\n"))
+	dryRun, err := r.Call("file_patch", map[string]any{
+		"path":            path,
+		"match":           "beta",
+		"replace":         "gamma",
+		"expected_sha256": oldHash,
+		"dry_run":         true,
+	})
+	if err != nil {
+		t.Fatalf("file_patch dry_run: %v", err)
+	}
+	if !strings.Contains(dryRun, "Dry run") || !strings.Contains(dryRun, `"kind": "replacement"`) {
+		t.Fatalf("unexpected dry_run result: %q", dryRun)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after dry_run: %v", err)
+	}
+	if string(data) != "alpha\nbeta\n" {
+		t.Fatalf("dry_run should not patch file: %q", data)
+	}
+
+	if _, err := r.Call("file_patch", map[string]any{
+		"path":            path,
+		"match":           "beta",
+		"replace":         "gamma",
+		"expected_sha256": oldHash,
+	}); err != nil {
+		t.Fatalf("file_patch expected hash: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after patch: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("expected permissions 0755, got %o", got)
+	}
+
+	if _, err := r.Call("file_patch", map[string]any{
+		"path":    path,
+		"match":   "gamma",
+		"replace": "gamma",
+	}); err == nil || !strings.Contains(err.Error(), "no changes") {
+		t.Fatalf("expected no-op error, got %v", err)
+	}
+	if _, err := r.Call("file_patch", map[string]any{
+		"path":            path,
+		"match":           "gamma",
+		"replace":         "delta",
+		"expected_sha256": oldHash,
+	}); err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("expected hash mismatch, got %v", err)
 	}
 }
 
