@@ -87,7 +87,7 @@ func (a *Agent) buildSkillRouteSystemHintWithOptions(userInput string, opts skil
 	}
 	lines = append(lines, "- Prefer this skill workflow before ad-hoc reasoning if it fits the task after inspection.")
 	if a.hasModelVisibleToolExcept("skill_read", opts.DisabledTools) {
-		lines = append(lines, fmt.Sprintf("- First inspect the skill guidance with skill_read(name=%q).", match.skill.Name))
+		lines = append(lines, fmt.Sprintf("- First inspect the skill guidance with skill_read(action=\"read\", name=%q, detail=\"summary\"). Use detail=\"full\" only if the summary is insufficient.", match.skill.Name))
 	}
 	if preferredRun := a.visibleSkillRunTool(match.skill.Name, opts.DisabledTools); preferredRun != "" {
 		lines = append(lines, fmt.Sprintf("- Preferred execution entry: %s", preferredRun))

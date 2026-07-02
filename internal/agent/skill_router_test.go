@@ -29,7 +29,7 @@ func TestBuildSkillRouteSystemHint_ExplicitSkillMention(t *testing.T) {
 	if !strings.Contains(hint, `matches the "obsidian" skill`) {
 		t.Fatalf("expected obsidian skill hint, got %q", hint)
 	}
-	if !strings.Contains(hint, "skill_read(name=\"obsidian\")") {
+	if !strings.Contains(hint, `skill_read(action="read", name="obsidian", detail="summary")`) {
 		t.Fatalf("expected skill_read guidance, got %q", hint)
 	}
 	if !strings.Contains(hint, "skill_obsidian_run") {
@@ -84,7 +84,7 @@ func TestBuildSkillRouteSystemHint_LuckyAgentMemoryDoesNotRouteToExternalObsidia
 	if !strings.Contains(hint, "LuckyAgent memory backend") {
 		t.Fatalf("expected LuckyAgent memory backend guardrail, got %q", hint)
 	}
-	if strings.Contains(hint, `skill_read(name="obsidian")`) || strings.Contains(hint, "skill_obsidian_run") {
+	if strings.Contains(hint, `skill_read(action="read", name="obsidian"`) || strings.Contains(hint, "skill_obsidian_run") {
 		t.Fatalf("expected no external obsidian skill routing, got %q", hint)
 	}
 }
