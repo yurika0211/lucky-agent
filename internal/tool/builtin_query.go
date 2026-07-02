@@ -36,6 +36,8 @@ const (
 	defaultStructuredOutput  = 12000
 	maxStructuredOutput      = 1 << 20
 	maxStructuredQueryChars  = 2048
+	defaultCSVMaxScanRows    = 100_000
+	maxCSVMaxScanRows        = 1_000_000
 )
 
 // LogTailTool returns the last N lines of a log file.
@@ -612,15 +614,25 @@ func handleYAMLQuery(args map[string]any) (string, error) {
 func CSVQueryTool() *Tool {
 	return &Tool{
 		Name:        "csv_query",
-		Description: "Read a CSV file and optionally filter rows by one column equality match.",
+		Description: "Stream a CSV file and optionally filter rows, project columns, and return bounded JSON results.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermAuto,
 		Parameters: map[string]Param{
-			"path":   {Type: "string", Description: "Path to the CSV file.", Required: true},
-			"column": {Type: "string", Description: "Optional column name to filter or project.", Required: false},
-			"equals": {Type: "string", Description: "Optional exact string to match in the chosen column.", Required: false},
-			"limit":  {Type: "number", Description: "Maximum number of rows to return (default 20, max 100).", Required: false, Default: 20},
+			"path":          {Type: "string", Description: "Path to the CSV file.", Required: true},
+			"column":        {Type: "string", Description: "Optional legacy column name for equals/contains/regex filters.", Required: false},
+			"equals":        {Type: "string", Description: "Optional exact string to match with column.", Required: false},
+			"contains":      {Type: "string", Description: "Optional substring to match with column.", Required: false},
+			"regex":         {Type: "string", Description: "Optional regular expression to match with column.", Required: false},
+			"columns":       {Type: "array", Description: "Optional list of columns to include in output.", Required: false},
+			"filters":       {Type: "array", Description: "Optional filters with column, op, and value. Supported ops: eq, neq, contains, prefix, suffix, regex, empty, not_empty, gt, gte, lt, lte.", Required: false},
+			"limit":         {Type: "number", Description: "Maximum number of rows to return (default 20, max 100).", Required: false, Default: 20},
+			"max_scan_rows": {Type: "number", Description: "Maximum data rows to scan (default 100000, max 1000000).", Required: false, Default: defaultCSVMaxScanRows},
+			"delimiter":     {Type: "string", Description: "Single-rune delimiter, or \\t for TSV. Default comma.", Required: false, Default: ","},
+			"comment":       {Type: "string", Description: "Optional single-rune comment marker.", Required: false},
+			"trim_space":    {Type: "boolean", Description: "Trim leading parser spaces and surrounding field spaces.", Required: false, Default: false},
+			"lazy_quotes":   {Type: "boolean", Description: "Allow lazy quote parsing for non-standard CSV.", Required: false, Default: false},
+			"include_meta":  {Type: "boolean", Description: "Return rows with scanned/matched/truncated metadata.", Required: false, Default: false},
 		},
 		Handler:      handleCSVQuery,
 		ParallelSafe: true,
@@ -636,8 +648,18 @@ func handleCSVQuery(args map[string]any) (string, error) {
 		return "", err
 	}
 	limit := boundedIntArg(args, "limit", 20, 1, 100)
-	column, _ := args["column"].(string)
-	equals, _ := args["equals"].(string)
+	maxScanRows := boundedIntArg(args, "max_scan_rows", defaultCSVMaxScanRows, 1, maxCSVMaxScanRows)
+	trimSpace, _ := args["trim_space"].(bool)
+	lazyQuotes, _ := args["lazy_quotes"].(bool)
+	includeMeta, _ := args["include_meta"].(bool)
+	delimiter, err := csvRuneArg(args, "delimiter", ',')
+	if err != nil {
+		return "", err
+	}
+	comment, err := csvOptionalRuneArg(args, "comment")
+	if err != nil {
+		return "", err
+	}
 
 	f, err := os.Open(path)
 	if err != nil {
@@ -646,48 +668,378 @@ func handleCSVQuery(args map[string]any) (string, error) {
 	defer f.Close()
 
 	reader := csv.NewReader(f)
-	rows, err := reader.ReadAll()
+	reader.FieldsPerRecord = -1
+	reader.Comma = delimiter
+	reader.Comment = comment
+	reader.TrimLeadingSpace = trimSpace
+	reader.LazyQuotes = lazyQuotes
+
+	headers, err := reader.Read()
 	if err != nil {
+		if err == io.EOF {
+			return "", fmt.Errorf("csv is empty")
+		}
 		return "", fmt.Errorf("read csv: %w", err)
 	}
-	if len(rows) == 0 {
+	if trimSpace {
+		trimCSVRecord(headers)
+	}
+	if len(headers) == 0 {
 		return "", fmt.Errorf("csv is empty")
 	}
-	headers := rows[0]
-	colIdx := -1
-	if strings.TrimSpace(column) != "" {
-		for i, h := range headers {
-			if h == column {
-				colIdx = i
-				break
-			}
-		}
-		if colIdx < 0 {
-			return "", fmt.Errorf("column %q not found", column)
-		}
+	headerIndex := make(map[string]int, len(headers))
+	for i, h := range headers {
+		headerIndex[h] = i
+	}
+	projection, err := csvProjection(args, headers, headerIndex)
+	if err != nil {
+		return "", err
+	}
+	filters, err := csvFilters(args, headerIndex)
+	if err != nil {
+		return "", err
 	}
 
 	var out []map[string]string
-	for _, row := range rows[1:] {
-		if colIdx >= 0 && strings.TrimSpace(equals) != "" {
-			if colIdx >= len(row) || row[colIdx] != equals {
-				continue
-			}
+	scannedRows := 0
+	matchedRows := 0
+	scanLimited := false
+	for scannedRows < maxScanRows {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
 		}
-		entry := make(map[string]string, len(headers))
-		for i, h := range headers {
-			if i < len(row) {
-				entry[h] = row[i]
-			} else {
-				entry[h] = ""
-			}
+		if err != nil {
+			return "", fmt.Errorf("read csv row %d: %w", scannedRows+2, err)
 		}
-		out = append(out, entry)
-		if len(out) >= limit {
+		scannedRows++
+		if trimSpace {
+			trimCSVRecord(row)
+		}
+		if !csvRowMatches(row, filters) {
+			continue
+		}
+		matchedRows++
+		if len(out) < limit {
+			entry := make(map[string]string, len(projection))
+			for _, col := range projection {
+				i := headerIndex[col]
+				if i < len(row) {
+					entry[col] = row[i]
+				} else {
+					entry[col] = ""
+				}
+			}
+			out = append(out, entry)
+		}
+		if len(out) >= limit && !includeMeta {
 			break
 		}
 	}
+	if scannedRows >= maxScanRows {
+		if _, err := reader.Read(); err != io.EOF {
+			if err == nil {
+				scanLimited = true
+			} else {
+				return "", fmt.Errorf("read csv row %d: %w", scannedRows+2, err)
+			}
+		}
+	}
+	truncated := matchedRows > len(out) || scanLimited
+	if includeMeta {
+		return prettyStructuredValue(map[string]any{
+			"rows": out,
+			"meta": map[string]any{
+				"scanned_rows":  scannedRows,
+				"matched_rows":  matchedRows,
+				"returned_rows": len(out),
+				"max_scan_rows": maxScanRows,
+				"scan_limited":  scanLimited,
+				"truncated":     truncated,
+			},
+		})
+	}
 	return prettyStructuredValue(out)
+}
+
+func csvProjection(args map[string]any, headers []string, headerIndex map[string]int) ([]string, error) {
+	columns, err := stringListArg(args["columns"])
+	if err != nil {
+		return nil, fmt.Errorf("columns: %w", err)
+	}
+	if len(columns) == 0 {
+		return headers, nil
+	}
+	out := make([]string, 0, len(columns))
+	for _, col := range columns {
+		if _, ok := headerIndex[col]; !ok {
+			return nil, fmt.Errorf("column %q not found", col)
+		}
+		out = append(out, col)
+	}
+	return out, nil
+}
+
+type csvFilter struct {
+	column string
+	index  int
+	op     string
+	value  string
+	re     *regexp.Regexp
+}
+
+func csvFilters(args map[string]any, headerIndex map[string]int) ([]csvFilter, error) {
+	var filters []csvFilter
+	specs, err := csvFilterSpecs(args["filters"])
+	if err != nil {
+		return nil, err
+	}
+	for _, spec := range specs {
+		filter, err := newCSVFilter(spec, headerIndex)
+		if err != nil {
+			return nil, err
+		}
+		filters = append(filters, filter)
+	}
+
+	column, _ := args["column"].(string)
+	column = strings.TrimSpace(column)
+	if column == "" {
+		return filters, nil
+	}
+	if _, ok := headerIndex[column]; !ok {
+		return nil, fmt.Errorf("column %q not found", column)
+	}
+	if equals, _ := args["equals"].(string); strings.TrimSpace(equals) != "" {
+		filter, err := newCSVFilter(map[string]any{"column": column, "op": "eq", "value": equals}, headerIndex)
+		if err != nil {
+			return nil, err
+		}
+		filters = append(filters, filter)
+	}
+	if contains, _ := args["contains"].(string); strings.TrimSpace(contains) != "" {
+		filter, err := newCSVFilter(map[string]any{"column": column, "op": "contains", "value": contains}, headerIndex)
+		if err != nil {
+			return nil, err
+		}
+		filters = append(filters, filter)
+	}
+	if regexText, _ := args["regex"].(string); strings.TrimSpace(regexText) != "" {
+		filter, err := newCSVFilter(map[string]any{"column": column, "op": "regex", "value": regexText}, headerIndex)
+		if err != nil {
+			return nil, err
+		}
+		filters = append(filters, filter)
+	}
+	return filters, nil
+}
+
+func csvFilterSpecs(raw any) ([]map[string]any, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	switch v := raw.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil, nil
+		}
+		var specs []map[string]any
+		if err := json.Unmarshal([]byte(v), &specs); err != nil {
+			return nil, fmt.Errorf("parse filters: %w", err)
+		}
+		return specs, nil
+	case []map[string]any:
+		return v, nil
+	case []any:
+		specs := make([]map[string]any, 0, len(v))
+		for i, item := range v {
+			spec, ok := item.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("filter %d must be an object", i)
+			}
+			specs = append(specs, spec)
+		}
+		return specs, nil
+	default:
+		return nil, fmt.Errorf("filters must be an array or JSON array string")
+	}
+}
+
+func newCSVFilter(spec map[string]any, headerIndex map[string]int) (csvFilter, error) {
+	column := strings.TrimSpace(stringValue(spec["column"]))
+	if column == "" {
+		return csvFilter{}, fmt.Errorf("filter column is required")
+	}
+	index, ok := headerIndex[column]
+	if !ok {
+		return csvFilter{}, fmt.Errorf("column %q not found", column)
+	}
+	op := strings.ToLower(strings.TrimSpace(stringValue(spec["op"])))
+	if op == "" {
+		op = "eq"
+	}
+	value := stringValue(spec["value"])
+	filter := csvFilter{column: column, index: index, op: op, value: value}
+	switch op {
+	case "eq", "neq", "contains", "prefix", "suffix", "empty", "not_empty", "gt", "gte", "lt", "lte":
+		return filter, nil
+	case "regex":
+		re, err := regexp.Compile(value)
+		if err != nil {
+			return csvFilter{}, fmt.Errorf("compile regex for column %q: %w", column, err)
+		}
+		filter.re = re
+		return filter, nil
+	default:
+		return csvFilter{}, fmt.Errorf("unsupported filter op %q", op)
+	}
+}
+
+func csvRowMatches(row []string, filters []csvFilter) bool {
+	for _, filter := range filters {
+		value := ""
+		if filter.index < len(row) {
+			value = row[filter.index]
+		}
+		if !csvFilterMatches(value, filter) {
+			return false
+		}
+	}
+	return true
+}
+
+func csvFilterMatches(value string, filter csvFilter) bool {
+	switch filter.op {
+	case "eq":
+		return value == filter.value
+	case "neq":
+		return value != filter.value
+	case "contains":
+		return strings.Contains(value, filter.value)
+	case "prefix":
+		return strings.HasPrefix(value, filter.value)
+	case "suffix":
+		return strings.HasSuffix(value, filter.value)
+	case "regex":
+		return filter.re.MatchString(value)
+	case "empty":
+		return value == ""
+	case "not_empty":
+		return value != ""
+	case "gt", "gte", "lt", "lte":
+		left, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return false
+		}
+		right, err := strconv.ParseFloat(filter.value, 64)
+		if err != nil {
+			return false
+		}
+		switch filter.op {
+		case "gt":
+			return left > right
+		case "gte":
+			return left >= right
+		case "lt":
+			return left < right
+		case "lte":
+			return left <= right
+		}
+	}
+	return false
+}
+
+func stringValue(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case fmt.Stringer:
+		return x.String()
+	case nil:
+		return ""
+	default:
+		return fmt.Sprint(x)
+	}
+}
+
+func stringListArg(raw any) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	switch v := raw.(type) {
+	case []string:
+		return compactStringList(v), nil
+	case []any:
+		out := make([]string, 0, len(v))
+		for i, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("item %d must be a string", i)
+			}
+			out = append(out, s)
+		}
+		return compactStringList(out), nil
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil, nil
+		}
+		var out []string
+		if strings.HasPrefix(strings.TrimSpace(v), "[") {
+			if err := json.Unmarshal([]byte(v), &out); err != nil {
+				return nil, fmt.Errorf("parse JSON list: %w", err)
+			}
+			return compactStringList(out), nil
+		}
+		return compactStringList(strings.Split(v, ",")), nil
+	default:
+		return nil, fmt.Errorf("must be an array, JSON array string, or comma-separated string")
+	}
+}
+
+func compactStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func csvRuneArg(args map[string]any, key string, def rune) (rune, error) {
+	raw, _ := args[key].(string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def, nil
+	}
+	return parseSingleRune(raw, key)
+}
+
+func csvOptionalRuneArg(args map[string]any, key string) (rune, error) {
+	raw, _ := args[key].(string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, nil
+	}
+	return parseSingleRune(raw, key)
+}
+
+func parseSingleRune(raw, name string) (rune, error) {
+	if raw == `\t` {
+		return '\t', nil
+	}
+	runes := []rune(raw)
+	if len(runes) != 1 {
+		return 0, fmt.Errorf("%s must be a single rune", name)
+	}
+	return runes[0], nil
+}
+
+func trimCSVRecord(record []string) {
+	for i := range record {
+		record[i] = strings.TrimSpace(record[i])
+	}
 }
 
 // SQLQueryTool executes a read-only SQL query against a local SQLite database.
