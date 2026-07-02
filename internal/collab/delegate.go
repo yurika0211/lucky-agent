@@ -64,6 +64,7 @@ type DelegateManager struct {
 	planner    *Planner
 	taskStore  taskstore.Store
 	taskEvents *taskstore.EventBus
+	policy     *taskstore.Policy
 }
 
 // TaskHandler 子任务执行处理器接口
@@ -115,10 +116,32 @@ func (dm *DelegateManager) SetTaskStore(store taskstore.Store) {
 	dm.taskEvents = taskstore.NewEventBus(store)
 }
 
+func (dm *DelegateManager) SetPolicy(policy taskstore.Policy) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.policy = &policy
+}
+
 // Delegate 创建并执行协作任务
 func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, description, input string, agentIDs []string, timeout time.Duration) (*CollabTask, error) {
 	if len(agentIDs) == 0 {
 		return nil, fmt.Errorf("at least one agent ID is required")
+	}
+
+	dm.mu.RLock()
+	policy := dm.policy
+	dm.mu.RUnlock()
+	if policy != nil {
+		decision := taskstore.EvaluatePolicy(*policy, taskstore.PolicyRequest{
+			Source:        taskstore.SourceHTTP,
+			Mode:          collabModeToUnified(mode),
+			ChildCount:    len(agentIDs),
+			MaxConcurrent: len(agentIDs),
+			Timeout:       timeout,
+		})
+		if err := decision.Error(); err != nil {
+			return nil, err
+		}
 	}
 
 	dm.mu.Lock()

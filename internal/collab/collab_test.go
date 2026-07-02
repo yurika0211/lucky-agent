@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
 
 func TestMessageEncodeDecode(t *testing.T) {
@@ -299,6 +301,25 @@ func TestDelegateManagerPassesRuntimeProfileToSubTask(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("handler did not receive runtime profile")
+	}
+}
+
+func TestDelegateManagerPolicyDeniesTooManyChildren(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"})
+	_ = r.Register(&AgentProfile{ID: "agent-2", Name: "Agent 2"})
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		return "ok", nil
+	})
+	dm := NewDelegateManager(r, handler)
+	dm.SetPolicy(taskstore.Policy{MaxChildren: 1})
+
+	_, err := dm.Delegate(context.Background(), ModeParallel, "too many children", "input", []string{"agent-1", "agent-2"}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "child count") {
+		t.Fatalf("expected child count policy error, got %v", err)
+	}
+	if tasks := dm.ListTasks(); len(tasks) != 0 {
+		t.Fatalf("policy-denied task should not be created, got %+v", tasks)
 	}
 }
 
