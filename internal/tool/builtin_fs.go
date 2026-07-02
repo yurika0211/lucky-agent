@@ -1,15 +1,24 @@
 package tool
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
+)
+
+const (
+	defaultFileReadLimit = 2000
+	maxFileReadLimit     = 5000
+	binarySniffBytes     = 8192
 )
 
 func TerminalTool() *Tool {
@@ -147,48 +156,96 @@ func handleFileRead(args map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(path)
+	offset, limit := parseFileReadRange(args)
+	return readTextFileRange(path, offset, limit)
+}
+
+func parseFileReadRange(args map[string]any) (offset, limit int) {
+	offset = boundedIntArg(args, "offset", 1, 1, int(^uint(0)>>1))
+	limit = boundedIntArg(args, "limit", defaultFileReadLimit, 1, maxFileReadLimit)
+	return offset, limit
+}
+
+func readTextFileRange(path string, offset, limit int) (string, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return "", fmt.Errorf("read file: %w", err)
+		return "", fmt.Errorf("open file: %w", err)
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat file: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("file_read expects a file, got directory: %s", path)
+	}
+	if binary, err := fileLooksBinary(file); err != nil {
+		return "", err
+	} else if binary {
+		return "", fmt.Errorf("file appears to be binary; use document_read or a media-specific tool instead: %s", path)
 	}
 
-	lines := strings.Split(string(data), "\n")
-	offset := 1
-	if o, ok := args["offset"]; ok {
-		switch v := o.(type) {
-		case float64:
-			offset = int(v)
-		case int:
-			offset = v
-		}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("seek file: %w", err)
 	}
-	if offset < 1 {
-		offset = 1
-	}
-	limit := 2000
-	if l, ok := args["limit"]; ok {
-		switch v := l.(type) {
-		case float64:
-			limit = int(v)
-		case int:
-			limit = v
-		}
-	}
-
-	start := offset - 1
-	if start >= len(lines) {
-		return "", fmt.Errorf("offset %d exceeds file length %d", offset, len(lines))
-	}
-	end := start + limit
-	if end > len(lines) {
-		end = len(lines)
-	}
-
 	var b strings.Builder
-	for i := start; i < end; i++ {
-		b.WriteString(fmt.Sprintf("%d| %s\n", i+1, lines[i]))
+	b.WriteString(fmt.Sprintf("File: %s\n", path))
+	b.WriteString(fmt.Sprintf("Size: %d bytes\n", info.Size()))
+	b.WriteString(fmt.Sprintf("Showing from line %d, max %d lines\n\n", offset, limit))
+
+	reader := bufio.NewReader(file)
+	lineNo := 0
+	shown := 0
+	truncated := false
+	for {
+		line, readErr := reader.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return "", fmt.Errorf("read file: %w", readErr)
+		}
+		if line == "" && errors.Is(readErr, io.EOF) {
+			break
+		}
+		lineNo++
+		if lineNo >= offset && shown < limit {
+			b.WriteString(fmt.Sprintf("%d| %s\n", lineNo, trimLineEnding(line)))
+			shown++
+		} else if lineNo >= offset && shown >= limit {
+			truncated = true
+			break
+		}
+		if errors.Is(readErr, io.EOF) {
+			break
+		}
+	}
+	if shown == 0 {
+		return "", fmt.Errorf("offset %d exceeds file length %d", offset, lineNo)
+	}
+	if truncated {
+		b.WriteString(fmt.Sprintf("... truncated; use offset=%d to continue\n", offset+shown))
 	}
 	return b.String(), nil
+}
+
+func fileLooksBinary(file *os.File) (bool, error) {
+	buf := make([]byte, binarySniffBytes)
+	n, err := file.Read(buf)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read file header: %w", err)
+	}
+	buf = buf[:n]
+	if len(buf) == 0 {
+		return false, nil
+	}
+	if bytes.IndexByte(buf, 0) >= 0 {
+		return true, nil
+	}
+	return !utf8.Valid(buf), nil
+}
+
+func trimLineEnding(line string) string {
+	line = strings.TrimSuffix(line, "\n")
+	return strings.TrimSuffix(line, "\r")
 }
 
 func FileWriteTool() *Tool {

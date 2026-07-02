@@ -840,6 +840,48 @@ func TestFileReadWriteTool(t *testing.T) {
 	}
 }
 
+func TestFileReadToolRangeAndContinuation(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "range.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\nfour\n"), 0o644); err != nil {
+		t.Fatalf("write range file: %v", err)
+	}
+
+	result, err := r.Call("file_read", map[string]any{
+		"path":   path,
+		"offset": 2,
+		"limit":  2,
+	})
+	if err != nil {
+		t.Fatalf("file_read range: %v", err)
+	}
+	for _, want := range []string{"File:", "Size:", "2| two", "3| three", "use offset=4"} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("expected %q in result:\n%s", want, result)
+		}
+	}
+	if strings.Contains(result, "4| four") {
+		t.Fatalf("limit should hide line 4:\n%s", result)
+	}
+}
+
+func TestFileReadToolRejectsBinary(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "blob.bin")
+	if err := os.WriteFile(path, []byte{0x00, 0x01, 0x02, 0x03}, 0o644); err != nil {
+		t.Fatalf("write binary file: %v", err)
+	}
+
+	_, err := r.Call("file_read", map[string]any{"path": path})
+	if err == nil || !strings.Contains(err.Error(), "binary") {
+		t.Fatalf("expected binary rejection, got %v", err)
+	}
+}
+
 func TestDocumentReadToolReadsDocx(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
