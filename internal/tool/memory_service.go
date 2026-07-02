@@ -597,7 +597,20 @@ func stringArg(v any) string {
 	return ""
 }
 
-func boolArg(v any) bool {
+func boolArg(v any, rest ...any) bool {
+	if len(rest) >= 2 {
+		args, _ := v.(map[string]any)
+		key, _ := rest[0].(string)
+		def, _ := rest[1].(bool)
+		if args == nil || key == "" {
+			return def
+		}
+		b, ok := args[key].(bool)
+		if !ok {
+			return def
+		}
+		return b
+	}
 	b, _ := v.(bool)
 	return b
 }
