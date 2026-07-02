@@ -1330,8 +1330,20 @@ func handleFileList(args map[string]any) (string, error) {
 }
 
 func validatePath(path string) error {
+	if containsInvalidPathChars(path) {
+		return fmt.Errorf("invalid path: %s", path)
+	}
 	_, err := resolvePath(path, "")
 	return err
+}
+
+func containsInvalidPathChars(path string) bool {
+	for _, r := range path {
+		if r < 32 || strings.ContainsRune("!@#$", r) {
+			return true
+		}
+	}
+	return false
 }
 
 func resolvePathArg(args map[string]any, key string) (string, error) {
