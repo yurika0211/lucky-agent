@@ -1540,6 +1540,31 @@ func TestCompactSessionForceLocalWritesFallbackBoundary(t *testing.T) {
 	}
 }
 
+func TestCompactSessionDryRunDoesNotWriteBoundary(t *testing.T) {
+	sess := session.NewSession("compact-dry-run", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent passed for dry-run compact behavior")
+	before := sess.MessageCount()
+
+	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
+	result, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{
+		ForceLocal: true,
+		DryRun:     true,
+	})
+	if err != nil {
+		t.Fatalf("CompactSessionWithOptions dry-run: %v", err)
+	}
+	if !result.DryRun || result.SummarySource != "local" {
+		t.Fatalf("unexpected dry-run result: %+v", result)
+	}
+	if got := sess.MessageCount(); got != before {
+		t.Fatalf("dry-run must not append boundary: got %d messages, want %d", got, before)
+	}
+	if _, ok := sess.LatestCompactTrace(); ok {
+		t.Fatal("dry-run must not expose a latest compact trace")
+	}
+}
+
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
 func TestAgent_Tools(t *testing.T) {

@@ -1527,10 +1527,12 @@ type CompactSessionResult struct {
 	DroppedMessages     int
 	RestoredAttachments int
 	SummarySource       string
+	DryRun              bool
 }
 
 type CompactSessionOptions struct {
 	ForceLocal bool
+	DryRun     bool
 }
 
 // CompactSession summarizes raw session history since the latest compact
@@ -1602,9 +1604,11 @@ func (a *Agent) CompactSessionWithOptions(ctx context.Context, sess *session.Ses
 		SummarySource:       summarySource,
 		Attachments:         attachments,
 	}
-	sess.AddCompactBoundary(meta)
-	if err := sess.Save(); err != nil {
-		return nil, fmt.Errorf("compact session: save boundary: %w", err)
+	if !opts.DryRun {
+		sess.AddCompactBoundary(meta)
+		if err := sess.Save(); err != nil {
+			return nil, fmt.Errorf("compact session: save boundary: %w", err)
+		}
 	}
 	return &CompactSessionResult{
 		BoundaryID:          boundaryID,
@@ -1616,6 +1620,7 @@ func (a *Agent) CompactSessionWithOptions(ctx context.Context, sess *session.Ses
 		DroppedMessages:     len(raw),
 		RestoredAttachments: len(attachments),
 		SummarySource:       summarySource,
+		DryRun:              opts.DryRun,
 	}, nil
 }
 
