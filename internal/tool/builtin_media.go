@@ -16,6 +16,11 @@ import (
 	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
+const (
+	maxImageAnalyzeImageBytes = 20 << 20
+	maxImageAnalyzeDocBytes   = 50 << 20
+)
+
 // ImageGenerationDefaults captures configurable defaults for the image_generate tool.
 type ImageGenerationDefaults struct {
 	Model             string
@@ -70,9 +75,23 @@ func ImageAnalyzeTool(processor *multimodal.Processor, defaultProvider string) *
 				Description: "Optional multimodal provider name override.",
 				Required:    false,
 			},
+			"format": {
+				Type:        "string",
+				Description: "Optional output format: text or json. Defaults to text.",
+				Required:    false,
+			},
 		},
 		Handler: handleImageAnalyze(processor, defaultProvider),
 	}
+}
+
+type imageAnalyzeOptions struct {
+	Path       string
+	URL        string
+	Base64Data string
+	MIMEType   string
+	Provider   string
+	Format     string
 }
 
 func handleImageAnalyze(processor *multimodal.Processor, defaultProvider string) func(args map[string]any) (string, error) {
@@ -81,7 +100,11 @@ func handleImageAnalyze(processor *multimodal.Processor, defaultProvider string)
 			return "", fmt.Errorf("image analysis is not configured")
 		}
 
-		input, err := buildImageAnalyzeInput(args)
+		opts, err := parseImageAnalyzeOptions(args)
+		if err != nil {
+			return "", err
+		}
+		input, err := buildImageAnalyzeInput(opts)
 		if err != nil {
 			return "", err
 		}
@@ -89,8 +112,7 @@ func handleImageAnalyze(processor *multimodal.Processor, defaultProvider string)
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 
-		providerName, _ := args["provider"].(string)
-		providerName = strings.TrimSpace(providerName)
+		providerName := opts.Provider
 		if providerName == "" {
 			providerName = strings.TrimSpace(defaultProvider)
 		}
@@ -101,49 +123,112 @@ func handleImageAnalyze(processor *multimodal.Processor, defaultProvider string)
 			result, err = processor.Analyze(ctx, input)
 		}
 		if err != nil {
-			return "", err
+			if providerName != "" {
+				return "", fmt.Errorf("image analysis with provider %q for %s input failed: %w", providerName, input.Modality, err)
+			}
+			return "", fmt.Errorf("image analysis for %s input failed: %w", input.Modality, err)
+		}
+		if opts.Format == "json" {
+			return formatImageAnalysisResultJSON(result)
 		}
 		return formatImageAnalysisResult(result), nil
 	}
 }
 
-func buildImageAnalyzeInput(args map[string]any) (*multimodal.Input, error) {
+func parseImageAnalyzeOptions(args map[string]any) (imageAnalyzeOptions, error) {
 	path, _ := args["path"].(string)
 	url, _ := args["url"].(string)
 	base64Data, _ := args["base64_data"].(string)
 	mimeType, _ := args["mime_type"].(string)
+	provider, _ := args["provider"].(string)
+	format, _ := args["format"].(string)
 
-	path = strings.TrimSpace(path)
-	url = strings.TrimSpace(url)
-	base64Data = strings.TrimSpace(base64Data)
-	mimeType = strings.TrimSpace(mimeType)
-
-	if path == "" && url == "" && base64Data == "" {
-		return nil, fmt.Errorf("one of path, url, or base64_data is required")
+	opts := imageAnalyzeOptions{
+		Path:       strings.TrimSpace(path),
+		URL:        strings.TrimSpace(url),
+		Base64Data: strings.TrimSpace(base64Data),
+		MIMEType:   strings.TrimSpace(mimeType),
+		Provider:   strings.TrimSpace(provider),
+		Format:     strings.ToLower(strings.TrimSpace(format)),
+	}
+	if opts.Format == "" {
+		opts.Format = "text"
+	}
+	if opts.Format != "text" && opts.Format != "json" {
+		return imageAnalyzeOptions{}, fmt.Errorf("unsupported image_analyze format %q; supported formats: text, json", opts.Format)
 	}
 
-	modality := inferImageAnalyzeModality(path, mimeType)
+	inputs := 0
+	for _, value := range []string{opts.Path, opts.URL, opts.Base64Data} {
+		if value != "" {
+			inputs++
+		}
+	}
+	if inputs == 0 {
+		return imageAnalyzeOptions{}, fmt.Errorf("one of path, url, or base64_data is required")
+	}
+	if inputs > 1 {
+		return imageAnalyzeOptions{}, fmt.Errorf("path, url, and base64_data are mutually exclusive")
+	}
+	return opts, nil
+}
+
+func buildImageAnalyzeInput(opts imageAnalyzeOptions) (*multimodal.Input, error) {
+	mimeType := opts.MIMEType
+	modality := inferImageAnalyzeModality(opts.Path, mimeType)
 	var input *multimodal.Input
 	switch {
-	case path != "":
-		if err := validatePath(path); err != nil {
+	case opts.Path != "":
+		if err := validatePath(opts.Path); err != nil {
 			return nil, err
 		}
-		input = multimodal.NewInputFromPath(modality, path)
 		if mimeType == "" {
-			mimeType = mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+			mimeType = mime.TypeByExtension(strings.ToLower(filepath.Ext(opts.Path)))
 		}
-	case url != "":
-		input = multimodal.NewInputFromURL(modality, url)
-	case base64Data != "":
-		data, err := base64.StdEncoding.DecodeString(base64Data)
+		mimeType = normalizeMediaMIME(mimeType)
+		if mimeType == "" {
+			detected, err := detectFileMIME(opts.Path)
+			if err != nil {
+				return nil, err
+			}
+			mimeType = detected
+		}
+		modality = inferImageAnalyzeModality(opts.Path, mimeType)
+		if err := validateImageAnalyzeMIME(mimeType); err != nil {
+			return nil, err
+		}
+		if err := validateImageAnalyzeFileSize(opts.Path, mimeType); err != nil {
+			return nil, err
+		}
+		input = multimodal.NewInputFromPath(modality, opts.Path)
+	case opts.URL != "":
+		if err := validateFetchURL(opts.URL); err != nil {
+			return nil, fmt.Errorf("url validation failed: %w", err)
+		}
+		mimeType = normalizeMediaMIME(mimeType)
+		if mimeType != "" {
+			if err := validateImageAnalyzeMIME(mimeType); err != nil {
+				return nil, err
+			}
+			modality = inferImageAnalyzeModality("", mimeType)
+		}
+		input = multimodal.NewInputFromURL(modality, opts.URL)
+	case opts.Base64Data != "":
+		data, err := base64.StdEncoding.DecodeString(opts.Base64Data)
 		if err != nil {
 			return nil, fmt.Errorf("decode base64_data: %w", err)
 		}
 		if mimeType == "" {
 			mimeType = http.DetectContentType(data)
 		}
+		mimeType = normalizeMediaMIME(mimeType)
 		modality = inferImageAnalyzeModality("", mimeType)
+		if err := validateImageAnalyzeMIME(mimeType); err != nil {
+			return nil, err
+		}
+		if err := validateImageAnalyzeBytesSize(int64(len(data)), mimeType); err != nil {
+			return nil, err
+		}
 		input = multimodal.NewInput(modality, mimeType, data)
 	}
 
@@ -155,14 +240,75 @@ func buildImageAnalyzeInput(args map[string]any) (*multimodal.Input, error) {
 	if input.Metadata == nil {
 		input.Metadata = make(map[string]string)
 	}
-	if path != "" {
-		input.Metadata["file_path"] = path
-		input.Metadata["filename"] = filepath.Base(path)
+	if opts.Path != "" {
+		input.Metadata["file_path"] = opts.Path
+		input.Metadata["filename"] = filepath.Base(opts.Path)
 	}
-	if url != "" {
-		input.Metadata["url"] = url
+	if opts.URL != "" {
+		input.Metadata["url"] = opts.URL
 	}
 	return input, nil
+}
+
+func detectFileMIME(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("open image_analyze path: %w", err)
+	}
+	defer f.Close()
+	buf := make([]byte, 512)
+	n, err := f.Read(buf)
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("read image_analyze path: %w", err)
+	}
+	return normalizeMediaMIME(http.DetectContentType(buf[:n])), nil
+}
+
+func validateImageAnalyzeFileSize(path, mimeType string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat image_analyze path: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("image_analyze path is a directory: %s", path)
+	}
+	return validateImageAnalyzeBytesSize(info.Size(), mimeType)
+}
+
+func validateImageAnalyzeBytesSize(size int64, mimeType string) error {
+	limit := int64(maxImageAnalyzeImageBytes)
+	if normalizeMediaMIME(mimeType) == "application/pdf" {
+		limit = maxImageAnalyzeDocBytes
+	}
+	if size > limit {
+		return fmt.Errorf("image_analyze input exceeds %d MiB limit for %s", limit>>20, mimeType)
+	}
+	return nil
+}
+
+func validateImageAnalyzeMIME(mimeType string) error {
+	switch normalizeMediaMIME(mimeType) {
+	case "image/png", "image/jpeg", "image/webp", "image/gif", "application/pdf":
+		return nil
+	default:
+		return fmt.Errorf("unsupported image_analyze MIME type %q; supported types: image/png, image/jpeg, image/webp, image/gif, application/pdf", mimeType)
+	}
+}
+
+func normalizeMediaMIME(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return ""
+	}
+	if parsed, _, err := mime.ParseMediaType(value); err == nil {
+		value = parsed
+	}
+	switch value {
+	case "image/jpg", "image/pjpeg":
+		return "image/jpeg"
+	default:
+		return value
+	}
 }
 
 func inferImageAnalyzeModality(path, mimeType string) multimodal.Modality {
@@ -203,6 +349,30 @@ func formatImageAnalysisResult(result *multimodal.AnalysisResult) string {
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+func formatImageAnalysisResultJSON(result *multimodal.AnalysisResult) (string, error) {
+	if result == nil {
+		return prettyStructuredValue(map[string]any{
+			"available": false,
+		})
+	}
+	text := strings.TrimSpace(result.Text)
+	truncatedText := utils.Truncate(text, 4000)
+	payload := map[string]any{
+		"available":   true,
+		"input_id":    result.InputID,
+		"modality":    result.Modality,
+		"summary":     strings.TrimSpace(result.Summary),
+		"text":        truncatedText,
+		"text_length": len(text),
+		"truncated":   len(truncatedText) < len(text),
+		"labels":      result.Labels,
+		"confidence":  result.Confidence,
+		"duration_ms": result.Duration.Milliseconds(),
+		"metadata":    result.Metadata,
+	}
+	return prettyStructuredValue(payload)
 }
 
 // ImageGenerateTool generates images from text prompts and can optionally edit an input image.

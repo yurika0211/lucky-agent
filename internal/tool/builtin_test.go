@@ -1132,6 +1132,39 @@ func TestFileMkdirMoveDeleteTools(t *testing.T) {
 	}
 }
 
+func TestFileMkdirToolDryRunAndParentErrors(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "a", "b")
+	result, err := r.Call("file_mkdir", map[string]any{
+		"path":    target,
+		"dry_run": true,
+	})
+	if err != nil {
+		t.Fatalf("file_mkdir dry_run: %v", err)
+	}
+	if !strings.Contains(result, "Dry run") || !strings.Contains(result, `"create_dirs"`) {
+		t.Fatalf("unexpected dry_run result: %q", result)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry_run should not create target, got %v", err)
+	}
+
+	_, err = r.Call("file_mkdir", map[string]any{
+		"path":      target,
+		"recursive": false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "set recursive=true") {
+		t.Fatalf("expected clear recursive hint, got %v", err)
+	}
+
+	if _, err := r.Call("file_mkdir", map[string]any{"path": tmpDir}); err != nil {
+		t.Fatalf("existing directory should be idempotent: %v", err)
+	}
+}
+
 func TestFilePatchTool(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)

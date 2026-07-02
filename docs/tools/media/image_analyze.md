@@ -38,6 +38,7 @@ ParallelSafe: true
 | `base64_data` | 否 | 无 | 已经在内存中的文件内容，使用 Base64 编码。 |
 | `mime_type` | 否 | 自动推断 | MIME 类型，例如 `image/png` 或 `application/pdf`。 |
 | `provider` | 否 | 配置默认值 | 多模态 provider 名称覆盖。 |
+| `format` | 否 | `text` | 输出格式，支持 `text` 或 `json`。 |
 
 示例参数：
 
@@ -64,25 +65,24 @@ ParallelSafe: true
 1. 检查 `multimodal.Processor` 是否已配置。
 2. 读取 `path`、`url`、`base64_data`、`mime_type`。
 3. 如果三种输入来源都为空，返回 `one of path, url, or base64_data is required`。
-4. 根据 `mime_type` 或文件扩展名推断输入 modality。
-5. 如果是本地 `path`，先执行 `validatePath(path)`，再构造本地输入。
-6. 如果是 `url`，直接构造 URL 输入。
-7. 如果是 `base64_data`，先解码，再通过 `http.DetectContentType` 推断 MIME。
-8. 设置 metadata，例如 `file_path`、`filename` 或 `url`。
-9. 创建 90 秒超时的 context。
-10. 如果传入 `provider`，调用 `AnalyzeWithProvider`。
-11. 如果没有传入 `provider`，使用配置的默认 provider；仍为空时调用 processor 默认分析路径。
-12. 格式化 `AnalysisResult` 为文本返回。
+4. 如果同时提供多个输入来源，返回互斥错误，避免隐式覆盖。
+5. 根据 `mime_type`、文件扩展名或内容 sniff 推断输入 modality。
+6. 如果是本地 `path`，先执行 `validatePath(path)`，再校验大小和 MIME。
+7. 如果是 `url`，先执行 `validateFetchURL`，再构造 URL 输入。
+8. 如果是 `base64_data`，先解码，再校验大小和 MIME。
+9. 设置 metadata，例如 `file_path`、`filename` 或 `url`。
+10. 创建 90 秒超时的 context。
+11. 如果传入 `provider`，调用 `AnalyzeWithProvider`。
+12. 如果没有传入 `provider`，使用配置的默认 provider；仍为空时调用 processor 默认分析路径。
+13. 默认格式化 `AnalysisResult` 为文本返回；`format=json` 时返回结构化 JSON。
 
-## 输入优先级
+## 输入来源
 
-当多个输入来源同时提供时，当前实现按以下顺序选择：
+`path`、`url`、`base64_data` 必须且只能提供一个。多个来源同时出现时会返回：
 
-1. `path`
-2. `url`
-3. `base64_data`
-
-也就是说，如果同时传入 `path` 和 `url`，实际会使用 `path`。
+```text
+path, url, and base64_data are mutually exclusive
+```
 
 ## modality 推断
 
@@ -94,7 +94,7 @@ ParallelSafe: true
 | 文件扩展名是 `.pdf` | `document` |
 | 其他情况 | `image` |
 
-本地路径输入会根据扩展名补充 MIME：
+本地路径输入会根据扩展名补充 MIME，扩展名缺失时读取文件头通过 `http.DetectContentType` 推断：
 
 ```go
 mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
@@ -105,6 +105,21 @@ Base64 输入如果没有传 `mime_type`，会使用：
 ```go
 http.DetectContentType(data)
 ```
+
+允许的 MIME 类型：
+
+- `image/png`
+- `image/jpeg`
+- `image/webp`
+- `image/gif`
+- `application/pdf`
+
+本地文件和 Base64 输入会在调用 provider 前执行大小限制：
+
+- 图片最大 20 MiB。
+- PDF 最大 50 MiB。
+
+远程 URL 输入会先执行 `validateFetchURL`，拒绝 localhost、私网、link-local 等地址。
 
 ## provider 选择
 
@@ -130,7 +145,7 @@ http.DetectContentType(data)
 
 ## 输出格式
 
-成功输出是多行文本。
+默认成功输出是多行文本。
 
 可能包含：
 
@@ -166,6 +181,8 @@ utils.Truncate(text, 4000)
 ```text
 Image analysis unavailable.
 ```
+
+当传入 `format=json` 时，返回结构化 JSON，包含 `modality`、`summary`、`text`、`text_length`、`truncated`、`labels`、`confidence`、`duration_ms` 和 `metadata` 等字段。
 
 ## 配置
 
