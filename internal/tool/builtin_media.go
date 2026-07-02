@@ -732,7 +732,7 @@ func saveGeneratedImages(images []multimodal.GeneratedImage, opts imageGeneratio
 				return nil, fmt.Errorf("stat output_path: %w", err)
 			}
 		}
-		if err := mediaWriteFileAtomic(resolved, images[0].Data, 0o644); err != nil {
+		if err := writeFileAtomic(resolved, images[0].Data, 0o644); err != nil {
 			return nil, fmt.Errorf("write output file: %w", err)
 		}
 		return []string{resolved}, nil
@@ -760,7 +760,7 @@ func saveGeneratedImages(images []multimodal.GeneratedImage, opts imageGeneratio
 				return nil, err
 			}
 		}
-		if err := mediaWriteFileAtomic(resolved, image.Data, 0o644); err != nil {
+		if err := writeFileAtomic(resolved, image.Data, 0o644); err != nil {
 			return nil, fmt.Errorf("write generated image: %w", err)
 		}
 		saved = append(saved, resolved)
@@ -1055,35 +1055,6 @@ func uniqueOutputPath(path string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("failed to allocate unique output path for %s", path)
-}
-
-func mediaWriteFileAtomic(path string, data []byte, perm os.FileMode) error {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	if err := tmp.Chmod(perm); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename temp file: %w", err)
-	}
-	return nil
 }
 
 // TextToSpeechTool synthesizes speech audio from text and saves it to disk.
