@@ -114,6 +114,9 @@ func (s *SQLiteStore) initSchema() error {
 // Dimension returns the expected vector dimension.
 func (s *SQLiteStore) Dimension() int { return s.dim }
 
+// DB returns the underlying database connection (for advanced use).
+func (s *SQLiteStore) DB() *sql.DB { return s.db }
+
 // Len returns the number of stored vectors.
 func (s *SQLiteStore) Len() int {
 	s.mu.RLock()

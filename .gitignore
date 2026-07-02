@@ -43,3 +43,6 @@ skill/
 # Databases
 *.db
 windowpet/
+GRAPH_RAG_STARTUP_GUIDE.md
+HOOKS_INIT_INTEGRATION.md
+PROACTIVE_CONFIG_GUIDE.md

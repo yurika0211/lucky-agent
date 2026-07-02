@@ -264,7 +264,23 @@ func NewRAGManagerWithSQLiteAndGraph(embedder embedderpkg.Embedder, config RAGCo
 		return nil, err
 	}
 	if config.EnableGraph && llmProvider != nil {
-		m.graph = NewKnowledgeGraph()
+		// 获取 SQLite 连接用于图谱持久化
+		sqliteStore := m.SQLiteStore()
+		if sqliteStore != nil {
+			graphStore, err := NewGraphStore(sqliteStore.DB())
+			if err != nil {
+				return nil, fmt.Errorf("create graph store: %w", err)
+			}
+			// 创建带持久化的知识图谱
+			graph, err := NewKnowledgeGraphWithStore(graphStore)
+			if err != nil {
+				return nil, fmt.Errorf("create knowledge graph with store: %w", err)
+			}
+			m.graph = graph
+		} else {
+			// 回退到内存图谱
+			m.graph = NewKnowledgeGraph()
+		}
 		m.graphExtractor = NewEntityExtractor(llmProvider)
 	}
 	return m, nil

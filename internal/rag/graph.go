@@ -74,6 +74,9 @@ type KnowledgeGraph struct {
 
 	// 与向量存储的桥接
 	ChunkNodes map[string][]string // chunkID -> related node IDs
+
+	// 持久化支持
+	store *GraphStore // 可选的持久化存储
 }
 
 // NewKnowledgeGraph 创建新的知识图谱
@@ -88,6 +91,19 @@ func NewKnowledgeGraph() *KnowledgeGraph {
 		TagIndex:   make(map[string][]string),
 		ChunkNodes: make(map[string][]string),
 	}
+}
+
+// NewKnowledgeGraphWithStore 创建带持久化的知识图谱
+func NewKnowledgeGraphWithStore(store *GraphStore) (*KnowledgeGraph, error) {
+	kg := NewKnowledgeGraph()
+	kg.store = store
+
+	// 从存储加载现有图谱数据
+	if err := kg.LoadFromStore(); err != nil {
+		return nil, fmt.Errorf("load from store: %w", err)
+	}
+
+	return kg, nil
 }
 
 // AddNode 添加节点到图谱
@@ -108,6 +124,13 @@ func (kg *KnowledgeGraph) AddNode(node *KnowledgeNode) error {
 			existing.Description = node.Description
 		}
 		existing.SourceChunks = append(existing.SourceChunks, node.SourceChunks...)
+
+		// 持久化更新
+		if kg.store != nil {
+			if err := kg.store.SaveNode(existing); err != nil {
+				return fmt.Errorf("persist updated node: %w", err)
+			}
+		}
 		return nil
 	}
 
@@ -134,6 +157,13 @@ func (kg *KnowledgeGraph) AddNode(node *KnowledgeNode) error {
 	// 更新 chunk 到 node 的映射
 	for _, chunkID := range node.SourceChunks {
 		kg.ChunkNodes[chunkID] = append(kg.ChunkNodes[chunkID], node.ID)
+	}
+
+	// 持久化新节点
+	if kg.store != nil {
+		if err := kg.store.SaveNode(node); err != nil {
+			return fmt.Errorf("persist new node: %w", err)
+		}
 	}
 
 	return nil
@@ -165,6 +195,13 @@ func (kg *KnowledgeGraph) AddEdge(edge *KnowledgeEdge) error {
 		existing.Evidence = append(existing.Evidence, edge.Evidence...)
 		// 更新权重（取平均）
 		existing.Weight = (existing.Weight + edge.Weight) / 2
+
+		// 持久化更新
+		if kg.store != nil {
+			if err := kg.store.SaveEdge(existing); err != nil {
+				return fmt.Errorf("persist updated edge: %w", err)
+			}
+		}
 		return nil
 	}
 
@@ -173,6 +210,13 @@ func (kg *KnowledgeGraph) AddEdge(edge *KnowledgeEdge) error {
 	// 更新前向和后向索引
 	kg.Forward[edge.SourceID] = append(kg.Forward[edge.SourceID], edge.ID)
 	kg.Backward[edge.TargetID] = append(kg.Backward[edge.TargetID], edge.ID)
+
+	// 持久化新边
+	if kg.store != nil {
+		if err := kg.store.SaveEdge(edge); err != nil {
+			return fmt.Errorf("persist new edge: %w", err)
+		}
+	}
 
 	return nil
 }
@@ -257,4 +301,81 @@ func generateEdgeID(sourceID, targetID, relType string) string {
 // normalizeString 标准化字符串（用于索引）
 func normalizeString(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// LoadFromStore 从持久化存储加载图谱数据
+func (kg *KnowledgeGraph) LoadFromStore() error {
+	if kg.store == nil {
+		return nil // 没有持久化存储，跳过
+	}
+
+	// 加载所有节点
+	nodes, err := kg.store.LoadAllNodes()
+	if err != nil {
+		return fmt.Errorf("load nodes: %w", err)
+	}
+
+	for _, node := range nodes {
+		if err := kg.AddNode(node); err != nil {
+			return fmt.Errorf("add node %s: %w", node.ID, err)
+		}
+	}
+
+	// 加载所有边
+	edges, err := kg.store.LoadAllEdges()
+	if err != nil {
+		return fmt.Errorf("load edges: %w", err)
+	}
+
+	for _, edge := range edges {
+		if err := kg.AddEdge(edge); err != nil {
+			return fmt.Errorf("add edge %s: %w", edge.ID, err)
+		}
+	}
+
+	return nil
+}
+
+// SaveToStore 保存图谱数据到持久化存储
+func (kg *KnowledgeGraph) SaveToStore() error {
+	if kg.store == nil {
+		return nil // 没有持久化存储，跳过
+	}
+
+	kg.mu.RLock()
+	defer kg.mu.RUnlock()
+
+	// 保存所有节点
+	for _, node := range kg.Nodes {
+		if err := kg.store.SaveNode(node); err != nil {
+			return fmt.Errorf("save node %s: %w", node.ID, err)
+		}
+	}
+
+	// 保存所有边
+	for _, edge := range kg.Edges {
+		if err := kg.store.SaveEdge(edge); err != nil {
+			return fmt.Errorf("save edge %s: %w", edge.ID, err)
+		}
+	}
+
+	return nil
+}
+
+// PersistNode 立即持久化单个节点
+func (kg *KnowledgeGraph) PersistNode(node *KnowledgeNode) error {
+	if kg.store == nil {
+		return nil // 没有持久化存储，跳过
+	}
+
+	return kg.store.SaveNode(node)
+}
+
+// PersistEdge 立即持久化单个边
+func (kg *KnowledgeGraph) PersistEdge(edge *KnowledgeEdge) error {
+	if kg.store == nil {
+		return nil // 没有持久化存储，跳过
+	}
+
+	return kg.store.SaveEdge(edge)
 }

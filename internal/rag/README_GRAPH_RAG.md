@@ -212,11 +212,13 @@ LLM 应该返回如下 JSON 格式：
 
 ```
 internal/rag/
-├── graph.go                  # 知识图谱数据结构
+├── graph.go                  # 知识图谱数据结构（已支持持久化）
+├── graph_store.go            # 知识图谱 SQLite 持久化
 ├── graph_activation.go       # 激活扩散算法
 ├── extractor.go             # 实体关系提取器
 ├── rag.go                   # RAG Manager（已扩展）
 ├── graph_example_test.go    # 使用示例和测试
+├── graph_persist_test.go    # 持久化测试
 └── README_GRAPH_RAG.md      # 本文档
 ```
 
@@ -382,17 +384,69 @@ A: 分数组成：
 
 ### Q: 如何持久化知识图谱？
 
-A: 当前版本图谱在内存中，重启后需要重新提取。后续版本会添加 SQLite 持久化：
+A: **知识图谱持久化已实现！** 使用 SQLite 后端时，图谱数据会自动持久化到数据库：
+
+```go
+// 创建带 SQLite 和 Graph 的 RAG（自动持久化）
+config := rag.DefaultRAGConfig()
+config.EnableGraph = true
+
+ragManager, err := rag.NewRAGManagerWithSQLiteAndGraph(
+    embedder, 
+    config, 
+    "~/.luckyagent/rag/graph.db",
+    llmProvider,
+)
+if err != nil {
+    panic(err)
+}
+defer ragManager.CloseStore()
+
+// 添加节点和边会自动持久化到 SQLite
+// 重启后会自动从数据库加载
+```
+
+**数据库表结构：**
 
 ```sql
--- 将在 future version 中添加
-CREATE TABLE knowledge_nodes (...);
-CREATE TABLE knowledge_edges (...);
+-- 知识节点表
+CREATE TABLE knowledge_nodes (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    aliases TEXT NOT NULL DEFAULT '[]',
+    description TEXT NOT NULL DEFAULT '',
+    importance REAL NOT NULL DEFAULT 0.5,
+    access_count INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL,
+    accessed_at DATETIME NOT NULL,
+    source_chunks TEXT NOT NULL DEFAULT '[]',
+    embedding_id TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '[]'
+);
+
+-- 知识边表
+CREATE TABLE knowledge_edges (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    rel_type TEXT NOT NULL,
+    weight REAL NOT NULL DEFAULT 0.5,
+    context TEXT NOT NULL DEFAULT '',
+    evidence TEXT NOT NULL DEFAULT '[]',
+    created_at DATETIME NOT NULL,
+    FOREIGN KEY (source_id) REFERENCES knowledge_nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_id) REFERENCES knowledge_nodes(id) ON DELETE CASCADE
+);
 ```
+
+**重启后自动加载：**
+
+图谱数据会在初始化时自动从数据库加载，无需手动操作。
 
 ## 后续优化
 
-- [ ] 图谱持久化到 SQLite
+- [x] 图谱持久化到 SQLite ✅
 - [ ] 批量实体提取
 - [ ] 实体消歧和合并
 - [ ] 图可视化支持

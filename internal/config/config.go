@@ -1762,6 +1762,7 @@ func (m *Manager) InitHome() error {
 		filepath.Join(m.homeDir, "data"),
 		filepath.Join(m.homeDir, "data", "telegram"),
 		filepath.Join(m.homeDir, "description"),
+		filepath.Join(m.homeDir, "hooks"), // 添加 hooks 目录
 	}
 
 	for _, dir := range dirs {
@@ -1832,6 +1833,11 @@ Prompts 目录位于 memory 文件夹内，与记忆系统放在一起，便于�
 		}
 	}
 
+	// 写入默认 hooks 脚本
+	if err := m.initDefaultHooks(); err != nil {
+		return fmt.Errorf("init hooks: %w", err)
+	}
+
 	return nil
 }
 
@@ -1860,4 +1866,255 @@ type MsgGatewayOpenClawWeixin struct {
 	SplitMultilineMessages  bool     `json:"split_multiline_messages,omitempty"`
 	PollTimeoutMilliseconds int      `json:"poll_timeout_ms,omitempty"`
 	SendChunkDelayMS        int      `json:"send_chunk_delay_ms,omitempty"`
+}
+
+// initDefaultHooks 初始化默认的 hooks 脚本
+func (m *Manager) initDefaultHooks() error {
+	hooksDir := filepath.Join(m.homeDir, "hooks")
+
+	hooks := map[string]string{
+		"audit_log.py":       defaultAuditLogHook(),
+		"protect_paths.py":   defaultProtectPathsHook(),
+		"block_dangerous.py": defaultBlockDangerousHook(),
+		"redact_secrets.py":  defaultRedactSecretsHook(),
+	}
+
+	for filename, content := range hooks {
+		hookPath := filepath.Join(hooksDir, filename)
+		// 只在文件不存在时写入，避免覆盖用户自定义的 hooks
+		if _, err := os.Stat(hookPath); os.IsNotExist(err) {
+			if err := os.WriteFile(hookPath, []byte(content), 0o755); err != nil {
+				return fmt.Errorf("write %s: %w", filename, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// defaultAuditLogHook 返回默认的审计日志 hook
+func defaultAuditLogHook() string {
+	return `#!/usr/bin/env python3
+"""PreToolUse hook: append every tool call to a JSONL audit file.
+
+Reads the hook Payload as JSON on stdin, records it, and always allows.
+Match this on: [] (all tools). Put it FIRST in pre_tool_use so attempts are
+logged even when a later hook blocks them.
+
+Audit file path: $LH_HOOK_AUDIT, else ~/.luckyagent/hook-audit.jsonl
+"""
+import sys
+import json
+import os
+from datetime import datetime
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    record = {
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "event": payload.get("event", ""),
+        "tool": payload.get("tool", ""),
+        "source": payload.get("source", ""),
+        "session_id": payload.get("session_id", ""),
+        "arguments": payload.get("arguments", ""),
+    }
+
+    path = os.environ.get(
+        "LH_HOOK_AUDIT",
+        os.path.join(os.path.expanduser("~"), ".luckyagent", "hook-audit.jsonl"),
+    )
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        # Never let an audit failure break tool execution.
+        pass
+
+    print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
+}
+
+// defaultProtectPathsHook 返回默认的路径保护 hook
+func defaultProtectPathsHook() string {
+	return `#!/usr/bin/env python3
+"""PreToolUse hook: block writes/deletes to sensitive files.
+
+Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
+Match this on: file_write, file_patch, file_delete, file_move, file_mkdir,
+shell, terminal.
+
+This is a starter policy — tune PROTECTED to your deployment.
+"""
+import sys
+import json
+import re
+
+# Substrings that mark a path as protected. Conservative: ".env" also covers
+# ".env.prod" etc., which is the safe direction.
+PROTECTED = (
+    "config.json",
+    ".env",
+    "accounts.db",
+    ".git/",
+    "/.ssh/",
+    "/etc/",
+    "/tokens/",
+    ".luckyagent/",
+)
+
+# Shell tokens that indicate the command mutates the filesystem.
+MUTATING = re.compile(r"(>>?|\brm\b|\bmv\b|\bcp\b|\btee\b|sed\s+-i|truncate|chmod|chown|dd\b)")
+
+
+def hits(value: str) -> bool:
+    return any(p in (value or "") for p in PROTECTED)
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    tool = payload.get("tool", "")
+    try:
+        args = json.loads(payload.get("arguments") or "{}")
+    except (ValueError, TypeError):
+        args = {}
+
+    blocked = False
+    if tool in ("file_write", "file_patch", "file_delete", "file_move", "file_mkdir"):
+        for key in ("path", "dest", "to", "target", "src", "source"):
+            if hits(str(args.get(key, ""))):
+                blocked = True
+                break
+    elif tool in ("shell", "terminal"):
+        cmd = str(args.get("command", ""))
+        if MUTATING.search(cmd) and hits(cmd):
+            blocked = True
+
+    if blocked:
+        print(json.dumps({
+            "decision": "block",
+            "reason": "writing or deleting protected files (config/secrets/db/.git) is not allowed",
+        }))
+    else:
+        print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
+}
+
+// defaultBlockDangerousHook 返回默认的危险命令阻止 hook
+func defaultBlockDangerousHook() string {
+	return `#!/usr/bin/env python3
+"""PreToolUse hook: block destructive shell and database commands.
+
+Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
+Match this on: shell, terminal, sql_query.
+
+The shell checks are heuristics — harden them for your threat model.
+"""
+import sys
+import json
+import re
+
+
+def block(reason: str) -> None:
+    print(json.dumps({"decision": "block", "reason": reason}))
+    sys.exit(0)
+
+
+def check_shell(cmd: str) -> None:
+    low = cmd.lower()
+    # rm -rf / -fr / -r ... -f / --recursive --force
+    if re.search(r"\brm\b", low) and (
+        re.search(r"-\s*[a-z]*r[a-z]*f|-\s*[a-z]*f[a-z]*r", low)
+        or (re.search(r"-[a-z]*r", low) and re.search(r"-[a-z]*f", low))
+        or ("--recursive" in low and "--force" in low)
+    ):
+        block("rm -rf (recursive force delete) is blocked")
+    if "git push" in low and ("--force" in low or re.search(r"\s-f(\s|$)", low) or "+refs" in low):
+        block("git force-push is blocked")
+    if "git reset --hard" in low:
+        block("git reset --hard is blocked")
+    if re.search(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", cmd):
+        block("fork bomb is blocked")
+    if re.search(r"\bdd\b.*\bof=/dev/", low) or "mkfs" in low:
+        block("raw disk write is blocked")
+
+
+def check_sql(args: dict) -> None:
+    query = str(args.get("query", args.get("sql", ""))).upper()
+    if re.search(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|REPLACE)\b", query):
+        block("only read-only SELECT queries are allowed")
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    tool = payload.get("tool", "")
+    try:
+        args = json.loads(payload.get("arguments") or "{}")
+    except (ValueError, TypeError):
+        args = {}
+
+    if tool in ("shell", "terminal"):
+        check_shell(str(args.get("command", "")))
+    elif tool == "sql_query":
+        check_sql(args)
+
+    print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
+}
+
+// defaultRedactSecretsHook 返回默认的密钥脱敏 hook
+func defaultRedactSecretsHook() string {
+	return `#!/usr/bin/env python3
+"""PostToolUse hook: redact secrets from tool output.
+
+Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
+Match this on: [] (all tools) — secrets can surface in any output, and lh
+forwards output to Telegram/QQ/Weixin, so redact before it leaves.
+"""
+import sys
+import json
+import re
+
+# (pattern, replacement). Patterns are intentionally broad; false positives
+# only cost a redaction, never a leak.
+RULES = [
+    (re.compile(r"sk-[A-Za-z0-9_\-]{8,}"), "sk-[REDACTED]"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), "[REDACTED_GH_TOKEN]"),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"), "Bearer [REDACTED]"),
+    (re.compile(
+        r"(?i)\b(api[_-]?key|secret|token|password|passwd|access[_-]?token)\b\s*[=:]\s*[\"']?[A-Za-z0-9._\-]{6,}"
+    ), r"\1=[REDACTED]"),
+]
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    out = payload.get("output", "") or ""
+
+    redacted = out
+    for pattern, repl in RULES:
+        redacted = pattern.sub(repl, redacted)
+
+    if redacted != out:
+        print(json.dumps({"decision": "modify", "modified_output": redacted}))
+    else:
+        print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
 }
