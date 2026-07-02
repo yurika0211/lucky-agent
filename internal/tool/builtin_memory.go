@@ -96,6 +96,18 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 				Required:    false,
 				Default:     false,
 			},
+			"mode": {
+				Type:        "string",
+				Description: "Write mode: append, upsert_state, or supersede. upsert_state requires state_key and supersedes older active state memories.",
+				Required:    false,
+				Default:     "append",
+			},
+			"format": {
+				Type:        "string",
+				Description: "Output format: text or json.",
+				Required:    false,
+				Default:     "text",
+			},
 		},
 		Handler:      handler,
 		ParallelSafe: false,

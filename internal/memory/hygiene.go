@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+const MaxDurableMemoryContentRunes = 4000
+
 // HygieneOptions configures deterministic memory hygiene scans.
 type HygieneOptions struct {
 	IncludeInactive bool
@@ -42,6 +44,58 @@ var (
 	secretLikeRe            = regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?token|secret|password|passwd|bearer\s+[a-z0-9._~+/-]{16,}|sk-[a-z0-9]{16,}|xox[baprs]-[a-z0-9-]{10,})`)
 	promptInjectionRe       = regexp.MustCompile(`(?i)(ignore (all )?(previous|prior) instructions|system prompt|developer message|you are now|jailbreak|do not obey|泄露.*提示词|忽略.*指令|越狱)`)
 )
+
+// AnalyzeMemoryContent applies deterministic hygiene checks to proposed durable
+// memory content before it is written.
+func AnalyzeMemoryContent(content string) []HygieneIssue {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return []HygieneIssue{{
+			Severity:        "high",
+			Reason:          "empty",
+			SuggestedAction: "reject",
+			Score:           0.85,
+		}}
+	}
+	issues := make([]HygieneIssue, 0, 4)
+	if rawConversationPrefixRe.MatchString(content) || rawConversationText(content) {
+		issues = append(issues, HygieneIssue{
+			Severity:        "high",
+			Reason:          "raw_conversation",
+			SuggestedAction: "reject",
+			Score:           0.82,
+			Preview:         truncateRunes(strings.ReplaceAll(content, "\n", " "), 160),
+		})
+	}
+	if secretLikeRe.MatchString(content) {
+		issues = append(issues, HygieneIssue{
+			Severity:        "critical",
+			Reason:          "secret_like",
+			SuggestedAction: "reject",
+			Score:           0.98,
+			Preview:         truncateRunes(strings.ReplaceAll(content, "\n", " "), 160),
+		})
+	}
+	if promptInjectionRe.MatchString(content) {
+		issues = append(issues, HygieneIssue{
+			Severity:        "high",
+			Reason:          "prompt_injection",
+			SuggestedAction: "reject",
+			Score:           0.86,
+			Preview:         truncateRunes(strings.ReplaceAll(content, "\n", " "), 160),
+		})
+	}
+	if len([]rune(content)) > MaxDurableMemoryContentRunes {
+		issues = append(issues, HygieneIssue{
+			Severity:        "low",
+			Reason:          "oversized",
+			SuggestedAction: "reject",
+			Score:           0.40,
+			Preview:         truncateRunes(strings.ReplaceAll(content, "\n", " "), 160),
+		})
+	}
+	return issues
+}
 
 // AuditHygiene scans memory entries for deterministic dirty-memory signals.
 func (s *Store) AuditHygiene(opts HygieneOptions) HygieneReport {
@@ -167,7 +221,7 @@ func (s *Store) hygieneIssuesLocked(opts HygieneOptions, now time.Time) []Hygien
 				activeState[stateKey] = e
 			}
 		}
-		if len([]rune(content)) > 4000 && e.Tier != TierLong {
+		if len([]rune(content)) > MaxDurableMemoryContentRunes && e.Tier != TierLong {
 			issues = appendHygieneIssue(issues, seenIssue, e, "low", "oversized", "quarantine", 0.40, content)
 		}
 	}
@@ -225,6 +279,10 @@ func rawConversationMemory(e *Entry) bool {
 		return false
 	}
 	content := strings.TrimSpace(e.Content)
+	return rawConversationText(content)
+}
+
+func rawConversationText(content string) bool {
 	return strings.Contains(content, "\nUser:") || strings.Contains(content, "\nAssistant:") || strings.HasPrefix(content, "User:") || strings.HasPrefix(content, "Assistant:")
 }
 

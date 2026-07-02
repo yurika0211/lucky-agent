@@ -5,9 +5,15 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/yurika0211/luckyagent/internal/memory"
 	"github.com/yurika0211/luckyagent/internal/utils"
+)
+
+const (
+	maxMemoryToolMetadataItems = 20
+	maxMemoryToolMetadataRunes = 80
 )
 
 // MemoryToolService implements remember/recall handlers in the tool layer.
@@ -26,11 +32,17 @@ func (s *MemoryToolService) HandleRemember(args map[string]any) (string, error) 
 	}
 	content, _ := args["content"].(string)
 	category, _ := args["category"].(string)
+	content = strings.TrimSpace(content)
 	if content == "" {
 		return "", fmt.Errorf("content is required")
 	}
+	if err := rejectDirtyMemoryContent(content); err != nil {
+		return "", err
+	}
+	categoryInferred := false
 	if category == "" {
 		category = inferMemoryCategory(content)
+		categoryInferred = true
 	}
 	tier := memory.TierMedium
 	importance := 0.5
@@ -48,9 +60,18 @@ func (s *MemoryToolService) HandleRemember(args map[string]any) (string, error) 
 	if rawImportance, ok := numberArg(args["importance"]); ok {
 		importance = clamp01(rawImportance)
 	}
-	tags := stringSliceArg(args["tags"])
-	links := stringSliceArg(args["links"])
-	aliases := stringSliceArg(args["aliases"])
+	tags, err := normalizeMemoryMetadataArg("tags", stringSliceArg(args["tags"]))
+	if err != nil {
+		return "", err
+	}
+	links, err := normalizeMemoryMetadataArg("links", stringSliceArg(args["links"]))
+	if err != nil {
+		return "", err
+	}
+	aliases, err := normalizeMemoryMetadataArg("aliases", stringSliceArg(args["aliases"]))
+	if err != nil {
+		return "", err
+	}
 	opts := memory.SaveOptions{
 		Tags:       tags,
 		Links:      links,
@@ -63,6 +84,9 @@ func (s *MemoryToolService) HandleRemember(args map[string]any) (string, error) 
 	if confidence, ok := numberArg(args["confidence"]); ok {
 		opts.Confidence = clamp01(confidence)
 	}
+	if tier == memory.TierLong && opts.Confidence > 0 && opts.Confidence < 0.35 {
+		return "", fmt.Errorf("long-term memory with confidence below 0.35 is rejected; save a medium-tier note or confirm stronger evidence")
+	}
 	if validFrom, ok, err := timeArg(args["valid_from"]); err != nil {
 		return "", err
 	} else if ok {
@@ -74,10 +98,146 @@ func (s *MemoryToolService) HandleRemember(args map[string]any) (string, error) 
 		opts.ValidUntil = &validUntil
 	}
 
-	if err := s.store.SaveWithOptions(content, category, tier, importance, opts); err != nil {
+	mode := strings.ToLower(strings.TrimSpace(stringArg(args["mode"])))
+	if mode == "" {
+		mode = "append"
+	}
+	if mode != "append" && mode != "upsert_state" && mode != "supersede" {
+		return "", fmt.Errorf("mode must be append, upsert_state, or supersede")
+	}
+	if mode == "supersede" && len(opts.Supersedes) == 0 {
+		return "", fmt.Errorf("mode=supersede requires supersedes")
+	}
+	var superseded []string
+	if mode == "upsert_state" {
+		if opts.StateKey == "" {
+			return "", fmt.Errorf("mode=upsert_state requires state_key")
+		}
+		superseded = s.store.ActiveStateIDs(opts.StateKey)
+		opts.Supersedes = append(opts.Supersedes, superseded...)
+	}
+
+	result, err := s.store.SaveWithOptionsResult(content, category, tier, importance, opts)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("✅ 已保存为%s记忆 [%s] 到 LuckyAgent Markdown 记忆库 %s: %s", memoryTierLabel(tier), category, memoryVaultPathForTool(s.store), utils.Truncate(content, 80)), nil
+	if mode == "upsert_state" && len(superseded) > 0 {
+		filtered := make([]string, 0, len(superseded))
+		for _, id := range superseded {
+			if id != result.ID {
+				filtered = append(filtered, id)
+			}
+		}
+		superseded, err = s.store.SupersedeEntries(filtered)
+		if err != nil {
+			return "", err
+		}
+	}
+	format := strings.ToLower(strings.TrimSpace(stringArg(args["format"])))
+	if format == "" {
+		format = "text"
+	}
+	if format != "text" && format != "json" {
+		return "", fmt.Errorf("format must be text or json")
+	}
+	if format == "json" {
+		return formatRememberJSON(memoryRememberResponse{
+			Saved:            true,
+			ID:               result.ID,
+			Path:             result.Path,
+			Created:          result.Created,
+			UpdatedExisting:  result.UpdatedExisting,
+			DuplicateOf:      result.DuplicateOf,
+			Category:         category,
+			CategoryInferred: categoryInferred,
+			Tier:             tier.String(),
+			Importance:       importance,
+			Links:            links,
+			Aliases:          aliases,
+			Tags:             tags,
+			Superseded:       superseded,
+		})
+	}
+	action := "已保存"
+	if result.UpdatedExisting {
+		action = "已更新已有"
+	}
+	return fmt.Sprintf("✅ %s为%s记忆 [%s] 到 LuckyAgent Markdown 记忆库 %s: %s", action, memoryTierLabel(tier), category, memoryVaultPathForTool(s.store), utils.Truncate(content, 80)), nil
+}
+
+type memoryRememberResponse struct {
+	Saved            bool     `json:"saved"`
+	ID               string   `json:"id,omitempty"`
+	Path             string   `json:"path,omitempty"`
+	Created          bool     `json:"created"`
+	UpdatedExisting  bool     `json:"updated_existing"`
+	DuplicateOf      string   `json:"duplicate_of,omitempty"`
+	Category         string   `json:"category"`
+	CategoryInferred bool     `json:"category_inferred"`
+	Tier             string   `json:"tier"`
+	Importance       float64  `json:"importance"`
+	Links            []string `json:"links,omitempty"`
+	Aliases          []string `json:"aliases,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Superseded       []string `json:"superseded,omitempty"`
+}
+
+func formatRememberJSON(payload memoryRememberResponse) (string, error) {
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func rejectDirtyMemoryContent(content string) error {
+	for _, issue := range memory.AnalyzeMemoryContent(content) {
+		switch issue.Reason {
+		case "empty":
+			return fmt.Errorf("content is required")
+		case "raw_conversation":
+			return fmt.Errorf("raw conversation content is rejected; save a concise stable summary instead")
+		case "secret_like":
+			return fmt.Errorf("secret-like content is rejected and must not be stored in durable memory")
+		case "prompt_injection":
+			return fmt.Errorf("prompt-injection-like content is rejected and must not be stored in durable memory")
+		case "oversized":
+			return fmt.Errorf("content exceeds %d rune limit; summarize it or index the source with rag_index", memory.MaxDurableMemoryContentRunes)
+		}
+	}
+	return nil
+}
+
+func normalizeMemoryMetadataArg(name string, values []string) ([]string, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if len([]rune(value)) > maxMemoryToolMetadataRunes {
+			return nil, fmt.Errorf("%s item exceeds %d rune limit", name, maxMemoryToolMetadataRunes)
+		}
+		for _, r := range value {
+			if unicode.IsControl(r) {
+				return nil, fmt.Errorf("%s item contains control characters", name)
+			}
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+		if len(out) > maxMemoryToolMetadataItems {
+			return nil, fmt.Errorf("%s exceeds maximum %d items", name, maxMemoryToolMetadataItems)
+		}
+	}
+	return out, nil
 }
 
 func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {

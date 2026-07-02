@@ -166,6 +166,16 @@ type SaveOptions struct {
 	Supersedes []string
 }
 
+// SaveResult describes whether a durable memory save created a new note or
+// updated an existing duplicate.
+type SaveResult struct {
+	ID              string `json:"id,omitempty"`
+	Path            string `json:"path,omitempty"`
+	Created         bool   `json:"created"`
+	UpdatedExisting bool   `json:"updated_existing"`
+	DuplicateOf     string `json:"duplicate_of,omitempty"`
+}
+
 // NewStore 创建记忆存储
 func NewStore(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -205,13 +215,20 @@ func (s *Store) SaveWithMetadata(content, category string, tier Tier, importance
 
 // SaveWithOptions saves a memory note with graph and temporal-state metadata.
 func (s *Store) SaveWithOptions(content, category string, tier Tier, importance float64, opts SaveOptions) error {
+	_, err := s.SaveWithOptionsResult(content, category, tier, importance, opts)
+	return err
+}
+
+// SaveWithOptionsResult saves a memory note and reports whether it was created
+// or merged into an existing duplicate.
+func (s *Store) SaveWithOptionsResult(content, category string, tier Tier, importance float64, opts SaveOptions) (SaveResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	content = sanitizeDurableMemoryContent(content)
 	category = strings.TrimSpace(category)
 	if content == "" {
-		return nil
+		return SaveResult{}, nil
 	}
 	opts = enrichSaveOptionsWithConcepts(content, category, opts)
 	if !strings.EqualFold(strings.TrimSpace(category), "concept") {
@@ -274,7 +291,16 @@ func (s *Store) SaveWithOptions(content, category string, tier Tier, importance 
 			}
 			e.Links = normalizeLinks(append(e.Links, extractWikiLinks(e.Content)...))
 			e.Aliases = dedupSlice(e.Aliases)
-			return s.persist()
+			if err := s.persist(); err != nil {
+				return SaveResult{}, err
+			}
+			return SaveResult{
+				ID:              e.ID,
+				Path:            e.Path,
+				Created:         false,
+				UpdatedExisting: true,
+				DuplicateOf:     e.ID,
+			}, nil
 		}
 	}
 
@@ -309,7 +335,14 @@ func (s *Store) SaveWithOptions(content, category string, tier Tier, importance 
 	entry.BlockID = blockIDForEntry(entry.ID)
 	entry.Links = normalizeLinks(append(opts.Links, extractWikiLinks(content)...))
 	s.entries[entry.ID] = entry
-	return s.persist()
+	if err := s.persist(); err != nil {
+		return SaveResult{}, err
+	}
+	return SaveResult{
+		ID:      entry.ID,
+		Path:    entry.Path,
+		Created: true,
+	}, nil
 }
 
 // mergeTags 合并标签，去重
@@ -421,6 +454,64 @@ func (s *Store) Get(id string) (*Entry, error) {
 		return nil, fmt.Errorf("memory not found: %s", id)
 	}
 	return e, nil
+}
+
+// ActiveStateIDs returns active memory IDs for a temporal state key.
+func (s *Store) ActiveStateIDs(stateKey string) []string {
+	if s == nil {
+		return nil
+	}
+	stateKey = strings.ToLower(strings.TrimSpace(stateKey))
+	if stateKey == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	ids := make([]string, 0, 2)
+	for id, e := range s.entries {
+		if e == nil || !entryIsActive(e, now) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(e.StateKey), stateKey) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// SupersedeEntries marks active entries as superseded without deleting their
+// Markdown notes.
+func (s *Store) SupersedeEntries(ids []string) ([]string, error) {
+	if s == nil || len(ids) == 0 {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		e := s.entries[id]
+		if e == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(e.Status), "superseded") {
+			continue
+		}
+		e.Status = "superseded"
+		changed = append(changed, id)
+	}
+	if len(changed) == 0 {
+		return nil, nil
+	}
+	if err := s.persist(); err != nil {
+		return changed, err
+	}
+	return changed, nil
 }
 
 // SearchParallel 并行检索三层记忆，按相关度排序返回 top-N 条
