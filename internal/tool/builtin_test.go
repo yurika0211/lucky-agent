@@ -26,6 +26,7 @@ type namedImageTestProvider struct{}
 type fakeImageGenerator struct {
 	lastReq multimodal.ImageGenerationRequest
 	result  *multimodal.ImageGenerationResult
+	calls   int
 }
 type fakeSpeechSynthesizer struct {
 	lastReq multimodal.SpeechSynthesisRequest
@@ -41,6 +42,7 @@ func testLuckyAgentWorkspace(t *testing.T) string {
 
 func (g *fakeImageGenerator) Name() string { return "fake-image-generator" }
 func (g *fakeImageGenerator) GenerateImage(ctx context.Context, req multimodal.ImageGenerationRequest) (*multimodal.ImageGenerationResult, error) {
+	g.calls++
 	g.lastReq = req
 	if g.result != nil {
 		return g.result, nil
@@ -951,6 +953,96 @@ func TestFileReadWriteTool(t *testing.T) {
 	}
 	if readResult == "" {
 		t.Error("expected read result")
+	}
+}
+
+func TestFileWriteToolModesDryRunAndHash(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "write.txt")
+	dryRun, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "planned",
+		"mode":    "create",
+		"dry_run": true,
+	})
+	if err != nil {
+		t.Fatalf("file_write dry_run: %v", err)
+	}
+	if !strings.Contains(dryRun, "Dry run") || !strings.Contains(dryRun, `"action": "create"`) {
+		t.Fatalf("unexpected dry_run result: %q", dryRun)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry_run should not create file, got %v", err)
+	}
+
+	if _, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "initial",
+		"mode":    "create",
+	}); err != nil {
+		t.Fatalf("file_write create: %v", err)
+	}
+	if _, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "again",
+		"mode":    "create",
+	}); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected create mode existing error, got %v", err)
+	}
+
+	oldHash := sha256Hex([]byte("initial"))
+	if _, err := r.Call("file_write", map[string]any{
+		"path":            path,
+		"content":         "updated",
+		"expected_sha256": oldHash,
+	}); err != nil {
+		t.Fatalf("file_write expected hash: %v", err)
+	}
+	if _, err := r.Call("file_write", map[string]any{
+		"path":            path,
+		"content":         "bad",
+		"expected_sha256": oldHash,
+	}); err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("expected hash mismatch, got %v", err)
+	}
+
+	skip, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "updated",
+	})
+	if err != nil {
+		t.Fatalf("file_write same content: %v", err)
+	}
+	if !strings.Contains(skip, "Skipped write") {
+		t.Fatalf("expected same-content skip, got %q", skip)
+	}
+}
+
+func TestFileWriteToolPreservesPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bit preservation is platform-specific on Windows")
+	}
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "script.sh")
+	if err := os.WriteFile(path, []byte("old"), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	if _, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "new",
+	}); err != nil {
+		t.Fatalf("file_write overwrite: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat script: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("expected permissions 0755, got %o", got)
 	}
 }
 

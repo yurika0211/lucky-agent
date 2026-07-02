@@ -3,6 +3,7 @@ package tool
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ const (
 	defaultFileReadLimit = 2000
 	maxFileReadLimit     = 5000
 	binarySniffBytes     = 8192
+	maxFileWriteBytes    = 25 * 1024 * 1024
 )
 
 func TerminalTool() *Tool {
@@ -251,17 +253,34 @@ func trimLineEnding(line string) string {
 func FileWriteTool() *Tool {
 	return &Tool{
 		Name:        "file_write",
-		Description: "Write or overwrite a local file when the task requires creating, updating, or exporting a real artifact on disk.",
+		Description: "Write a complete local file. Use dry_run=true to preview, mode=create|overwrite|upsert to control existing files, and expected_sha256 to protect against concurrent changes.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
 		ShellAware:  true,
 		Parameters: map[string]Param{
-			"path":    {Type: "string", Description: "Target path of the file to create or overwrite.", Required: true},
-			"content": {Type: "string", Description: "Full file content to write. Use complete intended content, not a diff.", Required: true},
+			"path":            {Type: "string", Description: "Target path of the file to create or overwrite.", Required: true},
+			"content":         {Type: "string", Description: "Full file content to write. Use complete intended content, not a diff.", Required: true},
+			"mode":            {Type: "string", Description: "Write mode: upsert creates or overwrites, create fails if the file exists, overwrite fails if it does not exist. Default upsert.", Required: false, Default: "upsert"},
+			"dry_run":         {Type: "boolean", Description: "Preview the write plan without changing the filesystem. Default false.", Required: false, Default: false},
+			"expected_sha256": {Type: "string", Description: "Optional SHA-256 hash the existing file must match before overwriting.", Required: false},
 		},
 		Handler: handleFileWrite,
 	}
+}
+
+type fileWritePlan struct {
+	Path           string `json:"path"`
+	Mode           string `json:"mode"`
+	Exists         bool   `json:"exists"`
+	Action         string `json:"action"`
+	OldSize        int64  `json:"old_size,omitempty"`
+	NewSize        int    `json:"new_size"`
+	OldSHA256      string `json:"old_sha256,omitempty"`
+	NewSHA256      string `json:"new_sha256"`
+	SameContent    bool   `json:"same_content"`
+	AtomicReplace  bool   `json:"atomic_replace"`
+	MaxAllowedSize int    `json:"max_allowed_size"`
 }
 
 func handleFileWrite(args map[string]any) (string, error) {
@@ -273,13 +292,132 @@ func handleFileWrite(args map[string]any) (string, error) {
 	if pathErr != nil {
 		return "", pathErr
 	}
+	contentBytes := []byte(content)
+	if len(contentBytes) > maxFileWriteBytes {
+		return "", fmt.Errorf("content is too large (%d bytes, max %d)", len(contentBytes), maxFileWriteBytes)
+	}
+	mode := strings.ToLower(strings.TrimSpace(stringArg(args["mode"])))
+	if mode == "" {
+		mode = "upsert"
+	}
+	dryRun := false
+	if v, ok := args["dry_run"].(bool); ok {
+		dryRun = v
+	}
+	expectedSHA := strings.ToLower(strings.TrimSpace(stringArg(args["expected_sha256"])))
+
+	plan, existingPerm, err := buildFileWritePlan(path, contentBytes, mode, expectedSHA)
+	if err != nil {
+		return "", err
+	}
+	if dryRun {
+		out, err := prettyStructuredValue(plan)
+		if err != nil {
+			return "", err
+		}
+		return "Dry run: file write plan\n" + out, nil
+	}
+	if plan.SameContent {
+		return fmt.Sprintf("Skipped write to %s; content already matches sha256 %s", path, plan.NewSHA256), nil
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("create directory: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+	if err := writeFileAtomic(path, contentBytes, existingPerm); err != nil {
 		return "", fmt.Errorf("write file: %w", err)
 	}
-	return fmt.Sprintf("Written %d bytes to %s", len(content), path), nil
+	return fmt.Sprintf("Written %d bytes to %s (sha256 %s)", len(contentBytes), path, plan.NewSHA256), nil
+}
+
+func buildFileWritePlan(path string, content []byte, mode, expectedSHA string) (fileWritePlan, os.FileMode, error) {
+	plan := fileWritePlan{
+		Path:           path,
+		Mode:           mode,
+		NewSize:        len(content),
+		NewSHA256:      sha256Hex(content),
+		AtomicReplace:  true,
+		MaxAllowedSize: maxFileWriteBytes,
+	}
+	if mode != "upsert" && mode != "create" && mode != "overwrite" {
+		return plan, 0, fmt.Errorf("mode must be one of create, overwrite, upsert")
+	}
+
+	info, err := os.Stat(path)
+	existingPerm := os.FileMode(0o644)
+	switch {
+	case err == nil:
+		if info.IsDir() {
+			return plan, 0, fmt.Errorf("cannot write file because path is a directory: %s", path)
+		}
+		existingPerm = info.Mode().Perm()
+		plan.Exists = true
+		plan.OldSize = info.Size()
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return plan, 0, fmt.Errorf("read existing file: %w", err)
+		}
+		plan.OldSHA256 = sha256Hex(data)
+		plan.SameContent = bytes.Equal(data, content)
+	case errors.Is(err, os.ErrNotExist):
+	default:
+		return plan, 0, fmt.Errorf("stat file: %w", err)
+	}
+
+	if mode == "create" && plan.Exists {
+		return plan, 0, fmt.Errorf("file already exists: %s", path)
+	}
+	if mode == "overwrite" && !plan.Exists {
+		return plan, 0, fmt.Errorf("file does not exist for overwrite mode: %s", path)
+	}
+	if expectedSHA != "" {
+		if !plan.Exists {
+			return plan, 0, fmt.Errorf("expected_sha256 requires an existing file: %s", path)
+		}
+		if plan.OldSHA256 != expectedSHA {
+			return plan, 0, fmt.Errorf("existing file sha256 mismatch: got %s, expected %s", plan.OldSHA256, expectedSHA)
+		}
+	}
+	switch {
+	case plan.SameContent:
+		plan.Action = "skip"
+	case plan.Exists:
+		plan.Action = "overwrite"
+	default:
+		plan.Action = "create"
+	}
+	return plan, existingPerm, nil
+}
+
+func writeFileAtomic(path string, content []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(perm); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
+func sha256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return fmt.Sprintf("%x", sum)
 }
 
 func FileMkdirTool() *Tool {
