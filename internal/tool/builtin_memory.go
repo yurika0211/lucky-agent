@@ -192,9 +192,26 @@ func RAGSearchTool(handler func(args map[string]any) (string, error)) *Tool {
 			},
 			"top_k": {
 				Type:        "number",
-				Description: "Maximum number of relevant passages to return.",
+				Description: "Maximum number of relevant passages to return. Defaults to 5 and cannot exceed 20.",
 				Required:    false,
 				Default:     5,
+			},
+			"min_score": {
+				Type:        "number",
+				Description: "Optional minimum similarity score from 0.0 to 1.0.",
+				Required:    false,
+			},
+			"timeout_seconds": {
+				Type:        "number",
+				Description: "Per-call search timeout in seconds, from 1 to 120.",
+				Required:    false,
+				Default:     30,
+			},
+			"format": {
+				Type:        "string",
+				Description: "Output format: text or json.",
+				Required:    false,
+				Default:     "text",
 			},
 		},
 		Handler:      handler,

@@ -50,6 +50,16 @@ type RAGConfig struct {
 	EnableGraph     bool // 是否启用知识图谱
 }
 
+// SearchOptions configures a single RAG search without mutating shared
+// retriever state.
+type SearchOptions struct {
+	TopK         int
+	MinScore     float64
+	UseMMR       bool
+	MMRLambda    float64
+	FilterSource string
+}
+
 func DefaultRAGConfig() RAGConfig {
 	return RAGConfig{
 		EmbeddingDim:    0, // 0 = auto-detect from embedder
@@ -150,6 +160,25 @@ func (m *RAGManager) IndexDirectory(dir string) ([]*Document, error) {
 // Search queries the knowledge base.
 func (m *RAGManager) Search(ctx context.Context, query string) ([]RetrievalResult, error) {
 	return m.retriever.Search(ctx, query)
+}
+
+// SearchWithOptions queries the knowledge base with per-call retrieval options.
+func (m *RAGManager) SearchWithOptions(ctx context.Context, query string, opts SearchOptions) ([]RetrievalResult, error) {
+	cfg := m.RetrieverConfig()
+	if opts.TopK > 0 {
+		cfg.TopK = opts.TopK
+	}
+	if opts.MinScore > 0 {
+		cfg.MinScore = opts.MinScore
+	}
+	cfg.UseMMR = opts.UseMMR
+	if opts.MMRLambda > 0 {
+		cfg.MMRLambda = opts.MMRLambda
+	}
+	if strings.TrimSpace(opts.FilterSource) != "" {
+		cfg.FilterSource = strings.TrimSpace(opts.FilterSource)
+	}
+	return m.retriever.SearchWithConfig(ctx, query, cfg)
 }
 
 // SearchWithContext queries and returns assembled context string.

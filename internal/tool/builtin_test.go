@@ -1487,8 +1487,8 @@ func TestRAGToolServiceSearchOptionsArePerCall(t *testing.T) {
 	}
 
 	out, err := svc.HandleSearch(map[string]any{
-		"query": "alpha",
-		"top_k": 1,
+		"query":  "alpha",
+		"top_k":  1,
 		"format": "json",
 	})
 	if err != nil {
