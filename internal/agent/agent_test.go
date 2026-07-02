@@ -1432,6 +1432,62 @@ func (p *staticChatProvider) ChatStream(ctx context.Context, messages []provider
 }
 func (p *staticChatProvider) Validate() error { return nil }
 
+func TestCompactSessionRejectsLowQualitySummary(t *testing.T) {
+	sess := session.NewSession("compact-bad", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and run go test ./internal/agent.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent failed: context planner dropped latest user turn")
+	before := sess.MessageCount()
+
+	a := &Agent{
+		provider:   &staticChatProvider{name: "static", content: "Looks good."},
+		contextEst: contextx.NewTokenEstimator(4096),
+	}
+	_, err := a.CompactSession(context.Background(), sess, "manual")
+	if err == nil || !strings.Contains(err.Error(), "invalid summary") {
+		t.Fatalf("expected invalid summary error, got %v", err)
+	}
+	if got := sess.MessageCount(); got != before {
+		t.Fatalf("failed compact must not append boundary: got %d messages, want %d", got, before)
+	}
+}
+
+func TestCompactSessionAcceptsValidatedSummary(t *testing.T) {
+	sess := session.NewSession("compact-good", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and run go test ./internal/agent.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent passed after preserving latest user turn.")
+	summary := strings.Join([]string{
+		"Current user goal:",
+		"Continue implementing LuckyAgent compact behavior and keep internal/agent/context_planner.go consistent with session compact boundaries.",
+		"Completed work:",
+		"Added a compact boundary marker and verified go test ./internal/agent passed for the context planner compact case.",
+		"Pending work:",
+		"Add restore attachments and trace output before considering auto compact.",
+		"Key files and functions:",
+		"internal/agent/context_planner.go, internal/session/session.go, Agent.CompactSession.",
+		"Commands and test results:",
+		"go test ./internal/agent passed for the compact boundary tests.",
+		"User constraints:",
+		"Commit small chunks after each optimization phase.",
+		"Uncertain facts:",
+		"No unresolved provider-specific compact behavior was verified.",
+	}, "\n")
+	a := &Agent{
+		provider:   &staticChatProvider{name: "static", content: summary},
+		contextEst: contextx.NewTokenEstimator(4096),
+	}
+	result, err := a.CompactSession(context.Background(), sess, "manual")
+	if err != nil {
+		t.Fatalf("CompactSession: %v", err)
+	}
+	if result.BoundaryID == "" || result.DroppedMessages != 2 {
+		t.Fatalf("unexpected compact result: %+v", result)
+	}
+	messages := sess.GetMessages()
+	if !session.IsCompactBoundary(messages[len(messages)-1]) {
+		t.Fatalf("expected compact boundary as last message, got %+v", messages[len(messages)-1])
+	}
+}
+
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
 func TestAgent_Tools(t *testing.T) {

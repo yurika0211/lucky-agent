@@ -1561,6 +1561,9 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 	if err != nil {
 		return nil, err
 	}
+	if validation := validateCompactSummary(summary, compactInput); !validation.Valid {
+		return nil, fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
+	}
 	postTokens := est.Estimate(summary)
 	boundaryID := fmt.Sprintf("compact-%d", time.Now().UnixNano())
 	meta := session.CompactMetadata{
