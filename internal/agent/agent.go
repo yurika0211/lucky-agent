@@ -2520,6 +2520,7 @@ func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *sessi
 		logs = citationLogs[0]
 	}
 	response = appendNaturalCitations(response, logs)
+	response = a.appendRunningTaskNotice(response)
 	if sess != nil {
 		sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent})
 		_ = sess.Save()
