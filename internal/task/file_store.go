@@ -250,6 +250,67 @@ func (s *FileStore) PlannerTrace(taskID string) ([]byte, bool, error) {
 	return s.readArtifact(taskID, plannerTraceFileName)
 }
 
+func (s *FileStore) Cleanup(policy RetentionPolicy) (CleanupResult, error) {
+	if s == nil {
+		return CleanupResult{}, fmt.Errorf("task store is nil")
+	}
+	if policy.MaxAge <= 0 && policy.KeepLast <= 0 {
+		return CleanupResult{}, fmt.Errorf("cleanup policy requires max age or keep last")
+	}
+	statuses := policy.Statuses
+	if len(statuses) == 0 {
+		statuses = []Status{StatusCompleted, StatusFailed, StatusCancelled}
+	}
+	statusSet := make(map[Status]struct{}, len(statuses))
+	for _, status := range statuses {
+		statusSet[status] = struct{}{}
+	}
+
+	records, err := s.List(ListFilter{})
+	if err != nil {
+		return CleanupResult{}, err
+	}
+	candidates := make([]Record, 0, len(records))
+	for _, record := range records {
+		if _, ok := statusSet[record.Status]; ok {
+			candidates = append(candidates, record)
+		}
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return retentionTime(candidates[i]).After(retentionTime(candidates[j]))
+	})
+
+	keep := make(map[string]struct{})
+	if policy.KeepLast > 0 {
+		for i, record := range candidates {
+			if i >= policy.KeepLast {
+				break
+			}
+			keep[record.ID] = struct{}{}
+		}
+	}
+	cutoff := time.Now().Add(-policy.MaxAge)
+	var result CleanupResult
+	for _, record := range candidates {
+		if _, ok := keep[record.ID]; ok {
+			result.KeptCount++
+			continue
+		}
+		if policy.MaxAge > 0 && retentionTime(record).After(cutoff) {
+			result.KeptCount++
+			continue
+		}
+		s.mu.Lock()
+		err := os.RemoveAll(s.taskDir(record.ID))
+		s.mu.Unlock()
+		if err != nil {
+			return result, err
+		}
+		result.DeletedIDs = append(result.DeletedIDs, record.ID)
+	}
+	return result, nil
+}
+
 func (s *FileStore) writeArtifact(taskID, name string, data []byte) error {
 	if s == nil {
 		return fmt.Errorf("task store is nil")
@@ -286,6 +347,13 @@ func (s *FileStore) readArtifact(taskID, name string) ([]byte, bool, error) {
 
 func (s *FileStore) taskDir(id string) string {
 	return filepath.Join(s.root, sanitizeID(id))
+}
+
+func retentionTime(record Record) time.Time {
+	if !record.CompletedAt.IsZero() {
+		return record.CompletedAt
+	}
+	return record.CreatedAt
 }
 
 func writeJSONFile(path string, value any) error {

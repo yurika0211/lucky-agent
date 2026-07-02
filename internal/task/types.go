@@ -139,3 +139,14 @@ type ListFilter struct {
 	ParentID string
 	Limit    int
 }
+
+type RetentionPolicy struct {
+	MaxAge   time.Duration `json:"max_age,omitempty"`
+	KeepLast int           `json:"keep_last,omitempty"`
+	Statuses []Status      `json:"statuses,omitempty"`
+}
+
+type CleanupResult struct {
+	DeletedIDs []string `json:"deleted_ids,omitempty"`
+	KeptCount  int      `json:"kept_count"`
+}

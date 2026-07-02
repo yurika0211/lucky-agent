@@ -127,3 +127,65 @@ func TestFileStoreListFiltersAndSorts(t *testing.T) {
 		t.Fatalf("expected HTTP task only, got %+v", httpOnly)
 	}
 }
+
+func TestFileStoreCleanupRetention(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	now := time.Now()
+	records := []Record{
+		{ID: "old-completed", Status: StatusCompleted, CreatedAt: now.Add(-48 * time.Hour), CompletedAt: now.Add(-47 * time.Hour), Description: "old completed"},
+		{ID: "old-running", Status: StatusRunning, CreatedAt: now.Add(-48 * time.Hour), Description: "old running"},
+		{ID: "new-completed", Status: StatusCompleted, CreatedAt: now.Add(-time.Minute), CompletedAt: now.Add(-time.Minute), Description: "new completed"},
+	}
+	for _, record := range records {
+		if _, err := store.Create(record); err != nil {
+			t.Fatalf("Create %s: %v", record.ID, err)
+		}
+	}
+
+	result, err := store.Cleanup(RetentionPolicy{MaxAge: 24 * time.Hour})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if len(result.DeletedIDs) != 1 || result.DeletedIDs[0] != "old-completed" {
+		t.Fatalf("unexpected deleted ids: %+v", result)
+	}
+	if _, ok, err := store.Get("old-completed"); err != nil || ok {
+		t.Fatalf("old completed should be deleted: ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := store.Get("old-running"); err != nil || !ok {
+		t.Fatalf("old running should be retained: ok=%t err=%v", ok, err)
+	}
+	if _, ok, err := store.Get("new-completed"); err != nil || !ok {
+		t.Fatalf("new completed should be retained: ok=%t err=%v", ok, err)
+	}
+}
+
+func TestFileStoreCleanupKeepLast(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	now := time.Now()
+	for i, id := range []string{"oldest", "middle", "newest"} {
+		if _, err := store.Create(Record{
+			ID:          id,
+			Status:      StatusCompleted,
+			CreatedAt:   now.Add(time.Duration(i-3) * time.Hour),
+			CompletedAt: now.Add(time.Duration(i-3) * time.Hour),
+			Description: id,
+		}); err != nil {
+			t.Fatalf("Create %s: %v", id, err)
+		}
+	}
+
+	result, err := store.Cleanup(RetentionPolicy{KeepLast: 2})
+	if err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if len(result.DeletedIDs) != 1 || result.DeletedIDs[0] != "oldest" {
+		t.Fatalf("unexpected deleted ids: %+v", result)
+	}
+}
