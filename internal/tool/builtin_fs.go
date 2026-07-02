@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -519,7 +520,7 @@ func reverseStrings(values []string) {
 func FileMoveTool() *Tool {
 	return &Tool{
 		Name:        "file_move",
-		Description: "Move or rename a file or directory on disk. Optionally overwrite an existing target.",
+		Description: "Move or rename a file or directory on disk. Use dry_run=true to preview the move plan before changing files.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
@@ -528,9 +529,21 @@ func FileMoveTool() *Tool {
 			"src":       {Type: "string", Description: "Existing source path to move.", Required: true},
 			"dst":       {Type: "string", Description: "Destination path after the move.", Required: true},
 			"overwrite": {Type: "boolean", Description: "Replace an existing destination if present. Default false.", Required: false, Default: false},
+			"dry_run":   {Type: "boolean", Description: "Preview the move plan without changing the filesystem. Default false.", Required: false, Default: false},
 		},
 		Handler: handleFileMove,
 	}
+}
+
+type movePlan struct {
+	Source              string `json:"source"`
+	Destination         string `json:"destination"`
+	Kind                string `json:"kind"`
+	Overwrite           bool   `json:"overwrite"`
+	DestinationExists   bool   `json:"destination_exists"`
+	DestinationKind     string `json:"destination_kind,omitempty"`
+	Action              string `json:"action"`
+	CrossDeviceFallback string `json:"cross_device_fallback"`
 }
 
 func handleFileMove(args map[string]any) (string, error) {
@@ -546,37 +559,154 @@ func handleFileMove(args map[string]any) (string, error) {
 	if v, ok := args["overwrite"].(bool); ok {
 		overwrite = v
 	}
-	srcInfo, err := os.Stat(src)
+	dryRun := false
+	if v, ok := args["dry_run"].(bool); ok {
+		dryRun = v
+	}
+	plan, err := buildMovePlan(src, dst, overwrite)
+	if err != nil {
+		return "", err
+	}
+	if dryRun {
+		out, err := prettyStructuredValue(plan)
+		if err != nil {
+			return "", err
+		}
+		return "Dry run: file move plan\n" + out, nil
+	}
+	if err := executeMovePlan(plan); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Moved %s from %s to %s", plan.Kind, src, dst), nil
+}
+
+func buildMovePlan(src, dst string, overwrite bool) (movePlan, error) {
+	plan := movePlan{Source: src, Destination: dst, Overwrite: overwrite, Action: "move", CrossDeviceFallback: "file-only"}
+	srcInfo, err := os.Lstat(src)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("source path does not exist: %s", src)
+			return plan, fmt.Errorf("source path does not exist: %s", src)
 		}
-		return "", fmt.Errorf("stat source: %w", err)
+		return plan, fmt.Errorf("stat source: %w", err)
 	}
-	if sameFilePath(src, dst) {
-		return "", fmt.Errorf("source and destination are the same path: %s", src)
+	plan.Kind = fileKind(srcInfo)
+	if same, err := sameResolvedPath(src, dst); err != nil {
+		return plan, err
+	} else if same {
+		return plan, fmt.Errorf("source and destination are the same path: %s", src)
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return "", fmt.Errorf("create destination parent: %w", err)
-	}
-	if _, err := os.Stat(dst); err == nil {
-		if !overwrite {
-			return "", fmt.Errorf("destination already exists: %s", dst)
-		}
-		if err := removePath(dst, true); err != nil {
-			return "", fmt.Errorf("remove destination: %w", err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("stat destination: %w", err)
-	}
-	if err := os.Rename(src, dst); err != nil {
-		return "", fmt.Errorf("move path: %w", err)
-	}
-	kind := "file"
 	if srcInfo.IsDir() {
-		kind = "directory"
+		inside, err := destinationInsideSource(src, dst)
+		if err != nil {
+			return plan, err
+		}
+		if inside {
+			return plan, fmt.Errorf("cannot move directory into itself: %s -> %s", src, dst)
+		}
 	}
-	return fmt.Sprintf("Moved %s from %s to %s", kind, src, dst), nil
+	if dstInfo, err := os.Lstat(dst); err == nil {
+		plan.DestinationExists = true
+		plan.DestinationKind = fileKind(dstInfo)
+		if !overwrite {
+			return plan, fmt.Errorf("destination already exists: %s", dst)
+		}
+		if srcInfo.IsDir() != dstInfo.IsDir() {
+			return plan, fmt.Errorf("cannot overwrite %s destination with %s source", plan.DestinationKind, plan.Kind)
+		}
+		plan.Action = "overwrite"
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return plan, fmt.Errorf("stat destination: %w", err)
+	}
+	return plan, nil
+}
+
+func executeMovePlan(plan movePlan) error {
+	if err := os.MkdirAll(filepath.Dir(plan.Destination), 0o755); err != nil {
+		return fmt.Errorf("create destination parent: %w", err)
+	}
+	if plan.DestinationExists {
+		if err := removePath(plan.Destination, true); err != nil {
+			return fmt.Errorf("remove destination: %w", err)
+		}
+	}
+	if err := os.Rename(plan.Source, plan.Destination); err != nil {
+		if errors.Is(err, syscall.EXDEV) {
+			if plan.Kind == "directory" {
+				return fmt.Errorf("move path across devices: directory fallback is not supported")
+			}
+			if copyErr := copyFileThenRemove(plan.Source, plan.Destination); copyErr != nil {
+				return fmt.Errorf("move path across devices: %w", copyErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("move path: %w", err)
+	}
+	return nil
+}
+
+func sameResolvedPath(a, b string) (bool, error) {
+	ar, err := resolvedComparablePath(a)
+	if err != nil {
+		return false, err
+	}
+	br, err := resolvedComparablePath(b)
+	if err != nil {
+		return false, err
+	}
+	return ar == br, nil
+}
+
+func resolvedComparablePath(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Abs(resolved)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("resolve path %s: %w", path, err)
+	}
+	parent := filepath.Dir(path)
+	resolvedParent, parentErr := filepath.EvalSymlinks(parent)
+	if parentErr == nil {
+		return filepath.Abs(filepath.Join(resolvedParent, filepath.Base(path)))
+	}
+	if !errors.Is(parentErr, os.ErrNotExist) {
+		return "", fmt.Errorf("resolve parent path %s: %w", parent, parentErr)
+	}
+	return filepath.Abs(filepath.Clean(path))
+}
+
+func destinationInsideSource(src, dst string) (bool, error) {
+	srcPath, err := resolvedComparablePath(src)
+	if err != nil {
+		return false, err
+	}
+	dstPath, err := resolvedComparablePath(dst)
+	if err != nil {
+		return false, err
+	}
+	rel, err := filepath.Rel(srcPath, dstPath)
+	if err != nil {
+		return false, err
+	}
+	return rel != "." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != "..", nil
+}
+
+func copyFileThenRemove(src, dst string) error {
+	info, err := os.Stat(src)
+	if err != nil {
+		return fmt.Errorf("stat source: %w", err)
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return fmt.Errorf("read source: %w", err)
+	}
+	if err := writeFileAtomic(dst, data, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("write destination: %w", err)
+	}
+	if err := os.Remove(src); err != nil {
+		return fmt.Errorf("remove source: %w", err)
+	}
+	return nil
 }
 
 func FileDeleteTool() *Tool {
@@ -778,8 +908,6 @@ func entrySuffix(count int) string {
 	}
 	return "ies"
 }
-
-func sameFilePath(a, b string) bool { return filepath.Clean(a) == filepath.Clean(b) }
 
 func FilePatchTool() *Tool {
 	return &Tool{

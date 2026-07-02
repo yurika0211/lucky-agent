@@ -1458,6 +1458,69 @@ func TestFileMkdirMoveDeleteTools(t *testing.T) {
 	}
 }
 
+func TestFileMoveToolDryRunAndSafetyChecks(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "src.txt")
+	dst := filepath.Join(tmpDir, "dst.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	dryRun, err := r.Call("file_move", map[string]any{
+		"src":     src,
+		"dst":     dst,
+		"dry_run": true,
+	})
+	if err != nil {
+		t.Fatalf("file_move dry_run: %v", err)
+	}
+	if !strings.Contains(dryRun, "Dry run") || !strings.Contains(dryRun, `"kind": "file"`) {
+		t.Fatalf("unexpected dry_run result: %q", dryRun)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("dry_run should keep source: %v", err)
+	}
+
+	dir := filepath.Join(tmpDir, "dir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir dir: %v", err)
+	}
+	_, err = r.Call("file_move", map[string]any{
+		"src": dir,
+		"dst": filepath.Join(dir, "child"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "into itself") {
+		t.Fatalf("expected self move rejection, got %v", err)
+	}
+
+	existingDir := filepath.Join(tmpDir, "existing-dir")
+	if err := os.MkdirAll(existingDir, 0o755); err != nil {
+		t.Fatalf("mkdir existing dir: %v", err)
+	}
+	_, err = r.Call("file_move", map[string]any{
+		"src":       src,
+		"dst":       existingDir,
+		"overwrite": true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot overwrite") {
+		t.Fatalf("expected overwrite type rejection, got %v", err)
+	}
+
+	link := filepath.Join(tmpDir, "src-link")
+	if err := os.Symlink(src, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	_, err = r.Call("file_move", map[string]any{
+		"src": src,
+		"dst": link,
+	})
+	if err == nil || !strings.Contains(err.Error(), "same path") {
+		t.Fatalf("expected resolved same path rejection, got %v", err)
+	}
+}
+
 func TestFileDeleteToolDryRunLimitTrashAndSymlink(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
