@@ -259,9 +259,21 @@
     "fail_closed": false,
     "pre_tool_use": [
       {
-        "match": ["file_delete", "shell"],
+        "match": [],
         "sources": [],
-        "command": "/path/to/pre_guard.sh",
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/audit_log.py",
+        "script": ""
+      },
+      {
+        "match": ["file_write", "file_patch", "file_delete", "file_move", "file_mkdir", "shell", "terminal"],
+        "sources": [],
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/workspace_guard.py",
+        "script": ""
+      },
+      {
+        "match": ["shell", "terminal", "sql_query"],
+        "sources": [],
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/block_dangerous.py",
         "script": ""
       }
     ],
@@ -269,7 +281,13 @@
       {
         "match": [],
         "sources": [],
-        "command": "/path/to/redact_secrets.sh",
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/redact_secrets.py",
+        "script": ""
+      },
+      {
+        "match": [],
+        "sources": [],
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/truncate_output.py",
         "script": ""
       }
     ]

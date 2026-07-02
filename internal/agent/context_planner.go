@@ -1318,9 +1318,10 @@ func historyExplicitlyIrrelevant(content string) bool {
 }
 
 func (p *contextPlanner) summarizeConversationRangeWithLLM(ctx context.Context, sess *session.Session, messages []provider.Message, header string, tokenBudget int) string {
-	if summary := p.tryLLMConversationSummary(ctx, sess, messages, header, tokenBudget); summary != "" {
-		return summary
-	}
+	// Context construction runs before the user-facing model call. Do not make
+	// an extra provider request here: transient upstream failures would charge
+	// tokens, increment the shared circuit breaker, and then still fall back to
+	// a local summary. Manual/auto compact keeps the explicit LLM summary path.
 	return summarizeConversationRange(messages, header, p.est, tokenBudget)
 }
 

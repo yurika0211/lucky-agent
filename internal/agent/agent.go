@@ -1795,6 +1795,7 @@ type streamConvergenceState struct {
 	disabledTools            []string
 	memoryGate               *memoryToolGate
 	citationToolCalls        []toolCallLog
+	iterationTimeout         time.Duration
 }
 
 /*
@@ -1805,6 +1806,16 @@ func (s *streamConvergenceState) hasContinuation() bool {
 		return false
 	}
 	return strings.TrimSpace(s.continuedResponse.String()) != ""
+}
+
+func streamIterationContext(parent context.Context, state *streamConvergenceState) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if state == nil || state.iterationTimeout <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, state.iterationTimeout)
 }
 
 /*
@@ -1975,6 +1986,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
 			memoryGate:             a.buildMemoryToolGate(routingText, loopCfg.DisabledTools),
 			toolExecutionGuard:     newToolExecutionGuard(routingText),
+			iterationTimeout:       loopCfg.Timeout,
 		}
 		logger.Debug("agent stream context prepared",
 			"session_id", sessionID,
@@ -2035,7 +2047,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		"tool_choice", fmt.Sprint(callOpts.ToolChoice),
 		"force_search_synthesis", state.forceSearchSynthesis,
 	)
-	ch, err := a.streamLoopIteration(ctx, messages, callOpts, state.forceSearchSynthesis)
+	iterCtx, cancel := streamIterationContext(ctx, state)
+	defer cancel()
+	ch, err := a.streamLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis)
 	if err != nil {
 		logger.Warn("agent stream native iteration failed",
 			"session_id", sessionID,
@@ -2327,7 +2341,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		"tool_choice", fmt.Sprint(callOpts.ToolChoice),
 		"force_search_synthesis", state.forceSearchSynthesis,
 	)
-	resp, err := a.chatLoopIteration(ctx, messages, callOpts, state.forceSearchSynthesis)
+	iterCtx, cancel := streamIterationContext(ctx, state)
+	defer cancel()
+	resp, err := a.chatLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis)
 	if err != nil {
 		logger.Warn("agent stream simulated iteration failed",
 			"session_id", sessionID,

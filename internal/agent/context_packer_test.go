@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/contextx"
 	"github.com/yurika0211/luckyagent/internal/memory"
 	"github.com/yurika0211/luckyagent/internal/provider"
@@ -164,6 +166,63 @@ func TestBuildHistoryMessagesRespectsCompactBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildHistoryMessagesDoesNotCallProviderForCompression(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	counting := &countingProvider{}
+	planner := &contextPlanner{
+		agent: &Agent{
+			cfg:      cfg,
+			provider: counting,
+		},
+		est: contextx.NewTokenEstimator(4096),
+		budget: contextBudget{
+			History: 1200,
+			Memory:  400,
+		},
+		options: contextBuildOptions{
+			IncludeHistory: true,
+			HistoryRecent:  2,
+			HistoryMiddle:  2,
+		},
+	}
+
+	sess := session.NewSession("history-local-summary", t.TempDir())
+	for i := 0; i < 10; i++ {
+		sess.AddMessage("user", "hydrology forecast calibration task message")
+		sess.AddMessage("assistant", "hydrology forecast calibration progress")
+	}
+
+	messages := planner.buildHistoryMessages(sess, "hydrology forecast")
+	if counting.chatCalls != 0 {
+		t.Fatalf("context history compression must not call provider, got %d calls", counting.chatCalls)
+	}
+	if text := messagesToTestText(messages); !strings.Contains(text, "[Conversation Summary]") {
+		t.Fatalf("expected local conversation summary, got:\n%s", text)
+	}
+}
+
+type countingProvider struct {
+	chatCalls int
+}
+
+func (p *countingProvider) Name() string { return "counting" }
+
+func (p *countingProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	p.chatCalls++
+	return &provider.Response{Content: "provider summary should not be used"}, nil
+}
+
+func (p *countingProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+
+func (p *countingProvider) Validate() error { return nil }
 
 func messagesToTestText(messages []provider.Message) string {
 	var b strings.Builder

@@ -88,7 +88,7 @@ func forcedToolChoiceName(choice any) string {
 }
 
 func prepareLoopCallOptions(messages []provider.Message, base provider.CallOptions, forceSearchSynthesis bool) provider.CallOptions {
-	opts := relaxForcedSkillToolChoice(messages, base)
+	opts := constrainForcedToolChoice(messages, base)
 	if forceSearchSynthesis {
 		opts.Tools = nil
 		opts.ToolChoice = "none"
@@ -110,6 +110,36 @@ func (a *Agent) streamLoopIteration(ctx context.Context, messages []provider.Mes
 		return fcProvider.ChatStreamWithOptions(ctx, messages, opts)
 	}
 	return a.provider.ChatStream(ctx, messages)
+}
+
+func constrainForcedToolChoice(messages []provider.Message, opts provider.CallOptions) provider.CallOptions {
+	name := forcedToolChoiceName(opts.ToolChoice)
+	if name == "" {
+		return opts
+	}
+	if hasUsedToolInMessages(messages, name) {
+		opts.ToolChoice = "auto"
+		return opts
+	}
+	opts.Tools = filterFunctionToolsByName(opts.Tools, name)
+	if len(opts.Tools) == 0 {
+		opts.ToolChoice = "none"
+	}
+	return opts
+}
+
+func filterFunctionToolsByName(tools []map[string]any, name string) []map[string]any {
+	name = strings.TrimSpace(name)
+	if name == "" || len(tools) == 0 {
+		return nil
+	}
+	filtered := make([]map[string]any, 0, 1)
+	for _, t := range tools {
+		if functionToolNameFromSchema(t) == name {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 type executedToolCall struct {
