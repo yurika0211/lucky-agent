@@ -551,6 +551,7 @@ type SearchOptions struct {
 	IncludeGraph    bool
 	GraphDepth      int
 	Explain         bool
+	SkipAccessStats bool
 }
 
 // SearchResult contains a memory entry plus ranking/explanation signals.
@@ -597,7 +598,7 @@ func (s *Store) SearchWithOptions(query string, opts SearchOptions) []SearchResu
 		MaxGraphDepth:     opts.GraphDepth,
 		MaxGraphBoost:     0.45,
 		MaxGraphSeeds:     12,
-		UpdateAccessStats: true,
+		UpdateAccessStats: !opts.SkipAccessStats,
 		Explain:           opts.Explain,
 	})
 	results := make([]SearchResult, 0, len(scores))

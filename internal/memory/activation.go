@@ -111,6 +111,8 @@ type ActivationPath struct {
 	Via    string
 	Kind   string
 	Weight float64
+	Depth  int
+	Boost  float64
 }
 
 func normalizeActivationOptions(opts ActivationOptions) ActivationOptions {
@@ -530,5 +532,7 @@ func (s *Store) addActivationBoostLocked(scores map[string]*ActivationScore, sou
 		Via:    strings.TrimSpace(via),
 		Kind:   kind,
 		Weight: coefficient,
+		Depth:  1,
+		Boost:  boost,
 	})
 }

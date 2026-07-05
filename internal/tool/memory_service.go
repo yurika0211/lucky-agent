@@ -367,6 +367,79 @@ func (s *MemoryToolService) HandleRecall(args map[string]any) (string, error) {
 	return sb.String(), nil
 }
 
+func (s *MemoryToolService) HandleRecallDetailed(args map[string]any) (ToolCallResult, error) {
+	out, err := s.HandleRecall(args)
+	if err != nil {
+		return ToolCallResult{}, err
+	}
+	trace, ok, err := s.buildRecallTrace(args)
+	if err != nil {
+		return ToolCallResult{Output: out}, nil
+	}
+	if !ok {
+		return ToolCallResult{Output: out}, nil
+	}
+	return ToolCallResult{
+		Output:   out,
+		Metadata: map[string]any{"memory_trace": trace},
+	}, nil
+}
+
+func (s *MemoryToolService) buildRecallTrace(args map[string]any) (memory.SearchTrace, bool, error) {
+	if s == nil || s.store == nil {
+		return memory.SearchTrace{}, false, nil
+	}
+	query := strings.TrimSpace(stringArg(args["query"]))
+	if query == "" {
+		return memory.SearchTrace{}, false, nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(stringArg(args["mode"])))
+	if mode == "" {
+		mode = "search"
+	}
+	if mode != "search" {
+		return memory.SearchTrace{}, false, nil
+	}
+	limit, err := boundedMemoryIntArg(args["limit"], defaultRecallSearchLimit, 1, maxRecallLimit, "limit")
+	if err != nil {
+		return memory.SearchTrace{}, false, err
+	}
+	var tierPtr *memory.Tier
+	if rawTier := stringArg(args["tier"]); rawTier != "" {
+		tier, err := parseMemoryToolTierStrict(rawTier)
+		if err != nil {
+			return memory.SearchTrace{}, false, err
+		}
+		tierPtr = &tier
+	}
+	var asOf time.Time
+	if parsed, ok, err := timeArg(args["as_of"]); err != nil {
+		return memory.SearchTrace{}, false, err
+	} else if ok {
+		asOf = parsed
+	}
+	graphDepth, err := boundedMemoryIntArg(args["graph_depth"], defaultRecallGraphDepth, 0, maxRecallGraphDepth, "graph_depth")
+	if err != nil {
+		return memory.SearchTrace{}, false, err
+	}
+	opts := memory.SearchOptions{
+		Limit:           limit,
+		Category:        stringArg(args["category"]),
+		Tier:            tierPtr,
+		IncludeInactive: boolArg(args["include_inactive"]),
+		IncludeExpired:  boolArg(args["include_expired"]),
+		AsOf:            asOf,
+		IncludeGraph:    graphDepth > 0,
+		GraphDepth:      graphDepth,
+		Explain:         true,
+		SkipAccessStats: true,
+	}
+	start := time.Now()
+	results := s.store.SearchWithOptions(query, opts)
+	trace := s.store.BuildSearchTrace(query, mode, memoryVaultPathForTool(s.store), opts, results, time.Since(start))
+	return trace, true, nil
+}
+
 type recallEntryJSON struct {
 	ID          string                  `json:"id"`
 	Category    string                  `json:"category"`

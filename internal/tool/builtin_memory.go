@@ -115,11 +115,15 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 }
 
 // RecallTool 搜索记忆工具
-func RecallTool(handler func(args map[string]any) (string, error)) *Tool {
+func RecallTool(handler func(args map[string]any) (string, error), detailed ...func(args map[string]any) (ToolCallResult, error)) *Tool {
 	if handler == nil {
 		handler = func(args map[string]any) (string, error) {
 			return "", fmt.Errorf("recall handler not configured")
 		}
+	}
+	var detailedHandler func(args map[string]any) (ToolCallResult, error)
+	if len(detailed) > 0 {
+		detailedHandler = detailed[0]
 	}
 	return &Tool{
 		Name:        "recall",
@@ -189,8 +193,9 @@ func RecallTool(handler func(args map[string]any) (string, error)) *Tool {
 				Default:     "text",
 			},
 		},
-		Handler:      handler,
-		ParallelSafe: true,
+		Handler:         handler,
+		DetailedHandler: detailedHandler,
+		ParallelSafe:    true,
 	}
 }
 
