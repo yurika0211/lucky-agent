@@ -257,6 +257,8 @@ func TestRenameNotesPrunesDuplicateConceptUsingStorePath(t *testing.T) {
 	if err := os.WriteFile(oldPath, []byte(renderMemoryNote(&oldConcept)), 0o600); err != nil {
 		t.Fatalf("write old concept duplicate: %v", err)
 	}
+	concept.Path = oldRel
+	store.paths[concept.ID] = oldRel
 
 	report, err := store.RenameNotes(NoteRenameOptions{Apply: true})
 	if err != nil {
@@ -265,7 +267,8 @@ func TestRenameNotesPrunesDuplicateConceptUsingStorePath(t *testing.T) {
 	if report.PrunedDuplicates != 1 {
 		t.Fatalf("expected duplicate concept prune, got %#v", report)
 	}
-	if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(concept.Path))); err != nil {
+	canonicalPath := filepath.Join(dir, "70_Concepts", "Legacy Concept.md")
+	if _, err := os.Stat(canonicalPath); err != nil {
 		t.Fatalf("expected canonical concept note: %v", err)
 	}
 	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {

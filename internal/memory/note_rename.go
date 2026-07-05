@@ -205,7 +205,10 @@ func (s *Store) planDuplicateNotePrunesLocked() ([]NoteDuplicatePlan, map[string
 		if len(files) == 0 {
 			continue
 		}
-		preferred := filepath.ToSlash(strings.TrimSpace(s.paths[id]))
+		preferred := duplicateIdealNotePath(s.entries[id], files)
+		if preferred == "" {
+			preferred = filepath.ToSlash(strings.TrimSpace(s.paths[id]))
+		}
 		if preferred == "" {
 			if entry := s.entries[id]; entry != nil {
 				preferred = filepath.ToSlash(strings.TrimSpace(entry.Path))
@@ -258,6 +261,33 @@ func noteFileCandidateLess(a, b noteFileCandidate, preferredRel string) bool {
 		return len(a.Rel) < len(b.Rel)
 	}
 	return a.Rel < b.Rel
+}
+
+func duplicateIdealNotePath(entry *Entry, files []noteFileCandidate) string {
+	candidate := entry
+	if candidate == nil && len(files) > 0 {
+		candidate = files[0].Entry
+	}
+	if candidate == nil {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(candidate.Category), "concept") {
+		return conceptNotePath(candidate.Content)
+	}
+	currentRel := filepath.ToSlash(strings.TrimSpace(candidate.Path))
+	if strings.EqualFold(strings.TrimSpace(candidate.Status), "archived") || strings.HasPrefix(currentRel, "90_Archive/dirty/") || duplicateCandidatesInDirtyArchive(files) {
+		return filepath.ToSlash(filepath.Join("90_Archive", "dirty", humanMemoryFileBase(candidate)+".md"))
+	}
+	return notePathForEntry(candidate)
+}
+
+func duplicateCandidatesInDirtyArchive(files []noteFileCandidate) bool {
+	for _, file := range files {
+		if strings.HasPrefix(filepath.ToSlash(strings.TrimSpace(file.Rel)), "90_Archive/dirty/") {
+			return true
+		}
+	}
+	return false
 }
 
 func machineMemoryNotePath(rel string) bool {
