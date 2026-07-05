@@ -166,32 +166,30 @@ func renderTelegramMemoryTraceCard(trace memory.SearchTrace, level string, maxRe
 		lines = append(lines, "source: "+source)
 	}
 
-	for i, result := range trace.Results {
-		if i >= maxResults {
-			lines = append(lines, fmt.Sprintf("... %d more results", len(trace.Results)-i))
-			break
-		}
-		mode := "graph"
-		if result.DirectScore > 0 {
-			mode = "direct"
-		}
-		ref := firstMemoryTraceText(result.Ref, result.ID)
-		line := fmt.Sprintf("[%d] %s %s/%s score=%.2f %s", result.Rank, mode, result.Category, result.Tier, result.Score, ref)
-		lines = append(lines, clipOneLine(line, 180))
-		if level == "full" && strings.TrimSpace(result.ContentPreview) != "" {
-			lines = append(lines, "    "+clipOneLine(result.ContentPreview, 160))
+	resultRefs := memoryTraceResultRefs(trace.Results)
+	if len(trace.Results) > 0 {
+		lines = append(lines, "direct:")
+		for i, result := range trace.Results {
+			if i >= maxResults {
+				lines = append(lines, fmt.Sprintf("  ... %d more nodes", len(trace.Results)-i))
+				break
+			}
+			lines = append(lines, "  "+clipOneLine(formatMemoryTraceNode(result), 180))
+			if level == "full" && strings.TrimSpace(result.ContentPreview) != "" {
+				lines = append(lines, "      "+clipOneLine(result.ContentPreview, 160))
+			}
 		}
 	}
 
-	for i, hop := range trace.Hops {
-		if i >= maxHops {
-			lines = append(lines, fmt.Sprintf("... %d more hops", len(trace.Hops)-i))
-			break
+	if len(trace.Hops) > 0 {
+		lines = append(lines, "paths:")
+		for i, hop := range trace.Hops {
+			if i >= maxHops {
+				lines = append(lines, fmt.Sprintf("  ... %d more links", len(trace.Hops)-i))
+				break
+			}
+			lines = append(lines, "  "+clipOneLine(formatMemoryTraceLink(hop, resultRefs), 220))
 		}
-		via := firstMemoryTraceText(hop.Via, "-")
-		target := firstMemoryTraceText(hop.ToRef, hop.ToID)
-		line := fmt.Sprintf("hop%d %s via %s -> %s +%.2f", hop.Depth, hop.Kind, via, target, hop.Boost)
-		lines = append(lines, clipOneLine(line, 180))
 	}
 
 	if len(trace.Temporal) > 0 {
@@ -211,6 +209,49 @@ func firstMemoryTraceText(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func memoryTraceResultRefs(results []memory.SearchTraceResult) map[string]string {
+	refs := make(map[string]string, len(results))
+	for _, result := range results {
+		if result.ID == "" {
+			continue
+		}
+		refs[result.ID] = firstMemoryTraceText(result.Ref, result.ID)
+	}
+	return refs
+}
+
+func formatMemoryTraceNode(result memory.SearchTraceResult) string {
+	ref := firstMemoryTraceText(result.Ref, result.ID, "(unknown)")
+	kind := "graph"
+	if result.DirectScore > 0 {
+		kind = "direct"
+	}
+	return fmt.Sprintf("[%d] %s (%s %s/%s score=%.2f)", result.Rank, ref, kind, result.Category, result.Tier, result.Score)
+}
+
+func formatMemoryTraceLink(hop memory.SearchTraceHop, resultRefs map[string]string) string {
+	from := firstMemoryTraceText(hop.FromRef, resultRefs[hop.FromID], hop.FromID, "(unknown)")
+	to := firstMemoryTraceText(hop.ToRef, resultRefs[hop.ToID], hop.ToID, "(unknown)")
+	edge := strings.TrimSpace(hop.Kind)
+	if via := strings.TrimSpace(hop.Via); via != "" {
+		if edge != "" {
+			edge += ":" + via
+		} else {
+			edge = via
+		}
+	}
+	if edge == "" {
+		edge = "link"
+	}
+	if hop.Depth > 0 {
+		edge = fmt.Sprintf("d%d %s", hop.Depth, edge)
+	}
+	if hop.Boost != 0 {
+		edge += fmt.Sprintf(" %+.2f", hop.Boost)
+	}
+	return fmt.Sprintf("%s --[%s]--> %s", from, edge, to)
 }
 
 func limitMemoryTraceStrings(values []string, limit int) []string {
