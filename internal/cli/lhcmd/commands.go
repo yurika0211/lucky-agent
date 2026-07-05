@@ -1296,6 +1296,55 @@ func runMemoryMigrateGraph(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runMemoryRenameNotes(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	apply, _ := cmd.Flags().GetBool("apply")
+	limit, _ := cmd.Flags().GetInt("limit")
+	store, err := memory.NewStore(filepath.Join(mgr.HomeDir(), "memory"))
+	if err != nil {
+		return fmt.Errorf("open memory store: %w", err)
+	}
+	report, err := store.RenameNotes(memory.NoteRenameOptions{
+		Apply: apply,
+		Limit: limit,
+	})
+	if err != nil {
+		return err
+	}
+	if apply {
+		fmt.Println("Memory note rename applied.")
+	} else {
+		fmt.Println("Memory note rename dry-run. Re-run with --apply to rename files.")
+	}
+	fmt.Printf("  Scanned: %d\n", report.Scanned)
+	fmt.Printf("  Renames: %d", report.WouldRename)
+	if apply {
+		fmt.Printf(" (applied %d)", report.Renamed)
+	}
+	fmt.Println()
+
+	maxShow := 20
+	if len(report.Entries) > 0 {
+		fmt.Println("  Planned renames:")
+		for i, entry := range report.Entries {
+			if i >= maxShow {
+				fmt.Printf("    ... %d more\n", len(report.Entries)-maxShow)
+				break
+			}
+			fmt.Printf("    - %s\n", entry.From)
+			fmt.Printf("      -> %s\n", entry.To)
+		}
+	}
+	return nil
+}
+
 func runMemoryTidalStats(cmd *cobra.Command, args []string) error {
 	mgr, err := config.NewManager()
 	if err != nil {

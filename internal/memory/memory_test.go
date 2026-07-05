@@ -93,6 +93,9 @@ func TestObsidianVaultPersistenceWritesNotes(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("expected one Obsidian note, got %d: %v", len(matches), matches)
 	}
+	if got := filepath.Base(matches[0]); got != "My Daughter has Pollen Allergy.md" {
+		t.Fatalf("expected human-readable note filename, got %q", got)
+	}
 	raw, err := os.ReadFile(matches[0])
 	if err != nil {
 		t.Fatalf("read note: %v", err)
@@ -273,8 +276,29 @@ func TestSaveWithOptionsInfersObsidianConceptLinks(t *testing.T) {
 			t.Fatalf("expected inferred link %q, got %#v", want, fact.Links)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "qq-official.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "QQ Official.md")); err != nil {
 		t.Fatalf("expected QQ Official concept note: %v", err)
+	}
+}
+
+func TestHumanReadableNotePathsPreserveUnicodeAndDeduplicate(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithOptions("用户偏好是中文输出\n细节 A", "preference", TierLong, 0.9, SaveOptions{}); err != nil {
+		t.Fatalf("save first: %v", err)
+	}
+	if err := s.SaveWithOptions("用户偏好是中文输出\n细节 B", "preference", TierLong, 0.8, SaveOptions{}); err != nil {
+		t.Fatalf("save second: %v", err)
+	}
+
+	for _, name := range []string{"用户偏好是中文输出.md", "用户偏好是中文输出 2.md"} {
+		if _, err := os.Stat(filepath.Join(dir, "10_Profile", name)); err != nil {
+			t.Fatalf("expected readable note %q: %v", name, err)
+		}
 	}
 }
 

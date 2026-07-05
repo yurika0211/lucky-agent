@@ -235,6 +235,13 @@ func newRootCmd() *cobra.Command {
 	memoryMigrateGraphCmd.Flags().Bool("apply", false, "实际写入迁移结果；默认只 dry-run")
 	memoryMigrateGraphCmd.Flags().Bool("archive-dirty", true, "将 high/critical 脏记忆归档到 90_Archive/dirty")
 	memoryMigrateGraphCmd.Flags().Int("limit", 200, "最多审计/展示的脏记忆数量")
+	memoryRenameNotesCmd := &cobra.Command{
+		Use:   "rename-notes",
+		Short: "Rename memory notes to human-readable Obsidian filenames",
+		RunE:  runMemoryRenameNotes,
+	}
+	memoryRenameNotesCmd.Flags().Bool("apply", false, "Write renamed files; default is dry-run")
+	memoryRenameNotesCmd.Flags().Int("limit", 1000, "Maximum planned note renames")
 	memoryTidalStatsCmd := &cobra.Command{
 		Use:   "tidal-stats",
 		Short: "查看潮汐记忆 reranker 的持久化统计",
@@ -250,7 +257,7 @@ func newRootCmd() *cobra.Command {
 		RunE:  runMemoryTidalStats,
 	}
 	memoryTidalCmd.AddCommand(memoryTidalNestedStatsCmd)
-	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryTidalStatsCmd, memoryTidalCmd)
+	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryRenameNotesCmd, memoryTidalStatsCmd, memoryTidalCmd)
 
 	proactiveCmd := &cobra.Command{
 		Use:   "proactive",

@@ -1309,13 +1309,29 @@ func (s *Store) persist() error {
 	if err := s.ensureVaultDirs(); err != nil {
 		return err
 	}
-	for _, e := range s.entries {
-		normalizeEntryForNote(e)
-		rel := e.Path
-		if rel == "" {
-			rel = notePathForEntry(e)
-			e.Path = rel
+	ids := sortedMemoryEntryIDs(s.entries)
+	usedPaths := make(map[string]string, len(ids))
+	for _, id := range ids {
+		e := s.entries[id]
+		if e == nil {
+			continue
 		}
+		if rel := strings.TrimSpace(e.Path); rel != "" {
+			usedPaths[filepath.ToSlash(rel)] = id
+		}
+	}
+	for _, id := range ids {
+		e := s.entries[id]
+		if e == nil {
+			continue
+		}
+		normalizeEntryForNote(e)
+		rel := filepath.ToSlash(strings.TrimSpace(e.Path))
+		if rel == "" {
+			rel = s.uniqueNotePathForEntry(e, usedPaths, "")
+			usedPaths[rel] = e.ID
+		}
+		e.Path = rel
 		s.paths[e.ID] = rel
 		path := filepath.Join(s.dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -1327,6 +1343,15 @@ func (s *Store) persist() error {
 	}
 	s.rebuildGraphLocked()
 	return nil
+}
+
+func sortedMemoryEntryIDs(entries map[string]*Entry) []string {
+	ids := make([]string, 0, len(entries))
+	for id := range entries {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func max(a, b float64) float64 {
@@ -1475,17 +1500,137 @@ func notePathForEntry(e *Entry) string {
 	if strings.EqualFold(strings.TrimSpace(e.Category), "concept") {
 		return conceptNotePath(e.Content)
 	}
-	created := e.CreatedAt
-	if created.IsZero() {
-		created = time.Now()
-	}
 	dir := noteDirForEntry(e)
-	slug := slugify(truncateRunes(stripWikiSyntax(e.Content), 48))
-	if slug == "" {
-		slug = strings.ReplaceAll(e.ID, "_", "-")
-	}
-	name := fmt.Sprintf("%s-%s-%s.md", created.Format("20060102-150405"), slug, e.ID)
+	name := humanMemoryFileBase(e) + ".md"
 	return filepath.ToSlash(filepath.Join(dir, name))
+}
+
+func (s *Store) uniqueNotePathForEntry(e *Entry, used map[string]string, currentRel string) string {
+	if strings.EqualFold(strings.TrimSpace(e.Category), "concept") {
+		return uniqueNotePath(s.dir, "70_Concepts", humanFileTitle(e.Content, "Concept"), used, currentRel)
+	}
+	return uniqueNotePath(s.dir, noteDirForEntry(e), humanMemoryFileBase(e), used, currentRel)
+}
+
+func uniqueNotePath(root, dir, base string, used map[string]string, currentRel string) string {
+	base = humanFileTitle(base, "Memory")
+	currentRel = filepath.ToSlash(strings.TrimSpace(currentRel))
+	for i := 0; ; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s %d", base, i+1)
+		}
+		rel := filepath.ToSlash(filepath.Join(dir, name+".md"))
+		if rel == currentRel {
+			return rel
+		}
+		if _, ok := used[rel]; ok {
+			continue
+		}
+		if root != "" {
+			path := filepath.Join(root, filepath.FromSlash(rel))
+			if _, err := os.Stat(path); err == nil {
+				continue
+			}
+		}
+		return rel
+	}
+}
+
+func humanMemoryFileBase(e *Entry) string {
+	if e == nil {
+		return "Memory"
+	}
+	if text := firstHumanTitleLine(stripWikiSyntax(e.Content)); text != "" {
+		return humanFileTitle(text, "Memory")
+	}
+	for _, alias := range e.Aliases {
+		if strings.TrimSpace(alias) == "" {
+			continue
+		}
+		if title := humanFileTitle(alias, ""); title != "" {
+			return title
+		}
+	}
+	for _, link := range e.Links {
+		if strings.TrimSpace(link) == "" {
+			continue
+		}
+		if title := humanFileTitle(link, ""); title != "" {
+			return title
+		}
+	}
+	if category := strings.TrimSpace(e.Category); category != "" {
+		return humanFileTitle(category+" memory", "Memory")
+	}
+	return "Memory"
+}
+
+func firstHumanTitleLine(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "#>-* \t")
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "^") || strings.HasPrefix(line, "```") {
+			continue
+		}
+		return strings.Join(strings.Fields(line), " ")
+	}
+	return ""
+}
+
+func humanFileTitle(text, fallback string) string {
+	text = strings.TrimSpace(stripWikiSyntax(text))
+	if text == "" {
+		text = strings.TrimSpace(fallback)
+	}
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range text {
+		if r < 32 || r == 127 || strings.ContainsRune(`<>:"/\|?*`, r) || unicode.IsSpace(r) {
+			if !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		lastSpace = false
+	}
+	out := strings.Trim(b.String(), " .-_")
+	if out == "" {
+		out = strings.TrimSpace(fallback)
+	}
+	if out == "" {
+		out = "Memory"
+	}
+	out = strings.Trim(truncateRunes(out, 80), " .-_")
+	if out == "" {
+		out = "Memory"
+	}
+	if windowsReservedFileTitle(out) {
+		out += " note"
+	}
+	return out
+}
+
+func windowsReservedFileTitle(title string) bool {
+	title = strings.TrimSpace(strings.TrimSuffix(title, "."))
+	title = strings.ToUpper(title)
+	switch title {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	for i := 1; i <= 9; i++ {
+		if title == fmt.Sprintf("COM%d", i) || title == fmt.Sprintf("LPT%d", i) {
+			return true
+		}
+	}
+	return false
 }
 
 func noteDirForEntry(e *Entry) string {
@@ -2009,11 +2154,7 @@ func conceptEntryID(concept string) string {
 }
 
 func conceptNotePath(concept string) string {
-	slug := slugify(concept)
-	if slug == "" {
-		slug = "concept"
-	}
-	return filepath.ToSlash(filepath.Join("70_Concepts", slug+".md"))
+	return filepath.ToSlash(filepath.Join("70_Concepts", humanFileTitle(concept, "Concept")+".md"))
 }
 
 func conceptRelatedLinks(rule conceptRule) []string {
