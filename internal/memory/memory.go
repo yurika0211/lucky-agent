@@ -2,6 +2,7 @@ package memory
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math"
 	"os"
 	"path/filepath"
@@ -231,9 +232,8 @@ func (s *Store) SaveWithOptionsResult(content, category string, tier Tier, impor
 		return SaveResult{}, nil
 	}
 	opts = enrichSaveOptionsWithConcepts(content, category, opts)
-	if !strings.EqualFold(strings.TrimSpace(category), "concept") {
-		s.ensureConceptEntriesLocked(opts.Links)
-	}
+	entryLinks := normalizeMemoryLinks(append(opts.Links, extractWikiLinks(content)...))
+	s.ensureConceptEntriesLocked(entryLinks)
 
 	// 去重检查：同 category + 同 content（忽略前后空白）不重复写入
 	normalized := strings.TrimSpace(content)
@@ -245,8 +245,8 @@ func (s *Store) SaveWithOptionsResult(content, category string, tier Tier, impor
 			if len(opts.Tags) > 0 {
 				e.Tags = mergeTags(e.Tags, opts.Tags)
 			}
-			if len(opts.Links) > 0 {
-				e.Links = normalizeLinks(append(e.Links, opts.Links...))
+			if len(entryLinks) > 0 {
+				e.Links = normalizeMemoryLinks(append(e.Links, entryLinks...))
 			}
 			if len(opts.Aliases) > 0 {
 				e.Aliases = dedupSlice(append(e.Aliases, opts.Aliases...))
@@ -289,7 +289,7 @@ func (s *Store) SaveWithOptionsResult(content, category string, tier Tier, impor
 			if len(opts.Supersedes) > 0 {
 				e.Supersedes = dedupSlice(append(e.Supersedes, opts.Supersedes...))
 			}
-			e.Links = normalizeLinks(append(e.Links, extractWikiLinks(e.Content)...))
+			e.Links = normalizeMemoryLinks(append(e.Links, extractWikiLinks(e.Content)...))
 			e.Aliases = dedupSlice(e.Aliases)
 			if err := s.persist(); err != nil {
 				return SaveResult{}, err
@@ -333,7 +333,7 @@ func (s *Store) SaveWithOptionsResult(content, category string, tier Tier, impor
 		Supersedes: dedupSlice(opts.Supersedes),
 	}
 	entry.BlockID = blockIDForEntry(entry.ID)
-	entry.Links = normalizeLinks(append(opts.Links, extractWikiLinks(content)...))
+	entry.Links = entryLinks
 	s.entries[entry.ID] = entry
 	if err := s.persist(); err != nil {
 		return SaveResult{}, err
@@ -1484,7 +1484,7 @@ func normalizeEntryForNote(e *Entry) {
 	if e.Confidence < 0 || e.Confidence > 1 {
 		e.Confidence = clampFloat(e.Confidence, 0, 1)
 	}
-	e.Links = normalizeLinks(append(e.Links, extractWikiLinks(e.Content)...))
+	e.Links = normalizeMemoryLinks(append(e.Links, extractWikiLinks(e.Content)...))
 }
 
 func blockIDForEntry(id string) string {
@@ -1506,6 +1506,10 @@ func notePathForEntry(e *Entry) string {
 }
 
 func (s *Store) uniqueNotePathForEntry(e *Entry, used map[string]string, currentRel string) string {
+	currentRel = filepath.ToSlash(strings.TrimSpace(currentRel))
+	if strings.EqualFold(strings.TrimSpace(e.Status), "archived") || strings.HasPrefix(currentRel, "90_Archive/dirty/") {
+		return uniqueNotePath(s.dir, "90_Archive/dirty", humanMemoryFileBase(e), used, currentRel)
+	}
 	if strings.EqualFold(strings.TrimSpace(e.Category), "concept") {
 		return uniqueNotePath(s.dir, "70_Concepts", humanFileTitle(e.Content, "Concept"), used, currentRel)
 	}
@@ -1790,7 +1794,7 @@ func parseMemoryNote(path, root string) (*Entry, bool, error) {
 		Status:      fm.Status,
 		ValidFrom:   fm.ValidFrom,
 		ValidUntil:  fm.ValidUntil,
-		Links:       normalizeLinks(append(fm.Links, extractWikiLinks(content)...)),
+		Links:       normalizeMemoryLinks(append(fm.Links, extractWikiLinks(content)...)),
 		Aliases:     dedupSlice(fm.Aliases),
 		StateKey:    fm.StateKey,
 		StateValue:  fm.StateValue,
@@ -1895,6 +1899,30 @@ func normalizeLinks(links []string) []string {
 	return out
 }
 
+func normalizeMemoryLinks(links []string) []string {
+	normalized := normalizeLinks(links)
+	out := make([]string, 0, len(normalized))
+	for _, link := range normalized {
+		link = canonicalMemoryLinkTarget(link)
+		if link == "" {
+			continue
+		}
+		out = append(out, link)
+	}
+	return normalizeLinks(out)
+}
+
+func canonicalMemoryLinkTarget(link string) string {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return ""
+	}
+	if rule, ok := conceptRuleForName(link); ok {
+		return rule.Concept
+	}
+	return link
+}
+
 func extractQueryTerms(query string) []string {
 	var terms []string
 	var latin strings.Builder
@@ -1972,6 +2000,13 @@ type conceptRule struct {
 	Triggers []string
 	Aliases  []string
 	Tags     []string
+}
+
+type conceptSpec struct {
+	Name    string
+	Aliases []string
+	Tags    []string
+	Related []string
 }
 
 var builtInConceptRules = []conceptRule{
@@ -2078,34 +2113,69 @@ func init() {
 }
 
 func (s *Store) ensureConceptEntriesLocked(links []string) {
-	for _, link := range normalizeLinks(links) {
-		rule, ok := conceptRuleForName(link)
+	queue := normalizeMemoryLinks(links)
+	seen := make(map[string]bool, len(queue))
+	for len(queue) > 0 {
+		link := queue[0]
+		queue = queue[1:]
+		spec, ok := conceptSpecForLink(link)
 		if !ok {
 			continue
 		}
-		if s.hasConceptEntryLocked(rule.Concept) {
+		key := graphKey(spec.Name)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		queue = append(queue, spec.Related...)
+		if s.hasConceptEntryLocked(spec.Name) {
 			continue
 		}
 		now := time.Now()
+		id := conceptEntryID(spec.Name)
 		entry := &Entry{
-			ID:         conceptEntryID(rule.Concept),
-			Content:    rule.Concept,
+			ID:         id,
+			Content:    spec.Name,
 			Category:   "concept",
 			Tier:       TierLong,
 			Importance: 0.85,
 			CreatedAt:  now,
 			AccessedAt: now,
-			Tags:       mergeTags([]string{"concept"}, rule.Tags),
-			Aliases:    dedupSlice(rule.Aliases),
+			Tags:       mergeTags([]string{"concept"}, spec.Tags),
+			Aliases:    dedupSlice(spec.Aliases),
 			Status:     "active",
 			ValidFrom:  now,
-			BlockID:    blockIDForEntry(conceptEntryID(rule.Concept)),
-			Path:       conceptNotePath(rule.Concept),
+			BlockID:    blockIDForEntry(id),
+			Path:       conceptNotePath(spec.Name),
 		}
-		entry.Links = normalizeLinks(conceptRelatedLinks(rule))
+		entry.Links = normalizeMemoryLinks(spec.Related)
 		s.entries[entry.ID] = entry
 		s.paths[entry.ID] = entry.Path
 	}
+}
+
+func conceptSpecForLink(link string) (conceptSpec, bool) {
+	link = strings.TrimSpace(link)
+	if link == "" || memoryInternalLinkTarget(link) {
+		return conceptSpec{}, false
+	}
+	if rule, ok := conceptRuleForName(link); ok {
+		return conceptSpec{
+			Name:    rule.Concept,
+			Aliases: dedupSlice(rule.Aliases),
+			Tags:    dedupSlice(rule.Tags),
+			Related: normalizeMemoryLinks(conceptRelatedLinks(rule)),
+		}, true
+	}
+	return conceptSpec{Name: link}, true
+}
+
+func memoryInternalLinkTarget(link string) bool {
+	link = strings.ToLower(strings.TrimSpace(link))
+	if link == "" {
+		return true
+	}
+	return strings.HasPrefix(link, "mem_")
 }
 
 func conceptRuleForName(name string) (conceptRule, bool) {
@@ -2148,7 +2218,9 @@ func (s *Store) hasConceptEntryLocked(concept string) bool {
 func conceptEntryID(concept string) string {
 	slug := slugify(concept)
 	if slug == "" {
-		slug = "concept"
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(concept))
+		slug = fmt.Sprintf("u%x", h.Sum32())
 	}
 	return "concept_" + strings.ReplaceAll(slug, "-", "_")
 }

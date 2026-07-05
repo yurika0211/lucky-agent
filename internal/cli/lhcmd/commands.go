@@ -1329,6 +1329,11 @@ func runMemoryRenameNotes(cmd *cobra.Command, args []string) error {
 		fmt.Printf(" (applied %d)", report.Renamed)
 	}
 	fmt.Println()
+	fmt.Printf("  Duplicate prunes: %d", report.WouldPruneDuplicates)
+	if apply {
+		fmt.Printf(" (pruned %d)", report.PrunedDuplicates)
+	}
+	fmt.Println()
 
 	maxShow := 20
 	if len(report.Entries) > 0 {
@@ -1340,6 +1345,17 @@ func runMemoryRenameNotes(cmd *cobra.Command, args []string) error {
 			}
 			fmt.Printf("    - %s\n", entry.From)
 			fmt.Printf("      -> %s\n", entry.To)
+		}
+	}
+	if len(report.DuplicatePruneEntries) > 0 {
+		fmt.Println("  Duplicate notes:")
+		for i, entry := range report.DuplicatePruneEntries {
+			if i >= maxShow {
+				fmt.Printf("    ... %d more\n", len(report.DuplicatePruneEntries)-maxShow)
+				break
+			}
+			fmt.Printf("    - keep %s\n", entry.Keep)
+			fmt.Printf("      prune %s\n", entry.Remove)
 		}
 	}
 	return nil

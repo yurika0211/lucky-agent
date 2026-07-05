@@ -244,6 +244,30 @@ func TestSaveWithMetadataPersistsAliasesAndLinks(t *testing.T) {
 	if !foundAlias {
 		t.Fatalf("expected alias to persist, got %#v", results[0].Aliases)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "Daughter.md")); err != nil {
+		t.Fatalf("expected generic concept note for Daughter: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "Pollen Allergy.md")); err != nil {
+		t.Fatalf("expected generic concept note for Pollen Allergy: %v", err)
+	}
+}
+
+func TestSaveWithOptionsCreatesConceptNotesForContentWikilinks(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithOptions("Project uses [[Project Graph]] with [[Obsidian]].", "project", TierLong, 0.9, SaveOptions{}); err != nil {
+		t.Fatalf("SaveWithOptions: %v", err)
+	}
+
+	for _, name := range []string{"Project Graph.md", "Obsidian.md", "LuckyAgent Memory.md"} {
+		if _, err := os.Stat(filepath.Join(dir, "70_Concepts", name)); err != nil {
+			t.Fatalf("expected concept note %q: %v", name, err)
+		}
+	}
 }
 
 func TestSaveWithOptionsInfersObsidianConceptLinks(t *testing.T) {
