@@ -302,6 +302,29 @@ func TestHumanReadableNotePathsPreserveUnicodeAndDeduplicate(t *testing.T) {
 	}
 }
 
+func TestMemoryNoteDoesNotWikilinkInternalSummaryIDs(t *testing.T) {
+	note := renderMemoryNote(&Entry{
+		ID:         "mem_1_3",
+		Content:    "Conversation summary.",
+		Category:   "conversation",
+		Tier:       TierMedium,
+		CreatedAt:  time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		AccessedAt: time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		Status:     "active",
+		ValidFrom:  time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		SummaryOf:  []string{"mem_1_1", "mem_1_2"},
+		BlockID:    "mem-1-3",
+	})
+	if strings.Contains(note, "[[mem_") {
+		t.Fatalf("summary source IDs should not become Obsidian wikilinks:\n%s", note)
+	}
+	for _, want := range []string{"Summary source: `mem_1_1`", "Summary source: `mem_1_2`"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("expected note to contain %q:\n%s", want, note)
+		}
+	}
+}
+
 func TestSaveWithOptionsSanitizesGeneratedTruncationMarkers(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStore(dir)

@@ -1743,7 +1743,7 @@ func renderMemoryNote(e *Entry) string {
 			b.WriteString("- [[" + link + "]]\n")
 		}
 		for _, id := range e.SummaryOf {
-			b.WriteString("- Summary of [[" + id + "]]\n")
+			b.WriteString("- Summary source: `" + strings.TrimSpace(id) + "`\n")
 		}
 	}
 	return b.String()

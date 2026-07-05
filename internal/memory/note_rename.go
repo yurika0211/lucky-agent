@@ -91,8 +91,11 @@ func (s *Store) RenameNotes(opts NoteRenameOptions) (NoteRenameReport, error) {
 	}
 	report.WouldRename = len(plans)
 	report.Entries = plans
-	if !opts.Apply || len(plans) == 0 {
+	if !opts.Apply {
 		return report, nil
+	}
+	if len(plans) == 0 {
+		return report, s.persist()
 	}
 
 	for _, plan := range plans {
