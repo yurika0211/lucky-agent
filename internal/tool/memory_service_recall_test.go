@@ -102,3 +102,41 @@ func TestMemoryToolServiceRecallRecentJSON(t *testing.T) {
 		t.Fatalf("unexpected recent payload: %+v", payload)
 	}
 }
+
+func TestMemoryToolServiceRecallDetailedIncludesMemoryTrace(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.SaveWithTierAndTags("Outdoor walks often include [[Daughter]].", "plan", memory.TierMedium, 0.6, []string{"family"}); err != nil {
+		t.Fatalf("save plan: %v", err)
+	}
+	if err := store.SaveWithTierAndTags("[[Daughter]] has [[Pollen Allergy]].", "health", memory.TierLong, 0.95, []string{"health"}); err != nil {
+		t.Fatalf("save health: %v", err)
+	}
+	svc := NewMemoryToolService(store)
+
+	result, err := svc.HandleRecallDetailed(map[string]any{
+		"query":         "Outdoor walks",
+		"limit":         5,
+		"graph_depth":   1,
+		"explain_graph": false,
+	})
+	if err != nil {
+		t.Fatalf("HandleRecallDetailed: %v", err)
+	}
+	if strings.TrimSpace(result.Output) == "" {
+		t.Fatal("expected model-visible recall output")
+	}
+	rawTrace, ok := result.Metadata["memory_trace"]
+	if !ok {
+		t.Fatalf("expected memory_trace metadata, got %#v", result.Metadata)
+	}
+	trace, ok := rawTrace.(memory.SearchTrace)
+	if !ok {
+		t.Fatalf("expected memory.SearchTrace metadata, got %T", rawTrace)
+	}
+	if trace.Query != "Outdoor walks" || len(trace.Results) < 2 || len(trace.Hops) == 0 {
+		t.Fatalf("unexpected trace: %+v", trace)
+	}
+}
