@@ -202,7 +202,11 @@
       "progress_as_messages": true,
       "progress_as_natural_language": false,
       "progress_summary_with_llm": false,
-      "show_tool_details_in_result": false
+      "show_tool_details_in_result": false,
+      "memory_trace": true,
+      "memory_trace_level": "summary",
+      "memory_trace_max_results": 6,
+      "memory_trace_max_hops": 8
     },
     "qqofficial": {
       "app_id": "",

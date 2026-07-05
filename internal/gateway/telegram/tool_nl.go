@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"html"
 	"strings"
+
+	"github.com/yurika0211/luckyagent/internal/memory"
 )
 
 type telegramToolTraceStep struct {
@@ -122,6 +124,100 @@ func renderTelegramAgentTraceCard(steps []telegramToolTraceStep) string {
 	body := strings.Join(segments, "\n")
 	body += "\nDone · " + fmt.Sprintf("%d agent steps", shown)
 	return "<b>🧭 Agent Trace</b>\n<pre><code>" + html.EscapeString(body) + "</code></pre>"
+}
+
+func parseTelegramMemoryTracePayload(payload string) (memory.SearchTrace, bool) {
+	var trace memory.SearchTrace
+	payload = strings.TrimSpace(payload)
+	if payload == "" {
+		return trace, false
+	}
+	if err := json.Unmarshal([]byte(payload), &trace); err != nil {
+		return trace, false
+	}
+	return trace, strings.TrimSpace(trace.Query) != "" || len(trace.Results) > 0 || len(trace.Hops) > 0
+}
+
+func renderTelegramMemoryTraceCard(trace memory.SearchTrace, level string, maxResults, maxHops int) string {
+	if strings.TrimSpace(trace.Query) == "" && len(trace.Results) == 0 && len(trace.Hops) == 0 {
+		return ""
+	}
+	if maxResults <= 0 {
+		maxResults = 6
+	}
+	if maxHops <= 0 {
+		maxHops = 8
+	}
+	level = strings.ToLower(strings.TrimSpace(level))
+	if level == "" {
+		level = "summary"
+	}
+
+	lines := make([]string, 0, 4+maxResults+maxHops)
+	if query := clipOneLine(trace.Query, 120); query != "" {
+		lines = append(lines, "query: "+query)
+	}
+	meta := fmt.Sprintf("depth=%d results=%d hops=%d", trace.GraphDepth, len(trace.Results), len(trace.Hops))
+	if trace.DurationMS > 0 {
+		meta += fmt.Sprintf(" duration=%dms", trace.DurationMS)
+	}
+	lines = append(lines, meta)
+	if source := clipOneLine(trace.Source, 96); source != "" {
+		lines = append(lines, "source: "+source)
+	}
+
+	for i, result := range trace.Results {
+		if i >= maxResults {
+			lines = append(lines, fmt.Sprintf("... %d more results", len(trace.Results)-i))
+			break
+		}
+		mode := "graph"
+		if result.DirectScore > 0 {
+			mode = "direct"
+		}
+		ref := firstMemoryTraceText(result.Ref, result.ID)
+		line := fmt.Sprintf("[%d] %s %s/%s score=%.2f %s", result.Rank, mode, result.Category, result.Tier, result.Score, ref)
+		lines = append(lines, clipOneLine(line, 180))
+		if level == "full" && strings.TrimSpace(result.ContentPreview) != "" {
+			lines = append(lines, "    "+clipOneLine(result.ContentPreview, 160))
+		}
+	}
+
+	for i, hop := range trace.Hops {
+		if i >= maxHops {
+			lines = append(lines, fmt.Sprintf("... %d more hops", len(trace.Hops)-i))
+			break
+		}
+		via := firstMemoryTraceText(hop.Via, "-")
+		target := firstMemoryTraceText(hop.ToRef, hop.ToID)
+		line := fmt.Sprintf("hop%d %s via %s -> %s +%.2f", hop.Depth, hop.Kind, via, target, hop.Boost)
+		lines = append(lines, clipOneLine(line, 180))
+	}
+
+	if len(trace.Temporal) > 0 {
+		lines = append(lines, "notes: "+clipOneLine(strings.Join(limitMemoryTraceStrings(trace.Temporal, 2), " | "), 180))
+	}
+	if len(trace.Warnings) > 0 {
+		lines = append(lines, "warnings: "+clipOneLine(strings.Join(limitMemoryTraceStrings(trace.Warnings, 2), " | "), 180))
+	}
+	return "<b>Memory Trace</b>\n<pre><code>" + html.EscapeString(strings.Join(lines, "\n")) + "</code></pre>"
+}
+
+func firstMemoryTraceText(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func limitMemoryTraceStrings(values []string, limit int) []string {
+	if limit <= 0 || len(values) <= limit {
+		return values
+	}
+	return values[:limit]
 }
 
 func humanizeToolCallProgress(step int, name, args string) string {
@@ -337,6 +433,8 @@ func telegramToolTraceVisibility(name string) string {
 	switch {
 	case lower == "":
 		return "visible"
+	case lower == "__memory_trace":
+		return "hidden"
 	case lower == "skill_read",
 		lower == "remember",
 		lower == "recall",

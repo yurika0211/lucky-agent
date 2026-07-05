@@ -319,6 +319,10 @@ type MsgGatewayTelegram struct {
 	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
 	ProgressSummaryWithLLM    bool   `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
 	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
+	MemoryTrace               bool   `json:"memory_trace,omitempty"`                 // 是否发送 Memory Trace 卡片
+	MemoryTraceLevel          string `json:"memory_trace_level,omitempty"`           // summary 或 full
+	MemoryTraceMaxResults     int    `json:"memory_trace_max_results,omitempty"`     // Memory Trace 最多展示的结果数
+	MemoryTraceMaxHops        int    `json:"memory_trace_max_hops,omitempty"`        // Memory Trace 最多展示的图路径数
 }
 
 // MsgGatewayQQOfficial QQ 官方机器人配置
@@ -703,6 +707,10 @@ func DefaultConfig() *Config {
 				ProgressAsMessages:        true, // 默认启用独立步骤消息
 				ProgressAsNaturalLanguage: false,
 				ShowToolDetailsInResult:   false,
+				MemoryTrace:               true,
+				MemoryTraceLevel:          "summary",
+				MemoryTraceMaxResults:     6,
+				MemoryTraceMaxHops:        8,
 			},
 			QQOfficial: MsgGatewayQQOfficial{
 				RemoveAt:      true,
@@ -1525,6 +1533,18 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.telegram.show_tool_chain":
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
+	case "msg_gateway.telegram.memory_trace":
+		m.config.MsgGateway.Telegram.MemoryTrace = parseBool(value)
+	case "msg_gateway.telegram.memory_trace_level":
+		m.config.MsgGateway.Telegram.MemoryTraceLevel = value
+	case "msg_gateway.telegram.memory_trace_max_results":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Telegram.MemoryTraceMaxResults = n
+	case "msg_gateway.telegram.memory_trace_max_hops":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Telegram.MemoryTraceMaxHops = n
 	case "msg_gateway.qqofficial.app_id":
 		m.config.MsgGateway.QQOfficial.AppID = value
 	case "msg_gateway.qqofficial.app_secret":
