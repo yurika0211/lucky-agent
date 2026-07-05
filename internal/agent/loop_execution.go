@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -148,6 +149,7 @@ type executedToolCall struct {
 	Result      string
 	ShortResult string
 	Duration    time.Duration
+	Metadata    map[string]any
 }
 
 func (a *Agent) executeToolCallsOrdered(
@@ -163,20 +165,23 @@ func (a *Agent) executeToolCallsOrdered(
 
 	runOne := func(idx int, tc provider.ToolCall) {
 		start := time.Now()
-		toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit)
+		toolResult, err := a.executeToolMaybeDedupDetailed(tc.Name, tc.Arguments, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit)
+		resultText := toolResult.Output
 		if err != nil {
-			toolResult = fmt.Sprintf("Error: %v", err)
+			resultText = fmt.Sprintf("Error: %v", err)
 		}
-		shortResult := toolResult
+		shortResult := resultText
 		if len(shortResult) > 200 {
 			shortResult = shortResult[:197] + "..."
 		}
+		shortResult = appendMemoryTracePayload(shortResult, toolResult.Metadata)
 		resultCh <- executedToolCall{
 			Index:       idx,
 			ToolCall:    tc,
-			Result:      toolResult,
+			Result:      resultText,
 			ShortResult: shortResult,
 			Duration:    time.Since(start),
+			Metadata:    toolResult.Metadata,
 		}
 	}
 
@@ -342,10 +347,47 @@ func emitChatToolCallEvents(events chan<- ChatEvent, toolCalls []provider.ToolCa
 }
 
 func emitChatToolResultEvent(events chan<- ChatEvent, toolName, shortResult string) {
+	displayResult, memoryTracePayload, hasMemoryTrace := splitMemoryTracePayload(shortResult)
 	events <- ChatEvent{
 		Type:    ChatEventToolResult,
 		Name:    toolName,
-		Result:  shortResult,
-		Content: fmt.Sprintf("📋 %s → %s", toolName, shortResult),
+		Result:  displayResult,
+		Content: fmt.Sprintf("📋 %s → %s", toolName, displayResult),
 	}
+	if hasMemoryTrace {
+		events <- ChatEvent{
+			Type:    ChatEventToolResult,
+			Name:    chatEventMemoryTraceName,
+			Result:  memoryTracePayload,
+			Content: "Memory Trace",
+		}
+	}
+}
+
+const chatEventMemoryTraceName = "__memory_trace"
+const memoryTracePayloadMarker = "\n\n__LUCKYAGENT_MEMORY_TRACE__"
+
+func appendMemoryTracePayload(shortResult string, metadata map[string]any) string {
+	if len(metadata) == 0 {
+		return shortResult
+	}
+	trace, ok := metadata["memory_trace"]
+	if !ok || trace == nil {
+		return shortResult
+	}
+	data, err := json.Marshal(trace)
+	if err != nil || len(data) == 0 {
+		return shortResult
+	}
+	return shortResult + memoryTracePayloadMarker + string(data)
+}
+
+func splitMemoryTracePayload(shortResult string) (displayResult string, payload string, ok bool) {
+	idx := strings.Index(shortResult, memoryTracePayloadMarker)
+	if idx < 0 {
+		return shortResult, "", false
+	}
+	display := strings.TrimSpace(shortResult[:idx])
+	payload = strings.TrimSpace(shortResult[idx+len(memoryTracePayloadMarker):])
+	return display, payload, payload != ""
 }
