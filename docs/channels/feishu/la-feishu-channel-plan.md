@@ -4,6 +4,34 @@
 `lh msg-gateway start` 网关体系下新增 `feishu` 平台，让飞书私聊和群聊消息可以进入
 LuckyAgent agent runtime，并把最终回答回发到飞书。
 
+## 当前落地状态
+
+Phase 1 文本通道已经落地：
+
+- `internal/gateway/feishu` 实现 HTTP event callback、URL challenge、verification token 校验和 tenant access token 缓存。
+- 支持 schema 2.0 的 `im.message.receive_v1` 文本事件。
+- 支持私聊、群聊 `mention|all|none` 触发、chat/user allowlist 和 mention 文本移除。
+- 支持飞书文本消息发送与 reply API，接入 LuckyAgent session、通用命令和 `/lucky` 收集能力。
+- `lh msg-gateway start --platform feishu` 已接入配置解析、凭证校验、adapter 注册和启动。
+
+Phase 1 尚不支持：
+
+- 加密事件；配置非空 `encrypt_key` 时启动会明确失败。
+- 图片、文件、语音等附件收发。
+- 飞书富文本、卡片和流式消息更新。
+
+最小启动配置：
+
+```bash
+lh config set msg_gateway.platform feishu
+lh config set msg_gateway.feishu.app_id cli_xxx
+lh config set msg_gateway.feishu.app_secret your-app-secret
+lh config set msg_gateway.feishu.verification_token your-verification-token
+lh msg-gateway start --platform feishu
+```
+
+默认本地回调为 `http://127.0.0.1:6710/feishu/events`。飞书控制台需要配置公网 HTTPS URL，并通过反向代理转发到该地址。
+
 ## 现状基线
 
 当前仓库已经有统一的消息网关抽象：
