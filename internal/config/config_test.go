@@ -155,6 +155,92 @@ func TestManagerSetTelegramProxy(t *testing.T) {
 	}
 }
 
+func TestDefaultFeishuConfig(t *testing.T) {
+	cfg := DefaultConfig().MsgGateway.Feishu
+	if cfg.ListenAddr != "127.0.0.1:6710" {
+		t.Fatalf("unexpected listen address %q", cfg.ListenAddr)
+	}
+	if cfg.Path != "/feishu/events" {
+		t.Fatalf("unexpected callback path %q", cfg.Path)
+	}
+	if cfg.APIBaseURL != "https://open.feishu.cn" {
+		t.Fatalf("unexpected API base URL %q", cfg.APIBaseURL)
+	}
+	if !cfg.RemoveAt {
+		t.Fatal("expected remove_at to default to true")
+	}
+	if cfg.GroupTriggerMode != "mention" {
+		t.Fatalf("unexpected group trigger mode %q", cfg.GroupTriggerMode)
+	}
+}
+
+func TestParseConfigDataAppliesFeishuDefaults(t *testing.T) {
+	cfg, err := parseConfigData([]byte(`{"msg_gateway":{"feishu":{"app_id":"cli_test","listen_addr":"","path":"","api_base_url":"","group_trigger_mode":""}}}`))
+	if err != nil {
+		t.Fatalf("parseConfigData: %v", err)
+	}
+	if cfg.MsgGateway.Feishu.AppID != "cli_test" {
+		t.Fatalf("expected custom app ID, got %q", cfg.MsgGateway.Feishu.AppID)
+	}
+	if cfg.MsgGateway.Feishu.ListenAddr != "127.0.0.1:6710" || cfg.MsgGateway.Feishu.Path != "/feishu/events" {
+		t.Fatalf("unexpected callback defaults: %q %q", cfg.MsgGateway.Feishu.ListenAddr, cfg.MsgGateway.Feishu.Path)
+	}
+	if cfg.MsgGateway.Feishu.APIBaseURL != "https://open.feishu.cn" {
+		t.Fatalf("unexpected API base URL %q", cfg.MsgGateway.Feishu.APIBaseURL)
+	}
+	if cfg.MsgGateway.Feishu.GroupTriggerMode != "mention" {
+		t.Fatalf("unexpected group trigger mode %q", cfg.MsgGateway.Feishu.GroupTriggerMode)
+	}
+}
+
+func TestManagerSetFeishuConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	values := map[string]string{
+		"msg_gateway.feishu.app_id":             "cli_app",
+		"msg_gateway.feishu.app_secret":         "secret",
+		"msg_gateway.feishu.verification_token": "verify",
+		"msg_gateway.feishu.encrypt_key":        "encrypt",
+		"msg_gateway.feishu.listen_addr":        "0.0.0.0:7000",
+		"msg_gateway.feishu.path":               "/callbacks/feishu",
+		"msg_gateway.feishu.api_base_url":       "https://open.feishu.example",
+		"msg_gateway.feishu.allowed_chats":      "oc_1,oc_2",
+		"msg_gateway.feishu.allowed_users":      "ou_1,ou_2",
+		"msg_gateway.feishu.remove_at":          "false",
+		"msg_gateway.feishu.group_trigger_mode": "all",
+	}
+	for key, value := range values {
+		if err := mgr.Set(key, value); err != nil {
+			t.Fatalf("Set %s: %v", key, err)
+		}
+	}
+
+	cfg := mgr.Get()
+	feishu := cfg.MsgGateway.Feishu
+	if feishu.AppID != "cli_app" || feishu.AppSecret != "secret" || feishu.VerificationToken != "verify" || feishu.EncryptKey != "encrypt" {
+		t.Fatalf("unexpected credentials: %+v", feishu)
+	}
+	if feishu.ListenAddr != "0.0.0.0:7000" || feishu.Path != "/callbacks/feishu" || feishu.APIBaseURL != "https://open.feishu.example" {
+		t.Fatalf("unexpected endpoints: %+v", feishu)
+	}
+	if len(feishu.AllowedChats) != 2 || feishu.AllowedChats[0] != "oc_1" || len(feishu.AllowedUsers) != 2 || feishu.AllowedUsers[0] != "ou_1" {
+		t.Fatalf("unexpected allowlists: chats=%v users=%v", feishu.AllowedChats, feishu.AllowedUsers)
+	}
+	if feishu.RemoveAt || feishu.GroupTriggerMode != "all" {
+		t.Fatalf("unexpected message policy: remove_at=%v group_trigger_mode=%q", feishu.RemoveAt, feishu.GroupTriggerMode)
+	}
+
+	cfg.MsgGateway.Feishu.AllowedChats[0] = "mutated_chat"
+	cfg.MsgGateway.Feishu.AllowedUsers[0] = "mutated_user"
+	again := mgr.Get().MsgGateway.Feishu
+	if again.AllowedChats[0] != "oc_1" || again.AllowedUsers[0] != "ou_1" {
+		t.Fatalf("Get should return cloned Feishu allowlists, got chats=%v users=%v", again.AllowedChats, again.AllowedUsers)
+	}
+}
+
 func TestManagerSetSimpleLocalInspectionConfig(t *testing.T) {
 	mgr, err := NewManager()
 	if err != nil {

@@ -238,6 +238,19 @@
       "remove_at": true,
       "group_trigger_mode": "mention"
     },
+    "feishu": {
+      "app_id": "",
+      "app_secret": "",
+      "verification_token": "",
+      "encrypt_key": "",
+      "listen_addr": "127.0.0.1:6710",
+      "path": "/feishu/events",
+      "api_base_url": "https://open.feishu.cn",
+      "allowed_chats": [],
+      "allowed_users": [],
+      "remove_at": true,
+      "group_trigger_mode": "mention"
+    },
     "weixin": {
       "token": "",
       "account_id": "",

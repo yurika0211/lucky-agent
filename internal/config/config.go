@@ -317,6 +317,7 @@ type MsgGatewayConfig struct {
 	Telegram       MsgGatewayTelegram       `json:"telegram,omitempty"`
 	QQOfficial     MsgGatewayQQOfficial     `json:"qqofficial,omitempty"`
 	NapCat         MsgGatewayNapCat         `json:"napcat,omitempty"`
+	Feishu         MsgGatewayFeishu         `json:"feishu,omitempty"`
 	Weixin         MsgGatewayWeixin         `json:"weixin,omitempty"`
 	OpenClawWeixin MsgGatewayOpenClawWeixin `json:"openclawweixin,omitempty"`
 }
@@ -360,6 +361,21 @@ type MsgGatewayNapCat struct {
 	AllowedUsers     []string `json:"allowed_users,omitempty"`
 	RemoveAt         bool     `json:"remove_at,omitempty"`
 	GroupTriggerMode string   `json:"group_trigger_mode,omitempty"`
+}
+
+// MsgGatewayFeishu configures the Feishu event callback and Open API client.
+type MsgGatewayFeishu struct {
+	AppID             string   `json:"app_id,omitempty"`
+	AppSecret         string   `json:"app_secret,omitempty"`
+	VerificationToken string   `json:"verification_token,omitempty"`
+	EncryptKey        string   `json:"encrypt_key,omitempty"`
+	ListenAddr        string   `json:"listen_addr,omitempty"`
+	Path              string   `json:"path,omitempty"`
+	APIBaseURL        string   `json:"api_base_url,omitempty"`
+	AllowedChats      []string `json:"allowed_chats,omitempty"`
+	AllowedUsers      []string `json:"allowed_users,omitempty"`
+	RemoveAt          bool     `json:"remove_at,omitempty"`
+	GroupTriggerMode  string   `json:"group_trigger_mode,omitempty"`
 }
 
 // MemoryConfig 记忆系统配置
@@ -738,6 +754,13 @@ func DefaultConfig() *Config {
 				RemoveAt:         true,
 				GroupTriggerMode: "mention",
 			},
+			Feishu: MsgGatewayFeishu{
+				ListenAddr:       "127.0.0.1:6710",
+				Path:             "/feishu/events",
+				APIBaseURL:       "https://open.feishu.cn",
+				RemoveAt:         true,
+				GroupTriggerMode: "mention",
+			},
 			Weixin: MsgGatewayWeixin{
 				BaseURL:                 "https://ilinkai.weixin.qq.com",
 				DMPolicy:                "open",
@@ -1098,6 +1121,18 @@ func normalizeConfig(cfg *Config) {
 	if strings.TrimSpace(cfg.MsgGateway.NapCat.GroupTriggerMode) == "" {
 		cfg.MsgGateway.NapCat.GroupTriggerMode = def.MsgGateway.NapCat.GroupTriggerMode
 	}
+	if strings.TrimSpace(cfg.MsgGateway.Feishu.ListenAddr) == "" {
+		cfg.MsgGateway.Feishu.ListenAddr = def.MsgGateway.Feishu.ListenAddr
+	}
+	if strings.TrimSpace(cfg.MsgGateway.Feishu.Path) == "" {
+		cfg.MsgGateway.Feishu.Path = def.MsgGateway.Feishu.Path
+	}
+	if strings.TrimSpace(cfg.MsgGateway.Feishu.APIBaseURL) == "" {
+		cfg.MsgGateway.Feishu.APIBaseURL = def.MsgGateway.Feishu.APIBaseURL
+	}
+	if strings.TrimSpace(cfg.MsgGateway.Feishu.GroupTriggerMode) == "" {
+		cfg.MsgGateway.Feishu.GroupTriggerMode = def.MsgGateway.Feishu.GroupTriggerMode
+	}
 	if cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds <= 0 {
 		cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds = def.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds
 	}
@@ -1138,6 +1173,8 @@ func cloneConfig(in *Config) *Config {
 	cp.MsgGateway.QQOfficial.Intents = append([]string(nil), in.MsgGateway.QQOfficial.Intents...)
 	cp.MsgGateway.NapCat.AllowedChats = append([]string(nil), in.MsgGateway.NapCat.AllowedChats...)
 	cp.MsgGateway.NapCat.AllowedUsers = append([]string(nil), in.MsgGateway.NapCat.AllowedUsers...)
+	cp.MsgGateway.Feishu.AllowedChats = append([]string(nil), in.MsgGateway.Feishu.AllowedChats...)
+	cp.MsgGateway.Feishu.AllowedUsers = append([]string(nil), in.MsgGateway.Feishu.AllowedUsers...)
 	cp.MsgGateway.Weixin.AllowedUsers = append([]string(nil), in.MsgGateway.Weixin.AllowedUsers...)
 	cp.MsgGateway.Weixin.GroupAllowedUsers = append([]string(nil), in.MsgGateway.Weixin.GroupAllowedUsers...)
 	cp.MsgGateway.OpenClawWeixin.AllowedUsers = append([]string(nil), in.MsgGateway.OpenClawWeixin.AllowedUsers...)
@@ -1597,6 +1634,28 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.NapCat.RemoveAt = parseBool(value)
 	case "msg_gateway.napcat.group_trigger_mode":
 		m.config.MsgGateway.NapCat.GroupTriggerMode = value
+	case "msg_gateway.feishu.app_id":
+		m.config.MsgGateway.Feishu.AppID = value
+	case "msg_gateway.feishu.app_secret":
+		m.config.MsgGateway.Feishu.AppSecret = value
+	case "msg_gateway.feishu.verification_token":
+		m.config.MsgGateway.Feishu.VerificationToken = value
+	case "msg_gateway.feishu.encrypt_key":
+		m.config.MsgGateway.Feishu.EncryptKey = value
+	case "msg_gateway.feishu.listen_addr":
+		m.config.MsgGateway.Feishu.ListenAddr = value
+	case "msg_gateway.feishu.path":
+		m.config.MsgGateway.Feishu.Path = value
+	case "msg_gateway.feishu.api_base_url":
+		m.config.MsgGateway.Feishu.APIBaseURL = value
+	case "msg_gateway.feishu.allowed_chats":
+		m.config.MsgGateway.Feishu.AllowedChats = splitCSV(value)
+	case "msg_gateway.feishu.allowed_users":
+		m.config.MsgGateway.Feishu.AllowedUsers = splitCSV(value)
+	case "msg_gateway.feishu.remove_at":
+		m.config.MsgGateway.Feishu.RemoveAt = parseBool(value)
+	case "msg_gateway.feishu.group_trigger_mode":
+		m.config.MsgGateway.Feishu.GroupTriggerMode = value
 	case "msg_gateway.weixin.token":
 		m.config.MsgGateway.Weixin.Token = value
 	case "msg_gateway.weixin.account_id":
