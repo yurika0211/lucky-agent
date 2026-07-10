@@ -396,6 +396,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	}
 	loopState := newLoopRuntimeState()
 	loopState.toolExecutionGuard = newToolExecutionGuard(routingText)
+	loopState.artifactGuard = newArtifactFinalizationGuard(routingText)
 	memoryGate := a.buildMemoryToolGate(routingText, turnInput.Scope, loopCfg.DisabledTools)
 
 	// 构建初始消息
@@ -544,6 +545,7 @@ type loopRuntimeState struct {
 	successfulSearchEvidence int
 	detailedSearchEvidence   int
 	forceSearchSynthesis     bool
+	artifactGuard            *artifactFinalizationGuard
 	continuedResponse        strings.Builder
 	continuedReasoning       strings.Builder
 }
@@ -616,9 +618,20 @@ func (a *Agent) processDirectResponse(
 	if strings.TrimSpace(loopState.continuedResponse.String()) != "" {
 		appendContinuation(&loopState.continuedResponse, raw)
 		appendContinuation(&loopState.continuedReasoning, resp.ReasoningContent)
-		return messages, true, strings.TrimSpace(loopState.continuedResponse.String())
+		finalResponse := strings.TrimSpace(loopState.continuedResponse.String())
+		if msg, blocked := loopState.artifactGuard.blockMessage(finalResponse); blocked {
+			messages = append(messages, provider.Message{Role: "assistant", Content: raw, ReasoningContent: resp.ReasoningContent})
+			messages = append(messages, provider.Message{Role: "user", Content: msg})
+			return messages, false, ""
+		}
+		return messages, true, finalResponse
 	}
 
+	if msg, blocked := loopState.artifactGuard.blockMessage(raw); blocked {
+		messages = append(messages, provider.Message{Role: "assistant", Content: raw, ReasoningContent: resp.ReasoningContent})
+		messages = append(messages, provider.Message{Role: "user", Content: msg})
+		return messages, false, ""
+	}
 	return messages, true, raw
 }
 
@@ -761,6 +774,9 @@ func (a *Agent) processToolCallBatch(
 			Duration:  execResult.Duration,
 		}
 		result.ToolCalls = append(result.ToolCalls, tcLog)
+		if loopState.artifactGuard != nil {
+			loopState.artifactGuard.recordToolResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
+		}
 
 		contextToolMsg := provider.Message{
 			Role:       "tool",

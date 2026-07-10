@@ -1835,6 +1835,7 @@ type streamConvergenceState struct {
 	memoryGate               *memoryToolGate
 	citationToolCalls        []toolCallLog
 	iterationTimeout         time.Duration
+	artifactGuard            *artifactFinalizationGuard
 }
 
 /*
@@ -1927,6 +1928,9 @@ func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result 
 		Result:    result,
 		Duration:  duration,
 	})
+	if s.artifactGuard != nil {
+		s.artifactGuard.recordToolResult(name, arguments, result)
+	}
 }
 
 /*
@@ -2026,6 +2030,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			memoryGate:             a.buildMemoryToolGate(routingText, input.Scope, loopCfg.DisabledTools),
 			toolExecutionGuard:     newToolExecutionGuard(routingText),
 			iterationTimeout:       loopCfg.Timeout,
+			artifactGuard:          newArtifactFinalizationGuard(routingText),
 		}
 		logger.Debug("agent stream context prepared",
 			"session_id", sessionID,
@@ -2344,6 +2349,19 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 		finalReasoning = strings.TrimSpace(state.continuedReasoning.String())
 	}
+	if msg, blocked := state.artifactGuard.blockMessage(finalResponse); blocked {
+		if remaining > 1 {
+			messages = append(messages, provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoning.String()})
+			messages = append(messages, provider.Message{Role: "user", Content: msg})
+			messages = a.fitContextWindow(messages)
+			nextRound := round + 1
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
+			return
+		}
+		finalResponse = msg
+		finalReasoning = ""
+	}
 	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state, finalReasoning)
 }
 
@@ -2546,12 +2564,6 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	}
 	state.lengthRecoveryCount = 0
 
-	chunks := splitIntoChunks(response, 60)
-	for _, chunk := range chunks {
-		events <- ChatEvent{Type: ChatEventContent, Content: chunk}
-		time.Sleep(50 * time.Millisecond)
-	}
-
 	finalResponse := response
 	finalReasoning := resp.ReasoningContent
 	if state.hasContinuation() {
@@ -2559,6 +2571,24 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		appendContinuation(&state.continuedReasoning, resp.ReasoningContent)
 		finalResponse = strings.TrimSpace(state.continuedResponse.String())
 		finalReasoning = strings.TrimSpace(state.continuedReasoning.String())
+	}
+	if msg, blocked := state.artifactGuard.blockMessage(finalResponse); blocked {
+		if remaining > 1 {
+			messages = append(messages, provider.Message{Role: "assistant", Content: response, ReasoningContent: resp.ReasoningContent})
+			messages = append(messages, provider.Message{Role: "user", Content: msg})
+			messages = a.fitContextWindow(messages)
+			nextRound := round + 1
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
+			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
+			return
+		}
+		finalResponse = msg
+		finalReasoning = ""
+	}
+	chunks := splitIntoChunks(finalResponse, 60)
+	for _, chunk := range chunks {
+		events <- ChatEvent{Type: ChatEventContent, Content: chunk}
+		time.Sleep(50 * time.Millisecond)
 	}
 	a.finalizeStreamWithState(events, sess, turnInput, finalResponse, state, finalReasoning)
 }
