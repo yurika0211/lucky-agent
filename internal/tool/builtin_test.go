@@ -2463,6 +2463,103 @@ func TestSandboxPathValidationUsesWindowsHomeAndTemp(t *testing.T) {
 	}
 }
 
+func sandboxExternalTestRoot(t *testing.T) string {
+	t.Helper()
+	if wd, err := os.Getwd(); err == nil {
+		root, err := os.MkdirTemp(wd, "sandbox-external-*")
+		if err == nil {
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			return root
+		}
+	}
+	return t.TempDir()
+}
+
+func TestFileReadAllowsConfiguredReadRoot(t *testing.T) {
+	root := sandboxExternalTestRoot(t)
+	home := filepath.Join(root, "home")
+	tempRoot := filepath.Join(root, "runtime-temp")
+	externalRoot := filepath.Join(root, "external-notes")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	if err := os.MkdirAll(tempRoot, 0o755); err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	if err := os.MkdirAll(externalRoot, 0o755); err != nil {
+		t.Fatalf("mkdir external root: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("TEMP", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TMPDIR", tempRoot)
+
+	notePath := filepath.Join(externalRoot, "questions.md")
+	if err := os.WriteFile(notePath, []byte("classic interview question"), 0o644); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+
+	if _, err := FileReadTool().Handler(map[string]any{"path": notePath}); err == nil {
+		t.Logf("default sandbox already allows %s; skipping default rejection assertion", notePath)
+	} else if !strings.Contains(err.Error(), "outside sandbox") {
+		t.Fatalf("expected default sandbox rejection, got %v", err)
+	}
+
+	readTool := FileReadTool(FilesystemPolicy{AllowedReadRoots: []string{externalRoot}})
+	out, err := readTool.Handler(map[string]any{"path": notePath})
+	if err != nil {
+		t.Fatalf("configured read root should allow file_read: %v", err)
+	}
+	if !strings.Contains(out, "classic interview question") {
+		t.Fatalf("expected file contents in output, got %q", out)
+	}
+
+	listTool := FileListTool(FilesystemPolicy{AllowedReadRoots: []string{externalRoot}})
+	listOut, err := listTool.Handler(map[string]any{"path": externalRoot})
+	if err != nil {
+		t.Fatalf("configured read root should allow file_list: %v", err)
+	}
+	if !strings.Contains(listOut, "questions.md") {
+		t.Fatalf("expected listed note, got %q", listOut)
+	}
+}
+
+func TestConfiguredReadRootDoesNotAllowWrite(t *testing.T) {
+	root := sandboxExternalTestRoot(t)
+	home := filepath.Join(root, "home")
+	tempRoot := filepath.Join(root, "runtime-temp")
+	externalRoot := filepath.Join(root, "external-notes")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	if err := os.MkdirAll(tempRoot, 0o755); err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	if err := os.MkdirAll(externalRoot, 0o755); err != nil {
+		t.Fatalf("mkdir external root: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("TEMP", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TMPDIR", tempRoot)
+
+	writePath := filepath.Join(externalRoot, "created.md")
+	if err := validatePath(writePath); err == nil {
+		t.Skipf("test external root is already inside the default sandbox: %s", writePath)
+	}
+	if _, err := FileWriteTool().Handler(map[string]any{
+		"path":    writePath,
+		"content": "should not write",
+	}); err == nil || !strings.Contains(err.Error(), "outside sandbox") {
+		t.Fatalf("expected write outside sandbox to be rejected, got %v", err)
+	}
+	if _, err := os.Stat(writePath); !os.IsNotExist(err) {
+		t.Fatalf("external file should not have been written, stat err %v", err)
+	}
+}
+
 func TestShellSandboxValidation(t *testing.T) {
 	tests := []struct {
 		name    string

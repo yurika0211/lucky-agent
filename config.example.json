@@ -191,6 +191,11 @@
       "prefer_lightweight_tasks"
     ]
   },
+  "tools": {
+    "filesystem": {
+      "allowed_read_roots": []
+    }
+  },
   "msg_gateway": {
     "platform": "telegram",
     "start_all": false,

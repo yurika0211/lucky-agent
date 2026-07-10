@@ -222,6 +222,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Proactive.KernelLearningRate)
 	case "proactive.kernel_min_samples":
 		fmt.Println(cfg.Proactive.KernelMinSamples)
+	case "tools.filesystem.allowed_read_roots":
+		fmt.Println(strings.Join(cfg.Tools.Filesystem.AllowedReadRoots, ","))
 	case "msg_gateway.platform":
 		fmt.Println(cfg.MsgGateway.Platform)
 	case "msg_gateway.api_addr":

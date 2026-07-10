@@ -86,11 +86,22 @@ type Config struct {
 	// Proactive 配置
 	Proactive ProactiveConfig `json:"proactive,omitempty"`
 
+	// Tool runtime configuration.
+	Tools ToolsConfig `json:"tools,omitempty"`
+
 	// Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
 
 	// Hooks 配置工具执行前后的可插拔 hook（PreToolUse / PostToolUse）
 	Hooks HooksConfig `json:"hooks,omitempty"`
+}
+
+type ToolsConfig struct {
+	Filesystem FilesystemToolConfig `json:"filesystem,omitempty"`
+}
+
+type FilesystemToolConfig struct {
+	AllowedReadRoots []string `json:"allowed_read_roots,omitempty"`
 }
 
 // HooksConfig 配置工具执行边界上的 hook。Enabled 为 false 时所有 hook 不生效，
@@ -1121,6 +1132,7 @@ func cloneConfig(in *Config) *Config {
 	cp.Fallbacks = append([]FallbackEntry(nil), in.Fallbacks...)
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
+	cp.Tools.Filesystem.AllowedReadRoots = append([]string(nil), in.Tools.Filesystem.AllowedReadRoots...)
 	cp.MsgGateway.QQOfficial.AllowedChats = append([]string(nil), in.MsgGateway.QQOfficial.AllowedChats...)
 	cp.MsgGateway.QQOfficial.AllowedUsers = append([]string(nil), in.MsgGateway.QQOfficial.AllowedUsers...)
 	cp.MsgGateway.QQOfficial.Intents = append([]string(nil), in.MsgGateway.QQOfficial.Intents...)
@@ -1509,6 +1521,8 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Proactive.KernelMinSamples = n
+	case "tools.filesystem.allowed_read_roots":
+		m.config.Tools.Filesystem.AllowedReadRoots = splitCSV(value)
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":

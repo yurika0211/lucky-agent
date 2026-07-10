@@ -25,6 +25,30 @@ const (
 	defaultDeleteMax     = 1000
 )
 
+type filesystemOperation string
+
+const (
+	filesystemRead filesystemOperation = "read"
+)
+
+// FilesystemPolicy extends the built-in filesystem sandbox with explicit,
+// read-only roots. Write, patch, move, mkdir, and delete operations continue to
+// use the built-in sandbox only.
+type FilesystemPolicy struct {
+	AllowedReadRoots []string
+}
+
+func DefaultFilesystemPolicy() FilesystemPolicy {
+	return FilesystemPolicy{}
+}
+
+func filesystemPolicyFromOptional(policies []FilesystemPolicy) FilesystemPolicy {
+	if len(policies) == 0 {
+		return DefaultFilesystemPolicy()
+	}
+	return policies[0]
+}
+
 func TerminalTool() *Tool {
 	return &Tool{
 		Name:         "terminal",
@@ -138,7 +162,8 @@ func shellEnvPrefix(env map[string]string, goos string) string {
 	return b.String()
 }
 
-func FileReadTool() *Tool {
+func FileReadTool(policies ...FilesystemPolicy) *Tool {
+	policy := filesystemPolicyFromOptional(policies)
 	return &Tool{
 		Name:        "file_read",
 		Description: "Read a local file when repository or document contents are the source of truth. Prefer this before guessing about code, config, notes, or generated artifacts.",
@@ -151,12 +176,18 @@ func FileReadTool() *Tool {
 			"offset": {Type: "number", Description: "Line number to start reading from (1-indexed)", Required: false, Default: 1},
 			"limit":  {Type: "number", Description: "Maximum number of lines to read", Required: false, Default: 2000},
 		},
-		Handler: handleFileRead,
+		Handler: func(args map[string]any) (string, error) {
+			return handleFileReadWithPolicy(args, policy)
+		},
 	}
 }
 
 func handleFileRead(args map[string]any) (string, error) {
-	path, err := resolvePathArg(args, "path")
+	return handleFileReadWithPolicy(args, DefaultFilesystemPolicy())
+}
+
+func handleFileReadWithPolicy(args map[string]any, policy FilesystemPolicy) (string, error) {
+	path, err := resolveReadPathArg(args, "path", policy)
 	if err != nil {
 		return "", err
 	}
@@ -1241,7 +1272,8 @@ func directoryWord(count int) string {
 	return "directories"
 }
 
-func FileListTool() *Tool {
+func FileListTool(policies ...FilesystemPolicy) *Tool {
+	policy := filesystemPolicyFromOptional(policies)
 	return &Tool{
 		Name:        "file_list",
 		Description: "List files or directories when you need repository structure, candidate files, or navigation context before reading or editing specific paths.",
@@ -1253,12 +1285,18 @@ func FileListTool() *Tool {
 			"path":      {Type: "string", Description: "Directory path to inspect.", Required: true},
 			"recursive": {Type: "boolean", Description: "Whether to include nested files and subdirectories.", Required: false, Default: false},
 		},
-		Handler: handleFileList,
+		Handler: func(args map[string]any) (string, error) {
+			return handleFileListWithPolicy(args, policy)
+		},
 	}
 }
 
 func handleFileList(args map[string]any) (string, error) {
-	path, pathErr := resolvePathArg(args, "path")
+	return handleFileListWithPolicy(args, DefaultFilesystemPolicy())
+}
+
+func handleFileListWithPolicy(args map[string]any, policy FilesystemPolicy) (string, error) {
+	path, pathErr := resolveReadPathArg(args, "path", policy)
 	recursive := false
 	if r, ok := args["recursive"]; ok {
 		recursive, _ = r.(bool)
@@ -1355,7 +1393,20 @@ func resolvePathArg(args map[string]any, key string) (string, error) {
 	return resolvePath(path, cwd)
 }
 
+func resolveReadPathArg(args map[string]any, key string, policy FilesystemPolicy) (string, error) {
+	path, ok := args[key].(string)
+	if !ok || strings.TrimSpace(path) == "" {
+		return "", fmt.Errorf("%s is required", key)
+	}
+	cwd, _ := args["_cwd"].(string)
+	return resolvePathForOperation(path, cwd, filesystemRead, policy)
+}
+
 func resolvePath(path, baseCwd string) (string, error) {
+	return resolvePathForOperation(path, baseCwd, "", DefaultFilesystemPolicy())
+}
+
+func resolvePathForOperation(path, baseCwd string, op filesystemOperation, policy FilesystemPolicy) (string, error) {
 	path = expandSandboxPath(strings.TrimSpace(path))
 	clean := filepath.Clean(path)
 	if strings.Contains(clean, "..") {
@@ -1365,7 +1416,7 @@ func resolvePath(path, baseCwd string) (string, error) {
 		baseCwd = expandSandboxPath(strings.TrimSpace(baseCwd))
 		if baseCwd != "" {
 			baseCwd = filepath.Clean(baseCwd)
-			if err := validateSandbox(baseCwd); err == nil {
+			if err := validateSandboxForOperation(baseCwd, op, policy); err == nil {
 				clean = filepath.Join(baseCwd, clean)
 			}
 		}
@@ -1376,7 +1427,7 @@ func resolvePath(path, baseCwd string) (string, error) {
 		}
 	}
 	clean = filepath.Clean(clean)
-	if err := validateSandbox(clean); err != nil {
+	if err := validateSandboxForOperation(clean, op, policy); err != nil {
 		return "", err
 	}
 	return clean, nil
@@ -1389,23 +1440,32 @@ func expandSandboxPath(path string) string {
 	if strings.HasPrefix(path, "~/") || strings.HasPrefix(path, `~\`) {
 		return filepath.Join(sandboxHomeDir(), path[2:])
 	}
+	if runtime.GOOS == "windows" {
+		slashPath := filepath.ToSlash(path)
+		if slashPath == "/tmp" {
+			return os.TempDir()
+		}
+		if strings.HasPrefix(slashPath, "/tmp/") {
+			return filepath.Join(os.TempDir(), strings.TrimPrefix(slashPath, "/tmp/"))
+		}
+		if slashPath == "/dev/null" {
+			return os.DevNull
+		}
+	}
 	return path
 }
 
 func validateSandbox(cleanPath string) error {
+	return validateSandboxForOperation(cleanPath, "", DefaultFilesystemPolicy())
+}
+
+func validateSandboxForOperation(cleanPath string, op filesystemOperation, policy FilesystemPolicy) error {
 	normalizedRequested := strings.ReplaceAll(cleanPath, `\`, `/`)
 	if normalizedRequested == "/dev/null" || strings.HasPrefix(normalizedRequested, "/tmp/") {
 		return nil
 	}
 
-	absPath := cleanPath
-	if !filepath.IsAbs(absPath) {
-		if wd, err := os.Getwd(); err == nil {
-			absPath = filepath.Join(wd, absPath)
-		}
-	}
-	absPath = filepath.Clean(absPath)
-	absPath = normalizeSandboxPath(absPath)
+	absPath := normalizeFilesystemCandidate(cleanPath)
 
 	home := sandboxHomeDir()
 	tempDir := normalizeSandboxPath(os.TempDir())
@@ -1437,7 +1497,36 @@ func validateSandbox(cleanPath string) error {
 			return nil
 		}
 	}
+	if op == filesystemRead {
+		for _, root := range policy.AllowedReadRoots {
+			allowed := normalizeFilesystemRoot(root)
+			if allowed != "" && pathMatchesPrefix(absPath, allowed) {
+				return nil
+			}
+		}
+	}
 	return fmt.Errorf("access denied: path is outside sandbox (allowed: ~/.luckyagent/, /tmp/). Requested: %s", cleanPath)
+}
+
+func normalizeFilesystemCandidate(path string) string {
+	absPath := expandSandboxPath(strings.TrimSpace(path))
+	if !filepath.IsAbs(absPath) {
+		if wd, err := os.Getwd(); err == nil {
+			absPath = filepath.Join(wd, absPath)
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+		absPath = resolved
+	}
+	return normalizeSandboxPath(absPath)
+}
+
+func normalizeFilesystemRoot(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	return normalizeFilesystemCandidate(root)
 }
 
 func sandboxHomeDir() string {

@@ -19,7 +19,8 @@ import (
 
 const maxDocumentReadBytes = 50 * 1024 * 1024
 
-func DocumentReadTool() *Tool {
+func DocumentReadTool(policies ...FilesystemPolicy) *Tool {
+	policy := filesystemPolicyFromOptional(policies)
 	return &Tool{
 		Name:         "document_read",
 		Description:  "Extract readable text from local document files such as PDF, DOCX, and PPTX. Use this instead of file_read for Office documents or PDFs.",
@@ -33,12 +34,18 @@ func DocumentReadTool() *Tool {
 			"offset": {Type: "number", Description: "Line number to start reading extracted text from (1-indexed)", Required: false, Default: 1},
 			"limit":  {Type: "number", Description: "Maximum number of extracted text lines to return", Required: false, Default: 2000},
 		},
-		Handler: handleDocumentRead,
+		Handler: func(args map[string]any) (string, error) {
+			return handleDocumentReadWithPolicy(args, policy)
+		},
 	}
 }
 
 func handleDocumentRead(args map[string]any) (string, error) {
-	path, err := resolvePathArg(args, "path")
+	return handleDocumentReadWithPolicy(args, DefaultFilesystemPolicy())
+}
+
+func handleDocumentReadWithPolicy(args map[string]any, policy FilesystemPolicy) (string, error) {
+	path, err := resolveReadPathArg(args, "path", policy)
 	if err != nil {
 		return "", err
 	}

@@ -21,9 +21,10 @@ type Services struct {
 }
 
 // NewServices creates a tool service container.
-func NewServices(searchCfg *WebSearchConfig, opencliCfg *OpenCLIConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager) *Services {
+func NewServices(searchCfg *WebSearchConfig, opencliCfg *OpenCLIConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager, policies ...FilesystemPolicy) *Services {
+	policy := filesystemPolicyFromOptional(policies)
 	return &Services{
-		Builtin:   NewBuiltinToolService(searchCfg, opencliCfg, defaultImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults),
+		Builtin:   NewBuiltinToolService(searchCfg, opencliCfg, defaultImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, policy),
 		SearchCfg: searchCfg,
 		OpenCLI:   opencliCfg,
 		Memory:    NewMemoryToolService(mem),

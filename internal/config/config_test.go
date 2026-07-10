@@ -287,6 +287,31 @@ func TestManagerSetProactiveConfig(t *testing.T) {
 	}
 }
 
+func TestManagerSetFilesystemAllowedReadRoots(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("tools.filesystem.allowed_read_roots", `G:\Obsidian\Notes,C:\Docs`); err != nil {
+		t.Fatalf("Set filesystem allowed roots: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if len(cfg.Tools.Filesystem.AllowedReadRoots) != 2 {
+		t.Fatalf("expected two allowed read roots, got %v", cfg.Tools.Filesystem.AllowedReadRoots)
+	}
+	if cfg.Tools.Filesystem.AllowedReadRoots[0] != `G:\Obsidian\Notes` {
+		t.Fatalf("unexpected first root %q", cfg.Tools.Filesystem.AllowedReadRoots[0])
+	}
+
+	cfg.Tools.Filesystem.AllowedReadRoots[0] = `C:\Mutated`
+	again := mgr.Get()
+	if again.Tools.Filesystem.AllowedReadRoots[0] != `G:\Obsidian\Notes` {
+		t.Fatalf("Get should return cloned filesystem roots, got %v", again.Tools.Filesystem.AllowedReadRoots)
+	}
+}
+
 func TestManagerSetAutonomyWorkerConfig(t *testing.T) {
 	mgr, err := NewManager()
 	if err != nil {

@@ -755,7 +755,10 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		MaxChars:           c.OpenCLI.MaxChars,
 		FallbackToWebFetch: c.OpenCLI.FallbackToWebFetch,
 	}
-	toolServices := tool.NewServices(searchCfg, opencliCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr)
+	filesystemPolicy := tool.FilesystemPolicy{
+		AllowedReadRoots: append([]string(nil), c.Tools.Filesystem.AllowedReadRoots...),
+	}
+	toolServices := tool.NewServices(searchCfg, opencliCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr, filesystemPolicy)
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
