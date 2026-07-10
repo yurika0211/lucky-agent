@@ -49,7 +49,7 @@ func hasArtifactIntent(text string) bool {
 }
 
 func stripArtifactDeliveryGuidance(text string) string {
-	for _, marker := range []string{"[Telegram delivery rule]", "[QQ delivery rule]"} {
+	for _, marker := range []string{"[Telegram delivery rule]", "[QQ delivery rule]", "[Feishu delivery rule]"} {
 		if idx := strings.Index(text, marker); idx >= 0 {
 			return strings.TrimSpace(text[:idx])
 		}

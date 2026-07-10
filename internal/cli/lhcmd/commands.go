@@ -20,6 +20,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/cron"
 	"github.com/yurika0211/luckyagent/internal/gateway"
 	luckycollector "github.com/yurika0211/luckyagent/internal/gateway/collector"
+	"github.com/yurika0211/luckyagent/internal/gateway/feishu"
 	"github.com/yurika0211/luckyagent/internal/gateway/napcat"
 	"github.com/yurika0211/luckyagent/internal/gateway/openclawweixin"
 	"github.com/yurika0211/luckyagent/internal/gateway/qqofficial"
@@ -252,6 +253,28 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(maskKey(cfg.MsgGateway.NapCat.AccessToken))
 	case "msg_gateway.napcat.group_trigger_mode":
 		fmt.Println(cfg.MsgGateway.NapCat.GroupTriggerMode)
+	case "msg_gateway.feishu.app_id":
+		fmt.Println(cfg.MsgGateway.Feishu.AppID)
+	case "msg_gateway.feishu.app_secret":
+		fmt.Println(maskKey(cfg.MsgGateway.Feishu.AppSecret))
+	case "msg_gateway.feishu.verification_token":
+		fmt.Println(maskKey(cfg.MsgGateway.Feishu.VerificationToken))
+	case "msg_gateway.feishu.encrypt_key":
+		fmt.Println(maskKey(cfg.MsgGateway.Feishu.EncryptKey))
+	case "msg_gateway.feishu.listen_addr":
+		fmt.Println(cfg.MsgGateway.Feishu.ListenAddr)
+	case "msg_gateway.feishu.path":
+		fmt.Println(cfg.MsgGateway.Feishu.Path)
+	case "msg_gateway.feishu.api_base_url":
+		fmt.Println(cfg.MsgGateway.Feishu.APIBaseURL)
+	case "msg_gateway.feishu.allowed_chats":
+		fmt.Println(strings.Join(cfg.MsgGateway.Feishu.AllowedChats, ","))
+	case "msg_gateway.feishu.allowed_users":
+		fmt.Println(strings.Join(cfg.MsgGateway.Feishu.AllowedUsers, ","))
+	case "msg_gateway.feishu.remove_at":
+		fmt.Println(cfg.MsgGateway.Feishu.RemoveAt)
+	case "msg_gateway.feishu.group_trigger_mode":
+		fmt.Println(cfg.MsgGateway.Feishu.GroupTriggerMode)
 	default:
 		if v, ok := cfg.Extra[args[0]]; ok {
 			fmt.Println(v)
@@ -437,6 +460,11 @@ type msgGatewayStartOptions struct {
 	NapCatListenAddr   string
 	NapCatPath         string
 	NapCatAccessToken  string
+	FeishuAppID        string
+	FeishuAppSecret    string
+	FeishuVerifyToken  string
+	FeishuListenAddr   string
+	FeishuPath         string
 	WeixinToken        string
 	WeixinAcct         string
 	OpenClawWeixinAcct string
@@ -502,6 +530,27 @@ func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGa
 		opts.NapCatAccessToken = cfg.MsgGateway.NapCat.AccessToken
 	}
 
+	opts.FeishuAppID, _ = cmd.Flags().GetString("feishu-app-id")
+	if !cmd.Flags().Changed("feishu-app-id") && cfg != nil {
+		opts.FeishuAppID = cfg.MsgGateway.Feishu.AppID
+	}
+	opts.FeishuAppSecret, _ = cmd.Flags().GetString("feishu-app-secret")
+	if !cmd.Flags().Changed("feishu-app-secret") && cfg != nil {
+		opts.FeishuAppSecret = cfg.MsgGateway.Feishu.AppSecret
+	}
+	opts.FeishuVerifyToken, _ = cmd.Flags().GetString("feishu-verification-token")
+	if !cmd.Flags().Changed("feishu-verification-token") && cfg != nil {
+		opts.FeishuVerifyToken = cfg.MsgGateway.Feishu.VerificationToken
+	}
+	opts.FeishuListenAddr, _ = cmd.Flags().GetString("feishu-listen")
+	if !cmd.Flags().Changed("feishu-listen") && cfg != nil {
+		opts.FeishuListenAddr = cfg.MsgGateway.Feishu.ListenAddr
+	}
+	opts.FeishuPath, _ = cmd.Flags().GetString("feishu-path")
+	if !cmd.Flags().Changed("feishu-path") && cfg != nil {
+		opts.FeishuPath = cfg.MsgGateway.Feishu.Path
+	}
+
 	if cfg != nil {
 		opts.WeixinToken = strings.TrimSpace(cfg.MsgGateway.Weixin.Token)
 		opts.WeixinAcct = strings.TrimSpace(cfg.MsgGateway.Weixin.AccountID)
@@ -540,11 +589,15 @@ func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
 		}
 	case "napcat":
 		return nil
+	case "feishu":
+		if strings.TrimSpace(opts.FeishuAppID) == "" || strings.TrimSpace(opts.FeishuAppSecret) == "" || strings.TrimSpace(opts.FeishuVerifyToken) == "" {
+			return fmt.Errorf("feishu 需要 app_id、app_secret 和 verification_token（可通过 --feishu-* 参数或 msg_gateway.feishu.* 配置）")
+		}
 	default:
 		if opts.Platform == "" {
 			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
 		}
-		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial, napcat, weixin, openclawweixin)", opts.Platform)
+		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial, napcat, feishu, weixin, openclawweixin)", opts.Platform)
 	}
 
 	return nil
@@ -944,6 +997,38 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			napcatPath = "/" + napcatPath
 		}
 		fmt.Printf("NapCat QQ 网关已启动，等待 NapCat 连接 ws://%s%s\n", napcatAdapter.ListenAddr(), napcatPath)
+	case "feishu":
+		feishuAdapter := feishu.NewAdapter(feishu.Config{
+			AppID:             opts.FeishuAppID,
+			AppSecret:         opts.FeishuAppSecret,
+			VerificationToken: opts.FeishuVerifyToken,
+			EncryptKey:        cfg.MsgGateway.Feishu.EncryptKey,
+			ListenAddr:        opts.FeishuListenAddr,
+			Path:              opts.FeishuPath,
+			APIBaseURL:        cfg.MsgGateway.Feishu.APIBaseURL,
+			AllowedChats:      append([]string(nil), cfg.MsgGateway.Feishu.AllowedChats...),
+			AllowedUsers:      append([]string(nil), cfg.MsgGateway.Feishu.AllowedUsers...),
+			RemoveAt:          cfg.MsgGateway.Feishu.RemoveAt,
+			GroupTriggerMode:  cfg.MsgGateway.Feishu.GroupTriggerMode,
+		})
+		handler := qqofficial.NewHandlerWithOptions(feishuAdapter, a, qqofficial.HandlerOptions{
+			PlatformName:     "feishu",
+			DisplayName:      "飞书网关",
+			LogPrefix:        "feishu",
+			FinalAnswerOnly:  true,
+			DeliveryGuidance: feishu.MediaDeliveryGuidance,
+		})
+		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "feishu"))
+		feishuAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			return handler.HandleMessage(ctx, msg)
+		})
+		if err := gm.Register(feishuAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "feishu"); err != nil {
+			return err
+		}
+		fmt.Printf("飞书网关已启动，本地事件回调 http://%s%s（飞书控制台需配置公网 HTTPS 反向代理地址）\n", feishuAdapter.ListenAddr(), feishuAdapter.Path())
 	case "weixin":
 		wxAdapter := weixin.NewAdapter(weixin.Config{
 			Token:                   cfg.MsgGateway.Weixin.Token,

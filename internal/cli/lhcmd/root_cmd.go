@@ -163,11 +163,11 @@ func newRootCmd() *cobra.Command {
 		Short: "消息平台网关管理",
 	}
 	msgGatewayStartCmd := &cobra.Command{
-		Use:   "start [--platform telegram --token TOKEN]",
+		Use:   "start [--platform PLATFORM]",
 		Short: "启动消息网关",
 		RunE:  runMsgGatewayStart,
 	}
-	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial, napcat, weixin, openclawweixin)")
+	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial, napcat, feishu, weixin, openclawweixin)")
 	msgGatewayStartCmd.Flags().String("token", "", "Bot token (Telegram)")
 	msgGatewayStartCmd.Flags().String("qq-appid", "", "QQ 官方机器人 AppID")
 	msgGatewayStartCmd.Flags().String("qq-appsecret", "", "QQ 官方机器人 AppSecret")
@@ -175,6 +175,11 @@ func newRootCmd() *cobra.Command {
 	msgGatewayStartCmd.Flags().String("napcat-listen", "", "NapCat OneBot 反向 WebSocket 监听地址")
 	msgGatewayStartCmd.Flags().String("napcat-path", "", "NapCat OneBot 反向 WebSocket 路径")
 	msgGatewayStartCmd.Flags().String("napcat-access-token", "", "NapCat OneBot 访问令牌")
+	msgGatewayStartCmd.Flags().String("feishu-app-id", "", "飞书应用 App ID")
+	msgGatewayStartCmd.Flags().String("feishu-app-secret", "", "飞书应用 App Secret")
+	msgGatewayStartCmd.Flags().String("feishu-verification-token", "", "飞书事件订阅 Verification Token")
+	msgGatewayStartCmd.Flags().String("feishu-listen", "", "飞书事件回调监听地址")
+	msgGatewayStartCmd.Flags().String("feishu-path", "", "飞书事件回调路径")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
 	msgGatewayStopCmd := &cobra.Command{
 		Use:   "stop [platform]",

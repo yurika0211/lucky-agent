@@ -11,9 +11,14 @@ import (
 )
 
 func TestArtifactIntentIgnoresPlatformDeliveryGuidance(t *testing.T) {
-	text := "你好\n\n[Telegram delivery rule]\nIf you want Telegram to send a file, save it to a real local file first and include MEDIA:/absolute/path/to/file.ext ."
-	if hasArtifactIntent(text) {
-		t.Fatal("platform delivery guidance alone must not trigger artifact finalization")
+	for _, text := range []string{
+		"你好\n\n[Telegram delivery rule]\nIf you want Telegram to send a file, save it to a real local file first and include MEDIA:/absolute/path/to/file.ext .",
+		"你好\n\n[QQ delivery rule]\nInclude MEDIA:/absolute/path/to/file.ext when sending a file.",
+		"你好\n\n[Feishu delivery rule]\nFeishu delivery is text-only in Phase 1. Do not claim a local file was delivered.",
+	} {
+		if hasArtifactIntent(text) {
+			t.Fatalf("platform delivery guidance alone must not trigger artifact finalization: %q", text)
+		}
 	}
 }
 

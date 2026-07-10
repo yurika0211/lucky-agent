@@ -11,6 +11,7 @@ import (
 func TestLearnCommandFlow(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	out := runLearnTestCommand(t, "learn", "list")
 	if !strings.Contains(out, "lh-agent-systems") {

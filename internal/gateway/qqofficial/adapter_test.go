@@ -956,3 +956,19 @@ func TestQQMediaDeliveryGuidance(t *testing.T) {
 		t.Fatalf("guidance should not be duplicated, got %q", again)
 	}
 }
+
+func TestHandlerOptionsUseCustomDeliveryGuidance(t *testing.T) {
+	h := NewHandlerWithOptions(&qqHandlerTestSender{}, nil, HandlerOptions{
+		PlatformName: "feishu",
+		DeliveryGuidance: func(text string) string {
+			return strings.TrimSpace(text) + "\n\n[Feishu delivery rule]"
+		},
+	})
+	got := inputWithMediaDeliveryGuidance(agent.TextUserTurnInput("hello"), h.deliveryGuidance)
+	if !strings.Contains(got.RoutingText, "[Feishu delivery rule]") {
+		t.Fatalf("expected custom guidance, got %q", got.RoutingText)
+	}
+	if strings.Contains(got.RoutingText, "[QQ delivery rule]") {
+		t.Fatalf("custom guidance must replace QQ guidance, got %q", got.RoutingText)
+	}
+}
