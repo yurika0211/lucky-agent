@@ -39,6 +39,7 @@ ParallelSafe: false
 | `supersedes` | 否 | 无 | 被这条记忆替代的 memory ID 列表。 |
 | `valid_from` | 否 | 无 | 生效日期，支持 RFC3339 或 `YYYY-MM-DD`。 |
 | `valid_until` | 否 | 无 | 失效日期，支持 RFC3339 或 `YYYY-MM-DD`。 |
+| `route_policies` | 否 | 无 | 类型化路由策略的 JSON 对象或数组；可声明 query/state 匹配、风险、结构化 required tool calls、约束和澄清项。 |
 | `long_term` | 否 | `false` | 为 true 时默认写成长长期记忆，重要性设为 0.9。 |
 
 ## 执行流程
@@ -54,9 +55,10 @@ ParallelSafe: false
 7. 如果显式传入 `tier`，使用 `parseMemoryToolTier` 解析。
 8. 如果显式传入 `importance`，使用 `clamp01` 限制到 0 到 1。
 9. 解析 tags、links、aliases、supersedes。
-10. 解析 temporal 字段和状态字段。
-11. 调用 `store.SaveWithOptions` 写入 Markdown memory vault。
-12. 返回中文保存确认信息。
+10. 解析 temporal 字段、状态字段和 `route_policies` JSON。
+11. 校验策略 ID、query/state matcher、风险和结构化 tool calls。
+12. 调用 `store.SaveWithOptions` 写入 Markdown memory vault。
+13. 返回中文保存确认信息。
 
 如果 handler 未配置，默认错误是：
 

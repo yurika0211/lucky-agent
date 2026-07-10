@@ -107,3 +107,29 @@ func TestMemoryToolServiceRememberUpsertState(t *testing.T) {
 		t.Fatalf("expected only resolved state to recall, got %+v", results)
 	}
 }
+
+func TestMemoryToolServiceRememberTypedRoutePolicy(t *testing.T) {
+	store, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	svc := NewMemoryToolService(store)
+	policyJSON := `[{"id":"verify-deploy","match":{"query_any":["deploy"]},"required_tools":[{"name":"policy_probe","calls":[{"arguments":{"subject":"{{query}}"}}]}]}]`
+	if _, err := svc.HandleRemember(map[string]any{
+		"content":        "Deployment verification policy",
+		"category":       "rule",
+		"tier":           "long",
+		"aliases":        []any{"deploy"},
+		"route_policies": policyJSON,
+	}); err != nil {
+		t.Fatalf("HandleRemember route policy: %v", err)
+	}
+
+	route := store.Route("deploy release")
+	if len(route.ToolRequirements) != 1 || route.ToolRequirements[0].Name != "policy_probe" {
+		t.Fatalf("expected typed policy requirement, got %#v", route.ToolRequirements)
+	}
+	if got := route.ToolRequirements[0].Calls[0].Arguments["subject"]; got != "deploy release" {
+		t.Fatalf("rendered subject = %#v", got)
+	}
+}

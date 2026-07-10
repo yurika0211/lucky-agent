@@ -80,14 +80,19 @@ func (s *MemoryToolService) HandleRemember(args map[string]any) (string, error) 
 	if err != nil {
 		return "", err
 	}
+	routePolicies, err := routePoliciesArg(args["route_policies"])
+	if err != nil {
+		return "", err
+	}
 	opts := memory.SaveOptions{
-		Tags:       tags,
-		Links:      links,
-		Aliases:    aliases,
-		Status:     stringArg(args["status"]),
-		StateKey:   stringArg(args["state_key"]),
-		StateValue: stringArg(args["state_value"]),
-		Supersedes: stringSliceArg(args["supersedes"]),
+		Tags:          tags,
+		Links:         links,
+		Aliases:       aliases,
+		Status:        stringArg(args["status"]),
+		StateKey:      stringArg(args["state_key"]),
+		StateValue:    stringArg(args["state_value"]),
+		Supersedes:    stringSliceArg(args["supersedes"]),
+		RoutePolicies: routePolicies,
 	}
 	if confidence, ok := numberArg(args["confidence"]); ok {
 		opts.Confidence = clamp01(confidence)
@@ -716,6 +721,36 @@ func stringArg(v any) string {
 		return strings.TrimSpace(s)
 	}
 	return ""
+}
+
+func routePoliciesArg(v any) ([]memory.RoutePolicy, error) {
+	if v == nil {
+		return nil, nil
+	}
+	var data []byte
+	var err error
+	switch typed := v.(type) {
+	case string:
+		if strings.TrimSpace(typed) == "" {
+			return nil, nil
+		}
+		data = []byte(typed)
+	default:
+		data, err = json.Marshal(typed)
+		if err != nil {
+			return nil, fmt.Errorf("route_policies must be valid JSON: %w", err)
+		}
+	}
+
+	var policies []memory.RoutePolicy
+	if err := json.Unmarshal(data, &policies); err == nil {
+		return policies, nil
+	}
+	var policy memory.RoutePolicy
+	if err := json.Unmarshal(data, &policy); err != nil {
+		return nil, fmt.Errorf("route_policies must be a JSON policy object or array: %w", err)
+	}
+	return []memory.RoutePolicy{policy}, nil
 }
 
 func boolArg(v any, rest ...any) bool {

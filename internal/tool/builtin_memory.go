@@ -90,6 +90,11 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 				Description: "Optional RFC3339 or YYYY-MM-DD end date after which this memory is no longer valid.",
 				Required:    false,
 			},
+			"route_policies": {
+				Type:        "string",
+				Description: "Optional JSON array of typed routing policies attached to this memory. Each policy may define match.query_all/query_any/query_none/states, risks, required_tools with structured calls.arguments, constraints, and clarifications. Only tools marked PolicySafe can auto-execute.",
+				Required:    false,
+			},
 			"long_term": {
 				Type:        "boolean",
 				Description: "Set true only for durable core facts like identity, strong preferences, or long-lived project constraints.",
