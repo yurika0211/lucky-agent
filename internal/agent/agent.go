@@ -2020,7 +2020,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			toolOnlyIterationLimit: loopCfg.ToolOnlyIterationLimit,
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
 			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
-			memoryGate:             a.buildMemoryToolGate(routingText, loopCfg.DisabledTools),
+			memoryGate:             a.buildMemoryToolGate(routingText, input.Scope, loopCfg.DisabledTools),
 			toolExecutionGuard:     newToolExecutionGuard(routingText),
 			iterationTimeout:       loopCfg.Timeout,
 		}

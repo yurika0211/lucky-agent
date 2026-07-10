@@ -59,6 +59,9 @@ type Tool struct {
 	// HiddenFromModel 标记该工具不应暴露给大模型的工具菜单。
 	// 适用于内部脚本入口、低层 skill 动作等。
 	HiddenFromModel bool
+	// PolicySafe allows typed durable-memory policies to execute this tool
+	// automatically. Keep false for write, shell, delegation, and control tools.
+	PolicySafe bool
 }
 
 // Param 代表工具参数

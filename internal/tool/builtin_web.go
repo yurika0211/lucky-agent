@@ -79,6 +79,7 @@ func WebSearchTool(cfg *WebSearchConfig) *Tool {
 		},
 		Handler:      func(args map[string]any) (string, error) { return handleWebSearch(cfg, args) },
 		ParallelSafe: true,
+		PolicySafe:   true,
 	}
 }
 
@@ -810,6 +811,7 @@ func CurrentTimeTool() *Tool {
 		},
 		Handler:      handleCurrentTime,
 		ParallelSafe: true,
+		PolicySafe:   true,
 	}
 }
 

@@ -11,19 +11,19 @@ import (
 	"github.com/yurika0211/luckyagent/internal/session"
 )
 
-const memoryGateMaxSuggestedSearches = 3
-
 type memoryToolGate struct {
-	query       string
-	route       memory.RouteAnalysis
-	required    []string
-	requiredSet map[string]struct{}
-	attempted   map[string]struct{}
-	failed      map[string]string
-	unavailable []string
+	query              string
+	route              memory.RouteAnalysis
+	required           []string
+	requirements       map[string]memory.RouteToolRequirement
+	requiredSet        map[string]struct{}
+	attempted          map[string]struct{}
+	failed             map[string]string
+	unavailable        []string
+	synthesisRequested bool
 }
 
-func (a *Agent) buildMemoryToolGate(query string, disabledTools []string) *memoryToolGate {
+func (a *Agent) buildMemoryToolGate(query string, scope TurnScope, disabledTools []string) *memoryToolGate {
 	if a == nil || a.memory == nil {
 		return nil
 	}
@@ -32,7 +32,11 @@ func (a *Agent) buildMemoryToolGate(query string, disabledTools []string) *memor
 		return nil
 	}
 
-	route := a.memory.Route(query)
+	route := a.memory.RouteWithOptions(query, memory.RouteOptions{
+		EntryFilter: func(entry memory.Entry) bool {
+			return memoryEntryVisibleInScope(entry, scope)
+		},
+	})
 	if len(route.RequiredTools) == 0 {
 		return nil
 	}
@@ -43,13 +47,20 @@ func (a *Agent) buildMemoryToolGate(query string, disabledTools []string) *memor
 	}
 
 	gate := &memoryToolGate{
-		query:       query,
-		route:       route,
-		requiredSet: make(map[string]struct{}, len(route.RequiredTools)),
-		attempted:   make(map[string]struct{}, len(route.RequiredTools)),
-		failed:      make(map[string]string),
+		query:        query,
+		route:        route,
+		requirements: make(map[string]memory.RouteToolRequirement, len(route.ToolRequirements)),
+		requiredSet:  make(map[string]struct{}, len(route.RequiredTools)),
+		attempted:    make(map[string]struct{}, len(route.RequiredTools)),
+		failed:       make(map[string]string),
 	}
 	seen := make(map[string]struct{}, len(route.RequiredTools))
+	for _, requirement := range route.ToolRequirements {
+		name := strings.TrimSpace(requirement.Name)
+		if name != "" {
+			gate.requirements[name] = requirement
+		}
+	}
 	for _, name := range route.RequiredTools {
 		name = strings.TrimSpace(name)
 		if name == "" {
@@ -81,11 +92,14 @@ func (a *Agent) memoryGateToolExecutable(name string, disabled map[string]struct
 		return false
 	}
 	t, ok := a.tools.Get(name)
-	return ok && t != nil && t.Enabled
+	return ok && t != nil && t.Enabled && t.PolicySafe
 }
 
 func (g *memoryToolGate) shouldBlockFinal() bool {
-	return len(g.unmetRequiredTools()) > 0
+	if g == nil {
+		return false
+	}
+	return len(g.unmetRequiredTools()) > 0 || (!g.synthesisRequested && len(g.unavailable) > 0)
 }
 
 func (g *memoryToolGate) unmetRequiredTools() []string {
@@ -152,80 +166,24 @@ func (g *memoryToolGate) nextToolCalls() []provider.ToolCall {
 	}
 	var calls []provider.ToolCall
 	for _, name := range g.unmetRequiredTools() {
-		switch name {
-		case "web_search":
-			for _, query := range g.searchQueries() {
-				calls = append(calls, provider.ToolCall{
-					ID:        provider.GenerateCallID(),
-					Name:      name,
-					Arguments: mustJSON(map[string]any{"query": query, "count": 5, "mode": "quick"}),
-				})
-			}
-		case "current_time":
-			args := map[string]any{}
-			if location := g.locationHint(); location != "" {
-				args["location"] = location
-			}
-			calls = append(calls, provider.ToolCall{
-				ID:        provider.GenerateCallID(),
-				Name:      name,
-				Arguments: mustJSON(args),
-			})
-		default:
+		requirement := g.requirements[name]
+		if len(requirement.Calls) == 0 {
 			calls = append(calls, provider.ToolCall{
 				ID:        provider.GenerateCallID(),
 				Name:      name,
 				Arguments: `{}`,
 			})
+			continue
+		}
+		for _, call := range requirement.Calls {
+			calls = append(calls, provider.ToolCall{
+				ID:        provider.GenerateCallID(),
+				Name:      name,
+				Arguments: mustJSON(call.Arguments),
+			})
 		}
 	}
 	return calls
-}
-
-func (g *memoryToolGate) searchQueries() []string {
-	if g == nil {
-		return nil
-	}
-	var queries []string
-	seen := make(map[string]struct{})
-	for _, query := range g.route.SuggestedSearches {
-		query = strings.TrimSpace(query)
-		if query == "" {
-			continue
-		}
-		if _, ok := seen[query]; ok {
-			continue
-		}
-		seen[query] = struct{}{}
-		queries = append(queries, query)
-		if len(queries) >= memoryGateMaxSuggestedSearches {
-			return queries
-		}
-	}
-	if len(queries) == 0 && strings.TrimSpace(g.query) != "" {
-		queries = append(queries, strings.TrimSpace(g.query))
-	}
-	return queries
-}
-
-func (g *memoryToolGate) locationHint() string {
-	if g == nil {
-		return ""
-	}
-	const prefix = "Use location hint: "
-	for _, constraint := range g.route.Constraints {
-		constraint = strings.TrimSpace(constraint)
-		if !strings.HasPrefix(constraint, prefix) {
-			continue
-		}
-		location := strings.TrimSpace(strings.TrimPrefix(constraint, prefix))
-		location = strings.TrimSuffix(location, ".")
-		if idx := strings.Index(location, ". If "); idx >= 0 {
-			location = location[:idx]
-		}
-		return strings.TrimSpace(location)
-	}
-	return ""
 }
 
 func (g *memoryToolGate) assistantToolCallMessage(calls []provider.ToolCall) provider.Message {
@@ -237,6 +195,7 @@ func (g *memoryToolGate) assistantToolCallMessage(calls []provider.ToolCall) pro
 }
 
 func (g *memoryToolGate) synthesisPrompt() provider.Message {
+	g.synthesisRequested = true
 	var lines []string
 	lines = append(lines, "Memory gate checks have now been attempted before the final answer.")
 	if len(g.required) > 0 {
@@ -272,6 +231,9 @@ func (g *memoryToolGate) incompleteMessage() string {
 	}
 	if unmet := g.unmetRequiredTools(); len(unmet) > 0 {
 		return "Memory gate blocked the final answer because required tools were not completed: " + strings.Join(unmet, ", ") + "."
+	}
+	if len(g.unavailable) > 0 {
+		return "Memory gate could not produce a final synthesis after required tools were unavailable: " + strings.Join(g.unavailable, ", ") + "."
 	}
 	return "Memory gate completed required tool checks, but the loop ended before a final synthesis could be produced."
 }
@@ -322,26 +284,25 @@ func (a *Agent) executeMemoryGateForLoop(
 		return messages, false
 	}
 	calls := gate.nextToolCalls()
-	if len(calls) == 0 {
-		return messages, false
-	}
+	var executed []executedToolCall
+	if len(calls) > 0 {
+		assistantMsg := gate.assistantToolCallMessage(calls)
+		messages = append(messages, assistantMsg)
+		if sess != nil {
+			sess.AddProviderMessage(assistantMsg)
+		}
 
-	assistantMsg := gate.assistantToolCallMessage(calls)
-	messages = append(messages, assistantMsg)
-	if sess != nil {
-		sess.AddProviderMessage(assistantMsg)
+		executed = a.executePreparedMemoryGateToolCalls(
+			gate,
+			calls,
+			true,
+			sess,
+			loopState.toolURLRepeatCount,
+			loopState.toolURLLastResult,
+			loopCfg.DuplicateFetchLimit,
+			true,
+		)
 	}
-
-	executed := a.executePreparedMemoryGateToolCalls(
-		gate,
-		calls,
-		true,
-		sess,
-		loopState.toolURLRepeatCount,
-		loopState.toolURLLastResult,
-		loopCfg.DuplicateFetchLimit,
-		true,
-	)
 
 	for _, execResult := range executed {
 		tcLog := toolCallLog{
@@ -388,22 +349,21 @@ func (a *Agent) continueAfterStreamMemoryGate(
 		return false
 	}
 	calls := state.memoryGate.nextToolCalls()
-	if len(calls) == 0 {
-		return false
+	var executed []executedToolCall
+	if len(calls) > 0 {
+		messages = append(messages, state.memoryGate.assistantToolCallMessage(calls))
+		emitChatToolCallEvents(events, calls)
+		executed = a.executePreparedMemoryGateToolCalls(
+			state.memoryGate,
+			calls,
+			true,
+			sess,
+			state.toolURLRepeatCount,
+			state.toolURLLastResult,
+			state.duplicateFetchLimit,
+			true,
+		)
 	}
-
-	messages = append(messages, state.memoryGate.assistantToolCallMessage(calls))
-	emitChatToolCallEvents(events, calls)
-	executed := a.executePreparedMemoryGateToolCalls(
-		state.memoryGate,
-		calls,
-		true,
-		sess,
-		state.toolURLRepeatCount,
-		state.toolURLLastResult,
-		state.duplicateFetchLimit,
-		true,
-	)
 	for _, execResult := range executed {
 		emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
 		messages = append(messages, provider.Message{

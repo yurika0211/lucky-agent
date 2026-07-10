@@ -396,7 +396,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	}
 	loopState := newLoopRuntimeState()
 	loopState.toolExecutionGuard = newToolExecutionGuard(routingText)
-	memoryGate := a.buildMemoryToolGate(routingText, loopCfg.DisabledTools)
+	memoryGate := a.buildMemoryToolGate(routingText, turnInput.Scope, loopCfg.DisabledTools)
 
 	// 构建初始消息
 	a.maybeAutoCompactSession(ctx, sess, routingText, loopCfg.Ephemeral)

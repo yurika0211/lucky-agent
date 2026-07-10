@@ -386,12 +386,42 @@ func TestToContextMessages_MemoryPriority(t *testing.T) {
 	}
 }
 
-func TestContextPlannerInjectsMemoryGateForDaughterOutdoorPrompt(t *testing.T) {
+func testAgentOutdoorRoutePolicy() memory.RoutePolicy {
+	return memory.RoutePolicy{
+		ID: "family-outdoor-live-check",
+		Match: memory.RoutePolicyMatch{
+			QueryAll: []memory.RouteTermGroup{
+				{Any: []string{"出门", "户外", "outdoor", "park"}},
+				{Any: []string{"女儿", "孩子", "daughter", "child"}},
+			},
+			States: []memory.RouteStateMatch{{Key: "family.daughter.pollen_allergy", Values: []string{"active"}}},
+		},
+		Risks: []memory.RouteRisk{
+			{Name: "child_health_outdoor_plan", Priority: 100},
+			{Name: "pollen_allergy", Priority: 80},
+		},
+		RequiredTools: []memory.RouteToolRequirement{
+			{Name: "current_time"},
+			{Name: "web_search", Calls: []memory.RouteToolCall{{Arguments: map[string]any{"query": "{{query}} weather pollen AQI", "count": 5, "mode": "quick"}}}},
+		},
+		Constraints: []string{"Check live weather, pollen, and air quality before the final answer."},
+	}
+}
+
+func TestContextPlannerInjectsTypedMemoryPolicy(t *testing.T) {
 	a := newTestAgentWithMemory(t)
-	if err := a.memory.SaveWithTierAndTags("My [[Daughter]] has [[Pollen Allergy]].", "health", memory.TierLong, 0.98, []string{"health"}); err != nil {
+	if err := a.memory.SaveWithOptions("My [[Daughter]] has [[Pollen Allergy]].", "health", memory.TierLong, 0.98, memory.SaveOptions{
+		Tags:       []string{"health"},
+		StateKey:   "family.daughter.pollen_allergy",
+		StateValue: "active",
+	}); err != nil {
 		t.Fatalf("save allergy: %v", err)
 	}
-	if err := a.memory.SaveWithTierAndTags("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", memory.TierLong, 0.92, []string{"tool-routing"}); err != nil {
+	if err := a.memory.SaveWithOptions("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", memory.TierLong, 0.92, memory.SaveOptions{
+		Tags:          []string{"tool-routing"},
+		Aliases:       []string{"女儿出门"},
+		RoutePolicies: []memory.RoutePolicy{testAgentOutdoorRoutePolicy()},
+	}); err != nil {
 		t.Fatalf("save rule: %v", err)
 	}
 

@@ -25,6 +25,11 @@ func TestMemoryGateAutoExecutesRequiredToolsBeforeDirectAnswer(t *testing.T) {
 		StateKey:   "pollen",
 		StateValue: "active",
 		Confidence: 0.95,
+		RoutePolicies: []memory.RoutePolicy{func() memory.RoutePolicy {
+			policy := testAgentOutdoorRoutePolicy()
+			policy.Match.States = []memory.RouteStateMatch{{Key: "pollen", Values: []string{"active"}}}
+			return policy
+		}()},
 	}); err != nil {
 		t.Fatalf("SaveWithOptions() error = %v", err)
 	}
@@ -44,6 +49,7 @@ func TestMemoryGateAutoExecutesRequiredToolsBeforeDirectAnswer(t *testing.T) {
 			return "Current time: 2026-05-19 14:00:00 (Asia/Shanghai)", nil
 		},
 		ParallelSafe: true,
+		PolicySafe:   true,
 	})
 	var searchQueries []string
 	reg.Register(&tool.Tool{
@@ -61,6 +67,7 @@ func TestMemoryGateAutoExecutesRequiredToolsBeforeDirectAnswer(t *testing.T) {
 			return fmt.Sprintf("Results for: %s\n\n1. pollen forecast high\n2. wind mild\n3. AQI moderate", query), nil
 		},
 		ParallelSafe: true,
+		PolicySafe:   true,
 	})
 
 	prov := &directThenFinalProvider{}
@@ -106,6 +113,69 @@ func TestMemoryGateAutoExecutesRequiredToolsBeforeDirectAnswer(t *testing.T) {
 	}
 	if !toolLogContains(result.ToolCalls, "current_time") || !toolLogContains(result.ToolCalls, "web_search") {
 		t.Fatalf("expected result tool log to include current_time and web_search, got %#v", result.ToolCalls)
+	}
+}
+
+func TestMemoryGateFiltersPoliciesByTurnScope(t *testing.T) {
+	mem, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	scopeA := TurnScope{Platform: "telegram", ChatID: "private:a", ChatType: "private", SenderID: "user-a"}
+	scopeB := TurnScope{Platform: "telegram", ChatID: "private:b", ChatType: "private", SenderID: "user-b"}
+	policy := memory.RoutePolicy{
+		ID:            "scoped-deploy-check",
+		Match:         memory.RoutePolicyMatch{QueryAny: []string{"deploy"}},
+		RequiredTools: []memory.RouteToolRequirement{{Name: "policy_probe"}},
+	}
+	if err := mem.SaveWithOptions("Private deployment policy.", "rule", memory.TierLong, 0.9, memory.SaveOptions{
+		Tags:          scopeA.MemoryTags(),
+		Aliases:       []string{"deploy"},
+		RoutePolicies: []memory.RoutePolicy{policy},
+	}); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "policy_probe", Enabled: true, PolicySafe: true})
+	a := &Agent{memory: mem, tools: reg}
+
+	if gate := a.buildMemoryToolGate("deploy now", scopeB, nil); gate != nil {
+		t.Fatalf("other user's scoped policy leaked into gate: %#v", gate.route.AppliedPolicies)
+	}
+	gate := a.buildMemoryToolGate("deploy now", scopeA, nil)
+	if gate == nil || len(gate.required) != 1 || gate.required[0] != "policy_probe" {
+		t.Fatalf("expected owner-scoped policy gate, got %#v", gate)
+	}
+}
+
+func TestMemoryGateDoesNotAutoExecuteToolsWithoutPolicySafe(t *testing.T) {
+	mem, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	if err := mem.SaveWithOptions("Deployment shell policy.", "rule", memory.TierLong, 0.9, memory.SaveOptions{
+		Aliases: []string{"deploy"},
+		RoutePolicies: []memory.RoutePolicy{{
+			ID:            "unsafe-deploy",
+			Match:         memory.RoutePolicyMatch{QueryAny: []string{"deploy"}},
+			RequiredTools: []memory.RouteToolRequirement{{Name: "unsafe_probe"}},
+		}},
+	}); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "unsafe_probe", Enabled: true, PolicySafe: false})
+	a := &Agent{memory: mem, tools: reg}
+
+	gate := a.buildMemoryToolGate("deploy now", TurnScope{}, nil)
+	if gate == nil || len(gate.unavailable) != 1 || gate.unavailable[0] != "unsafe_probe" {
+		t.Fatalf("expected unsafe tool to remain unavailable, got %#v", gate)
+	}
+	if calls := gate.nextToolCalls(); len(calls) != 0 {
+		t.Fatalf("unsafe policy tool must not auto-execute, got %#v", calls)
+	}
+	if !gate.shouldBlockFinal() {
+		t.Fatal("unavailable policy tool should force a disclosure synthesis")
 	}
 }
 

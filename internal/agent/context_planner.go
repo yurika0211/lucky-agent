@@ -610,7 +610,11 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScop
 	if strings.TrimSpace(query) == "" {
 		return provider.Message{}
 	}
-	route := p.agent.memory.Route(query)
+	route := p.agent.memory.RouteWithOptions(query, memory.RouteOptions{
+		EntryFilter: func(entry memory.Entry) bool {
+			return memoryEntryVisibleInScope(entry, scope)
+		},
+	})
 	results := route.Entries
 	if len(results) == 0 {
 		return provider.Message{}

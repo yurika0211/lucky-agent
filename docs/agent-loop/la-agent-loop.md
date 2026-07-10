@@ -426,10 +426,10 @@ Memory gate 在 `internal/agent/memory_gate.go`。
 构建流程：
 
 ```text
-buildMemoryToolGate(query, disabledTools)
-  -> memory.Route(query)
-  -> route.RequiredTools
-  -> 检查工具是否存在、启用、未被 disabled
+buildMemoryToolGate(query, turnScope, disabledTools)
+  -> memory.RouteWithOptions(query, scope filter)
+  -> route.ToolRequirements
+  -> 检查工具是否存在、启用、未被 disabled 且 PolicySafe
 ```
 
 如果 memory route 要求某些工具，memory gate 会记录：
@@ -441,11 +441,9 @@ buildMemoryToolGate(query, disabledTools)
 
 当模型准备直接给最终答案，但 required tools 还没执行时，`executeMemoryGateForLoop` 会自动插入工具调用。
 
-自动工具参数规则：
+工具名和参数不再由 gate 特判。每个 `RouteToolRequirement` 直接携带零个或多个结构化 `calls.arguments`；零个 calls 表示执行一次 `{}`。策略模板在 memory router 中展开后，gate 只负责通用执行。
 
-- `web_search`：最多使用 `route.SuggestedSearches` 的前 3 条；没有建议时用原始 query。
-- `current_time`：如果 route constraints 里有 location hint，则带上 location。
-- 其他工具：传 `{}`。
+只有工具注册时声明 `PolicySafe=true` 才能被 durable-memory policy 自动执行。当前写操作、shell、委派和 runtime 控制工具默认都不能被策略自动调用。
 
 工具执行后，memory gate 会追加 synthesis prompt，要求模型基于已尝试的检查回答，并说明哪些内容无法核验。
 
