@@ -26,11 +26,12 @@ type outboundMedia struct {
 
 var (
 	tgMediaDirectivePattern = regexp.MustCompile(`(?i)^tg://(photo|document)\s+(\S+)(?:\s+(.*))?$`)
-	mediaTagPattern         = regexp.MustCompile(`(?im)^[\s` + "`" + `"'“”‘’]*MEDIA:\s*(?P<path>(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?|https?://\S+)[\s` + "`" + `"'“”‘’,.;:)\]}]*$`)
+	mediaTagPattern         = regexp.MustCompile(`(?im)^[\t ` + "`" + `"'` + `]*MEDIA:\s*(?P<path>(?:(?:sandbox:(?:/|[A-Za-z]:[\\/])|file://|~/|/|[A-Za-z]:[\\/])\S+(?:[^\S\n]+\S+)*?|https?://\S+))[\t ` + "`" + `"',.;:)\]}]*$`)
 	markdownImagePattern    = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
 	fencedCodePattern       = regexp.MustCompile("(?s)```.*?```")
 	inlineCodePattern       = regexp.MustCompile("`[^`\n]+`")
-	localFilePattern        = regexp.MustCompile(`(?i)(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp3|wav|opus|ogg|aac|flac|m4a|pdf|txt|md|json|csv|docx?|xlsx?|pptx?|zip|rar|7z|svg|xml|html?|js|ts|py|go|ya?ml)\b`)
+	localFilePattern        = regexp.MustCompile(`(?i)(?:sandbox:(?:/|[A-Za-z]:[\\/])|file://|~/|/|[A-Za-z]:[\\/])\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp3|wav|opus|ogg|aac|flac|m4a|pdf|txt|md|json|csv|docx?|xlsx?|pptx?|zip|rar|7z|svg|xml|html?|js|ts|py|go|ya?ml)\b`)
+	generatedReferenceLine  = regexp.MustCompile(`(?i)^\[\d+\]\s+(tool result\.|local file\.|local directory listing\.)`)
 )
 
 func resolveOutboundMediaResponse(response string) (string, []outboundMedia, error) {
@@ -62,6 +63,15 @@ func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 			})
 			continue
 		}
+		if source, ok := parseStandaloneMediaLine(trimmed); ok {
+			if kind, kindOK := inferMediaKind(source); kindOK {
+				media = append(media, outboundMedia{
+					Kind:   kind,
+					Source: source,
+				})
+				continue
+			}
+		}
 		kept = append(kept, line)
 	}
 
@@ -69,7 +79,38 @@ func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 	text, media = extractExplicitMediaTags(text, media)
 	text, media = extractMarkdownMedia(text, media)
 	text = normalizeOutboundText(text)
+	if len(media) > 0 {
+		text = stripGeneratedReferencesForMedia(text)
+	}
 	return text, dedupeOutboundMedia(media)
+}
+
+func parseStandaloneMediaLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	line = strings.Trim(line, "`\"'")
+	if len(line) < len("MEDIA:") || !strings.EqualFold(line[:len("MEDIA:")], "MEDIA:") {
+		return "", false
+	}
+	source := trimWrappedPath(strings.TrimSpace(line[len("MEDIA:"):]))
+	if source == "" {
+		return "", false
+	}
+	if !isExplicitMediaSource(source) {
+		return "", false
+	}
+	return source, true
+}
+
+func isExplicitMediaSource(source string) bool {
+	source = strings.TrimSpace(source)
+	lower := strings.ToLower(source)
+	return strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "sandbox:") ||
+		strings.HasPrefix(lower, "file://") ||
+		strings.HasPrefix(source, "~/") ||
+		strings.HasPrefix(source, "/") ||
+		isWindowsDrivePath(source)
 }
 
 func extractExplicitMediaTags(text string, existing []outboundMedia) (string, []outboundMedia) {
@@ -97,6 +138,36 @@ func extractExplicitMediaTags(text string, existing []outboundMedia) (string, []
 	}
 
 	return removeRanges(text, ranges), existing
+}
+
+func stripGeneratedReferencesForMedia(text string) string {
+	text = normalizeOutboundText(text)
+	if text == "" {
+		return ""
+	}
+	idx := strings.LastIndex(text, "\nReferences:")
+	headerLen := len("\nReferences:")
+	if idx < 0 && strings.HasPrefix(text, "References:") {
+		idx = 0
+		headerLen = len("References:")
+	}
+	if idx < 0 {
+		return text
+	}
+	refs := strings.TrimSpace(text[idx+headerLen:])
+	if refs == "" {
+		return strings.TrimSpace(text[:idx])
+	}
+	for _, line := range strings.Split(refs, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !generatedReferenceLine.MatchString(line) {
+			return text
+		}
+	}
+	return strings.TrimSpace(text[:idx])
 }
 
 func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outboundMedia) {
@@ -203,6 +274,9 @@ func mediaSourceExt(source string) string {
 	if source == "" {
 		return ""
 	}
+	if isWindowsDrivePath(source) {
+		return filepath.Ext(source)
+	}
 	if strings.HasPrefix(strings.ToLower(source), "file://") {
 		if u, err := url.Parse(source); err == nil {
 			return path.Ext(u.Path)
@@ -214,19 +288,24 @@ func mediaSourceExt(source string) string {
 	return filepath.Ext(source)
 }
 
+func isWindowsDrivePath(source string) bool {
+	source = strings.TrimSpace(source)
+	return len(source) >= 3 && isASCIIAlpha(source[0]) && source[1] == ':' && (source[2] == '\\' || source[2] == '/')
+}
+
 func normalizeLocalMediaPath(source string) string {
 	source = trimWrappedPath(source)
 	if source == "" {
 		return ""
 	}
 	lower := strings.ToLower(source)
-	if strings.HasPrefix(lower, "sandbox:/") {
+	if strings.HasPrefix(lower, "sandbox:") {
 		return strings.TrimPrefix(source, "sandbox:")
 	}
 	if strings.HasPrefix(lower, "file://") {
 		u, err := url.Parse(source)
 		if err == nil && strings.TrimSpace(u.Path) != "" {
-			return u.Path
+			return cleanFileURLPath(u.Path)
 		}
 	}
 	if strings.HasPrefix(source, "~/") {
@@ -235,6 +314,18 @@ func normalizeLocalMediaPath(source string) string {
 		}
 	}
 	return source
+}
+
+func cleanFileURLPath(p string) string {
+	p = strings.TrimSpace(p)
+	if len(p) >= 3 && p[0] == '/' && isASCIIAlpha(p[1]) && p[2] == ':' {
+		p = p[1:]
+	}
+	return filepath.FromSlash(p)
+}
+
+func isASCIIAlpha(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z')
 }
 
 func trimWrappedPath(s string) string {
@@ -386,7 +477,7 @@ func summarizeOutboundMedia(media []outboundMedia) string {
 
 func telegramMediaDeliveryGuidance(text string) string {
 	text = strings.TrimSpace(text)
-	const guidance = "[Telegram delivery rule]\nIf you want Telegram to send a file, image, or other artifact, save it to a real local file first and include a standalone line exactly like MEDIA:/absolute/path/to/file.ext . Do not use markdown links for local files. Do not paste full file contents unless the user explicitly asks for inline content."
+	const guidance = "[Telegram delivery rule]\nIf you want Telegram to send a file, image, or other artifact, save it to a real local file first and include a standalone line exactly like MEDIA:/absolute/path/to/file.ext or MEDIA:C:\\absolute\\path\\to\\file.ext on Windows. Do not use markdown links for local files. Do not paste full file contents unless the user explicitly asks for inline content."
 	if text == "" {
 		return guidance
 	}

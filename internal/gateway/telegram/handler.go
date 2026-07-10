@@ -1970,7 +1970,7 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 	if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
 		return err
 	}
-	return h.sendRandomMemeIfNeeded(ctx, msg, text)
+	return nil
 }
 
 func (h *Handler) sendAssistantMedia(ctx context.Context, msg *gateway.Message, media []outboundMedia) error {
