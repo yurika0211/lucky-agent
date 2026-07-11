@@ -15,7 +15,24 @@ func (a *Agent) maybeAutoCompactSession(ctx context.Context, sess *session.Sessi
 	if !a.shouldAutoCompactSession(sess, routingText, ephemeral) {
 		return
 	}
-	result, err := a.CompactSession(ctx, sess, "auto")
+	cfg := a.autoCompactConfig()
+	maxTokens := cfg.MaxContextTokens
+	if maxTokens <= 0 {
+		maxTokens = 8000
+	}
+	targetRatio := cfg.AutoCompactTargetRatio
+	if targetRatio <= 0 || targetRatio >= cfg.AutoCompactThreshold {
+		targetRatio = 0.50
+	}
+	targetTailTokens := int(float64(maxTokens) * targetRatio)
+	targetTailTokens -= cfg.AutoCompactReservedSummaryTokens
+	if targetTailTokens <= 0 {
+		targetTailTokens = 1
+	}
+	result, err := a.CompactSessionWithOptions(ctx, sess, "auto", CompactSessionOptions{
+		RetainRecentTurns: cfg.AutoCompactRetainTurns,
+		TargetTailTokens:  targetTailTokens,
+	})
 	if err != nil {
 		a.recordAutoCompactFailure(sess.ID)
 		logger.Warn("auto compact failed", "session_id", sess.ID, "error", err)
@@ -25,7 +42,10 @@ func (a *Agent) maybeAutoCompactSession(ctx context.Context, sess *session.Sessi
 	logger.Info("auto compact completed",
 		"session_id", sess.ID,
 		"boundary_id", result.BoundaryID,
+		"from_message", result.FromMessage,
+		"to_message", result.ToMessage,
 		"dropped_messages", result.DroppedMessages,
+		"retained_messages", result.RetainedMessages,
 		"pre_tokens", result.PreTokenEstimate,
 		"post_tokens", result.PostTokenEstimate,
 	)

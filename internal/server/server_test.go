@@ -1254,6 +1254,46 @@ func TestHandleRAGSearchNoQuery(t *testing.T) {
 	}
 }
 
+func TestHandleRAGSearchOptionsDoNotMutateGlobalRetriever(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	if _, err := a.RAG().IndexText("isolated-source", "Isolated", "search option isolation evidence"); err != nil {
+		t.Fatal(err)
+	}
+	before := a.RAG().RetrieverConfig()
+	body := map[string]any{
+		"query":      "isolation evidence",
+		"top_k":      1,
+		"min_score":  0.8,
+		"source":     "isolated-source",
+		"use_mmr":    true,
+		"mmr_lambda": 0.4,
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/search", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	s.handleRAGSearch(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	after := a.RAG().RetrieverConfig()
+	if after != before {
+		t.Fatalf("per-request options mutated global retriever: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestHandleRAGSearchRejectsUnsafeOptions(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	b, _ := json.Marshal(map[string]any{"query": "test", "top_k": 21})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/search", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	s.handleRAGSearch(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestHandleRAGSearchMethodNotAllowed(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())

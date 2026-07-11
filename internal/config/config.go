@@ -38,6 +38,9 @@ type Config struct {
 	// Embedding 配置（供 RAG / 记忆向量化使用）
 	Embedding EmbeddingConfig `json:"embedding,omitempty"`
 
+	// RAG retrieval and reranking configuration.
+	RAG RAGConfig `json:"rag,omitempty"`
+
 	// 多模态配置
 	Multimodal MultimodalConfig `json:"multimodal,omitempty"`
 
@@ -149,6 +152,16 @@ type EmbeddingConfig struct {
 	Dimension int    `json:"dimension,omitempty"`
 }
 
+type RAGConfig struct {
+	TopK             int     `json:"top_k,omitempty"`
+	MinScore         float64 `json:"min_score,omitempty"`
+	UseHybrid        bool    `json:"use_hybrid,omitempty"`
+	DenseWeight      float64 `json:"dense_weight,omitempty"`
+	UseMMR           bool    `json:"use_mmr,omitempty"`
+	MMRLambda        float64 `json:"mmr_lambda,omitempty"`
+	RewriteFollowUps bool    `json:"rewrite_followups,omitempty"`
+}
+
 type MultimodalConfig struct {
 	Provider           string `json:"provider,omitempty"`
 	APIKey             string `json:"api_key,omitempty"`
@@ -228,8 +241,10 @@ type ContextConfig struct {
 	CompressionThreshold             float64 `json:"compression_threshold"`
 	AutoCompact                      bool    `json:"auto_compact,omitempty"`
 	AutoCompactThreshold             float64 `json:"auto_compact_threshold,omitempty"`
+	AutoCompactTargetRatio           float64 `json:"auto_compact_target_ratio,omitempty"`
 	AutoCompactMinMessages           int     `json:"auto_compact_min_messages,omitempty"`
 	AutoCompactCooldownTurns         int     `json:"auto_compact_cooldown_turns,omitempty"`
+	AutoCompactRetainTurns           int     `json:"auto_compact_retain_turns,omitempty"`
 	AutoCompactReservedSummaryTokens int     `json:"auto_compact_reserved_summary_tokens,omitempty"`
 	MemoryHygieneBeforeContext       bool    `json:"memory_hygiene_before_context,omitempty"`
 	MemoryHygieneAction              string  `json:"memory_hygiene_action,omitempty"`
@@ -628,6 +643,15 @@ func DefaultConfig() *Config {
 				MinSamples:   1,
 			},
 		},
+		RAG: RAGConfig{
+			TopK:             5,
+			MinScore:         0.3,
+			UseHybrid:        true,
+			DenseWeight:      0.65,
+			UseMMR:           false,
+			MMRLambda:        0.5,
+			RewriteFollowUps: true,
+		},
 		Limits: LimitsConfig{
 			MaxTokens:              4096,
 			Temperature:            0.7,
@@ -663,8 +687,10 @@ func DefaultConfig() *Config {
 			MaxContextTokens:                 8000,
 			CompressionThreshold:             0.8,
 			AutoCompactThreshold:             0.82,
+			AutoCompactTargetRatio:           0.50,
 			AutoCompactMinMessages:           24,
 			AutoCompactCooldownTurns:         8,
+			AutoCompactRetainTurns:           6,
 			AutoCompactReservedSummaryTokens: 1200,
 			MemoryHygieneBeforeContext:       false,
 			MemoryHygieneAction:              "quarantine",
@@ -963,6 +989,18 @@ func normalizeConfig(cfg *Config) {
 	if cfg.RateLimit.BurstSize <= 0 {
 		cfg.RateLimit.BurstSize = def.RateLimit.BurstSize
 	}
+	if cfg.RAG.TopK <= 0 {
+		cfg.RAG.TopK = def.RAG.TopK
+	}
+	if cfg.RAG.MinScore <= 0 || cfg.RAG.MinScore > 1 {
+		cfg.RAG.MinScore = def.RAG.MinScore
+	}
+	if cfg.RAG.DenseWeight <= 0 || cfg.RAG.DenseWeight >= 1 {
+		cfg.RAG.DenseWeight = def.RAG.DenseWeight
+	}
+	if cfg.RAG.MMRLambda <= 0 || cfg.RAG.MMRLambda > 1 {
+		cfg.RAG.MMRLambda = def.RAG.MMRLambda
+	}
 
 	if cfg.Context.MaxHistoryTurns <= 0 {
 		cfg.Context.MaxHistoryTurns = def.Context.MaxHistoryTurns
@@ -976,11 +1014,17 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Context.AutoCompactThreshold <= 0 {
 		cfg.Context.AutoCompactThreshold = def.Context.AutoCompactThreshold
 	}
+	if cfg.Context.AutoCompactTargetRatio <= 0 || cfg.Context.AutoCompactTargetRatio >= cfg.Context.AutoCompactThreshold {
+		cfg.Context.AutoCompactTargetRatio = def.Context.AutoCompactTargetRatio
+	}
 	if cfg.Context.AutoCompactMinMessages <= 0 {
 		cfg.Context.AutoCompactMinMessages = def.Context.AutoCompactMinMessages
 	}
 	if cfg.Context.AutoCompactCooldownTurns <= 0 {
 		cfg.Context.AutoCompactCooldownTurns = def.Context.AutoCompactCooldownTurns
+	}
+	if cfg.Context.AutoCompactRetainTurns < 0 {
+		cfg.Context.AutoCompactRetainTurns = def.Context.AutoCompactRetainTurns
 	}
 	if cfg.Context.AutoCompactReservedSummaryTokens <= 0 {
 		cfg.Context.AutoCompactReservedSummaryTokens = def.Context.AutoCompactReservedSummaryTokens
@@ -1314,6 +1358,28 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Embedding.Dimension = n
+	case "rag.top_k":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.RAG.TopK = n
+	case "rag.min_score":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.RAG.MinScore = f
+	case "rag.use_hybrid":
+		m.config.RAG.UseHybrid = parseBool(value)
+	case "rag.dense_weight":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.RAG.DenseWeight = f
+	case "rag.use_mmr":
+		m.config.RAG.UseMMR = parseBool(value)
+	case "rag.mmr_lambda":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.RAG.MMRLambda = f
+	case "rag.rewrite_followups":
+		m.config.RAG.RewriteFollowUps = parseBool(value)
 	case "multimodal.provider":
 		m.config.Multimodal.Provider = value
 	case "multimodal.api_key":
@@ -1798,6 +1864,10 @@ func (m *Manager) Set(key, value string) error {
 		var f float64
 		fmt.Sscanf(value, "%f", &f)
 		m.config.Context.AutoCompactThreshold = f
+	case "context.auto_compact_target_ratio":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Context.AutoCompactTargetRatio = f
 	case "context.auto_compact_min_messages":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
@@ -1806,6 +1876,10 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Context.AutoCompactCooldownTurns = n
+	case "context.auto_compact_retain_turns":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.AutoCompactRetainTurns = n
 	case "context.auto_compact_reserved_summary_tokens":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

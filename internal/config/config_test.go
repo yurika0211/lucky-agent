@@ -1310,11 +1310,17 @@ func TestSet_ContextAutoCompactOptions(t *testing.T) {
 	if err := mgr.Set("context.auto_compact_threshold", "0.75"); err != nil {
 		t.Fatalf("set auto_compact_threshold: %v", err)
 	}
+	if err := mgr.Set("context.auto_compact_target_ratio", "0.45"); err != nil {
+		t.Fatalf("set auto_compact_target_ratio: %v", err)
+	}
 	if err := mgr.Set("context.auto_compact_min_messages", "12"); err != nil {
 		t.Fatalf("set auto_compact_min_messages: %v", err)
 	}
 	if err := mgr.Set("context.auto_compact_cooldown_turns", "4"); err != nil {
 		t.Fatalf("set auto_compact_cooldown_turns: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_retain_turns", "5"); err != nil {
+		t.Fatalf("set auto_compact_retain_turns: %v", err)
 	}
 	if err := mgr.Set("context.auto_compact_reserved_summary_tokens", "900"); err != nil {
 		t.Fatalf("set auto_compact_reserved_summary_tokens: %v", err)
@@ -1327,14 +1333,44 @@ func TestSet_ContextAutoCompactOptions(t *testing.T) {
 	if cfg.Context.AutoCompactThreshold != 0.75 {
 		t.Fatalf("unexpected auto compact threshold: %v", cfg.Context.AutoCompactThreshold)
 	}
+	if cfg.Context.AutoCompactTargetRatio != 0.45 {
+		t.Fatalf("unexpected auto compact target ratio: %v", cfg.Context.AutoCompactTargetRatio)
+	}
 	if cfg.Context.AutoCompactMinMessages != 12 {
 		t.Fatalf("unexpected auto compact min messages: %d", cfg.Context.AutoCompactMinMessages)
 	}
 	if cfg.Context.AutoCompactCooldownTurns != 4 {
 		t.Fatalf("unexpected auto compact cooldown turns: %d", cfg.Context.AutoCompactCooldownTurns)
 	}
+	if cfg.Context.AutoCompactRetainTurns != 5 {
+		t.Fatalf("unexpected auto compact retain turns: %d", cfg.Context.AutoCompactRetainTurns)
+	}
 	if cfg.Context.AutoCompactReservedSummaryTokens != 900 {
 		t.Fatalf("unexpected auto compact reserved tokens: %d", cfg.Context.AutoCompactReservedSummaryTokens)
+	}
+}
+
+func TestSet_RAGRetrievalOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{
+		"rag.top_k":             "8",
+		"rag.min_score":         "0.42",
+		"rag.use_hybrid":        "true",
+		"rag.dense_weight":      "0.7",
+		"rag.use_mmr":           "true",
+		"rag.mmr_lambda":        "0.55",
+		"rag.rewrite_followups": "true",
+	} {
+		if err := mgr.Set(key, value); err != nil {
+			t.Fatalf("Set(%s): %v", key, err)
+		}
+	}
+	cfg := mgr.Get().RAG
+	if cfg.TopK != 8 || cfg.MinScore != 0.42 || !cfg.UseHybrid || cfg.DenseWeight != 0.7 || !cfg.UseMMR || cfg.MMRLambda != 0.55 || !cfg.RewriteFollowUps {
+		t.Fatalf("unexpected RAG config: %+v", cfg)
 	}
 }
 

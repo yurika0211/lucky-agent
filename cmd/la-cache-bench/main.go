@@ -14,6 +14,7 @@ import (
 
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
@@ -58,6 +59,12 @@ type benchRecord struct {
 	SystemPromptHash      string    `json:"system_prompt_hash,omitempty"`
 	SystemPromptBytes     int       `json:"system_prompt_bytes,omitempty"`
 	SystemPromptTokens    int       `json:"system_prompt_tokens,omitempty"`
+	PromptHash            string    `json:"prompt_hash,omitempty"`
+	PromptEstimatedTokens int       `json:"prompt_estimated_tokens,omitempty"`
+	StablePrefixMessages  int       `json:"stable_prefix_messages,omitempty"`
+	StablePrefixTokens    int       `json:"stable_prefix_tokens,omitempty"`
+	StablePrefixRatio     float64   `json:"stable_prefix_ratio,omitempty"`
+	PrefixComparable      bool      `json:"prefix_comparable"`
 	PromptTokens          int       `json:"prompt_tokens"`
 	CachedPromptTokens    int       `json:"cached_prompt_tokens"`
 	CacheCreation5MTokens int       `json:"cache_creation_5m_tokens,omitempty"`
@@ -71,27 +78,32 @@ type benchRecord struct {
 }
 
 type benchSummary struct {
-	Type                  string   `json:"type"`
-	Variant               string   `json:"variant"`
-	Scenario              string   `json:"scenario"`
-	Rounds                int      `json:"rounds"`
-	Errors                int      `json:"errors"`
-	ProviderCalls         int      `json:"provider_calls"`
-	CaptureErrors         int      `json:"capture_errors"`
-	MissingUsageCalls     int      `json:"missing_usage_calls"`
-	ToolRounds            int      `json:"tool_rounds"`
-	ToolCalls             int      `json:"tool_calls"`
-	ToolNames             []string `json:"tool_names,omitempty"`
-	SystemPromptHashes    []string `json:"system_prompt_hashes,omitempty"`
-	SystemPromptStable    bool     `json:"system_prompt_stable"`
-	AvgSystemPromptBytes  float64  `json:"avg_system_prompt_bytes,omitempty"`
-	AvgSystemPromptTokens float64  `json:"avg_system_prompt_tokens,omitempty"`
-	Clean                 bool     `json:"clean"`
-	AvgDurationMS         float64  `json:"avg_duration_ms"`
-	AvgPromptTokens       float64  `json:"avg_prompt_tokens"`
-	AvgCachedPromptTokens float64  `json:"avg_cached_prompt_tokens"`
-	AvgUncachedTokens     float64  `json:"avg_uncached_prompt_tokens"`
-	CachedRatio           float64  `json:"cached_ratio"`
+	Type                   string   `json:"type"`
+	Variant                string   `json:"variant"`
+	Scenario               string   `json:"scenario"`
+	Rounds                 int      `json:"rounds"`
+	Errors                 int      `json:"errors"`
+	EmptyResponses         int      `json:"empty_responses"`
+	ProviderCalls          int      `json:"provider_calls"`
+	CaptureErrors          int      `json:"capture_errors"`
+	MissingUsageCalls      int      `json:"missing_usage_calls"`
+	ToolRounds             int      `json:"tool_rounds"`
+	ToolCalls              int      `json:"tool_calls"`
+	ToolNames              []string `json:"tool_names,omitempty"`
+	SystemPromptHashes     []string `json:"system_prompt_hashes,omitempty"`
+	SystemPromptStable     bool     `json:"system_prompt_stable"`
+	AvgSystemPromptBytes   float64  `json:"avg_system_prompt_bytes,omitempty"`
+	AvgSystemPromptTokens  float64  `json:"avg_system_prompt_tokens,omitempty"`
+	PrefixComparableRounds int      `json:"prefix_comparable_rounds"`
+	AvgStablePrefixTokens  float64  `json:"avg_stable_prefix_tokens,omitempty"`
+	MinStablePrefixTokens  int      `json:"min_stable_prefix_tokens,omitempty"`
+	AvgStablePrefixRatio   float64  `json:"avg_stable_prefix_ratio,omitempty"`
+	Clean                  bool     `json:"clean"`
+	AvgDurationMS          float64  `json:"avg_duration_ms"`
+	AvgPromptTokens        float64  `json:"avg_prompt_tokens"`
+	AvgCachedPromptTokens  float64  `json:"avg_cached_prompt_tokens"`
+	AvgUncachedTokens      float64  `json:"avg_uncached_prompt_tokens"`
+	CachedRatio            float64  `json:"cached_ratio"`
 }
 
 func main() {
@@ -109,7 +121,7 @@ func parseFlags() benchConfig {
 
 	var cfg benchConfig
 	flag.StringVar(&cfg.Variant, "variant", "manual", "label written to each benchmark record, e.g. baseline or fixed")
-	flag.StringVar(&cfg.Scenario, "scenario", "same-session", "scenario to run: single, same-session, tool, or all")
+	flag.StringVar(&cfg.Scenario, "scenario", "same-session", "scenario to run: single, same-session, checkpoint-session, tool, or all")
 	flag.IntVar(&cfg.Rounds, "rounds", 5, "rounds per scenario")
 	flag.DurationVar(&cfg.Delay, "delay", 0, "delay between rounds, e.g. 65s to force minute-level timestamp drift")
 	flag.StringVar(&cfg.CaptureDir, "capture-dir", envOrDefault("LH_UPSTREAM_CAPTURE_DIR", defaultCapture), "directory for upstream request/response captures")
@@ -266,10 +278,10 @@ func newBenchmarkConfigManager(cfg benchConfig) (*config.Manager, func(), error)
 
 func expandScenarios(raw string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "single", "same-session", "tool":
+	case "single", "same-session", "checkpoint-session", "tool":
 		return []string{strings.ToLower(strings.TrimSpace(raw))}, nil
 	case "all":
-		return []string{"single", "same-session", "tool"}, nil
+		return []string{"single", "same-session", "checkpoint-session", "tool"}, nil
 	default:
 		return nil, fmt.Errorf("unknown scenario %q", raw)
 	}
@@ -310,13 +322,17 @@ func runScenario(ctx context.Context, a *agent.Agent, cfg benchConfig, scenario 
 			_ = sessionMgr.Delete(id)
 		}
 	}()
-	if scenario == "same-session" || scenario == "tool" {
+	if scenario == "same-session" || scenario == "checkpoint-session" || scenario == "tool" {
 		sess := sessionMgr.NewWithTitle("cache-bench " + scenario + " " + time.Now().Format(time.RFC3339))
+		if scenario == "checkpoint-session" {
+			seedCheckpointSession(sess)
+		}
 		sharedSessionID = sess.ID
 		createdSessionIDs = append(createdSessionIDs, sess.ID)
 	}
 
 	records := make([]benchRecord, 0, cfg.Rounds)
+	var previousPrompt promptSnapshot
 	for i := 1; i <= cfg.Rounds; i++ {
 		if i > 1 && cfg.Delay > 0 {
 			time.Sleep(cfg.Delay)
@@ -353,6 +369,8 @@ func runScenario(ctx context.Context, a *agent.Agent, cfg benchConfig, scenario 
 		usage, files, missing := aggregateCaptureUsage(prefixes)
 		captureErrors := countCaptureErrors(prefixes)
 		fingerprint := aggregatePromptFingerprint(prefixes)
+		promptSnapshot := aggregatePromptSnapshot(prefixes)
+		prefix := comparePromptPrefix(previousPrompt, promptSnapshot)
 
 		record := benchRecord{
 			Type:                  "round",
@@ -370,6 +388,12 @@ func runScenario(ctx context.Context, a *agent.Agent, cfg benchConfig, scenario 
 			SystemPromptHash:      fingerprint.Hash,
 			SystemPromptBytes:     fingerprint.Bytes,
 			SystemPromptTokens:    fingerprint.EstimatedTokens,
+			PromptHash:            promptSnapshot.Hash,
+			PromptEstimatedTokens: promptSnapshot.EstimatedTokens,
+			StablePrefixMessages:  prefix.Messages,
+			StablePrefixTokens:    prefix.Tokens,
+			StablePrefixRatio:     prefix.Ratio,
+			PrefixComparable:      len(previousPrompt.Messages) > 0 && len(promptSnapshot.Messages) > 0,
 			PromptTokens:          usage.PromptTokens,
 			CachedPromptTokens:    usage.CachedPromptTokens,
 			CacheCreation5MTokens: usage.CacheCreation5MTokens,
@@ -397,16 +421,21 @@ func runScenario(ctx context.Context, a *agent.Agent, cfg benchConfig, scenario 
 		if runErr != nil {
 			record.Error = runErr.Error()
 		}
+		if len(promptSnapshot.Messages) > 0 {
+			previousPrompt = promptSnapshot
+		}
 
 		if err := enc.Encode(record); err != nil {
 			return records, fmt.Errorf("write record: %w", err)
 		}
-		fmt.Fprintf(os.Stderr, "%s round=%d prompt=%d cached=%d ratio=%.1f%% calls=%d err=%v\n",
+		fmt.Fprintf(os.Stderr, "%s round=%d prompt=%d cached=%d ratio=%.1f%% stable_prefix=%d estimated_ratio=%.1f%% calls=%d err=%v\n",
 			scenario,
 			i,
 			record.PromptTokens,
 			record.CachedPromptTokens,
 			record.CachedRatio*100,
+			record.StablePrefixTokens,
+			record.StablePrefixRatio*100,
 			record.ProviderCalls,
 			runErr,
 		)
@@ -424,10 +453,31 @@ func scenarioPrompt(scenario string, round int, override string) string {
 		return "Reply with exactly this sentence: cache benchmark ready."
 	case "same-session":
 		return "Continue the cache benchmark with one concise sentence. Do not call tools."
+	case "checkpoint-session":
+		return fmt.Sprintf("Continue checkpoint cache benchmark round %d with one concise sentence. Do not call tools.", round)
 	case "tool":
 		return "Use the shell tool to run `pwd`, then answer with only the directory path."
 	default:
 		return fmt.Sprintf("Cache benchmark round %d. Reply in one concise sentence.", round)
+	}
+}
+
+func seedCheckpointSession(sess *session.Session) {
+	if sess == nil {
+		return
+	}
+	for i := 1; i <= 20; i++ {
+		sess.AddMessage("user", fmt.Sprintf("Archived checkpoint benchmark request %02d with stable project constraints and implementation evidence.", i))
+		sess.AddMessage("assistant", fmt.Sprintf("Archived checkpoint benchmark response %02d confirms the completed task and verification result.", i))
+	}
+	sess.AddCompactBoundary(session.CompactMetadata{
+		ID:      "cache-bench-checkpoint",
+		Trigger: "benchmark",
+		Summary: "The archived conversation established the checkpoint cache benchmark goal, preserved project constraints, and recorded completed verification evidence.",
+	})
+	for i := 1; i <= 4; i++ {
+		sess.AddMessage("user", fmt.Sprintf("Retained recent benchmark request %02d.", i))
+		sess.AddMessage("assistant", fmt.Sprintf("Retained recent benchmark response %02d.", i))
 	}
 }
 
@@ -448,6 +498,14 @@ func summarizeRecords(variant, scenario string, records []benchRecord) benchSumm
 		uncached += r.UncachedPromptTokens
 		promptBytes += r.SystemPromptBytes
 		promptTokens += r.SystemPromptTokens
+		if r.PrefixComparable {
+			if s.PrefixComparableRounds == 0 || r.StablePrefixTokens < s.MinStablePrefixTokens {
+				s.MinStablePrefixTokens = r.StablePrefixTokens
+			}
+			s.PrefixComparableRounds++
+			s.AvgStablePrefixTokens += float64(r.StablePrefixTokens)
+			s.AvgStablePrefixRatio += r.StablePrefixRatio
+		}
 		s.ProviderCalls += r.ProviderCalls
 		s.CaptureErrors += r.CaptureErrors
 		s.MissingUsageCalls += r.MissingUsageCalls
@@ -466,12 +524,14 @@ func summarizeRecords(variant, scenario string, records []benchRecord) benchSumm
 		}
 		if r.Error != "" {
 			s.Errors++
+		} else if r.ResponseChars == 0 {
+			s.EmptyResponses++
 		}
 	}
 	s.ToolNames = sortedKeys(toolNames)
 	s.SystemPromptHashes = sortedKeys(promptHashes)
 	s.SystemPromptStable = len(s.SystemPromptHashes) <= 1
-	s.Clean = s.Errors == 0 && s.CaptureErrors == 0 && s.MissingUsageCalls == 0 && s.ToolCalls == 0 && s.SystemPromptStable
+	s.Clean = s.Errors == 0 && s.EmptyResponses == 0 && s.CaptureErrors == 0 && s.MissingUsageCalls == 0 && s.ToolCalls == 0 && s.SystemPromptStable
 	if len(records) > 0 {
 		n := float64(len(records))
 		s.AvgDurationMS = float64(duration) / n
@@ -484,19 +544,27 @@ func summarizeRecords(variant, scenario string, records []benchRecord) benchSumm
 	if prompt > 0 {
 		s.CachedRatio = float64(cached) / float64(prompt)
 	}
+	if s.PrefixComparableRounds > 0 {
+		n := float64(s.PrefixComparableRounds)
+		s.AvgStablePrefixTokens /= n
+		s.AvgStablePrefixRatio /= n
+	}
 	return s
 }
 
 func printSummary(s benchSummary) {
 	fmt.Fprintf(os.Stderr,
-		"summary scenario=%s rounds=%d calls=%d avg_prompt=%.0f avg_cached=%.0f ratio=%.1f%% errors=%d capture_errors=%d missing_usage=%d tool_rounds=%d tool_calls=%d prompt_hashes=%d clean=%t\n",
+		"summary scenario=%s rounds=%d calls=%d avg_prompt=%.0f avg_cached=%.0f ratio=%.1f%% avg_stable_prefix=%.0f estimated_ratio=%.1f%% errors=%d empty_responses=%d capture_errors=%d missing_usage=%d tool_rounds=%d tool_calls=%d prompt_hashes=%d clean=%t\n",
 		s.Scenario,
 		s.Rounds,
 		s.ProviderCalls,
 		s.AvgPromptTokens,
 		s.AvgCachedPromptTokens,
 		s.CachedRatio*100,
+		s.AvgStablePrefixTokens,
+		s.AvgStablePrefixRatio*100,
 		s.Errors,
+		s.EmptyResponses,
 		s.CaptureErrors,
 		s.MissingUsageCalls,
 		s.ToolRounds,

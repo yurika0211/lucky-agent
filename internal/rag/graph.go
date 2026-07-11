@@ -11,18 +11,18 @@ import (
 
 // KnowledgeNode 表示知识图谱中的一个节点（实体或概念）
 type KnowledgeNode struct {
-	ID          string            // 唯一标识
-	Type        string            // person, organization, concept, location, event
-	Name        string            // 实体名称
-	Aliases     []string          // 别名
-	Description string            // 描述
-	Importance  float64           // 重要性 0.0~1.0
-	AccessCount int               // 被访问次数
-	CreatedAt   time.Time         // 创建时间
-	AccessedAt  time.Time         // 最后访问时间
-	SourceChunks []string         // 来源的文档块 ID
-	EmbeddingID string            // 可选：实体的向量 ID
-	Tags        []string          // 标签
+	ID           string    // 唯一标识
+	Type         string    // person, organization, concept, location, event
+	Name         string    // 实体名称
+	Aliases      []string  // 别名
+	Description  string    // 描述
+	Importance   float64   // 重要性 0.0~1.0
+	AccessCount  int       // 被访问次数
+	CreatedAt    time.Time // 创建时间
+	AccessedAt   time.Time // 最后访问时间
+	SourceChunks []string  // 来源的文档块 ID
+	EmbeddingID  string    // 可选：实体的向量 ID
+	Tags         []string  // 标签
 }
 
 // Weight 计算节点权重（类似 memory.Entry.Weight）
@@ -123,7 +123,14 @@ func (kg *KnowledgeGraph) AddNode(node *KnowledgeNode) error {
 		if node.Description != "" {
 			existing.Description = node.Description
 		}
-		existing.SourceChunks = append(existing.SourceChunks, node.SourceChunks...)
+		for _, chunkID := range node.SourceChunks {
+			if !containsString(existing.SourceChunks, chunkID) {
+				existing.SourceChunks = append(existing.SourceChunks, chunkID)
+			}
+			if !containsString(kg.ChunkNodes[chunkID], existing.ID) {
+				kg.ChunkNodes[chunkID] = append(kg.ChunkNodes[chunkID], existing.ID)
+			}
+		}
 
 		// 持久化更新
 		if kg.store != nil {
@@ -167,6 +174,15 @@ func (kg *KnowledgeGraph) AddNode(node *KnowledgeNode) error {
 	}
 
 	return nil
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // AddEdge 添加边到图谱

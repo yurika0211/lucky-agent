@@ -1610,6 +1610,57 @@ func TestCompactSessionForceLocalWritesFallbackBoundary(t *testing.T) {
 	}
 }
 
+func TestCompactSessionCreatesIndependentImmutableSegments(t *testing.T) {
+	sess := session.NewSession("compact-segments", t.TempDir())
+	sess.AddMessage("user", "first segment request about alpha.go")
+	sess.AddMessage("assistant", "first segment answer about alpha.go")
+	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
+	first, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
+	if err != nil {
+		t.Fatalf("first compact segment: %v", err)
+	}
+
+	sess.AddMessage("user", "second segment request about beta.go")
+	sess.AddMessage("assistant", "second segment answer about beta.go")
+	second, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
+	if err != nil {
+		t.Fatalf("second compact segment: %v", err)
+	}
+
+	segments, tail, covered := session.CompactSegments(sess.GetMessages())
+	if len(segments) != 2 || len(tail) != 0 || covered != 4 {
+		t.Fatalf("unexpected segments: segments=%+v tail=%+v covered=%d", segments, tail, covered)
+	}
+	if first.FromMessage != 0 || first.ToMessage != 2 || second.FromMessage != 2 || second.ToMessage != 4 {
+		t.Fatalf("unexpected segment ranges: first=%+v second=%+v", first, second)
+	}
+	if first.ContentHash == "" || second.ContentHash == "" || first.ContentHash == second.ContentHash {
+		t.Fatalf("segments need distinct stable hashes: first=%+v second=%+v", first, second)
+	}
+	if strings.Contains(segments[1].Summary, "alpha.go") {
+		t.Fatalf("new segment must not rewrite or absorb the prior summary: %s", segments[1].Summary)
+	}
+}
+
+func TestSelectCompactSegmentInputRetainsRecentCompleteTurns(t *testing.T) {
+	est := contextx.NewTokenEstimator(4096)
+	var raw []provider.Message
+	for i := 0; i < 4; i++ {
+		raw = append(raw,
+			provider.Message{Role: "user", Content: fmt.Sprintf("request-%d %s", i, strings.Repeat("context ", 40))},
+			provider.Message{Role: "assistant", Content: fmt.Sprintf("answer-%d %s", i, strings.Repeat("result ", 40))},
+		)
+	}
+	target := estimateProviderMessages(est, raw[4:]) + 4
+	compact, retained := selectCompactSegmentInput(raw, est, 2, target)
+	if len(compact) != 4 || len(retained) != 4 {
+		t.Fatalf("expected two compacted and two retained turns, compact=%d retained=%d", len(compact), len(retained))
+	}
+	if retained[0].Role != "user" || !strings.Contains(retained[0].Content, "request-2") {
+		t.Fatalf("retained tail must start at a complete user turn: %+v", retained)
+	}
+}
+
 func TestCompactSessionDryRunDoesNotWriteBoundary(t *testing.T) {
 	sess := session.NewSession("compact-dry-run", t.TempDir())
 	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks.")

@@ -15,6 +15,15 @@
     "api_base": "https://proxy.pieixan.icu/v1",
     "dimension": 2048
   },
+  "rag": {
+    "top_k": 5,
+    "min_score": 0.3,
+    "use_hybrid": true,
+    "dense_weight": 0.65,
+    "use_mmr": false,
+    "mmr_lambda": 0.5,
+    "rewrite_followups": true
+  },
   "multimodal": {
     "provider": "openai",
     "api_key": "",
@@ -123,6 +132,13 @@
     "max_history_turns": 50,
     "max_context_tokens": 8000,
     "compression_threshold": 0.8,
+    "auto_compact": true,
+    "auto_compact_threshold": 0.82,
+    "auto_compact_target_ratio": 0.5,
+    "auto_compact_min_messages": 24,
+    "auto_compact_cooldown_turns": 8,
+    "auto_compact_retain_turns": 6,
+    "auto_compact_reserved_summary_tokens": 1200,
     "memory_hygiene_before_context": false,
     "memory_hygiene_action": "quarantine",
     "memory_hygiene_min_severity": "high",

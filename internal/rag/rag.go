@@ -103,6 +103,11 @@ func NewRAGManagerWithSQLite(embedder embedderpkg.Embedder, config RAGConfig, db
 	if err != nil {
 		return nil, fmt.Errorf("create sqlite store: %w", err)
 	}
+	fingerprint := fmt.Sprintf("%s|%s|%d", embedder.Name(), embedder.Model(), dim)
+	if err := store.EnsureEmbeddingFingerprint(fingerprint); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("validate sqlite embedding index: %w", err)
+	}
 
 	indexer := NewIndexerWithBackend(store, embedder)
 
@@ -121,6 +126,7 @@ func NewRAGManagerWithSQLite(embedder embedderpkg.Embedder, config RAGConfig, db
 			indexer.chunks[id] = chunk
 		}
 		indexer.stats.ChunkCount = len(chunks)
+		indexer.stats.TotalTokens = estimateChunkMapTokens(chunks)
 		indexer.mu.Unlock()
 	}
 	if stats, err := store.LoadIndexStats(); err == nil {
@@ -147,9 +153,19 @@ func (m *RAGManager) IndexFile(path string) (*Document, error) {
 	return m.indexer.IndexFile(path)
 }
 
+// IndexFileContext indexes a file with cancellation support.
+func (m *RAGManager) IndexFileContext(ctx context.Context, path string) (*Document, error) {
+	return m.indexer.IndexFileContext(ctx, path)
+}
+
 // IndexText indexes raw text content.
 func (m *RAGManager) IndexText(source, title, content string) (*Document, error) {
 	return m.indexer.IndexText(source, title, content)
+}
+
+// IndexTextContext indexes text with cancellation support.
+func (m *RAGManager) IndexTextContext(ctx context.Context, source, title, content string) (*Document, error) {
+	return m.indexer.IndexTextContext(ctx, source, title, content)
 }
 
 // IndexDirectory indexes all .md/.txt files in a directory.

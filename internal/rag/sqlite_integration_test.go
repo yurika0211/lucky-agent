@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -107,6 +108,57 @@ func TestRAGManagerWithSQLitePersistence(t *testing.T) {
 	}
 	if len(results) == 0 {
 		t.Error("expected search results after reopen")
+	}
+}
+
+func TestSQLiteReindexRemovesObsoleteChunks(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "rag-reindex.db")
+	e := newMockEmbedder(64)
+	cfg := DefaultRAGConfig()
+	cfg.EmbeddingDim = 64
+	mgr, err := NewRAGManagerWithSQLite(e, cfg, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.CloseStore()
+
+	first, err := mgr.IndexText("replace.md", "Large", strings.Repeat("first paragraph content. ", 150))
+	if err != nil || len(first.Chunks) < 2 {
+		t.Fatalf("expected multi-chunk first version: doc=%+v err=%v", first, err)
+	}
+	second, err := mgr.IndexText("replace.md", "Small", "short replacement")
+	if err != nil || len(second.Chunks) != 1 {
+		t.Fatalf("expected one replacement chunk: doc=%+v err=%v", second, err)
+	}
+
+	var chunkRows, vectorRows int
+	if err := mgr.SQLiteStore().DB().QueryRow("SELECT COUNT(*) FROM chunks WHERE doc_id = ?", second.ID).Scan(&chunkRows); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.SQLiteStore().DB().QueryRow("SELECT COUNT(*) FROM vectors").Scan(&vectorRows); err != nil {
+		t.Fatal(err)
+	}
+	if chunkRows != 1 || vectorRows != 1 || mgr.Stats().ChunkCount != 1 {
+		t.Fatalf("obsolete rows remain: chunks=%d vectors=%d stats=%d", chunkRows, vectorRows, mgr.Stats().ChunkCount)
+	}
+}
+
+func TestSQLiteRejectsDifferentEmbeddingFingerprint(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "rag-fingerprint.db")
+	cfg := DefaultRAGConfig()
+	cfg.EmbeddingDim = 64
+	first, err := NewRAGManagerWithSQLite(newMockEmbedder(64), cfg, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.IndexText("doc.md", "Doc", "indexed with the first model"); err != nil {
+		t.Fatal(err)
+	}
+	_ = first.CloseStore()
+
+	_, err = NewRAGManagerWithSQLite(&contextCheckingEmbedder{dim: 64}, cfg, dbPath)
+	if err == nil || !strings.Contains(err.Error(), "embedding fingerprint mismatch") {
+		t.Fatalf("expected embedding fingerprint mismatch, got %v", err)
 	}
 }
 

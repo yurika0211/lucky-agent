@@ -45,3 +45,38 @@ func TestAggregatePromptFingerprint(t *testing.T) {
 		t.Fatalf("expected non-zero size estimate: %#v", got)
 	}
 }
+
+func TestComparePromptPrefixStopsAtFirstChangedMessage(t *testing.T) {
+	previous := promptSnapshot{
+		EstimatedTokens: 30,
+		Messages:        [][]byte{[]byte(`{"role":"system"}`), []byte(`{"role":"user","content":"one"}`)},
+		MessageTokens:   []int{20, 10},
+	}
+	current := promptSnapshot{
+		EstimatedTokens: 40,
+		Messages:        [][]byte{[]byte(`{"role":"system"}`), []byte(`{"role":"user","content":"two"}`), []byte(`{"role":"assistant"}`)},
+		MessageTokens:   []int{20, 10, 10},
+	}
+
+	got := comparePromptPrefix(previous, current)
+	if got.Messages != 1 || got.Tokens != 20 || got.Ratio != 0.5 {
+		t.Fatalf("unexpected stable prefix: %+v", got)
+	}
+}
+
+func TestReadPromptSnapshotCanonicalizesMessageObjects(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "call.request.json")
+	data := `{"messages":[{"content":"core prompt","role":"system"},{"role":"user","content":"hello"}]}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got := readPromptSnapshot(path)
+	if got.Hash == "" || got.EstimatedTokens <= 0 || len(got.Messages) != 2 {
+		t.Fatalf("unexpected prompt snapshot: %+v", got)
+	}
+	if string(got.Messages[0]) != `{"content":"core prompt","role":"system"}` {
+		t.Fatalf("expected canonical message JSON, got %s", got.Messages[0])
+	}
+}

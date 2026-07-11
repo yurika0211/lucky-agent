@@ -13,6 +13,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/memory"
 	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/rag"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/tool"
 	"github.com/yurika0211/luckyagent/internal/utils"
@@ -173,15 +174,16 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 		}
 	}
 
-	// 拼接rag知识库的内容
-	messages = append(messages, p.buildMemoryMessages(routingText, input.Scope)...)
-	if p.options.IncludeRAG {
-		if ragMsg := p.buildRAGMessage(ctx, routingText); ragMsg.Content != "" {
-			messages = append(messages, ragMsg)
-		}
-	}
+	// Keep the append-only session history ahead of query-dependent evidence so
+	// provider prefix caches survive changes in memory and RAG retrieval.
 	if p.options.IncludeHistory && sess != nil {
 		messages = append(messages, p.buildHistoryMessages(sess, routingText)...)
+	}
+	messages = append(messages, p.buildMemoryMessages(routingText, input.Scope)...)
+	if p.options.IncludeRAG {
+		if ragMsg := p.buildRAGMessage(ctx, sess, routingText); ragMsg.Content != "" {
+			messages = append(messages, ragMsg)
+		}
 	}
 
 	if p.agent == nil {
@@ -437,7 +439,8 @@ func classifyContextBucket(msg provider.Message) string {
 		strings.HasPrefix(msg.Content, "[Retrieved Knowledge"):
 		return "rag"
 	case strings.HasPrefix(msg.Content, "[Conversation Summary"),
-		strings.HasPrefix(msg.Content, "[Conversation Themes"):
+		strings.HasPrefix(msg.Content, "[Conversation Themes"),
+		strings.HasPrefix(msg.Content, "[Compact Summary"):
 		return "history"
 	default:
 		return "system"
@@ -967,7 +970,7 @@ func (p *contextPlanner) buildShortTermSummaryMessage() provider.Message {
 /*
 buildRAGMessage 构造检索增强知识消息。
 */
-func (p *contextPlanner) buildRAGMessage(ctx context.Context, query string) provider.Message {
+func (p *contextPlanner) buildRAGMessage(ctx context.Context, sess *session.Session, query string) provider.Message {
 	if p.agent == nil || p.agent.ragManager == nil || strings.TrimSpace(query) == "" {
 		return provider.Message{}
 	}
@@ -975,11 +978,75 @@ func (p *contextPlanner) buildRAGMessage(ctx context.Context, query string) prov
 	if stats.DocumentCount == 0 {
 		return provider.Message{}
 	}
-	ragCtx, _, err := p.agent.ragManager.SearchWithContext(ctx, query)
-	if err != nil || ragCtx == "" {
+	retrievalQuery := p.rewriteRAGFollowUp(sess, query)
+	results, err := p.agent.ragManager.Search(ctx, retrievalQuery)
+	if err != nil || len(results) == 0 {
 		return provider.Message{}
 	}
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(ragCtx, p.budget.RAG)}
+	var ragCtx string
+	for end := 1; end <= len(results); end++ {
+		candidate := p.agent.ragManager.Retriever().BuildContext(results[:end])
+		if p.est.Estimate(candidate) > p.budget.RAG {
+			break
+		}
+		ragCtx = candidate
+	}
+	if ragCtx == "" {
+		for contentBudget := max(16, p.budget.RAG/2); contentBudget >= 16; contentBudget /= 2 {
+			first := results[0]
+			first.Content = p.fitTextToBudget(first.Content, contentBudget)
+			candidate := p.agent.ragManager.Retriever().BuildContext([]rag.RetrievalResult{first})
+			if p.est.Estimate(candidate) <= p.budget.RAG {
+				ragCtx = candidate
+				break
+			}
+			if contentBudget == 16 {
+				break
+			}
+		}
+	}
+	if ragCtx == "" {
+		return provider.Message{}
+	}
+	return provider.Message{Role: "system", Content: ragCtx}
+}
+
+func (p *contextPlanner) rewriteRAGFollowUp(sess *session.Session, query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" || sess == nil || p.agent == nil || p.agent.cfg == nil || !p.agent.cfg.Get().RAG.RewriteFollowUps {
+		return query
+	}
+	lower := strings.ToLower(query)
+	indicators := []string{
+		"这个", "那个", "上述", "前面", "刚才", "继续", "详细一点", "为什么",
+		"what about", "how about", "tell me more", "more about", "continue", "why is that",
+	}
+	// Keep the user-facing Chinese indicators as valid UTF-8 even when legacy
+	// comments or fixtures in this file originated from another encoding.
+	indicators = append(indicators, "这个", "那个", "上述", "前面", "之前", "继续", "再说一点", "为什么")
+	referential := false
+	for _, indicator := range indicators {
+		if strings.Contains(lower, indicator) {
+			referential = true
+			break
+		}
+	}
+	if !referential {
+		return query
+	}
+	messages := sess.GetMessages()
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		previous := strings.TrimSpace(messages[i].Content)
+		if previous == "" || previous == query {
+			continue
+		}
+		previous = string([]rune(previous)[:min(len([]rune(previous)), 300)])
+		return previous + "\nFollow-up: " + query
+	}
+	return query
 }
 
 /*
@@ -990,98 +1057,92 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session, query strin
 	if len(all) == 0 {
 		return nil
 	}
-	compactSummary, all := p.compactBoundaryContext(all)
-	intentTerms := historyIntentTerms(query+" "+sess.Title, all)
-
-	recentCount := p.options.HistoryRecent
-	if recentCount <= 0 {
-		recentCount = 6
+	_ = query // History is intentionally query-independent for prefix caching.
+	summaries, raw := p.compactBoundaryContext(all)
+	messages := append([]provider.Message(nil), summaries...)
+	rawBudget := p.budget.History - estimateProviderMessages(p.est, summaries)
+	if rawBudget < 128 {
+		rawBudget = 128
 	}
-	if recentCount > len(all) {
-		recentCount = len(all)
-	}
-
-	middleCount := p.options.HistoryMiddle
-	if middleCount < 0 {
-		middleCount = 0
-	}
-
-	recentStart := len(all) - recentCount
-	if recentStart < 0 {
-		recentStart = 0
-	}
-
-	var messages []provider.Message
-	if compactSummary.Content != "" {
-		messages = append(messages, compactSummary)
-	}
-	if recentStart > 0 {
-		middleStart := recentStart - middleCount
-		if middleStart < 0 {
-			middleStart = 0
-		}
-		if middleStart > 0 {
-			if themes := p.summarizeIntentAwareConversationRange(context.Background(), sess, all[:middleStart], "[Conversation Themes]", utils.MaxInt(96, p.budget.History/4), intentTerms); themes != "" {
-				messages = append(messages, provider.Message{Role: "system", Content: themes})
-			}
-		}
-		if middleStart < recentStart {
-			if summary := p.summarizeIntentAwareConversationRange(context.Background(), sess, all[middleStart:recentStart], "[Conversation Summary]", utils.MaxInt(96, p.budget.History/3), intentTerms); summary != "" {
-				messages = append(messages, provider.Message{Role: "system", Content: summary})
-			}
-		}
-	}
-
-	recentBudget := utils.MaxInt(128, p.budget.History/2)
-	recentMessages := p.selectIntentAwareRecentHistory(all[recentStart:], intentTerms)
-	used := 0
-	for _, msg := range recentMessages {
-		msg = p.compactHistoryMessage(msg)
-		tokens := p.est.Estimate(msg.Content) + 4
-		if msg.ReasoningContent != "" {
-			tokens += p.est.Estimate(msg.ReasoningContent)
-		}
-		if used+tokens > recentBudget && len(messages) > 0 {
-			continue
-		}
-		used += tokens
-		messages = append(messages, msg)
-	}
-
+	messages = append(messages, p.fitStableHistoryTail(raw, rawBudget)...)
 	return messages
 }
 
-func (p *contextPlanner) compactBoundaryContext(messages []provider.Message) (provider.Message, []provider.Message) {
-	after, meta, dropped, ok := session.MessagesAfterLastCompactBoundary(messages)
-	if !ok {
-		return provider.Message{}, messages
+func (p *contextPlanner) compactBoundaryContext(messages []provider.Message) ([]provider.Message, []provider.Message) {
+	segments, after, _ := session.CompactSegments(messages)
+	if len(segments) == 0 {
+		return nil, messages
 	}
-	summary := strings.TrimSpace(meta.Summary)
-	if summary == "" {
-		return provider.Message{}, after
+	out := make([]provider.Message, 0, len(segments))
+	for _, meta := range segments {
+		summary := strings.TrimSpace(meta.Summary)
+		if summary == "" {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("[Compact Summary]\n")
+		b.WriteString("This immutable segment replaces only its covered raw session range. Treat it as prior evidence, not the current user request.\n")
+		if strings.TrimSpace(meta.ID) != "" {
+			b.WriteString("Segment: " + strings.TrimSpace(meta.ID) + "\n")
+		}
+		if meta.ToMessage > meta.FromMessage {
+			b.WriteString(fmt.Sprintf("Covered messages: [%d, %d)\n", meta.FromMessage, meta.ToMessage))
+		}
+		if strings.TrimSpace(meta.ContentHash) != "" {
+			b.WriteString("Content hash: " + strings.TrimSpace(meta.ContentHash) + "\n")
+		}
+		if strings.TrimSpace(meta.PolicyVersion) != "" {
+			b.WriteString("Policy version: " + strings.TrimSpace(meta.PolicyVersion) + "\n")
+		}
+		if strings.TrimSpace(meta.Trigger) != "" {
+			b.WriteString("Trigger: " + strings.TrimSpace(meta.Trigger) + "\n")
+		}
+		if strings.TrimSpace(meta.SummarySource) != "" {
+			b.WriteString("Summary source: " + strings.TrimSpace(meta.SummarySource) + "\n")
+		}
+		b.WriteString("\n")
+		b.WriteString(summary)
+		if restore := formatPostCompactRestore(meta.Attachments); restore != "" {
+			b.WriteString("\n\n")
+			b.WriteString(restore)
+		}
+		out = append(out, provider.Message{Role: "system", Content: strings.TrimSpace(b.String())})
 	}
-	var b strings.Builder
-	b.WriteString("[Compact Summary]\n")
-	b.WriteString("This summary replaces earlier raw session history before the latest compact boundary. Treat it as prior evidence, not the current user request.\n")
-	if strings.TrimSpace(meta.Trigger) != "" {
-		b.WriteString("Trigger: " + strings.TrimSpace(meta.Trigger) + "\n")
+	return out, after
+}
+
+func (p *contextPlanner) fitStableHistoryTail(messages []provider.Message, tokenBudget int) []provider.Message {
+	if len(messages) == 0 || tokenBudget <= 0 {
+		return nil
 	}
-	if strings.TrimSpace(meta.SummarySource) != "" {
-		b.WriteString("Summary source: " + strings.TrimSpace(meta.SummarySource) + "\n")
+	compacted := make([]provider.Message, len(messages))
+	for i, msg := range messages {
+		compacted[i] = p.compactHistoryMessage(msg)
 	}
-	if dropped > 0 {
-		b.WriteString(fmt.Sprintf("Dropped raw messages: %d\n", dropped))
+	if estimateProviderMessages(p.est, compacted) <= tokenBudget {
+		return compacted
 	}
-	if meta.RestoredAttachments > 0 {
-		b.WriteString(fmt.Sprintf("Restored attachments: %d\n", meta.RestoredAttachments))
+
+	starts := make([]int, 0, len(compacted)/2+1)
+	for i, msg := range compacted {
+		if msg.Role == "user" {
+			starts = append(starts, i)
+		}
 	}
-	b.WriteString("\n")
-	b.WriteString(summary)
-	if restore := formatPostCompactRestore(meta.Attachments); restore != "" {
-		b.WriteString("\n\n")
-		b.WriteString(restore)
+	if len(starts) == 0 || starts[0] != 0 {
+		starts = append([]int{0}, starts...)
 	}
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(b.String(), utils.MaxInt(128, p.budget.History/3))}, after
+	for _, start := range starts {
+		candidate := compacted[start:]
+		if estimateProviderMessages(p.est, candidate) <= tokenBudget {
+			return append([]provider.Message(nil), candidate...)
+		}
+	}
+	// Keep the latest complete turn even when it alone exceeds the local history
+	// budget. The final context fitter may trim content, but must not orphan a
+	// tool result from its assistant tool-call message.
+	lastStart := starts[len(starts)-1]
+	return append([]provider.Message(nil), compacted[lastStart:]...)
 }
 
 func formatPostCompactRestore(attachments []session.CompactAttachment) string {

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -167,7 +168,7 @@ func TestBuildHistoryMessagesRespectsCompactBoundary(t *testing.T) {
 	}
 }
 
-func TestBuildHistoryMessagesDoesNotCallProviderForCompression(t *testing.T) {
+func TestBuildHistoryMessagesKeepsRawHistoryStableWithoutPerTurnSummary(t *testing.T) {
 	cfg, err := config.NewManagerWithDir(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
@@ -200,8 +201,121 @@ func TestBuildHistoryMessagesDoesNotCallProviderForCompression(t *testing.T) {
 	if counting.chatCalls != 0 {
 		t.Fatalf("context history compression must not call provider, got %d calls", counting.chatCalls)
 	}
-	if text := messagesToTestText(messages); !strings.Contains(text, "[Conversation Summary]") {
-		t.Fatalf("expected local conversation summary, got:\n%s", text)
+	text := messagesToTestText(messages)
+	if strings.Contains(text, "[Conversation Summary]") || strings.Contains(text, "[Conversation Themes]") {
+		t.Fatalf("per-turn history summaries must not be generated, got:\n%s", text)
+	}
+	if !strings.Contains(text, "hydrology forecast calibration task message") {
+		t.Fatalf("expected stable raw history, got:\n%s", text)
+	}
+}
+
+func TestBuildHistoryMessagesAppendsImmutableSummarySegments(t *testing.T) {
+	sess := session.NewSession("compact-segment-history", t.TempDir())
+	sess.AddMessage("user", "first old request")
+	sess.AddMessage("assistant", "first old answer")
+	sess.AddCompactBoundary(session.CompactMetadata{ID: "segment-1", Summary: "first immutable summary", FromMessage: 0, ToMessage: 2})
+	sess.AddMessage("user", "second old request")
+	sess.AddMessage("assistant", "second old answer")
+	sess.AddCompactBoundary(session.CompactMetadata{ID: "segment-2", Summary: "second immutable summary", FromMessage: 2, ToMessage: 4})
+	sess.AddMessage("user", "current raw tail")
+
+	planner := &contextPlanner{
+		est:    contextx.NewTokenEstimator(4096),
+		budget: contextBudget{History: 2400, Memory: 400},
+	}
+	messages := planner.buildHistoryMessages(sess, "current query")
+	text := messagesToTestText(messages)
+	first := strings.Index(text, "first immutable summary")
+	second := strings.Index(text, "second immutable summary")
+	tail := strings.Index(text, "current raw tail")
+	if first < 0 || second <= first || tail <= second {
+		t.Fatalf("expected ordered immutable summaries followed by raw tail, got:\n%s", text)
+	}
+	if strings.Contains(text, "first old request") || strings.Contains(text, "second old request") {
+		t.Fatalf("covered raw history leaked into context:\n%s", text)
+	}
+}
+
+func TestBuildHistoryMessagesPreservesPrefixWhenRawTurnAppends(t *testing.T) {
+	sess := session.NewSession("stable-history-prefix", t.TempDir())
+	sess.AddMessage("user", "old request")
+	sess.AddMessage("assistant", "old answer")
+	planner := &contextPlanner{est: contextx.NewTokenEstimator(4096), budget: contextBudget{History: 2400}}
+
+	before := planner.buildHistoryMessages(sess, "query one")
+	sess.AddMessage("user", "new request")
+	after := planner.buildHistoryMessages(sess, "unrelated query two")
+	if len(after) <= len(before) {
+		t.Fatalf("expected appended history, before=%d after=%d", len(before), len(after))
+	}
+	for i := range before {
+		if !reflect.DeepEqual(before[i], after[i]) {
+			t.Fatalf("history prefix changed at %d: before=%+v after=%+v", i, before[i], after[i])
+		}
+	}
+}
+
+func TestContextPlannerPlacesDynamicMemoryAfterStableSessionHistory(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	if err := a.memory.SaveWithTier("cache-layout-memory-marker", "project", memory.TierLong, 0.9); err != nil {
+		t.Fatalf("save memory marker: %v", err)
+	}
+	sess := newTestSession(t)
+	sess.AddMessage("user", "cache-layout-history-marker")
+	sess.AddMessage("assistant", "prior stable answer")
+
+	messages := newContextPlanner(a, defaultContextBuildOptions()).Build(context.Background(), sess, "cache-layout-memory-marker")
+	historyIndex, memoryIndex, currentIndex := -1, -1, -1
+	for i, msg := range messages {
+		if strings.Contains(msg.Content, "cache-layout-history-marker") {
+			historyIndex = i
+		}
+		if msg.Role == "system" && strings.Contains(msg.Content, "cache-layout-memory-marker") {
+			memoryIndex = i
+		}
+		if msg.Role == "user" && msg.Content == "cache-layout-memory-marker" {
+			currentIndex = i
+		}
+	}
+	if historyIndex < 0 || memoryIndex <= historyIndex || currentIndex <= memoryIndex {
+		t.Fatalf("expected history -> dynamic memory -> current user, indexes history=%d memory=%d user=%d messages=%+v", historyIndex, memoryIndex, currentIndex, messages)
+	}
+}
+
+func TestRewriteRAGFollowUpUsesPreviousUserTopic(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.NewSession("rag-follow-up", t.TempDir())
+	sess.AddMessage("user", "解释 LuckyAgent 的 SQLite 向量索引事务")
+	sess.AddMessage("assistant", "它使用文档、分块和向量表。")
+	planner := &contextPlanner{agent: &Agent{cfg: cfg}}
+
+	got := planner.rewriteRAGFollowUp(sess, "这个为什么需要原子替换？")
+	if !strings.Contains(got, "SQLite 向量索引事务") || !strings.Contains(got, "Follow-up:") {
+		t.Fatalf("follow-up query was not grounded in session topic: %q", got)
+	}
+	standalone := planner.rewriteRAGFollowUp(sess, "Go channel 实现")
+	if standalone != "Go channel 实现" {
+		t.Fatalf("standalone query should not be rewritten: %q", standalone)
+	}
+}
+
+func TestRewriteRAGFollowUpRecognizesUTF8Chinese(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess := session.NewSession("rag-follow-up-utf8", t.TempDir())
+	sess.AddMessage("user", "解释 LuckyAgent 的 SQLite 混合检索实现")
+	sess.AddMessage("assistant", "它使用向量和词法分数混合排序。")
+	planner := &contextPlanner{agent: &Agent{cfg: cfg}}
+
+	got := planner.rewriteRAGFollowUp(sess, "这个为什么需要原子替换？")
+	if !strings.Contains(got, "SQLite 混合检索实现") || !strings.Contains(got, "Follow-up:") {
+		t.Fatalf("UTF-8 Chinese follow-up was not grounded in session topic: %q", got)
 	}
 }
 

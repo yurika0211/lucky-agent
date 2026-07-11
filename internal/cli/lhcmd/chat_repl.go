@@ -1443,7 +1443,9 @@ func handleSessionCommand(arg string, a *agent.Agent, mgr *session.Manager, curr
 		}
 		fmt.Printf("✅ 会话已 compact: %s\n", (*currentSession).ID[:8])
 		fmt.Printf("   boundary: %s\n", result.BoundaryID)
+		fmt.Printf("   covered messages: [%d, %d)\n", result.FromMessage, result.ToMessage)
 		fmt.Printf("   dropped messages: %d\n", result.DroppedMessages)
+		fmt.Printf("   retained messages: %d\n", result.RetainedMessages)
 		fmt.Printf("   restored attachments: %d\n", result.RestoredAttachments)
 		fmt.Printf("   summary source: %s\n", result.SummarySource)
 		fmt.Printf("   summary tokens: %d\n", result.SummaryTokens)

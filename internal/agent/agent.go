@@ -634,6 +634,12 @@ func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 		"embedder_dim", activeEmb.Dimension(),
 	)
 	ragConfig := rag.DefaultRAGConfig()
+	ragConfig.RetrieverConfig.TopK = c.RAG.TopK
+	ragConfig.RetrieverConfig.MinScore = c.RAG.MinScore
+	ragConfig.RetrieverConfig.UseHybrid = c.RAG.UseHybrid
+	ragConfig.RetrieverConfig.DenseWeight = c.RAG.DenseWeight
+	ragConfig.RetrieverConfig.UseMMR = c.RAG.UseMMR
+	ragConfig.RetrieverConfig.MMRLambda = c.RAG.MMRLambda
 
 	var ragManager *rag.RAGManager
 	var ragPersist *rag.Persistence
@@ -641,6 +647,7 @@ func initRAGRuntime(cfg *config.Manager, c *config.Config) (ragRuntime, error) {
 	ragDBPath := cfg.HomeDir() + "/rag/luckyagent.db"
 	ragMgr, err := rag.NewRAGManagerWithSQLite(activeEmb, ragConfig, ragDBPath)
 	if err != nil {
+		logger.Warn("sqlite RAG unavailable; using in-memory fallback", "path", ragDBPath, "error", err)
 		ragManager = rag.NewRAGManager(activeEmb, ragConfig)
 		ragPersist = rag.NewPersistence(cfg.HomeDir() + "/rag")
 		if ragPersist.Exists() {
@@ -1581,18 +1588,27 @@ type CompactSessionResult struct {
 	BoundaryID          string
 	Trigger             string
 	Summary             string
+	FromMessage         int
+	ToMessage           int
+	ContentHash         string
+	PolicyVersion       string
 	PreTokenEstimate    int
 	PostTokenEstimate   int
 	SummaryTokens       int
 	DroppedMessages     int
+	RetainedMessages    int
 	RestoredAttachments int
 	SummarySource       string
 	DryRun              bool
 }
 
+const compactSegmentPolicyVersion = "checkpoint-segments-v1"
+
 type CompactSessionOptions struct {
-	ForceLocal bool
-	DryRun     bool
+	ForceLocal        bool
+	DryRun            bool
+	RetainRecentTurns int
+	TargetTailTokens  int
 }
 
 // CompactSession summarizes raw session history since the latest compact
@@ -1616,18 +1632,18 @@ func (a *Agent) CompactSessionWithOptions(ctx context.Context, sess *session.Ses
 	if len(all) == 0 {
 		return nil, fmt.Errorf("compact session: no messages to compact")
 	}
-	raw, prior, _, hadPrior := session.MessagesAfterLastCompactBoundary(all)
+	_, raw, covered := session.CompactSegments(all)
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("compact session: nothing to compact after latest boundary")
-	}
-	compactInput := raw
-	if hadPrior && strings.TrimSpace(prior.Summary) != "" {
-		compactInput = append([]provider.Message{{Role: "system", Content: "[Prior Compact Summary]\n" + strings.TrimSpace(prior.Summary)}}, raw...)
 	}
 
 	est := a.contextEst
 	if est == nil {
 		est = contextx.NewTokenEstimator(4096)
+	}
+	compactInput, retained := selectCompactSegmentInput(raw, est, opts.RetainRecentTurns, opts.TargetTailTokens)
+	if len(compactInput) == 0 {
+		return nil, fmt.Errorf("compact session: retained tail leaves no complete messages to compact")
 	}
 	preTokens := estimateProviderMessages(est, compactInput)
 	summarySource := "llm"
@@ -1655,15 +1671,26 @@ func (a *Agent) CompactSessionWithOptions(ctx context.Context, sess *session.Ses
 		ID:                  boundaryID,
 		Trigger:             trigger,
 		Summary:             summary,
+		FromMessage:         covered,
+		ToMessage:           covered + len(compactInput),
+		PolicyVersion:       compactSegmentPolicyVersion,
 		CreatedAt:           time.Now(),
 		PreTokenEstimate:    preTokens,
 		PostTokenEstimate:   postTokens,
 		SummaryTokens:       postTokens,
-		DroppedMessages:     len(raw),
+		DroppedMessages:     len(compactInput),
+		RetainedMessages:    len(retained),
 		RestoredAttachments: len(attachments),
 		SummarySource:       summarySource,
 		Attachments:         attachments,
 	}
+	meta.ContentHash = fmt.Sprintf("%x", makeContextCacheKey(map[string]any{
+		"from":        meta.FromMessage,
+		"to":          meta.ToMessage,
+		"summary":     meta.Summary,
+		"attachments": meta.Attachments,
+		"policy":      meta.PolicyVersion,
+	}))
 	if !opts.DryRun {
 		sess.AddCompactBoundary(meta)
 		if err := sess.Save(); err != nil {
@@ -1674,14 +1701,78 @@ func (a *Agent) CompactSessionWithOptions(ctx context.Context, sess *session.Ses
 		BoundaryID:          boundaryID,
 		Trigger:             trigger,
 		Summary:             summary,
+		FromMessage:         meta.FromMessage,
+		ToMessage:           meta.ToMessage,
+		ContentHash:         meta.ContentHash,
+		PolicyVersion:       meta.PolicyVersion,
 		PreTokenEstimate:    preTokens,
 		PostTokenEstimate:   postTokens,
 		SummaryTokens:       postTokens,
-		DroppedMessages:     len(raw),
+		DroppedMessages:     len(compactInput),
+		RetainedMessages:    len(retained),
 		RestoredAttachments: len(attachments),
 		SummarySource:       summarySource,
 		DryRun:              opts.DryRun,
 	}, nil
+}
+
+func selectCompactSegmentInput(raw []provider.Message, est *contextx.TokenEstimator, retainTurns, targetTailTokens int) ([]provider.Message, []provider.Message) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if retainTurns <= 0 && targetTailTokens <= 0 {
+		return append([]provider.Message(nil), raw...), nil
+	}
+
+	turnStarts := make([]int, 0, len(raw)/2+1)
+	for i, msg := range raw {
+		if msg.Role == "user" {
+			turnStarts = append(turnStarts, i)
+		}
+	}
+	turnStarts = append(turnStarts, len(raw))
+
+	protectedStart := 0
+	if retainTurns > 0 && len(turnStarts) > 1 {
+		userTurns := len(turnStarts) - 1
+		if userTurns > retainTurns {
+			protectedStart = turnStarts[userTurns-retainTurns]
+		}
+	}
+
+	cut := protectedStart
+	if targetTailTokens > 0 {
+		cut = -1
+		for _, candidate := range turnStarts {
+			if candidate > protectedStart {
+				break
+			}
+			if estimateProviderMessages(est, raw[candidate:]) <= targetTailTokens {
+				cut = candidate
+				break
+			}
+		}
+		// A single protected turn can exceed the target. In that case retention
+		// is soft: advance only at complete user-turn boundaries.
+		if cut < 0 {
+			for _, candidate := range turnStarts {
+				if candidate <= protectedStart {
+					continue
+				}
+				if estimateProviderMessages(est, raw[candidate:]) <= targetTailTokens {
+					cut = candidate
+					break
+				}
+			}
+		}
+	}
+	if cut < 0 {
+		cut = len(raw)
+	}
+	if cut <= 0 {
+		return nil, append([]provider.Message(nil), raw...)
+	}
+	return append([]provider.Message(nil), raw[:cut]...), append([]provider.Message(nil), raw[cut:]...)
 }
 
 func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.Message) (string, error) {

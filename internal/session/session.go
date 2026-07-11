@@ -21,11 +21,16 @@ type CompactMetadata struct {
 	ID                  string              `json:"id"`
 	Trigger             string              `json:"trigger"`
 	Summary             string              `json:"summary"`
+	FromMessage         int                 `json:"from_message,omitempty"`
+	ToMessage           int                 `json:"to_message,omitempty"`
+	ContentHash         string              `json:"content_hash,omitempty"`
+	PolicyVersion       string              `json:"policy_version,omitempty"`
 	CreatedAt           time.Time           `json:"created_at"`
 	PreTokenEstimate    int                 `json:"pre_token_estimate,omitempty"`
 	PostTokenEstimate   int                 `json:"post_token_estimate,omitempty"`
 	SummaryTokens       int                 `json:"summary_tokens,omitempty"`
 	DroppedMessages     int                 `json:"dropped_messages,omitempty"`
+	RetainedMessages    int                 `json:"retained_messages,omitempty"`
 	RestoredAttachments int                 `json:"restored_attachments,omitempty"`
 	SummarySource       string              `json:"summary_source,omitempty"`
 	Attachments         []CompactAttachment `json:"attachments,omitempty"`
@@ -47,8 +52,13 @@ type CompactTrace struct {
 	PostTokenEstimate   int       `json:"post_token_estimate,omitempty"`
 	SummaryTokens       int       `json:"summary_tokens,omitempty"`
 	DroppedMessages     int       `json:"dropped_messages,omitempty"`
+	RetainedMessages    int       `json:"retained_messages,omitempty"`
 	RestoredAttachments int       `json:"restored_attachments,omitempty"`
 	SummarySource       string    `json:"summary_source,omitempty"`
+	FromMessage         int       `json:"from_message,omitempty"`
+	ToMessage           int       `json:"to_message,omitempty"`
+	ContentHash         string    `json:"content_hash,omitempty"`
+	PolicyVersion       string    `json:"policy_version,omitempty"`
 }
 
 // Session 代表一次对话会话
@@ -278,22 +288,70 @@ func ParseCompactMetadata(msg provider.Message) (CompactMetadata, bool) {
 	return CompactMetadata{Summary: summary}, true
 }
 
-// MessagesAfterLastCompactBoundary returns raw messages after the latest
-// boundary, the boundary metadata, and the number of raw messages represented
-// by the compact summary.
-func MessagesAfterLastCompactBoundary(messages []provider.Message) ([]provider.Message, CompactMetadata, int, bool) {
-	last := -1
-	for i, msg := range messages {
-		if IsCompactBoundary(msg) {
-			last = i
+// CompactSegments returns immutable compact summaries in append order and the
+// raw message tail not covered by any summary. Ranges count non-boundary
+// provider messages and use [FromMessage, ToMessage) semantics.
+func CompactSegments(messages []provider.Message) ([]CompactMetadata, []provider.Message, int) {
+	if len(messages) == 0 {
+		return nil, nil, 0
+	}
+
+	raw := make([]provider.Message, 0, len(messages))
+	segments := make([]CompactMetadata, 0, 4)
+	covered := 0
+	for _, msg := range messages {
+		if !IsCompactBoundary(msg) {
+			raw = append(raw, msg)
+			continue
+		}
+		meta, ok := ParseCompactMetadata(msg)
+		if !ok {
+			continue
+		}
+		// Legacy compaction folded the previous summary into each new boundary.
+		// Treat it as one cumulative segment so old sessions do not inject every
+		// superseded summary alongside the latest one.
+		legacyRange := meta.ToMessage <= meta.FromMessage
+		if legacyRange {
+			segments = segments[:0]
+			covered = 0
+			meta.FromMessage = 0
+			meta.ToMessage = len(raw)
+		}
+		if meta.FromMessage < covered {
+			meta.FromMessage = covered
+		}
+		if meta.ToMessage > len(raw) {
+			meta.ToMessage = len(raw)
+		}
+		if meta.ToMessage <= meta.FromMessage {
+			// Some legacy sessions persist only the boundary marker because their
+			// raw history was already removed. Keep the summary and trace visible.
+			if legacyRange && strings.TrimSpace(meta.Summary) != "" {
+				segments = append(segments, meta)
+			}
+			continue
+		}
+		segments = append(segments, meta)
+		if meta.ToMessage > covered {
+			covered = meta.ToMessage
 		}
 	}
-	if last < 0 {
+	if covered > len(raw) {
+		covered = len(raw)
+	}
+	return segments, append([]provider.Message(nil), raw[covered:]...), covered
+}
+
+// MessagesAfterLastCompactBoundary returns the logical raw tail after all
+// compact segments, the latest segment metadata, and the cumulative number of
+// raw messages represented by summaries.
+func MessagesAfterLastCompactBoundary(messages []provider.Message) ([]provider.Message, CompactMetadata, int, bool) {
+	segments, after, covered := CompactSegments(messages)
+	if len(segments) == 0 {
 		return messages, CompactMetadata{}, 0, false
 	}
-	meta, _ := ParseCompactMetadata(messages[last])
-	after := messages[last+1:]
-	return after, meta, last, true
+	return after, segments[len(segments)-1], covered, true
 }
 
 func (s *Session) LatestCompactTrace() (CompactTrace, bool) {
@@ -314,8 +372,13 @@ func CompactTraceFromMetadata(meta CompactMetadata) CompactTrace {
 		PostTokenEstimate:   meta.PostTokenEstimate,
 		SummaryTokens:       meta.SummaryTokens,
 		DroppedMessages:     meta.DroppedMessages,
+		RetainedMessages:    meta.RetainedMessages,
 		RestoredAttachments: meta.RestoredAttachments,
 		SummarySource:       meta.SummarySource,
+		FromMessage:         meta.FromMessage,
+		ToMessage:           meta.ToMessage,
+		ContentHash:         meta.ContentHash,
+		PolicyVersion:       meta.PolicyVersion,
 	}
 }
 

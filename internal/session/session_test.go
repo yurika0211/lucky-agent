@@ -127,6 +127,97 @@ func TestCompactBoundarySplitsPriorRawHistory(t *testing.T) {
 	}
 }
 
+func TestCompactSegmentsPreserveImmutableSummariesAndLogicalTail(t *testing.T) {
+	s := NewSession("test-compact-segments", t.TempDir())
+	s.AddMessage("user", "turn one request")
+	s.AddMessage("assistant", "turn one answer")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:          "segment-1",
+		Summary:     "summary for turn one",
+		FromMessage: 0,
+		ToMessage:   2,
+	})
+	s.AddMessage("user", "turn two request")
+	s.AddMessage("assistant", "turn two answer")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:          "segment-2",
+		Summary:     "summary for turn two",
+		FromMessage: 2,
+		ToMessage:   4,
+	})
+	s.AddMessage("user", "raw tail request")
+
+	segments, tail, covered := CompactSegments(s.GetMessages())
+	if covered != 4 || len(segments) != 2 {
+		t.Fatalf("unexpected compact segments: covered=%d segments=%+v", covered, segments)
+	}
+	if segments[0].ID != "segment-1" || segments[1].ID != "segment-2" {
+		t.Fatalf("segments must preserve append order: %+v", segments)
+	}
+	if len(tail) != 1 || tail[0].Content != "raw tail request" {
+		t.Fatalf("unexpected logical raw tail: %+v", tail)
+	}
+}
+
+func TestCompactSegmentsCanRetainRawMessagesBeforePhysicalBoundary(t *testing.T) {
+	s := NewSession("test-compact-retained-tail", t.TempDir())
+	s.AddMessage("user", "compact this request")
+	s.AddMessage("assistant", "compact this answer")
+	s.AddMessage("user", "retain this request")
+	s.AddMessage("assistant", "retain this answer")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:          "segment-retain",
+		Summary:     "summary for first turn",
+		FromMessage: 0,
+		ToMessage:   2,
+	})
+
+	_, tail, covered := CompactSegments(s.GetMessages())
+	if covered != 2 || len(tail) != 2 {
+		t.Fatalf("unexpected retained tail: covered=%d tail=%+v", covered, tail)
+	}
+	if tail[0].Content != "retain this request" || tail[1].Content != "retain this answer" {
+		t.Fatalf("retained tail order changed: %+v", tail)
+	}
+}
+
+func TestCompactSegmentsKeepsLegacyBoundaryWithoutRawMessages(t *testing.T) {
+	s := NewSession("legacy-boundary-only", t.TempDir())
+	s.AddCompactBoundary(CompactMetadata{
+		ID:      "legacy-only",
+		Summary: "legacy summary whose raw messages are no longer stored",
+	})
+
+	segments, tail, covered := CompactSegments(s.GetMessages())
+	if len(segments) != 1 || segments[0].ID != "legacy-only" {
+		t.Fatalf("expected legacy segment to remain visible, got %+v", segments)
+	}
+	if len(tail) != 0 || covered != 0 {
+		t.Fatalf("unexpected legacy tail state: tail=%+v covered=%d", tail, covered)
+	}
+	if trace, ok := s.LatestCompactTrace(); !ok || trace.BoundaryID != "legacy-only" {
+		t.Fatalf("expected legacy compact trace, trace=%+v ok=%v", trace, ok)
+	}
+}
+
+func TestCompactSegmentsLegacyBoundarySupersedesPriorSummary(t *testing.T) {
+	s := NewSession("legacy-cumulative-boundaries", t.TempDir())
+	s.AddMessage("user", "first old request")
+	s.AddMessage("assistant", "first old answer")
+	s.AddCompactBoundary(CompactMetadata{ID: "legacy-1", Summary: "first cumulative summary"})
+	s.AddMessage("user", "second old request")
+	s.AddMessage("assistant", "second old answer")
+	s.AddCompactBoundary(CompactMetadata{ID: "legacy-2", Summary: "second cumulative summary including the first"})
+
+	segments, tail, covered := CompactSegments(s.GetMessages())
+	if len(segments) != 1 || segments[0].ID != "legacy-2" {
+		t.Fatalf("expected only latest cumulative legacy segment, got %+v", segments)
+	}
+	if len(tail) != 0 || covered != 4 {
+		t.Fatalf("unexpected legacy cumulative tail: tail=%+v covered=%d", tail, covered)
+	}
+}
+
 func TestUndoLatestCompactBoundary(t *testing.T) {
 	s := NewSession("test-compact-undo", t.TempDir())
 	s.AddMessage("user", "old raw request")

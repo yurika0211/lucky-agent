@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/yurika0211/luckyagent/internal/session"
 )
 
 func TestSummarizeRecordsCleanliness(t *testing.T) {
@@ -20,6 +22,8 @@ func TestSummarizeRecordsCleanliness(t *testing.T) {
 			UncachedPromptTokens: 200,
 			CompletionTokens:     20,
 			TotalTokens:          1020,
+			ResponseChars:        20,
+			PrefixComparable:     false,
 		},
 		{
 			DurationMS:           200,
@@ -32,6 +36,10 @@ func TestSummarizeRecordsCleanliness(t *testing.T) {
 			UncachedPromptTokens: 100,
 			CompletionTokens:     20,
 			TotalTokens:          1020,
+			ResponseChars:        20,
+			PrefixComparable:     true,
+			StablePrefixTokens:   750,
+			StablePrefixRatio:    0.75,
 		},
 	}
 
@@ -44,6 +52,24 @@ func TestSummarizeRecordsCleanliness(t *testing.T) {
 	}
 	if got.CachedRatio != 0.85 {
 		t.Fatalf("CachedRatio = %v", got.CachedRatio)
+	}
+	if got.PrefixComparableRounds != 1 || got.AvgStablePrefixTokens != 750 || got.AvgStablePrefixRatio != 0.75 {
+		t.Fatalf("unexpected prefix summary: %#v", got)
+	}
+}
+
+func TestSummarizeRecordsRejectsEmptyResponse(t *testing.T) {
+	records := []benchRecord{{
+		ProviderCalls:        1,
+		SystemPromptHash:     "abc",
+		PromptTokens:         100,
+		CachedPromptTokens:   80,
+		UncachedPromptTokens: 20,
+	}}
+
+	got := summarizeRecords("fixed", "checkpoint-session", records)
+	if got.Clean || got.EmptyResponses != 1 {
+		t.Fatalf("expected empty response to invalidate summary: %#v", got)
 	}
 }
 
@@ -82,6 +108,32 @@ func TestSummarizeRecordsDetectsDirtyRun(t *testing.T) {
 	}
 	if len(got.ToolNames) != 1 || got.ToolNames[0] != "web_search" {
 		t.Fatalf("unexpected tool names: %#v", got.ToolNames)
+	}
+}
+
+func TestExpandScenariosIncludesCheckpointSession(t *testing.T) {
+	scenarios, err := expandScenarios("all")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(scenarios, ","), "checkpoint-session") {
+		t.Fatalf("checkpoint-session missing from all scenarios: %v", scenarios)
+	}
+}
+
+func TestSeedCheckpointSessionKeepsFourRecentTurns(t *testing.T) {
+	sess := session.NewSession("cache-bench-seed", t.TempDir())
+	seedCheckpointSession(sess)
+
+	tail, meta, covered, ok := session.MessagesAfterLastCompactBoundary(sess.GetMessages())
+	if !ok || meta.ID != "cache-bench-checkpoint" {
+		t.Fatalf("expected benchmark checkpoint, meta=%+v ok=%v", meta, ok)
+	}
+	if covered != 40 || len(tail) != 8 {
+		t.Fatalf("expected 40 covered messages and 8-message tail, covered=%d tail=%d", covered, len(tail))
+	}
+	if tail[0].Role != "user" || tail[len(tail)-1].Role != "assistant" {
+		t.Fatalf("retained tail must contain complete turns: %+v", tail)
 	}
 }
 

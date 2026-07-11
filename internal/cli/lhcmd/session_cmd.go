@@ -84,7 +84,9 @@ func runSessionCompact(ctx context.Context, sessionID string, dryRun bool, force
 		fmt.Printf("session compacted: %s\n", sess.ID)
 	}
 	fmt.Printf("boundary: %s\n", result.BoundaryID)
+	fmt.Printf("covered messages: [%d, %d)\n", result.FromMessage, result.ToMessage)
 	fmt.Printf("dropped messages: %d\n", result.DroppedMessages)
+	fmt.Printf("retained messages: %d\n", result.RetainedMessages)
 	fmt.Printf("restored attachments: %d\n", result.RestoredAttachments)
 	fmt.Printf("summary source: %s\n", result.SummarySource)
 	fmt.Printf("summary tokens: %d\n", result.SummaryTokens)
