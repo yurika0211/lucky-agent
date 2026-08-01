@@ -2,10 +2,13 @@ package collab
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
 
 func TestMessageEncodeDecode(t *testing.T) {
@@ -35,6 +38,39 @@ func TestMessageEncodeDecode(t *testing.T) {
 	}
 	if decoded.Priority != PriorityHigh {
 		t.Errorf("Priority mismatch: got %d, want %d", decoded.Priority, PriorityHigh)
+	}
+}
+
+func TestRegistryRuntimeProfileIsolation(t *testing.T) {
+	r := NewRegistry()
+	profile := &AgentProfile{
+		ID:           "runtime-agent",
+		Name:         "Runtime Agent",
+		Capabilities: []string{"code"},
+		Runtime: AgentRuntimeProfile{
+			Provider:      "openai",
+			Model:         "gpt-test",
+			ToolAllowlist: []string{"read_file"},
+			CWD:           "/tmp/runtime-agent",
+			AllowDelegate: false,
+		},
+		Metadata: map[string]string{"tier": "test"},
+	}
+	if err := r.Register(profile); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	got, ok := r.Get("runtime-agent")
+	if !ok {
+		t.Fatal("expected runtime-agent")
+	}
+	got.Runtime.ToolAllowlist[0] = "write_file"
+	got.Metadata["tier"] = "mutated"
+	again, _ := r.Get("runtime-agent")
+	if again.Runtime.ToolAllowlist[0] != "read_file" || again.Metadata["tier"] != "test" {
+		t.Fatalf("registry returned mutable profile: %+v", again)
+	}
+	if again.Runtime.AgentID != "runtime-agent" {
+		t.Fatalf("expected runtime agent id to default, got %+v", again.Runtime)
 	}
 }
 
@@ -230,6 +266,104 @@ func TestDelegateManagerPipeline(t *testing.T) {
 	expected := "input->processed_by_agent-1->processed_by_agent-2"
 	if updated.Result != expected {
 		t.Errorf("result: got %s, want %s", updated.Result, expected)
+	}
+}
+
+func TestDelegateManagerPassesRuntimeProfileToSubTask(t *testing.T) {
+	r := NewRegistry()
+	cwd := filepath.Join(t.TempDir(), "runtime-agent")
+	_ = r.Register(&AgentProfile{
+		ID:   "agent-runtime",
+		Name: "Runtime Agent",
+		Runtime: AgentRuntimeProfile{
+			Provider:        "openai",
+			Model:           "gpt-test",
+			ToolAllowlist:   []string{"read_file"},
+			CWD:             cwd,
+			MemoryNamespace: "runtime-agent-memory",
+			ApprovalPolicy:  "readonly",
+			AllowDelegate:   false,
+		},
+	})
+	seen := make(chan AgentRuntimeProfile, 1)
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		seen <- task.Runtime
+		return "ok", nil
+	})
+	dm := NewDelegateManager(r, handler)
+	if _, err := dm.Delegate(context.Background(), ModeParallel, "test runtime", "input", []string{"agent-runtime"}, time.Second); err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	select {
+	case runtime := <-seen:
+		if runtime.Provider != "openai" || runtime.Model != "gpt-test" || runtime.CWD != cwd || runtime.AllowDelegate {
+			t.Fatalf("unexpected runtime profile: %+v", runtime)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("handler did not receive runtime profile")
+	}
+}
+
+func TestDelegateManagerAppliesRuntimeProfileConstraints(t *testing.T) {
+	cwd := filepath.Join(t.TempDir(), "runtime-cwd")
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("expected runtime timeout deadline")
+		}
+		if remaining := time.Until(deadline); remaining > 200*time.Millisecond {
+			t.Fatalf("expected runtime timeout to constrain deadline, remaining=%s", remaining)
+		}
+		for _, want := range []string{
+			runtimeConstraintMarker,
+			"Tool allowlist: read_file, grep",
+			"Working directory: " + cwd,
+			"Memory namespace: runtime-memory",
+			"Recursive delegation: disabled",
+		} {
+			if !strings.Contains(task.Input, want) {
+				t.Fatalf("expected runtime constraint %q in input:\n%s", want, task.Input)
+			}
+		}
+		return "ok", nil
+	})
+	dm := NewDelegateManager(NewRegistry(), handler)
+	sub := &SubTask{
+		ID:    "runtime-sub",
+		Input: "original input",
+		Runtime: AgentRuntimeProfile{
+			ToolAllowlist:   []string{"read_file", "grep"},
+			CWD:             cwd,
+			MemoryNamespace: "runtime-memory",
+			Timeout:         50 * time.Millisecond,
+			AllowDelegate:   false,
+		},
+		Timeout: time.Second,
+	}
+	if _, err := dm.executeSubTask(context.Background(), sub); err != nil {
+		t.Fatalf("executeSubTask: %v", err)
+	}
+	if sub.Timeout != 50*time.Millisecond {
+		t.Fatalf("expected runtime timeout on subtask, got %s", sub.Timeout)
+	}
+}
+
+func TestDelegateManagerPolicyDeniesTooManyChildren(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"})
+	_ = r.Register(&AgentProfile{ID: "agent-2", Name: "Agent 2"})
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		return "ok", nil
+	})
+	dm := NewDelegateManager(r, handler)
+	dm.SetPolicy(taskstore.Policy{MaxChildren: 1})
+
+	_, err := dm.Delegate(context.Background(), ModeParallel, "too many children", "input", []string{"agent-1", "agent-2"}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "child count") {
+		t.Fatalf("expected child count policy error, got %v", err)
+	}
+	if tasks := dm.ListTasks(); len(tasks) != 0 {
+		t.Fatalf("policy-denied task should not be created, got %+v", tasks)
 	}
 }
 

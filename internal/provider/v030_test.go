@@ -109,6 +109,39 @@ func TestFallbackChainChatFallback(t *testing.T) {
 	}
 }
 
+func TestFallbackChainDuplicateProviderNamesUseDistinctConfigs(t *testing.T) {
+	registry := NewRegistry()
+	createdModels := make([]string, 0, 2)
+	registry.RegisterFactory("mock", func(cfg Config) Provider {
+		createdModels = append(createdModels, cfg.LlmProvider.Model)
+		return &mockProvider{name: cfg.LlmProvider.Model}
+	})
+
+	configs := []FallbackConfig{
+		{Name: "mock", APIKey: "test", Model: "primary-model"},
+		{Name: "mock", APIKey: "test", Model: "fallback-model"},
+	}
+
+	chain, err := NewFallbackChain(configs, registry)
+	if err != nil {
+		t.Fatalf("NewFallbackChain: %v", err)
+	}
+	if len(createdModels) != 2 {
+		t.Fatalf("expected two provider instances, got %d (%v)", len(createdModels), createdModels)
+	}
+	if chain.chain[0] == chain.chain[1] {
+		t.Fatal("expected duplicate provider names to create distinct provider instances")
+	}
+
+	resp, err := chain.chain[1].Chat(context.Background(), []Message{{Role: "user", Content: "hi"}})
+	if err != nil {
+		t.Fatalf("fallback provider Chat: %v", err)
+	}
+	if resp.Model != "fallback-model" {
+		t.Fatalf("expected fallback provider to use fallback config, got %q", resp.Model)
+	}
+}
+
 func TestFallbackChainChatNoFallbackOnRequestError(t *testing.T) {
 	registry := NewRegistry()
 	registry.RegisterFactory("mock1", func(cfg Config) Provider {

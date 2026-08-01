@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/yurika0211/luckyagent/internal/memory"
 )
 
 func TestHumanizeToolCall(t *testing.T) {
@@ -156,5 +157,31 @@ func TestTelegramProgressCards(t *testing.T) {
 		assert.Contains(t, got, "⚠️")
 		assert.Contains(t, got, "Done · 3 agent steps")
 		assert.NotContains(t, got, "web_search")
+	})
+
+	t.Run("memory trace card summarizes results and hops", func(t *testing.T) {
+		trace := memory.SearchTrace{
+			Query:      "Outdoor walks",
+			Source:     "memory-vault",
+			GraphDepth: 1,
+			DurationMS: 12,
+			Results: []memory.SearchTraceResult{
+				{Rank: 1, SearchTraceNode: memory.SearchTraceNode{ID: "a", Ref: "20_Projects/a.md#mem-a", Category: "plan", Tier: "medium", Score: 1.2, DirectScore: 1.2}},
+				{Rank: 2, SearchTraceNode: memory.SearchTraceNode{ID: "b", Ref: "50_Facts/b.md#mem-b", Category: "health", Tier: "long", Score: 0.4, GraphScore: 0.4}},
+			},
+			Hops: []memory.SearchTraceHop{
+				{Depth: 1, FromID: "a", ToID: "b", ToRef: "50_Facts/b.md#mem-b", Via: "Daughter", Kind: "wikilink_target", Boost: 0.31},
+			},
+			Temporal: []string{"Superseded memory ignored: old.md."},
+		}
+		got := renderTelegramMemoryTraceCard(trace, "summary", 1, 1)
+		assert.Contains(t, got, "<b>Memory Trace</b>")
+		assert.Contains(t, got, "query: Outdoor walks")
+		assert.Contains(t, got, "direct:")
+		assert.Contains(t, got, "[1] 20_Projects/a.md#mem-a (direct plan/medium score=1.20)")
+		assert.Contains(t, got, "... 1 more nodes")
+		assert.Contains(t, got, "paths:")
+		assert.Contains(t, got, "20_Projects/a.md#mem-a --[d1 wikilink_target:Daughter +0.31]--&gt; 50_Facts/b.md#mem-b")
+		assert.Contains(t, got, "notes:")
 	})
 }

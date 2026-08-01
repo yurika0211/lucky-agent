@@ -41,14 +41,15 @@ const (
 
 // Tool 代表一个可调用的工具
 type Tool struct {
-	Name        string
-	Description string
-	Parameters  map[string]Param
-	Handler     func(args map[string]any) (string, error)
-	Permission  PermissionLevel // 权限级别
-	Category    Category        // 工具分类
-	Source      string          // 来源（skill名/mcp server名/builtin）
-	Enabled     bool            // 是否启用
+	Name            string
+	Description     string
+	Parameters      map[string]Param
+	Handler         func(args map[string]any) (string, error)
+	DetailedHandler func(args map[string]any) (ToolCallResult, error)
+	Permission      PermissionLevel // 权限级别
+	Category        Category        // 工具分类
+	Source          string          // 来源（skill名/mcp server名/builtin）
+	Enabled         bool            // 是否启用
 	// ShellAware 标记该工具需要 shell 上下文注入（cwd + env）
 	ShellAware bool
 	// ParallelSafe 标记该工具可安全并发执行（无状态、无副作用冲突）
@@ -58,6 +59,9 @@ type Tool struct {
 	// HiddenFromModel 标记该工具不应暴露给大模型的工具菜单。
 	// 适用于内部脚本入口、低层 skill 动作等。
 	HiddenFromModel bool
+	// PolicySafe allows typed durable-memory policies to execute this tool
+	// automatically. Keep false for write, shell, delegation, and control tools.
+	PolicySafe bool
 }
 
 // Param 代表工具参数
@@ -66,6 +70,11 @@ type Param struct {
 	Description string
 	Required    bool
 	Default     any
+}
+
+type ToolCallResult struct {
+	Output   string
+	Metadata map[string]any
 }
 
 // ToOpenAIFormat 转换为 OpenAI function calling 格式
@@ -263,6 +272,35 @@ func (r *Registry) Call(name string, args map[string]any) (string, error) {
 	return t.Handler(args)
 }
 
+func (r *Registry) CallDetailed(name string, args map[string]any) (ToolCallResult, error) {
+	r.mu.RLock()
+	t, name, ok := r.lookupToolLocked(name)
+	r.mu.RUnlock()
+
+	if !ok {
+		return ToolCallResult{}, ErrToolNotFound{name: name}
+	}
+	if !t.Enabled {
+		return ToolCallResult{}, ErrToolDisabled{name: name}
+	}
+
+	perm := t.Permission
+	if override, has := r.permConf[name]; has {
+		perm = override
+	}
+	if perm == PermDeny {
+		return ToolCallResult{}, ErrToolDenied{name: name}
+	}
+	if t.DetailedHandler != nil {
+		return t.DetailedHandler(args)
+	}
+	if t.Handler == nil {
+		return ToolCallResult{}, fmt.Errorf("tool %s handler not configured", name)
+	}
+	out, err := t.Handler(args)
+	return ToolCallResult{Output: out}, err
+}
+
 // ShellContext 提供 shell 环境状态给工具调用
 type ShellContext struct {
 	Cwd string            // 当前工作目录
@@ -302,6 +340,43 @@ func (r *Registry) CallWithShellContext(name string, args map[string]any, sc *Sh
 	}
 
 	return t.Handler(args)
+}
+
+func (r *Registry) CallDetailedWithShellContext(name string, args map[string]any, sc *ShellContext) (ToolCallResult, error) {
+	r.mu.RLock()
+	t, name, ok := r.lookupToolLocked(name)
+	r.mu.RUnlock()
+
+	if !ok {
+		return ToolCallResult{}, ErrToolNotFound{name: name}
+	}
+	if !t.Enabled {
+		return ToolCallResult{}, ErrToolDisabled{name: name}
+	}
+
+	perm := t.Permission
+	if override, has := r.permConf[name]; has {
+		perm = override
+	}
+	if perm == PermDeny {
+		return ToolCallResult{}, ErrToolDenied{name: name}
+	}
+
+	if t.ShellAware && sc != nil {
+		if args == nil {
+			args = make(map[string]any)
+		}
+		args["_cwd"] = sc.Cwd
+		args["_env"] = sc.Env
+	}
+	if t.DetailedHandler != nil {
+		return t.DetailedHandler(args)
+	}
+	if t.Handler == nil {
+		return ToolCallResult{}, fmt.Errorf("tool %s handler not configured", name)
+	}
+	out, err := t.Handler(args)
+	return ToolCallResult{Output: out}, err
 }
 
 func (r *Registry) lookupToolLocked(name string) (*Tool, string, bool) {

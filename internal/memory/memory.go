@@ -2,6 +2,7 @@ package memory
 
 import (
 	"fmt"
+	"hash/fnv"
 	"math"
 	"os"
 	"path/filepath"
@@ -45,28 +46,29 @@ func (t Tier) String() string {
 
 // Entry 代表一条记忆
 type Entry struct {
-	ID          string     `json:"id"`
-	Content     string     `json:"content"`
-	Category    string     `json:"category"`
-	Tier        Tier       `json:"tier"`
-	Importance  float64    `json:"importance"`   // 0.0 ~ 1.0，越高越重要
-	AccessCount int        `json:"access_count"` // 被检索次数
-	CreatedAt   time.Time  `json:"created_at"`
-	AccessedAt  time.Time  `json:"accessed_at"` // 最后被检索时间
-	Tags        []string   `json:"tags,omitempty"`
-	SummaryOf   []string   `json:"summary_of,omitempty"` // 如果是摘要，记录原始条目 ID
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"` // 过期时间，nil 表示永不过期
-	Status      string     `json:"status,omitempty"`     // active/superseded/archived/conflict
-	ValidFrom   time.Time  `json:"valid_from,omitempty"`
-	ValidUntil  *time.Time `json:"valid_until,omitempty"`
-	Links       []string   `json:"links,omitempty"`     // Obsidian wikilinks referenced by this note
-	Aliases     []string   `json:"aliases,omitempty"`   // Obsidian note aliases / concept aliases
-	StateKey    string     `json:"state_key,omitempty"` // Stable key for temporal state resolution
-	StateValue  string     `json:"state_value,omitempty"`
-	Confidence  float64    `json:"confidence,omitempty"`
-	Supersedes  []string   `json:"supersedes,omitempty"`
-	BlockID     string     `json:"block_id,omitempty"` // Stable Obsidian block id for exact references
-	Path        string     `json:"path,omitempty"`     // Path relative to the memory vault
+	ID            string        `json:"id"`
+	Content       string        `json:"content"`
+	Category      string        `json:"category"`
+	Tier          Tier          `json:"tier"`
+	Importance    float64       `json:"importance"`   // 0.0 ~ 1.0，越高越重要
+	AccessCount   int           `json:"access_count"` // 被检索次数
+	CreatedAt     time.Time     `json:"created_at"`
+	AccessedAt    time.Time     `json:"accessed_at"` // 最后被检索时间
+	Tags          []string      `json:"tags,omitempty"`
+	SummaryOf     []string      `json:"summary_of,omitempty"` // 如果是摘要，记录原始条目 ID
+	ExpiresAt     *time.Time    `json:"expires_at,omitempty"` // 过期时间，nil 表示永不过期
+	Status        string        `json:"status,omitempty"`     // active/superseded/archived/conflict
+	ValidFrom     time.Time     `json:"valid_from,omitempty"`
+	ValidUntil    *time.Time    `json:"valid_until,omitempty"`
+	Links         []string      `json:"links,omitempty"`     // Obsidian wikilinks referenced by this note
+	Aliases       []string      `json:"aliases,omitempty"`   // Obsidian note aliases / concept aliases
+	StateKey      string        `json:"state_key,omitempty"` // Stable key for temporal state resolution
+	StateValue    string        `json:"state_value,omitempty"`
+	Confidence    float64       `json:"confidence,omitempty"`
+	Supersedes    []string      `json:"supersedes,omitempty"`
+	RoutePolicies []RoutePolicy `json:"route_policies,omitempty"`
+	BlockID       string        `json:"block_id,omitempty"` // Stable Obsidian block id for exact references
+	Path          string        `json:"path,omitempty"`     // Path relative to the memory vault
 }
 
 // Weight 计算记忆权重（用于排序和衰减）
@@ -117,6 +119,10 @@ type Store struct {
 	activationReranker ActivationReranker
 	dir                string
 	nextID             int64
+	// maintenance owns turn cadence for this process-wide memory store. It is
+	// initialized lazily so the Store zero value remains useful in tests.
+	maintenanceOnce sync.Once
+	maintenance     *MaintenanceCoordinator
 }
 
 type closeableActivationReranker interface {
@@ -136,34 +142,48 @@ type GraphIndex struct {
 // The Markdown notes remain the source of truth; this is a deterministic layer
 // that helps the agent convert graph recall into tool and answer constraints.
 type RouteAnalysis struct {
-	Query             string   `json:"query"`
-	Entries           []Entry  `json:"entries"`
-	RequiredTools     []string `json:"required_tools,omitempty"`
-	SuggestedSearches []string `json:"suggested_searches,omitempty"`
-	RiskFlags         []string `json:"risk_flags,omitempty"`
-	Constraints       []string `json:"constraints,omitempty"`
-	Clarifications    []string `json:"clarifications,omitempty"`
-	TemporalNotes     []string `json:"temporal_notes,omitempty"`
-	EvidenceRefs      []string `json:"evidence_refs,omitempty"`
-	SupersededRefs    []string `json:"superseded_refs,omitempty"`
-	ConflictRefs      []string `json:"conflict_refs,omitempty"`
-	ExpiredRefs       []string `json:"expired_refs,omitempty"`
-	FutureRefs        []string `json:"future_refs,omitempty"`
+	Query             string                 `json:"query"`
+	Entries           []Entry                `json:"entries"`
+	ToolRequirements  []RouteToolRequirement `json:"tool_requirements,omitempty"`
+	Risks             []RouteRisk            `json:"risks,omitempty"`
+	AppliedPolicies   []AppliedRoutePolicy   `json:"applied_policies,omitempty"`
+	RequiredTools     []string               `json:"required_tools,omitempty"`
+	SuggestedSearches []string               `json:"suggested_searches,omitempty"`
+	RiskFlags         []string               `json:"risk_flags,omitempty"`
+	Constraints       []string               `json:"constraints,omitempty"`
+	Clarifications    []string               `json:"clarifications,omitempty"`
+	TemporalNotes     []string               `json:"temporal_notes,omitempty"`
+	EvidenceRefs      []string               `json:"evidence_refs,omitempty"`
+	SupersededRefs    []string               `json:"superseded_refs,omitempty"`
+	ConflictRefs      []string               `json:"conflict_refs,omitempty"`
+	ExpiredRefs       []string               `json:"expired_refs,omitempty"`
+	FutureRefs        []string               `json:"future_refs,omitempty"`
 }
 
 // SaveOptions carries optional Obsidian and temporal-state metadata.
 type SaveOptions struct {
-	Tags       []string
-	Links      []string
-	Aliases    []string
-	Status     string
-	ValidFrom  time.Time
-	ValidUntil *time.Time
-	ExpiresAt  *time.Time
-	StateKey   string
-	StateValue string
-	Confidence float64
-	Supersedes []string
+	Tags          []string
+	Links         []string
+	Aliases       []string
+	Status        string
+	ValidFrom     time.Time
+	ValidUntil    *time.Time
+	ExpiresAt     *time.Time
+	StateKey      string
+	StateValue    string
+	Confidence    float64
+	Supersedes    []string
+	RoutePolicies []RoutePolicy
+}
+
+// SaveResult describes whether a durable memory save created a new note or
+// updated an existing duplicate.
+type SaveResult struct {
+	ID              string `json:"id,omitempty"`
+	Path            string `json:"path,omitempty"`
+	Created         bool   `json:"created"`
+	UpdatedExisting bool   `json:"updated_existing"`
+	DuplicateOf     string `json:"duplicate_of,omitempty"`
 }
 
 // NewStore 创建记忆存储
@@ -205,18 +225,29 @@ func (s *Store) SaveWithMetadata(content, category string, tier Tier, importance
 
 // SaveWithOptions saves a memory note with graph and temporal-state metadata.
 func (s *Store) SaveWithOptions(content, category string, tier Tier, importance float64, opts SaveOptions) error {
+	_, err := s.SaveWithOptionsResult(content, category, tier, importance, opts)
+	return err
+}
+
+// SaveWithOptionsResult saves a memory note and reports whether it was created
+// or merged into an existing duplicate.
+func (s *Store) SaveWithOptionsResult(content, category string, tier Tier, importance float64, opts SaveOptions) (SaveResult, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	content = sanitizeDurableMemoryContent(content)
 	category = strings.TrimSpace(category)
 	if content == "" {
-		return nil
+		return SaveResult{}, nil
 	}
+	policies, err := normalizeRoutePolicies(opts.RoutePolicies)
+	if err != nil {
+		return SaveResult{}, err
+	}
+	opts.RoutePolicies = policies
 	opts = enrichSaveOptionsWithConcepts(content, category, opts)
-	if !strings.EqualFold(strings.TrimSpace(category), "concept") {
-		s.ensureConceptEntriesLocked(opts.Links)
-	}
+	entryLinks := normalizeMemoryLinks(append(opts.Links, extractWikiLinks(content)...))
+	s.ensureConceptEntriesLocked(entryLinks)
 
 	// 去重检查：同 category + 同 content（忽略前后空白）不重复写入
 	normalized := strings.TrimSpace(content)
@@ -228,8 +259,8 @@ func (s *Store) SaveWithOptions(content, category string, tier Tier, importance 
 			if len(opts.Tags) > 0 {
 				e.Tags = mergeTags(e.Tags, opts.Tags)
 			}
-			if len(opts.Links) > 0 {
-				e.Links = normalizeLinks(append(e.Links, opts.Links...))
+			if len(entryLinks) > 0 {
+				e.Links = normalizeMemoryLinks(append(e.Links, entryLinks...))
 			}
 			if len(opts.Aliases) > 0 {
 				e.Aliases = dedupSlice(append(e.Aliases, opts.Aliases...))
@@ -272,9 +303,21 @@ func (s *Store) SaveWithOptions(content, category string, tier Tier, importance 
 			if len(opts.Supersedes) > 0 {
 				e.Supersedes = dedupSlice(append(e.Supersedes, opts.Supersedes...))
 			}
-			e.Links = normalizeLinks(append(e.Links, extractWikiLinks(e.Content)...))
+			if len(opts.RoutePolicies) > 0 {
+				e.RoutePolicies = mergeRoutePolicies(e.RoutePolicies, opts.RoutePolicies)
+			}
+			e.Links = normalizeMemoryLinks(append(e.Links, extractWikiLinks(e.Content)...))
 			e.Aliases = dedupSlice(e.Aliases)
-			return s.persist()
+			if err := s.persist(); err != nil {
+				return SaveResult{}, err
+			}
+			return SaveResult{
+				ID:              e.ID,
+				Path:            e.Path,
+				Created:         false,
+				UpdatedExisting: true,
+				DuplicateOf:     e.ID,
+			}, nil
 		}
 	}
 
@@ -288,28 +331,36 @@ func (s *Store) SaveWithOptions(content, category string, tier Tier, importance 
 		validFrom = now
 	}
 	entry := &Entry{
-		ID:         s.generateID(),
-		Content:    content,
-		Category:   category,
-		Tier:       tier,
-		Importance: importance,
-		CreatedAt:  now,
-		AccessedAt: now,
-		Tags:       opts.Tags,
-		Aliases:    dedupSlice(opts.Aliases),
-		ExpiresAt:  opts.ExpiresAt,
-		Status:     status,
-		ValidFrom:  validFrom,
-		ValidUntil: opts.ValidUntil,
-		StateKey:   strings.TrimSpace(opts.StateKey),
-		StateValue: strings.TrimSpace(opts.StateValue),
-		Confidence: clampFloat(opts.Confidence, 0, 1),
-		Supersedes: dedupSlice(opts.Supersedes),
+		ID:            s.generateID(),
+		Content:       content,
+		Category:      category,
+		Tier:          tier,
+		Importance:    importance,
+		CreatedAt:     now,
+		AccessedAt:    now,
+		Tags:          opts.Tags,
+		Aliases:       dedupSlice(opts.Aliases),
+		ExpiresAt:     opts.ExpiresAt,
+		Status:        status,
+		ValidFrom:     validFrom,
+		ValidUntil:    opts.ValidUntil,
+		StateKey:      strings.TrimSpace(opts.StateKey),
+		StateValue:    strings.TrimSpace(opts.StateValue),
+		Confidence:    clampFloat(opts.Confidence, 0, 1),
+		Supersedes:    dedupSlice(opts.Supersedes),
+		RoutePolicies: append([]RoutePolicy(nil), opts.RoutePolicies...),
 	}
 	entry.BlockID = blockIDForEntry(entry.ID)
-	entry.Links = normalizeLinks(append(opts.Links, extractWikiLinks(content)...))
+	entry.Links = entryLinks
 	s.entries[entry.ID] = entry
-	return s.persist()
+	if err := s.persist(); err != nil {
+		return SaveResult{}, err
+	}
+	return SaveResult{
+		ID:      entry.ID,
+		Path:    entry.Path,
+		Created: true,
+	}, nil
 }
 
 // mergeTags 合并标签，去重
@@ -423,6 +474,64 @@ func (s *Store) Get(id string) (*Entry, error) {
 	return e, nil
 }
 
+// ActiveStateIDs returns active memory IDs for a temporal state key.
+func (s *Store) ActiveStateIDs(stateKey string) []string {
+	if s == nil {
+		return nil
+	}
+	stateKey = strings.ToLower(strings.TrimSpace(stateKey))
+	if stateKey == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	ids := make([]string, 0, 2)
+	for id, e := range s.entries {
+		if e == nil || !entryIsActive(e, now) {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(e.StateKey), stateKey) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// SupersedeEntries marks active entries as superseded without deleting their
+// Markdown notes.
+func (s *Store) SupersedeEntries(ids []string) ([]string, error) {
+	if s == nil || len(ids) == 0 {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := make([]string, 0, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		e := s.entries[id]
+		if e == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(e.Status), "superseded") {
+			continue
+		}
+		e.Status = "superseded"
+		changed = append(changed, id)
+	}
+	if len(changed) == 0 {
+		return nil, nil
+	}
+	if err := s.persist(); err != nil {
+		return changed, err
+	}
+	return changed, nil
+}
+
 // SearchParallel 并行检索三层记忆，按相关度排序返回 top-N 条
 // 使用 goroutine 并发检索 short/medium/long 三层记忆
 // 限制返回条数为 2-3 条最相关记忆
@@ -447,6 +556,142 @@ func (s *Store) SearchParallel(query string, limit int) []Entry {
 // Search 搜索记忆（关键词匹配 + 权重排序）
 func (s *Store) Search(query string) []Entry {
 	return activationScoresToEntries(s.Activate(query, DefaultActivationOptions()))
+}
+
+// SearchOptions controls durable memory search from tool/API callers.
+type SearchOptions struct {
+	Limit           int
+	Category        string
+	Tier            *Tier
+	IncludeInactive bool
+	IncludeExpired  bool
+	AsOf            time.Time
+	IncludeGraph    bool
+	GraphDepth      int
+	Explain         bool
+	SkipAccessStats bool
+}
+
+// SearchResult contains a memory entry plus ranking/explanation signals.
+type SearchResult struct {
+	Entry       Entry            `json:"entry"`
+	Score       float64          `json:"score"`
+	DirectScore float64          `json:"direct_score,omitempty"`
+	GraphScore  float64          `json:"graph_score,omitempty"`
+	Paths       []ActivationPath `json:"paths,omitempty"`
+}
+
+// SearchWithOptions searches memory with bounded filters and structured scores.
+func (s *Store) SearchWithOptions(query string, opts SearchOptions) []SearchResult {
+	if s == nil {
+		return nil
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	customAsOf := !opts.AsOf.IsZero()
+	if opts.AsOf.IsZero() {
+		opts.AsOf = time.Now()
+	}
+	if opts.GraphDepth < 0 {
+		opts.GraphDepth = 0
+	}
+	if opts.GraphDepth == 0 {
+		opts.IncludeGraph = false
+	}
+	if opts.IncludeGraph && opts.GraphDepth == 0 {
+		opts.GraphDepth = 1
+	}
+	activationLimit := opts.Limit
+	if activationLimit > 0 {
+		activationLimit *= 3
+	}
+	if opts.IncludeInactive || opts.IncludeExpired || customAsOf {
+		return s.searchEntriesWithOptions(query, opts)
+	}
+	scores := s.Activate(query, ActivationOptions{
+		Limit:             activationLimit,
+		IncludeGraph:      opts.IncludeGraph,
+		MaxGraphDepth:     opts.GraphDepth,
+		MaxGraphBoost:     0.45,
+		MaxGraphSeeds:     12,
+		UpdateAccessStats: !opts.SkipAccessStats,
+		Explain:           opts.Explain,
+	})
+	results := make([]SearchResult, 0, len(scores))
+	for _, score := range scores {
+		if !memorySearchResultAllowed(score.Entry, opts) {
+			continue
+		}
+		result := SearchResult{
+			Entry:       score.Entry,
+			Score:       score.Score,
+			DirectScore: score.DirectScore,
+			GraphScore:  score.Components.GraphBoost,
+		}
+		if opts.Explain {
+			result.Paths = score.Paths
+		}
+		results = append(results, result)
+		if opts.Limit > 0 && len(results) >= opts.Limit {
+			break
+		}
+	}
+	return results
+}
+
+func (s *Store) searchEntriesWithOptions(query string, opts SearchOptions) []SearchResult {
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+	queryTerms := extractQueryTerms(queryLower)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	results := make([]SearchResult, 0, len(s.entries))
+	for _, e := range s.entries {
+		if e == nil || isConceptEntry(e) {
+			continue
+		}
+		if !opts.IncludeInactive && !entryIsActive(e, opts.AsOf) {
+			continue
+		}
+		if !opts.IncludeExpired && e.ExpiresAt != nil && !e.ExpiresAt.After(opts.AsOf) {
+			continue
+		}
+		if !memorySearchResultAllowed(*e, opts) {
+			continue
+		}
+		components := matchActivation(e, queryLower, queryTerms)
+		matchScore := components.MatchScore()
+		if matchScore <= 0 {
+			continue
+		}
+		score := matchScore * e.Weight(opts.AsOf) * tierActivationMultiplier(e.Tier)
+		results = append(results, SearchResult{
+			Entry:       *e,
+			Score:       score,
+			DirectScore: score,
+		})
+	}
+	sort.SliceStable(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			return results[i].Entry.CreatedAt.After(results[j].Entry.CreatedAt)
+		}
+		return results[i].Score > results[j].Score
+	})
+	if opts.Limit > 0 && len(results) > opts.Limit {
+		results = results[:opts.Limit]
+	}
+	return results
+}
+
+func memorySearchResultAllowed(e Entry, opts SearchOptions) bool {
+	if strings.TrimSpace(opts.Category) != "" && !strings.EqualFold(e.Category, opts.Category) {
+		return false
+	}
+	if opts.Tier != nil && e.Tier != *opts.Tier {
+		return false
+	}
+	return true
 }
 
 // SetActivationReranker installs an optional post-recall reranker. Passing nil
@@ -516,7 +761,21 @@ func (s *Store) RecordActivationFeedback(query string, entries []Entry, signal s
 
 // Route searches memory and derives deterministic tool/answer constraints.
 func (s *Store) Route(query string) RouteAnalysis {
+	return s.RouteWithOptions(query, RouteOptions{})
+}
+
+// RouteWithOptions evaluates typed policies on recalled memories visible to the caller.
+func (s *Store) RouteWithOptions(query string, opts RouteOptions) RouteAnalysis {
 	entries := activationScoresToEntries(s.Activate(query, RouteActivationOptions()))
+	if opts.EntryFilter != nil {
+		filtered := make([]Entry, 0, len(entries))
+		for _, entry := range entries {
+			if opts.EntryFilter(entry) {
+				filtered = append(filtered, entry)
+			}
+		}
+		entries = filtered
+	}
 	route := RouteAnalysis{
 		Query:   strings.TrimSpace(query),
 		Entries: entries,
@@ -524,7 +783,7 @@ func (s *Store) Route(query string) RouteAnalysis {
 	if len(entries) == 0 {
 		return route
 	}
-	resolution := s.ResolveTemporal(query, entries)
+	resolution := s.resolveTemporal(query, entries, opts.EntryFilter)
 	entries = resolution.Entries
 	route.Entries = entries
 	route.TemporalNotes = resolution.Notes
@@ -532,134 +791,9 @@ func (s *Store) Route(query string) RouteAnalysis {
 	route.ConflictRefs = resolution.ConflictRefs
 	route.ExpiredRefs = resolution.ExpiredRefs
 	route.FutureRefs = resolution.FutureRefs
-
-	text := routeAnalysisText(query, entries)
-	hasOutdoor := routeTextHasAny(text, "outdoor plan", "outdoor", "park", "公园", "户外", "出门", "外出", "踏青", "郊游")
-	hasChild := routeTextHasAny(text, "daughter", "child", "kid", "女儿", "孩子", "小孩", "儿童", "小朋友")
-	if hasOutdoor {
-		entries = s.includeRouteLocationEntries(entries, 3)
-		route.Entries = entries
-		text = routeAnalysisText(query, entries)
-	}
-	hasPollen := routeTextHasAny(text, "pollen allergy", "pollen", "hay fever", "allergy", "花粉", "花粉过敏", "花粉症", "过敏")
-	pollenInactive := routeStateInactive(entries, "pollen")
-	hasActivePollenRisk := hasPollen && !pollenInactive
-	hasWeather := routeTextHasAny(text, "weather forecast", "weather", "forecast", "天气", "气温", "风力", "下雨")
-	hasAirQuality := routeTextHasAny(text, "air quality", "aqi", "pm2.5", "空气质量", "空气", "雾霾")
-	location := routeLocationHint(query, entries)
-
-	if hasChild {
-		route.RiskFlags = append(route.RiskFlags, "child_or_family_context")
-		route.Constraints = append(route.Constraints, "Apply family/child-related memories when judging this request.")
-	}
-	if pollenInactive {
-		route.RiskFlags = append(route.RiskFlags, "pollen_allergy_inactive_or_resolved")
-		route.Constraints = append(route.Constraints, "Latest temporal memory says the pollen-allergy state is inactive/resolved; do not apply older allergy risk unless new evidence contradicts it.")
-	}
-	if len(route.SupersededRefs) > 0 && hasPollen {
-		route.Constraints = append(route.Constraints, "Do not apply older allergy risk unless new evidence contradicts it.")
-	}
-	if hasActivePollenRisk {
-		route.RiskFlags = append(route.RiskFlags, "pollen_allergy")
-		route.Constraints = append(route.Constraints, "Account for the remembered pollen allergy risk before recommending outdoor activity.")
-	}
-	if hasOutdoor {
-		route.RiskFlags = append(route.RiskFlags, "outdoor_exposure")
-	}
-	if hasOutdoor && hasChild && hasActivePollenRisk {
-		route.RiskFlags = append(route.RiskFlags, "child_health_outdoor_plan")
-		route.RequiredTools = append(route.RequiredTools, "current_time", "web_search")
-		route.Constraints = append(route.Constraints,
-			"Before the final answer, check current or forecast conditions relevant to outdoor exposure.",
-			"Include pollen exposure, wind/weather, and air quality uncertainty in the recommendation.",
-		)
-		route.SuggestedSearches = append(route.SuggestedSearches,
-			routeSearchQuery(location, "weather forecast wind outdoor afternoon"),
-			routeSearchQuery(location, "pollen forecast allergy level"),
-			routeSearchQuery(location, "air quality AQI PM2.5"),
-		)
-	}
-	if hasWeather && hasOutdoor {
-		route.RequiredTools = append(route.RequiredTools, "current_time", "web_search")
-		route.Constraints = append(route.Constraints, "Use live or forecast weather instead of relying only on static memory.")
-	}
-	if hasAirQuality && hasOutdoor {
-		route.RequiredTools = append(route.RequiredTools, "web_search")
-		route.Constraints = append(route.Constraints, "Check air quality when outdoor health risk is part of the request.")
-	}
-	if hasOutdoor && location == "" {
-		route.Clarifications = append(route.Clarifications, "Ask for the city or area if no remembered or user-provided location is available.")
-	} else if location != "" {
-		route.Constraints = append(route.Constraints, "Use location hint: "+location+". If the user provides another location, prefer the current user-provided location.")
-	}
-
-	route.RequiredTools = dedupSlice(route.RequiredTools)
-	route.SuggestedSearches = dedupSlice(route.SuggestedSearches)
-	route.RiskFlags = prioritizeRiskFlags(dedupSlice(route.RiskFlags))
-	route.Constraints = dedupSlice(route.Constraints)
-	route.Clarifications = dedupSlice(route.Clarifications)
+	applyRoutePolicies(&route, query, entries)
 	route.EvidenceRefs = routeEvidenceRefs(entries, 6)
 	return route
-}
-
-func (s *Store) includeRouteLocationEntries(entries []Entry, limit int) []Entry {
-	if s == nil || limit <= 0 {
-		return entries
-	}
-	seen := make(map[string]struct{}, len(entries))
-	for _, e := range entries {
-		seen[e.ID] = struct{}{}
-	}
-	now := time.Now()
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	var added int
-	for _, e := range s.entries {
-		if e == nil || !entryIsActive(e, now) {
-			continue
-		}
-		if _, ok := seen[e.ID]; ok {
-			continue
-		}
-		if !strings.EqualFold(strings.TrimSpace(e.Category), "location") {
-			continue
-		}
-		entries = append(entries, *e)
-		seen[e.ID] = struct{}{}
-		added++
-		if added >= limit {
-			break
-		}
-	}
-	return entries
-}
-
-func prioritizeRiskFlags(flags []string) []string {
-	if len(flags) <= 1 {
-		return flags
-	}
-	out := append([]string(nil), flags...)
-	sort.SliceStable(out, func(i, j int) bool {
-		return riskFlagRank(out[i]) > riskFlagRank(out[j])
-	})
-	return out
-}
-
-func riskFlagRank(flag string) int {
-	switch strings.ToLower(strings.TrimSpace(flag)) {
-	case "child_health_outdoor_plan":
-		return 100
-	case "pollen_allergy":
-		return 80
-	case "pollen_allergy_inactive_or_resolved":
-		return 75
-	case "outdoor_exposure":
-		return 60
-	case "child_or_family_context":
-		return 50
-	default:
-		return 0
-	}
 }
 
 // TemporalResolution is the deterministic current-state view for recalled memories.
@@ -674,6 +808,10 @@ type TemporalResolution struct {
 
 // ResolveTemporal keeps the current memory state and reports inactive/conflict notes.
 func (s *Store) ResolveTemporal(query string, activeEntries []Entry) TemporalResolution {
+	return s.resolveTemporal(query, activeEntries, nil)
+}
+
+func (s *Store) resolveTemporal(query string, activeEntries []Entry, filter func(Entry) bool) TemporalResolution {
 	now := time.Now()
 	resolution := TemporalResolution{
 		Entries: append([]Entry(nil), activeEntries...),
@@ -706,6 +844,9 @@ func (s *Store) ResolveTemporal(query string, activeEntries []Entry) TemporalRes
 	defer s.mu.RUnlock()
 	for id, e := range s.entries {
 		if activeIDs[id] || e == nil {
+			continue
+		}
+		if filter != nil && !filter(*e) {
 			continue
 		}
 		if !temporalCandidateMatches(e, queryLower, queryTerms, activeLinks, activeStateKeys) {
@@ -1082,13 +1223,29 @@ func (s *Store) persist() error {
 	if err := s.ensureVaultDirs(); err != nil {
 		return err
 	}
-	for _, e := range s.entries {
-		normalizeEntryForNote(e)
-		rel := e.Path
-		if rel == "" {
-			rel = notePathForEntry(e)
-			e.Path = rel
+	ids := sortedMemoryEntryIDs(s.entries)
+	usedPaths := make(map[string]string, len(ids))
+	for _, id := range ids {
+		e := s.entries[id]
+		if e == nil {
+			continue
 		}
+		if rel := strings.TrimSpace(e.Path); rel != "" {
+			usedPaths[filepath.ToSlash(rel)] = id
+		}
+	}
+	for _, id := range ids {
+		e := s.entries[id]
+		if e == nil {
+			continue
+		}
+		normalizeEntryForNote(e)
+		rel := filepath.ToSlash(strings.TrimSpace(e.Path))
+		if rel == "" {
+			rel = s.uniqueNotePathForEntry(e, usedPaths, "")
+			usedPaths[rel] = e.ID
+		}
+		e.Path = rel
 		s.paths[e.ID] = rel
 		path := filepath.Join(s.dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -1100,6 +1257,15 @@ func (s *Store) persist() error {
 	}
 	s.rebuildGraphLocked()
 	return nil
+}
+
+func sortedMemoryEntryIDs(entries map[string]*Entry) []string {
+	ids := make([]string, 0, len(entries))
+	for id := range entries {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func max(a, b float64) float64 {
@@ -1120,27 +1286,28 @@ func clampFloat(v, min, max float64) float64 {
 }
 
 type memoryNoteFrontmatter struct {
-	ID          string     `yaml:"id"`
-	Type        string     `yaml:"type"`
-	Tier        string     `yaml:"tier"`
-	Category    string     `yaml:"category"`
-	Importance  float64    `yaml:"importance"`
-	AccessCount int        `yaml:"access_count"`
-	CreatedAt   time.Time  `yaml:"created_at"`
-	AccessedAt  time.Time  `yaml:"accessed_at"`
-	Tags        []string   `yaml:"tags,omitempty"`
-	SummaryOf   []string   `yaml:"summary_of,omitempty"`
-	ExpiresAt   *time.Time `yaml:"expires_at,omitempty"`
-	Status      string     `yaml:"status,omitempty"`
-	ValidFrom   time.Time  `yaml:"valid_from,omitempty"`
-	ValidUntil  *time.Time `yaml:"valid_until,omitempty"`
-	Links       []string   `yaml:"links,omitempty"`
-	Aliases     []string   `yaml:"aliases,omitempty"`
-	StateKey    string     `yaml:"state_key,omitempty"`
-	StateValue  string     `yaml:"state_value,omitempty"`
-	Confidence  float64    `yaml:"confidence,omitempty"`
-	Supersedes  []string   `yaml:"supersedes,omitempty"`
-	BlockID     string     `yaml:"block_id,omitempty"`
+	ID            string        `yaml:"id"`
+	Type          string        `yaml:"type"`
+	Tier          string        `yaml:"tier"`
+	Category      string        `yaml:"category"`
+	Importance    float64       `yaml:"importance"`
+	AccessCount   int           `yaml:"access_count"`
+	CreatedAt     time.Time     `yaml:"created_at"`
+	AccessedAt    time.Time     `yaml:"accessed_at"`
+	Tags          []string      `yaml:"tags,omitempty"`
+	SummaryOf     []string      `yaml:"summary_of,omitempty"`
+	ExpiresAt     *time.Time    `yaml:"expires_at,omitempty"`
+	Status        string        `yaml:"status,omitempty"`
+	ValidFrom     time.Time     `yaml:"valid_from,omitempty"`
+	ValidUntil    *time.Time    `yaml:"valid_until,omitempty"`
+	Links         []string      `yaml:"links,omitempty"`
+	Aliases       []string      `yaml:"aliases,omitempty"`
+	StateKey      string        `yaml:"state_key,omitempty"`
+	StateValue    string        `yaml:"state_value,omitempty"`
+	Confidence    float64       `yaml:"confidence,omitempty"`
+	Supersedes    []string      `yaml:"supersedes,omitempty"`
+	RoutePolicies []RoutePolicy `yaml:"route_policies,omitempty"`
+	BlockID       string        `yaml:"block_id,omitempty"`
 }
 
 var wikiLinkPattern = regexp.MustCompile(`!?\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]`)
@@ -1194,7 +1361,7 @@ This directory is the LuckyAgent durable memory source of truth.
 
 - Memory notes are Obsidian-compatible Markdown files under the category folders.
 - Authoritative memory notes use YAML frontmatter with type: memory.
-- Wikilinks, tags, aliases, temporal state fields, and block IDs are part of the memory graph.
+- Wikilinks, tags, aliases, temporal state fields, typed route policies, and block IDs are part of the memory graph.
 - The RAG SQLite database is for indexed documents, not durable user memory.
 - An external Obsidian app vault, .obsidian directory, or OBSIDIAN_VAULT_PATH is not required for LuckyAgent memory.
 `) + "\n"
@@ -1227,12 +1394,15 @@ func normalizeEntryForNote(e *Entry) {
 	e.Tags = dedupSlice(e.Tags)
 	e.Aliases = dedupSlice(e.Aliases)
 	e.Supersedes = dedupSlice(e.Supersedes)
+	if policies, err := normalizeRoutePolicies(e.RoutePolicies); err == nil {
+		e.RoutePolicies = policies
+	}
 	e.StateKey = strings.TrimSpace(e.StateKey)
 	e.StateValue = strings.TrimSpace(e.StateValue)
 	if e.Confidence < 0 || e.Confidence > 1 {
 		e.Confidence = clampFloat(e.Confidence, 0, 1)
 	}
-	e.Links = normalizeLinks(append(e.Links, extractWikiLinks(e.Content)...))
+	e.Links = normalizeMemoryLinks(append(e.Links, extractWikiLinks(e.Content)...))
 }
 
 func blockIDForEntry(id string) string {
@@ -1248,17 +1418,141 @@ func notePathForEntry(e *Entry) string {
 	if strings.EqualFold(strings.TrimSpace(e.Category), "concept") {
 		return conceptNotePath(e.Content)
 	}
-	created := e.CreatedAt
-	if created.IsZero() {
-		created = time.Now()
-	}
 	dir := noteDirForEntry(e)
-	slug := slugify(truncateRunes(stripWikiSyntax(e.Content), 48))
-	if slug == "" {
-		slug = strings.ReplaceAll(e.ID, "_", "-")
-	}
-	name := fmt.Sprintf("%s-%s-%s.md", created.Format("20060102-150405"), slug, e.ID)
+	name := humanMemoryFileBase(e) + ".md"
 	return filepath.ToSlash(filepath.Join(dir, name))
+}
+
+func (s *Store) uniqueNotePathForEntry(e *Entry, used map[string]string, currentRel string) string {
+	currentRel = filepath.ToSlash(strings.TrimSpace(currentRel))
+	if strings.EqualFold(strings.TrimSpace(e.Status), "archived") || strings.HasPrefix(currentRel, "90_Archive/dirty/") {
+		return uniqueNotePath(s.dir, "90_Archive/dirty", humanMemoryFileBase(e), used, currentRel)
+	}
+	if strings.EqualFold(strings.TrimSpace(e.Category), "concept") {
+		return uniqueNotePath(s.dir, "70_Concepts", humanFileTitle(e.Content, "Concept"), used, currentRel)
+	}
+	return uniqueNotePath(s.dir, noteDirForEntry(e), humanMemoryFileBase(e), used, currentRel)
+}
+
+func uniqueNotePath(root, dir, base string, used map[string]string, currentRel string) string {
+	base = humanFileTitle(base, "Memory")
+	currentRel = filepath.ToSlash(strings.TrimSpace(currentRel))
+	for i := 0; ; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s %d", base, i+1)
+		}
+		rel := filepath.ToSlash(filepath.Join(dir, name+".md"))
+		if rel == currentRel {
+			return rel
+		}
+		if _, ok := used[rel]; ok {
+			continue
+		}
+		if root != "" {
+			path := filepath.Join(root, filepath.FromSlash(rel))
+			if _, err := os.Stat(path); err == nil {
+				continue
+			}
+		}
+		return rel
+	}
+}
+
+func humanMemoryFileBase(e *Entry) string {
+	if e == nil {
+		return "Memory"
+	}
+	if text := firstHumanTitleLine(stripWikiSyntax(e.Content)); text != "" {
+		return humanFileTitle(text, "Memory")
+	}
+	for _, alias := range e.Aliases {
+		if strings.TrimSpace(alias) == "" {
+			continue
+		}
+		if title := humanFileTitle(alias, ""); title != "" {
+			return title
+		}
+	}
+	for _, link := range e.Links {
+		if strings.TrimSpace(link) == "" {
+			continue
+		}
+		if title := humanFileTitle(link, ""); title != "" {
+			return title
+		}
+	}
+	if category := strings.TrimSpace(e.Category); category != "" {
+		return humanFileTitle(category+" memory", "Memory")
+	}
+	return "Memory"
+}
+
+func firstHumanTitleLine(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "#>-* \t")
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "^") || strings.HasPrefix(line, "```") {
+			continue
+		}
+		return strings.Join(strings.Fields(line), " ")
+	}
+	return ""
+}
+
+func humanFileTitle(text, fallback string) string {
+	text = strings.TrimSpace(stripWikiSyntax(text))
+	if text == "" {
+		text = strings.TrimSpace(fallback)
+	}
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range text {
+		if r < 32 || r == 127 || strings.ContainsRune(`<>:"/\|?*`, r) || unicode.IsSpace(r) {
+			if !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		lastSpace = false
+	}
+	out := strings.Trim(b.String(), " .-_")
+	if out == "" {
+		out = strings.TrimSpace(fallback)
+	}
+	if out == "" {
+		out = "Memory"
+	}
+	out = strings.Trim(truncateRunes(out, 80), " .-_")
+	if out == "" {
+		out = "Memory"
+	}
+	if windowsReservedFileTitle(out) {
+		out += " note"
+	}
+	return out
+}
+
+func windowsReservedFileTitle(title string) bool {
+	title = strings.TrimSpace(strings.TrimSuffix(title, "."))
+	title = strings.ToUpper(title)
+	switch title {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	for i := 1; i <= 9; i++ {
+		if title == fmt.Sprintf("COM%d", i) || title == fmt.Sprintf("LPT%d", i) {
+			return true
+		}
+	}
+	return false
 }
 
 func noteDirForEntry(e *Entry) string {
@@ -1328,27 +1622,28 @@ func truncateRunes(s string, maxLen int) string {
 
 func renderMemoryNote(e *Entry) string {
 	fm := memoryNoteFrontmatter{
-		ID:          e.ID,
-		Type:        "memory",
-		Tier:        e.Tier.String(),
-		Category:    e.Category,
-		Importance:  e.Importance,
-		AccessCount: e.AccessCount,
-		CreatedAt:   e.CreatedAt,
-		AccessedAt:  e.AccessedAt,
-		Tags:        e.Tags,
-		SummaryOf:   e.SummaryOf,
-		ExpiresAt:   e.ExpiresAt,
-		Status:      e.Status,
-		ValidFrom:   e.ValidFrom,
-		ValidUntil:  e.ValidUntil,
-		Links:       e.Links,
-		Aliases:     e.Aliases,
-		StateKey:    e.StateKey,
-		StateValue:  e.StateValue,
-		Confidence:  e.Confidence,
-		Supersedes:  e.Supersedes,
-		BlockID:     e.BlockID,
+		ID:            e.ID,
+		Type:          "memory",
+		Tier:          e.Tier.String(),
+		Category:      e.Category,
+		Importance:    e.Importance,
+		AccessCount:   e.AccessCount,
+		CreatedAt:     e.CreatedAt,
+		AccessedAt:    e.AccessedAt,
+		Tags:          e.Tags,
+		SummaryOf:     e.SummaryOf,
+		ExpiresAt:     e.ExpiresAt,
+		Status:        e.Status,
+		ValidFrom:     e.ValidFrom,
+		ValidUntil:    e.ValidUntil,
+		Links:         e.Links,
+		Aliases:       e.Aliases,
+		StateKey:      e.StateKey,
+		StateValue:    e.StateValue,
+		Confidence:    e.Confidence,
+		Supersedes:    e.Supersedes,
+		RoutePolicies: e.RoutePolicies,
+		BlockID:       e.BlockID,
 	}
 	yml, _ := yaml.Marshal(fm)
 	title := strings.TrimSpace(stripWikiSyntax(e.Content))
@@ -1371,7 +1666,7 @@ func renderMemoryNote(e *Entry) string {
 			b.WriteString("- [[" + link + "]]\n")
 		}
 		for _, id := range e.SummaryOf {
-			b.WriteString("- Summary of [[" + id + "]]\n")
+			b.WriteString("- Summary source: `" + strings.TrimSpace(id) + "`\n")
 		}
 	}
 	return b.String()
@@ -1402,30 +1697,35 @@ func parseMemoryNote(path, root string) (*Entry, bool, error) {
 		content = strings.TrimSpace(bodyWithoutTitle(body))
 	}
 	content = strings.TrimSpace(blockIDPattern.ReplaceAllString(content, ""))
+	policies, err := normalizeRoutePolicies(fm.RoutePolicies)
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid route_policies: %w", err)
+	}
 
 	entry := &Entry{
-		ID:          fm.ID,
-		Content:     content,
-		Category:    fm.Category,
-		Tier:        parseTier(fm.Tier),
-		Importance:  fm.Importance,
-		AccessCount: fm.AccessCount,
-		CreatedAt:   fm.CreatedAt,
-		AccessedAt:  fm.AccessedAt,
-		Tags:        fm.Tags,
-		SummaryOf:   fm.SummaryOf,
-		ExpiresAt:   fm.ExpiresAt,
-		Status:      fm.Status,
-		ValidFrom:   fm.ValidFrom,
-		ValidUntil:  fm.ValidUntil,
-		Links:       normalizeLinks(append(fm.Links, extractWikiLinks(content)...)),
-		Aliases:     dedupSlice(fm.Aliases),
-		StateKey:    fm.StateKey,
-		StateValue:  fm.StateValue,
-		Confidence:  fm.Confidence,
-		Supersedes:  dedupSlice(fm.Supersedes),
-		BlockID:     fm.BlockID,
-		Path:        filepath.ToSlash(rel),
+		ID:            fm.ID,
+		Content:       content,
+		Category:      fm.Category,
+		Tier:          parseTier(fm.Tier),
+		Importance:    fm.Importance,
+		AccessCount:   fm.AccessCount,
+		CreatedAt:     fm.CreatedAt,
+		AccessedAt:    fm.AccessedAt,
+		Tags:          fm.Tags,
+		SummaryOf:     fm.SummaryOf,
+		ExpiresAt:     fm.ExpiresAt,
+		Status:        fm.Status,
+		ValidFrom:     fm.ValidFrom,
+		ValidUntil:    fm.ValidUntil,
+		Links:         normalizeMemoryLinks(append(fm.Links, extractWikiLinks(content)...)),
+		Aliases:       dedupSlice(fm.Aliases),
+		StateKey:      fm.StateKey,
+		StateValue:    fm.StateValue,
+		Confidence:    fm.Confidence,
+		Supersedes:    dedupSlice(fm.Supersedes),
+		RoutePolicies: policies,
+		BlockID:       fm.BlockID,
+		Path:          filepath.ToSlash(rel),
 	}
 	normalizeEntryForNote(entry)
 	return entry, true, nil
@@ -1523,6 +1823,30 @@ func normalizeLinks(links []string) []string {
 	return out
 }
 
+func normalizeMemoryLinks(links []string) []string {
+	normalized := normalizeLinks(links)
+	out := make([]string, 0, len(normalized))
+	for _, link := range normalized {
+		link = canonicalMemoryLinkTarget(link)
+		if link == "" {
+			continue
+		}
+		out = append(out, link)
+	}
+	return normalizeLinks(out)
+}
+
+func canonicalMemoryLinkTarget(link string) string {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return ""
+	}
+	if rule, ok := conceptRuleForName(link); ok {
+		return rule.Concept
+	}
+	return link
+}
+
 func extractQueryTerms(query string) []string {
 	var terms []string
 	var latin strings.Builder
@@ -1600,6 +1924,13 @@ type conceptRule struct {
 	Triggers []string
 	Aliases  []string
 	Tags     []string
+}
+
+type conceptSpec struct {
+	Name    string
+	Aliases []string
+	Tags    []string
+	Related []string
 }
 
 var builtInConceptRules = []conceptRule{
@@ -1706,34 +2037,69 @@ func init() {
 }
 
 func (s *Store) ensureConceptEntriesLocked(links []string) {
-	for _, link := range normalizeLinks(links) {
-		rule, ok := conceptRuleForName(link)
+	queue := normalizeMemoryLinks(links)
+	seen := make(map[string]bool, len(queue))
+	for len(queue) > 0 {
+		link := queue[0]
+		queue = queue[1:]
+		spec, ok := conceptSpecForLink(link)
 		if !ok {
 			continue
 		}
-		if s.hasConceptEntryLocked(rule.Concept) {
+		key := graphKey(spec.Name)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		queue = append(queue, spec.Related...)
+		if s.hasConceptEntryLocked(spec.Name) {
 			continue
 		}
 		now := time.Now()
+		id := conceptEntryID(spec.Name)
 		entry := &Entry{
-			ID:         conceptEntryID(rule.Concept),
-			Content:    rule.Concept,
+			ID:         id,
+			Content:    spec.Name,
 			Category:   "concept",
 			Tier:       TierLong,
 			Importance: 0.85,
 			CreatedAt:  now,
 			AccessedAt: now,
-			Tags:       mergeTags([]string{"concept"}, rule.Tags),
-			Aliases:    dedupSlice(rule.Aliases),
+			Tags:       mergeTags([]string{"concept"}, spec.Tags),
+			Aliases:    dedupSlice(spec.Aliases),
 			Status:     "active",
 			ValidFrom:  now,
-			BlockID:    blockIDForEntry(conceptEntryID(rule.Concept)),
-			Path:       conceptNotePath(rule.Concept),
+			BlockID:    blockIDForEntry(id),
+			Path:       conceptNotePath(spec.Name),
 		}
-		entry.Links = normalizeLinks(conceptRelatedLinks(rule))
+		entry.Links = normalizeMemoryLinks(spec.Related)
 		s.entries[entry.ID] = entry
 		s.paths[entry.ID] = entry.Path
 	}
+}
+
+func conceptSpecForLink(link string) (conceptSpec, bool) {
+	link = strings.TrimSpace(link)
+	if link == "" || memoryInternalLinkTarget(link) {
+		return conceptSpec{}, false
+	}
+	if rule, ok := conceptRuleForName(link); ok {
+		return conceptSpec{
+			Name:    rule.Concept,
+			Aliases: dedupSlice(rule.Aliases),
+			Tags:    dedupSlice(rule.Tags),
+			Related: normalizeMemoryLinks(conceptRelatedLinks(rule)),
+		}, true
+	}
+	return conceptSpec{Name: link}, true
+}
+
+func memoryInternalLinkTarget(link string) bool {
+	link = strings.ToLower(strings.TrimSpace(link))
+	if link == "" {
+		return true
+	}
+	return strings.HasPrefix(link, "mem_")
 }
 
 func conceptRuleForName(name string) (conceptRule, bool) {
@@ -1776,17 +2142,15 @@ func (s *Store) hasConceptEntryLocked(concept string) bool {
 func conceptEntryID(concept string) string {
 	slug := slugify(concept)
 	if slug == "" {
-		slug = "concept"
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(concept))
+		slug = fmt.Sprintf("u%x", h.Sum32())
 	}
 	return "concept_" + strings.ReplaceAll(slug, "-", "_")
 }
 
 func conceptNotePath(concept string) string {
-	slug := slugify(concept)
-	if slug == "" {
-		slug = "concept"
-	}
-	return filepath.ToSlash(filepath.Join("70_Concepts", slug+".md"))
+	return filepath.ToSlash(filepath.Join("70_Concepts", humanFileTitle(concept, "Concept")+".md"))
 }
 
 func conceptRelatedLinks(rule conceptRule) []string {
@@ -2039,119 +2403,6 @@ func refForEntry(e *Entry) string {
 		}
 	}
 	return ref
-}
-
-func routeAnalysisText(query string, entries []Entry) string {
-	var b strings.Builder
-	b.WriteString(strings.ToLower(query))
-	for _, e := range entries {
-		b.WriteByte('\n')
-		b.WriteString(strings.ToLower(e.Content))
-		b.WriteByte('\n')
-		b.WriteString(strings.ToLower(e.Category))
-		for _, tag := range e.Tags {
-			b.WriteByte(' ')
-			b.WriteString(strings.ToLower(tag))
-		}
-		for _, link := range e.Links {
-			b.WriteByte(' ')
-			b.WriteString(strings.ToLower(link))
-		}
-		for _, alias := range e.Aliases {
-			b.WriteByte(' ')
-			b.WriteString(strings.ToLower(alias))
-		}
-	}
-	return b.String()
-}
-
-func routeTextHasAny(text string, needles ...string) bool {
-	for _, needle := range needles {
-		needle = strings.ToLower(strings.TrimSpace(needle))
-		if needle != "" && strings.Contains(text, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func routeStateInactive(entries []Entry, keyNeedle string) bool {
-	keyNeedle = strings.ToLower(strings.TrimSpace(keyNeedle))
-	if keyNeedle == "" {
-		return false
-	}
-	for _, e := range entries {
-		key := strings.ToLower(e.StateKey + " " + strings.Join(e.Links, " ") + " " + e.Content)
-		if !strings.Contains(key, keyNeedle) {
-			continue
-		}
-		value := strings.ToLower(strings.TrimSpace(e.StateValue))
-		switch value {
-		case "resolved", "inactive", "none", "negative", "false", "no", "无", "已缓解", "已解除":
-			return true
-		}
-	}
-	return false
-}
-
-func routeLocationHint(query string, entries []Entry) string {
-	queryLower := strings.ToLower(query)
-	switch {
-	case strings.Contains(query, "上海") || strings.Contains(queryLower, "shanghai"):
-		return "Shanghai"
-	case strings.Contains(query, "北京") || strings.Contains(queryLower, "beijing"):
-		return "Beijing"
-	case strings.Contains(query, "杭州") || strings.Contains(queryLower, "hangzhou"):
-		return "Hangzhou"
-	case strings.Contains(query, "深圳") || strings.Contains(queryLower, "shenzhen"):
-		return "Shenzhen"
-	case strings.Contains(query, "广州") || strings.Contains(queryLower, "guangzhou"):
-		return "Guangzhou"
-	}
-	for _, e := range entries {
-		if strings.EqualFold(strings.TrimSpace(e.Category), "location") {
-			if loc := firstKnownLocation(append(e.Links, append(e.Aliases, e.Content)...)); loc != "" {
-				return loc
-			}
-		}
-	}
-	return firstKnownLocationFromEntries(entries)
-}
-
-func firstKnownLocationFromEntries(entries []Entry) string {
-	for _, e := range entries {
-		if loc := firstKnownLocation(append(e.Links, append(e.Aliases, e.Content)...)); loc != "" {
-			return loc
-		}
-	}
-	return ""
-}
-
-func firstKnownLocation(values []string) string {
-	for _, value := range values {
-		lower := strings.ToLower(value)
-		switch {
-		case strings.Contains(value, "上海") || strings.Contains(lower, "shanghai"):
-			return "Shanghai"
-		case strings.Contains(value, "北京") || strings.Contains(lower, "beijing"):
-			return "Beijing"
-		case strings.Contains(value, "杭州") || strings.Contains(lower, "hangzhou"):
-			return "Hangzhou"
-		case strings.Contains(value, "深圳") || strings.Contains(lower, "shenzhen"):
-			return "Shenzhen"
-		case strings.Contains(value, "广州") || strings.Contains(lower, "guangzhou"):
-			return "Guangzhou"
-		}
-	}
-	return ""
-}
-
-func routeSearchQuery(location, topic string) string {
-	topic = strings.TrimSpace(topic)
-	if location == "" {
-		return topic
-	}
-	return strings.TrimSpace(location + " " + topic)
 }
 
 func routeEvidenceRefs(entries []Entry, limit int) []string {

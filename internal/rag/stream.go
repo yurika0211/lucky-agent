@@ -46,14 +46,14 @@ type FileChange struct {
 
 // IndexJob represents an indexing job in the queue.
 type IndexJob struct {
-	ID        string
-	Path      string
-	JobType   ChangeType
-	Priority  int       // higher = more urgent
-	CreatedAt time.Time
-	StartedAt time.Time
+	ID          string
+	Path        string
+	JobType     ChangeType
+	Priority    int // higher = more urgent
+	CreatedAt   time.Time
+	StartedAt   time.Time
 	CompletedAt time.Time
-	Error     error
+	Error       error
 }
 
 // IndexQueue manages pending indexing jobs.
@@ -311,6 +311,9 @@ func (cd *ChangeDetector) DetectChanges(dir string, extensions []string) []FileC
 
 	// Check for deleted files
 	for path, oldHash := range cd.hashes {
+		if !pathWithinDir(path, dir) {
+			continue
+		}
 		if _, exists := currentHashes[path]; !exists {
 			changes = append(changes, FileChange{
 				Path:      path,
@@ -321,11 +324,23 @@ func (cd *ChangeDetector) DetectChanges(dir string, extensions []string) []FileC
 		}
 	}
 
-	// Update snapshot
-	cd.hashes = currentHashes
-	cd.fileInfo = currentInfo
+	// Only unchanged files advance immediately. Added and modified files are
+	// committed by the indexer after a successful index operation.
+	for path, hash := range currentHashes {
+		if oldHash, exists := cd.hashes[path]; exists && oldHash == hash {
+			cd.fileInfo[path] = currentInfo[path]
+		}
+	}
 
 	return changes
+}
+
+func pathWithinDir(path, dir string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // GetHash returns the stored hash for a path.
@@ -353,16 +368,16 @@ func (cd *ChangeDetector) RemoveHash(path string) {
 
 // StreamIndexer provides incremental indexing with change detection.
 type StreamIndexer struct {
-	rag       *RAGManager
-	detector  *ChangeDetector
-	queue     *IndexQueue
-	watchDirs []string
+	rag        *RAGManager
+	detector   *ChangeDetector
+	queue      *IndexQueue
+	watchDirs  []string
 	extensions []string
 
-	mu       sync.RWMutex
-	running  bool
-	stopCh   chan struct{}
-	workers  int
+	mu      sync.RWMutex
+	running bool
+	stopCh  chan struct{}
+	workers int
 
 	// Callbacks
 	OnChange func(change FileChange)
@@ -403,19 +418,26 @@ func NewStreamIndexer(rag *RAGManager, config StreamConfig) *StreamIndexer {
 
 // AddWatchDir adds a directory to watch.
 func (si *StreamIndexer) AddWatchDir(dir string) {
+	dir = filepath.Clean(dir)
 	si.mu.Lock()
 	defer si.mu.Unlock()
+	for _, existing := range si.watchDirs {
+		if filepath.Clean(existing) == dir {
+			return
+		}
+	}
 	si.watchDirs = append(si.watchDirs, dir)
 }
 
 // RemoveWatchDir removes a watched directory.
 func (si *StreamIndexer) RemoveWatchDir(dir string) {
+	dir = filepath.Clean(dir)
 	si.mu.Lock()
 	defer si.mu.Unlock()
 
 	newDirs := make([]string, 0, len(si.watchDirs))
 	for _, d := range si.watchDirs {
-		if d != dir {
+		if filepath.Clean(d) != dir {
 			newDirs = append(newDirs, d)
 		}
 	}
@@ -480,9 +502,9 @@ func (si *StreamIndexer) ProcessOne(ctx context.Context) (*IndexJob, *Document, 
 
 	switch job.JobType {
 	case ChangeAdded, ChangeModified:
-		doc, err = si.rag.IndexFile(job.Path)
+		doc, err = si.indexPathContext(ctx, job.Path)
 	case ChangeDeleted:
-		si.rag.RemoveDocument(docID(job.Path))
+		_ = si.RemovePath(job.Path)
 		si.detector.RemoveHash(job.Path)
 	}
 
@@ -522,11 +544,13 @@ func (si *StreamIndexer) Start() {
 		si.mu.Unlock()
 		return
 	}
+	si.stopCh = make(chan struct{})
+	stopCh := si.stopCh
 	si.running = true
 	si.mu.Unlock()
 
 	for i := 0; i < si.workers; i++ {
-		go si.worker(i)
+		go si.worker(i, stopCh)
 	}
 }
 
@@ -559,17 +583,18 @@ func (si *StreamIndexer) Detector() *ChangeDetector {
 	return si.detector
 }
 
-func (si *StreamIndexer) worker(id int) {
+func (si *StreamIndexer) worker(id int, stopCh <-chan struct{}) {
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-si.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
-			// Scan for changes
-			si.Scan()
+			if id == 0 {
+				si.Scan()
+			}
 
 			// Process pending jobs
 			for si.queue.Len() > 0 {
@@ -581,17 +606,28 @@ func (si *StreamIndexer) worker(id int) {
 
 // IndexPath indexes a single path immediately.
 func (si *StreamIndexer) IndexPath(path string) (*Document, error) {
-	hash, err := si.detector.ComputeHash(path)
+	return si.indexPathContext(context.Background(), path)
+}
+
+func (si *StreamIndexer) indexPathContext(ctx context.Context, path string) (*Document, error) {
+	beforeHash, err := si.detector.ComputeHash(path)
 	if err != nil {
 		return nil, fmt.Errorf("compute hash: %w", err)
 	}
 
-	doc, err := si.rag.IndexFile(path)
-	if err == nil {
-		si.detector.SetHash(path, hash)
+	doc, err := si.rag.IndexFileContext(ctx, path)
+	if err != nil {
+		return nil, err
 	}
-
-	return doc, err
+	afterHash, err := si.detector.ComputeHash(path)
+	if err != nil {
+		return nil, fmt.Errorf("verify indexed hash: %w", err)
+	}
+	if beforeHash != afterHash {
+		return nil, fmt.Errorf("file changed while indexing: %s", path)
+	}
+	si.detector.SetHash(path, afterHash)
+	return doc, nil
 }
 
 // RemovePath removes a path from the index.
@@ -618,7 +654,7 @@ func (si *StreamIndexer) Stats() StreamStats {
 
 	return StreamStats{
 		QueueLen:     si.queue.Len(),
-		WatchDirs:    si.watchDirs,
+		WatchDirs:    append([]string(nil), si.watchDirs...),
 		TrackedFiles: len(si.detector.hashes),
 		Running:      si.running,
 	}

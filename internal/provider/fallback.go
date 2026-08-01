@@ -42,17 +42,21 @@ func NewFallbackChain(configs []FallbackConfig, registry *Registry) (*FallbackCh
 	cooldownAt := make([]time.Time, len(configs))
 
 	for _, fc := range configs {
+		name := strings.TrimSpace(fc.Name)
+		if name == "" {
+			name = "openai"
+		}
 		pCfg := Config{
 			LlmProvider: LlmProvider{
-				Name:    fc.Name,
+				Name:    name,
 				BaseURL: fc.APIBase,
 				Model:   fc.Model,
 				APIKey:  fc.APIKey,
 			},
 		}
-		p, err := registry.Resolve(pCfg)
+		p, err := registry.Create(name, pCfg)
 		if err != nil {
-			return nil, fmt.Errorf("resolve provider %s: %w", fc.Name, err)
+			return nil, fmt.Errorf("resolve provider %s: %w", name, err)
 		}
 		chain = append(chain, p)
 	}

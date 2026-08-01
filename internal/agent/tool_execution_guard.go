@@ -98,6 +98,7 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 		if g.onlyImageContent {
 			return "the user requested image recognition only, not opening linked content"
 		}
+		return g.blockOpenCLIReason(args)
 	case "remember":
 		if g.noRemember {
 			return "the user explicitly disallowed writing to memory"
@@ -138,6 +139,10 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 		if g.noDelegateMutation {
 			return "the user requested delegate task inspection without creating a new task"
 		}
+	case "delegate_cancel":
+		if g.noDelegateMutation || g.readOnly {
+			return "the user requested delegate task inspection without changing tasks"
+		}
 	}
 
 	if strings.HasPrefix(name, "skill_") && strings.HasSuffix(name, "_run") && g.noSkillRun {
@@ -146,18 +151,38 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 	return ""
 }
 
-func (g *toolExecutionGuard) blockShellReason(command string) string {
-	lower := strings.ToLower(strings.TrimSpace(command))
-	if lower == "" {
+func (g *toolExecutionGuard) blockOpenCLIReason(args map[string]any) string {
+	if guardBoolArg(args, "dry_run") {
 		return ""
 	}
-	if g.noPush && strings.Contains(lower, "git push") {
+	action := strings.ToLower(guardStringArg(args, "action"))
+	command := strings.ToLower(guardStringArg(args, "command"))
+	joinedArgs := strings.ToLower(strings.Join(guardStringSliceArg(args, "args"), " "))
+	combined := strings.TrimSpace(action + " " + command + " " + joinedArgs)
+	if (g.noHTTPMutation || g.readOnlyExternal) && (action == "browser" || strings.Contains(combined, " browser ")) {
+		return "the user requested source reading/summary without browser-side effects"
+	}
+	if (g.noWrite || g.readOnly || g.noHTTPMutation || g.readOnlyExternal) && openCLITextLooksMutating(combined) {
+		return "the user requested a read-only/no-mutation task"
+	}
+	if (g.noWrite || g.readOnly) && openCLITextLooksDownloading(combined) {
+		return "the user requested no downloads or file writes"
+	}
+	return ""
+}
+
+func (g *toolExecutionGuard) blockShellReason(command string) string {
+	if strings.TrimSpace(command) == "" {
+		return ""
+	}
+	finding := classifyShellCommand(command)
+	if g.noPush && finding.Pushes {
 		return "the user explicitly said not to push"
 	}
-	if (g.noDelete || g.noWrite || g.readOnly) && shellCommandDeletes(lower) {
+	if (g.noDelete || g.noWrite || g.readOnly) && finding.Deletes {
 		return "the user explicitly disallowed deletion or mutation"
 	}
-	if (g.noWrite || g.readOnly || g.readOnlyExternal) && shellCommandWrites(lower) {
+	if (g.noWrite || g.readOnly || g.readOnlyExternal) && finding.Writes {
 		return "the user requested a read-only/no-file-modification task"
 	}
 	return ""
@@ -235,6 +260,53 @@ func guardStringArg(args map[string]any, key string) string {
 	}
 	value, _ := args[key].(string)
 	return strings.TrimSpace(value)
+}
+
+func guardBoolArg(args map[string]any, key string) bool {
+	if args == nil {
+		return false
+	}
+	switch v := args[key].(type) {
+	case bool:
+		return v
+	case string:
+		return strings.EqualFold(strings.TrimSpace(v), "true")
+	default:
+		return false
+	}
+}
+
+func guardStringSliceArg(args map[string]any, key string) []string {
+	if args == nil {
+		return nil
+	}
+	switch items := args[key].(type) {
+	case []string:
+		return items
+	case []any:
+		out := make([]string, 0, len(items))
+		for _, item := range items {
+			if s, ok := item.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func openCLITextLooksMutating(text string) bool {
+	for _, keyword := range []string{" post", " publish", " send", " delete", " remove", " follow", " unfollow", " like", " unlike", " upload", " create", " update", " edit"} {
+		if strings.Contains(" "+text, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func openCLITextLooksDownloading(text string) bool {
+	return strings.Contains(text, "download") || strings.Contains(text, "--download-images true")
 }
 
 func shellCommandDeletes(command string) bool {

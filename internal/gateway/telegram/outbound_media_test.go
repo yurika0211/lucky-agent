@@ -173,6 +173,45 @@ func TestResolveOutboundMediaResponseMediaTag(t *testing.T) {
 	}
 }
 
+func TestResolveOutboundMediaResponseWindowsMediaTag(t *testing.T) {
+	winPath := `C:\Users\Administrator\.luckyagent\workspace\interview\daily_interview.docx`
+	text, media, err := resolveOutboundMediaResponse("DOCX ready\nMEDIA:" + winPath)
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse: %v", err)
+	}
+	if text != "DOCX ready" {
+		t.Fatalf("unexpected text: %q", text)
+	}
+	if len(media) != 1 || media[0].Kind != outboundMediaDocument || media[0].Source != winPath {
+		t.Fatalf("expected Windows MEDIA tag to resolve to document, got %#v", media)
+	}
+}
+
+func TestResolveOutboundMediaResponseStripsGeneratedReferencesForMedia(t *testing.T) {
+	winPath := `C:\Users\Administrator\.luckyagent\workspace\interview\daily_interview.docx`
+	text, media, err := resolveOutboundMediaResponse("DOCX ready\nMEDIA:" + winPath + "\n\nReferences:\n[1] Tool result. Tool: terminal.\n[2] Local file. C:\\tmp\\report.docx")
+	if err != nil {
+		t.Fatalf("resolveOutboundMediaResponse: %v", err)
+	}
+	if text != "DOCX ready" {
+		t.Fatalf("expected generated references to be stripped, got %q", text)
+	}
+	if len(media) != 1 || media[0].Kind != outboundMediaDocument {
+		t.Fatalf("expected media document, got %#v", media)
+	}
+}
+
+func TestParseOutboundMediaResponseWindowsTGDirective(t *testing.T) {
+	winPath := `C:\Users\Administrator\.luckyagent\workspace\interview\daily_interview.docx`
+	text, media := parseOutboundMediaResponse("Here is the DOCX\n\ntg://document " + winPath + " interview")
+	if text != "Here is the DOCX" {
+		t.Fatalf("unexpected text: %q", text)
+	}
+	if len(media) != 1 || media[0].Kind != outboundMediaDocument || media[0].Source != winPath || media[0].Caption != "interview" {
+		t.Fatalf("expected Windows tg document directive, got %#v", media)
+	}
+}
+
 func TestResolveOutboundMediaResponseDoesNotSendConfigJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 	configPath := filepath.Join(tmpDir, "config.json")
@@ -312,6 +351,42 @@ func TestSendAssistantResponseBareDocumentPathStaysText(t *testing.T) {
 	methods := recorder.snapshot()
 	if len(methods) != 1 || methods[0] != "sendMessage" {
 		t.Fatalf("unexpected methods: %#v", methods)
+	}
+}
+
+func TestSendAssistantResponseDocumentMediaDoesNotSendRandomMeme(t *testing.T) {
+	adapter, cleanup, recorder := newCaptureBotAdapter(t)
+	defer cleanup()
+
+	tmpDir := t.TempDir()
+	docPath := filepath.Join(tmpDir, "report.docx")
+	if err := os.WriteFile(docPath, []byte("fake docx"), 0600); err != nil {
+		t.Fatalf("write temp doc: %v", err)
+	}
+	memePath := filepath.Join(tmpDir, "meme.png")
+	if err := os.WriteFile(memePath, []byte("fake image data"), 0600); err != nil {
+		t.Fatalf("write meme file: %v", err)
+	}
+
+	handler := NewHandler(adapter, nil)
+	handler.memeDir = tmpDir
+	handler.memeProbability = 1
+	handler.memeCooldown = 0
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+	}
+
+	if err := handler.sendAssistantResponse(context.Background(), msg, "Done\nMEDIA:"+docPath); err != nil {
+		t.Fatalf("sendAssistantResponse: %v", err)
+	}
+
+	methods := strings.Join(recorder.snapshot(), ",")
+	if methods != "sendMessage,sendDocument" {
+		t.Fatalf("expected no random meme after document media, got sequence: %s", methods)
 	}
 }
 

@@ -3,10 +3,14 @@ package collab
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
+
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
 
 // TaskState 协作任务状态
@@ -21,19 +25,22 @@ const (
 	TaskTimeout   TaskState = "timeout"
 )
 
+const runtimeConstraintMarker = "LuckyAgent runtime constraints:"
+
 // SubTask 子任务
 type SubTask struct {
-	ID          string        `json:"id"`
-	ParentID    string        `json:"parent_id"`
-	AgentID     string        `json:"agent_id"` // 被委派的 Agent
-	Description string        `json:"description"`
-	Input       string        `json:"input"`  // 子任务输入
-	Output      string        `json:"output"` // 子任务输出
-	State       TaskState     `json:"state"`
-	Error       string        `json:"error,omitempty"`
-	StartedAt   time.Time     `json:"started_at"`
-	CompletedAt time.Time     `json:"completed_at,omitempty"`
-	Timeout     time.Duration `json:"timeout"`
+	ID          string              `json:"id"`
+	ParentID    string              `json:"parent_id"`
+	AgentID     string              `json:"agent_id"` // 被委派的 Agent
+	Description string              `json:"description"`
+	Input       string              `json:"input"`  // 子任务输入
+	Output      string              `json:"output"` // 子任务输出
+	State       TaskState           `json:"state"`
+	Error       string              `json:"error,omitempty"`
+	Runtime     AgentRuntimeProfile `json:"runtime,omitempty"`
+	StartedAt   time.Time           `json:"started_at"`
+	CompletedAt time.Time           `json:"completed_at,omitempty"`
+	Timeout     time.Duration       `json:"timeout"`
 }
 
 // CollabTask 协作任务（包含多个子任务）
@@ -53,12 +60,16 @@ type CollabTask struct {
 
 // DelegateManager 协作任务委派管理器
 type DelegateManager struct {
-	mu       sync.RWMutex
-	registry *Registry
-	tasks    map[string]*CollabTask
-	nextID   int
-	handler  TaskHandler // 子任务执行处理器
-	planner  *Planner
+	mu         sync.RWMutex
+	registry   *Registry
+	tasks      map[string]*CollabTask
+	nextID     int
+	handler    TaskHandler // 子任务执行处理器
+	planner    *Planner
+	taskStore  taskstore.Store
+	taskEvents *taskstore.EventBus
+	policy     *taskstore.Policy
+	mdpPath    string
 }
 
 // TaskHandler 子任务执行处理器接口
@@ -99,10 +110,61 @@ func (dm *DelegateManager) SetPlanner(planner *Planner) {
 	dm.planner = planner
 }
 
+func (dm *DelegateManager) SetTaskStore(store taskstore.Store) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.taskStore = store
+	if store == nil {
+		dm.taskEvents = nil
+		return
+	}
+	dm.taskEvents = taskstore.NewEventBus(store)
+}
+
+func (dm *DelegateManager) SetPolicy(policy taskstore.Policy) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.policy = &policy
+}
+
+func (dm *DelegateManager) SetMDPSnapshotPath(path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("mdp snapshot path is required")
+	}
+	dm.mu.Lock()
+	planner := dm.planner
+	dm.mdpPath = path
+	dm.mu.Unlock()
+	if planner == nil {
+		return nil
+	}
+	if err := planner.LoadMDP(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // Delegate 创建并执行协作任务
 func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, description, input string, agentIDs []string, timeout time.Duration) (*CollabTask, error) {
 	if len(agentIDs) == 0 {
 		return nil, fmt.Errorf("at least one agent ID is required")
+	}
+
+	dm.mu.RLock()
+	policy := dm.policy
+	dm.mu.RUnlock()
+	if policy != nil {
+		decision := taskstore.EvaluatePolicy(*policy, taskstore.PolicyRequest{
+			Source:        taskstore.SourceHTTP,
+			Mode:          collabModeToUnified(mode),
+			ChildCount:    len(agentIDs),
+			MaxConcurrent: len(agentIDs),
+			Timeout:       timeout,
+		})
+		if err := decision.Error(); err != nil {
+			return nil, err
+		}
 	}
 
 	dm.mu.Lock()
@@ -129,6 +191,7 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 			Description: description,
 			Input:       input,
 			State:       TaskPending,
+			Runtime:     profile.Runtime,
 			Timeout:     timeout,
 		})
 	}
@@ -181,7 +244,11 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 	}
 
 	dm.tasks[taskID] = task
+	store := dm.taskStore
+	events := dm.taskEvents
 	dm.mu.Unlock()
+
+	dm.recordCollabTaskCreated(store, events, task, plan)
 
 	// 根据模式执行
 	switch mode {
@@ -259,14 +326,15 @@ func (dm *DelegateManager) ListTasks() []*CollabTask {
 // CancelTask 取消任务
 func (dm *DelegateManager) CancelTask(taskID string) error {
 	dm.mu.Lock()
-	defer dm.mu.Unlock()
 
 	task, ok := dm.tasks[taskID]
 	if !ok {
+		dm.mu.Unlock()
 		return fmt.Errorf("task %s not found", taskID)
 	}
 
 	if task.State == TaskCompleted || task.State == TaskCancelled {
+		dm.mu.Unlock()
 		return fmt.Errorf("task %s is already %s", taskID, task.State)
 	}
 
@@ -280,17 +348,212 @@ func (dm *DelegateManager) CancelTask(taskID string) error {
 			sub.CompletedAt = time.Now()
 		}
 	}
+	store := dm.taskStore
+	events := dm.taskEvents
+	dm.mu.Unlock()
 
+	dm.recordCollabTaskFinished(store, events, task)
 	return nil
+}
+
+func (dm *DelegateManager) recordCollabTaskCreated(store taskstore.Store, events *taskstore.EventBus, task *CollabTask, plan *PlanResult) {
+	if store == nil || events == nil || task == nil {
+		return
+	}
+	record := taskstore.Record{
+		ID:          task.ID,
+		Source:      taskstore.SourceHTTP,
+		Mode:        collabModeToUnified(task.Mode),
+		Status:      collabStateToUnified(task.State),
+		Description: task.Description,
+		Input:       task.Input,
+		CreatedAt:   task.CreatedAt,
+		Budget: taskstore.Budget{
+			Timeout:         task.Timeout,
+			MaxChildren:     len(task.SubTasks),
+			MaxConcurrent:   len(task.SubTasks),
+			RequireVerifier: planRequiresVerifier(plan),
+		},
+		Metadata: cloneStringMap(task.Metadata),
+	}
+	if _, err := store.Create(record); err != nil {
+		return
+	}
+	_ = events.Created(record)
+	for _, sub := range task.SubTasks {
+		_ = events.Emit(taskstore.Event{
+			Type:    taskstore.EventChildCreated,
+			TaskID:  task.ID,
+			ChildID: sub.ID,
+			Message: sub.Description,
+			Metadata: map[string]string{
+				"agent_id":         sub.AgentID,
+				"provider":         sub.Runtime.Provider,
+				"model":            sub.Runtime.Model,
+				"cwd":              sub.Runtime.CWD,
+				"memory_namespace": sub.Runtime.MemoryNamespace,
+				"approval_policy":  sub.Runtime.ApprovalPolicy,
+				"allow_delegate":   fmt.Sprintf("%t", sub.Runtime.AllowDelegate),
+			},
+		})
+	}
+	if plan != nil {
+		_ = store.SavePlannerTrace(task.ID, plan)
+		_ = events.Emit(taskstore.Event{
+			Type:    taskstore.EventPlanned,
+			TaskID:  task.ID,
+			Mode:    collabModeToUnified(plan.Mode),
+			Message: fmt.Sprintf("planner=%s mode=%s weight=%.6f", plan.Version, plan.Mode, plan.TotalWeight),
+			Metadata: map[string]string{
+				"planner":      plan.Version,
+				"planned_mode": string(plan.Mode),
+				"mdp_version":  plan.MDP.Version,
+				"mdp_state":    plan.MDP.StateKey,
+			},
+		})
+	}
+}
+
+func (dm *DelegateManager) recordCollabTaskStarted(store taskstore.Store, events *taskstore.EventBus, task *CollabTask) {
+	if store == nil || events == nil || task == nil {
+		return
+	}
+	record, ok, err := store.Get(task.ID)
+	if err != nil || !ok {
+		return
+	}
+	record.Status = taskstore.StatusRunning
+	record.StartedAt = time.Now()
+	if err := store.Update(record); err != nil {
+		return
+	}
+	_ = events.Started(record)
+}
+
+func (dm *DelegateManager) recordCollabTaskFinishedForCurrentStore(task *CollabTask) {
+	dm.mu.RLock()
+	store := dm.taskStore
+	events := dm.taskEvents
+	dm.mu.RUnlock()
+	dm.recordCollabTaskFinished(store, events, task)
+}
+
+func (dm *DelegateManager) recordCollabTaskFinished(store taskstore.Store, events *taskstore.EventBus, task *CollabTask) {
+	if store == nil || events == nil || task == nil {
+		return
+	}
+	dm.mu.RLock()
+	snapshot := cloneCollabTask(task)
+	dm.mu.RUnlock()
+	record, ok, err := store.Get(snapshot.ID)
+	if err != nil || !ok {
+		return
+	}
+	record.Status = collabStateToUnified(snapshot.State)
+	record.CompletedAt = snapshot.CompletedAt
+	record.Outcome.Status = record.Status
+	record.Outcome.Verified = snapshot.Metadata["verifier_failed"] != "true" && snapshot.State == TaskCompleted
+	record.Outcome.Cost.ChildCount = len(snapshot.SubTasks)
+	record.Metadata = cloneStringMap(snapshot.Metadata)
+	if err := store.Update(record); err != nil {
+		return
+	}
+	switch snapshot.State {
+	case TaskCompleted:
+		_ = store.SaveResult(snapshot.ID, snapshot.Result)
+		_ = events.Completed(record, "collab task completed")
+	case TaskFailed, TaskTimeout:
+		_ = events.Failed(record, snapshot.Result)
+	case TaskCancelled:
+		_ = events.Emit(taskstore.Event{
+			Type:    taskstore.EventCancelled,
+			TaskID:  snapshot.ID,
+			Status:  taskstore.StatusCancelled,
+			Message: "collab task cancelled",
+		})
+	}
+}
+
+func collabStateToUnified(state TaskState) taskstore.Status {
+	switch state {
+	case TaskPending:
+		return taskstore.StatusPending
+	case TaskRunning:
+		return taskstore.StatusRunning
+	case TaskCompleted:
+		return taskstore.StatusCompleted
+	case TaskFailed, TaskTimeout:
+		return taskstore.StatusFailed
+	case TaskCancelled:
+		return taskstore.StatusCancelled
+	default:
+		return ""
+	}
+}
+
+func collabModeToUnified(mode CollabMode) taskstore.Mode {
+	switch mode {
+	case ModeAuto:
+		return taskstore.ModeAuto
+	case ModeParallel:
+		return taskstore.ModeParallel
+	case ModePipeline:
+		return taskstore.ModePipeline
+	case ModeDebate:
+		return taskstore.ModeDebate
+	default:
+		return taskstore.ModeSingle
+	}
+}
+
+func planRequiresVerifier(plan *PlanResult) bool {
+	if plan == nil {
+		return false
+	}
+	if action, ok := plan.MDP.Actions[plan.Mode]; ok {
+		return action.RequireVerifier
+	}
+	return false
+}
+
+func cloneCollabTask(task *CollabTask) CollabTask {
+	if task == nil {
+		return CollabTask{}
+	}
+	cp := *task
+	cp.Metadata = cloneStringMap(task.Metadata)
+	if task.SubTasks != nil {
+		cp.SubTasks = make([]*SubTask, len(task.SubTasks))
+		for i, sub := range task.SubTasks {
+			subCopy := *sub
+			cp.SubTasks[i] = &subCopy
+		}
+	}
+	return cp
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // executePipeline 串行执行
 func (dm *DelegateManager) executePipeline(ctx context.Context, task *CollabTask) {
 	defer dm.observePlannedOutcome(task)
+	defer dm.recordCollabTaskFinishedForCurrentStore(task)
 
 	dm.mu.Lock()
 	task.State = TaskRunning
+	store := dm.taskStore
+	events := dm.taskEvents
 	dm.mu.Unlock()
+	dm.recordCollabTaskStarted(store, events, task)
 
 	action := dm.actionForTask(task)
 	var pipelineResult string
@@ -343,10 +606,14 @@ func (dm *DelegateManager) executePipeline(ctx context.Context, task *CollabTask
 // executeParallel 并行执行
 func (dm *DelegateManager) executeParallel(ctx context.Context, task *CollabTask) {
 	defer dm.observePlannedOutcome(task)
+	defer dm.recordCollabTaskFinishedForCurrentStore(task)
 
 	dm.mu.Lock()
 	task.State = TaskRunning
+	store := dm.taskStore
+	events := dm.taskEvents
 	dm.mu.Unlock()
+	dm.recordCollabTaskStarted(store, events, task)
 
 	action := dm.actionForTask(task)
 	var wg sync.WaitGroup
@@ -414,10 +681,14 @@ func (dm *DelegateManager) executeParallel(ctx context.Context, task *CollabTask
 // executeDebate 辩论模式 — Agent 轮流发言，最后投票
 func (dm *DelegateManager) executeDebate(ctx context.Context, task *CollabTask) {
 	defer dm.observePlannedOutcome(task)
+	defer dm.recordCollabTaskFinishedForCurrentStore(task)
 
 	dm.mu.Lock()
 	task.State = TaskRunning
+	store := dm.taskStore
+	events := dm.taskEvents
 	dm.mu.Unlock()
+	dm.recordCollabTaskStarted(store, events, task)
 
 	action := dm.actionForTask(task)
 	rounds := 2
@@ -533,6 +804,7 @@ func (dm *DelegateManager) observePlannedOutcome(task *CollabTask) {
 		outcome = "partial"
 	}
 	planner := dm.planner
+	mdpPath := dm.mdpPath
 	req := PlanRequest{
 		Description: task.Description,
 		Input:       task.Input,
@@ -546,6 +818,9 @@ func (dm *DelegateManager) observePlannedOutcome(task *CollabTask) {
 	dm.mu.RUnlock()
 	if planner != nil {
 		planner.ObserveExecution(req, mode, outcome, duration)
+		if mdpPath != "" {
+			_ = planner.SaveMDP(mdpPath)
+		}
 	}
 }
 
@@ -653,6 +928,7 @@ func (dm *DelegateManager) executeSubTask(ctx context.Context, sub *SubTask) (st
 	dm.mu.Lock()
 	sub.State = TaskRunning
 	sub.StartedAt = time.Now()
+	applyRuntimeProfile(sub)
 	dm.mu.Unlock()
 
 	// 设置超时
@@ -684,6 +960,72 @@ func (dm *DelegateManager) executeSubTask(ctx context.Context, sub *SubTask) (st
 	dm.mu.Unlock()
 
 	return result, err
+}
+
+func applyRuntimeProfile(sub *SubTask) {
+	if sub == nil {
+		return
+	}
+	runtime := sub.Runtime
+	if runtime.Timeout > 0 && (sub.Timeout <= 0 || runtime.Timeout < sub.Timeout) {
+		sub.Timeout = runtime.Timeout
+	}
+	constraints := runtimeConstraintText(runtime)
+	if constraints == "" || strings.Contains(sub.Input, runtimeConstraintMarker) {
+		return
+	}
+	sub.Input = strings.TrimSpace(sub.Input)
+	if sub.Input == "" {
+		sub.Input = constraints
+		return
+	}
+	sub.Input += "\n\n" + constraints
+}
+
+func runtimeConstraintText(runtime AgentRuntimeProfile) string {
+	if !runtimeHasConstraints(runtime) {
+		return ""
+	}
+	var lines []string
+	if strings.TrimSpace(runtime.Provider) != "" || strings.TrimSpace(runtime.Model) != "" {
+		lines = append(lines, fmt.Sprintf("- Model: provider=%s model=%s", runtime.Provider, runtime.Model))
+	}
+	if len(runtime.ToolAllowlist) > 0 {
+		lines = append(lines, "- Tool allowlist: "+strings.Join(runtime.ToolAllowlist, ", "))
+	}
+	if strings.TrimSpace(runtime.CWD) != "" {
+		lines = append(lines, "- Working directory: "+strings.TrimSpace(runtime.CWD))
+	}
+	if strings.TrimSpace(runtime.MemoryNamespace) != "" {
+		lines = append(lines, "- Memory namespace: "+strings.TrimSpace(runtime.MemoryNamespace))
+	}
+	if strings.TrimSpace(runtime.ApprovalPolicy) != "" {
+		lines = append(lines, "- Approval policy: "+strings.TrimSpace(runtime.ApprovalPolicy))
+	}
+	if runtime.MaxIterations > 0 {
+		lines = append(lines, fmt.Sprintf("- Max iterations: %d", runtime.MaxIterations))
+	}
+	if runtime.Timeout > 0 {
+		lines = append(lines, fmt.Sprintf("- Timeout: %s", runtime.Timeout))
+	}
+	if !runtime.AllowDelegate {
+		lines = append(lines, "- Recursive delegation: disabled")
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return runtimeConstraintMarker + "\n" + strings.Join(lines, "\n")
+}
+
+func runtimeHasConstraints(runtime AgentRuntimeProfile) bool {
+	return strings.TrimSpace(runtime.Provider) != "" ||
+		strings.TrimSpace(runtime.Model) != "" ||
+		len(runtime.ToolAllowlist) > 0 ||
+		strings.TrimSpace(runtime.CWD) != "" ||
+		strings.TrimSpace(runtime.MemoryNamespace) != "" ||
+		strings.TrimSpace(runtime.ApprovalPolicy) != "" ||
+		runtime.MaxIterations > 0 ||
+		runtime.Timeout > 0
 }
 
 // Stats 委派统计

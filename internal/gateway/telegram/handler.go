@@ -131,6 +131,10 @@ type agentConfigSnapshot struct {
 	ProgressAsNaturalLanguage bool
 	ProgressSummaryWithLLM    bool
 	ShowToolDetailsInResult   bool
+	MemoryTrace               bool
+	MemoryTraceLevel          string
+	MemoryTraceMaxResults     int
+	MemoryTraceMaxHops        int
 	ModelRouterEnabled        bool
 }
 
@@ -311,6 +315,10 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 		ProgressAsNaturalLanguage: cfg.MsgGateway.Telegram.ProgressAsNaturalLanguage,
 		ProgressSummaryWithLLM:    cfg.MsgGateway.Telegram.ProgressSummaryWithLLM,
 		ShowToolDetailsInResult:   cfg.MsgGateway.Telegram.ShowToolDetailsInResult,
+		MemoryTrace:               cfg.MsgGateway.Telegram.MemoryTrace,
+		MemoryTraceLevel:          cfg.MsgGateway.Telegram.MemoryTraceLevel,
+		MemoryTraceMaxResults:     cfg.MsgGateway.Telegram.MemoryTraceMaxResults,
+		MemoryTraceMaxHops:        cfg.MsgGateway.Telegram.MemoryTraceMaxHops,
 		ModelRouterEnabled:        cfg.ModelRouter.Enable,
 	}
 }
@@ -355,6 +363,10 @@ type Handler struct {
 	progressSummaryWithLLM bool
 	// 最终回答前是否附上自然语言工具摘要
 	showToolDetailsInResult bool
+	memoryTrace             bool
+	memoryTraceLevel        string
+	memoryTraceMaxResults   int
+	memoryTraceMaxHops      int
 
 	memeDir         string
 	memeProbability float64
@@ -417,6 +429,10 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(state),
 		progressSummaryWithLLM:    resolveProgressSummaryWithLLM(state),
 		showToolDetailsInResult:   resolveShowToolDetailsInResult(state),
+		memoryTrace:               resolveMemoryTrace(state),
+		memoryTraceLevel:          resolveMemoryTraceLevel(state),
+		memoryTraceMaxResults:     resolveMemoryTraceMaxResults(state),
+		memoryTraceMaxHops:        resolveMemoryTraceMaxHops(state),
 		memeDir:                   memeDir,
 		memeProbability:           memeProbability,
 		memeCooldown:              memeCooldown,
@@ -581,6 +597,45 @@ func resolveShowToolDetailsInResult(state stateRuntime) bool {
 	return cfg.ShowToolDetailsInResult
 }
 
+func resolveMemoryTrace(state stateRuntime) bool {
+	if state == nil {
+		return true
+	}
+	cfg := state.Config().Get()
+	return cfg.MemoryTrace
+}
+
+func resolveMemoryTraceLevel(state stateRuntime) string {
+	if state == nil {
+		return "summary"
+	}
+	level := strings.ToLower(strings.TrimSpace(state.Config().Get().MemoryTraceLevel))
+	if level == "" {
+		return "summary"
+	}
+	return level
+}
+
+func resolveMemoryTraceMaxResults(state stateRuntime) int {
+	if state == nil {
+		return 6
+	}
+	if n := state.Config().Get().MemoryTraceMaxResults; n > 0 {
+		return n
+	}
+	return 6
+}
+
+func resolveMemoryTraceMaxHops(state stateRuntime) int {
+	if state == nil {
+		return 8
+	}
+	if n := state.Config().Get().MemoryTraceMaxHops; n > 0 {
+		return n
+	}
+	return 8
+}
+
 func (h *Handler) sessionManager() *session.Manager {
 	if h == nil {
 		return nil
@@ -725,6 +780,52 @@ func (h *Handler) effectiveProgressSummaryWithLLM() bool {
 
 func (h *Handler) effectiveShowToolDetailsInResult() bool {
 	return h.showToolDetailsInResult
+}
+
+func (h *Handler) effectiveMemoryTrace() bool {
+	return h.memoryTrace
+}
+
+func (h *Handler) effectiveMemoryTraceLevel() string {
+	level := strings.ToLower(strings.TrimSpace(h.memoryTraceLevel))
+	if level == "" {
+		return "summary"
+	}
+	return level
+}
+
+func (h *Handler) effectiveMemoryTraceMaxResults() int {
+	if h.memoryTraceMaxResults > 0 {
+		return h.memoryTraceMaxResults
+	}
+	return 6
+}
+
+func (h *Handler) effectiveMemoryTraceMaxHops() int {
+	if h.memoryTraceMaxHops > 0 {
+		return h.memoryTraceMaxHops
+	}
+	return 8
+}
+
+const telegramMemoryTraceEventName = "__memory_trace"
+
+func (h *Handler) sendMemoryTraceCards(msg *gateway.Message, traces []memory.SearchTrace) {
+	if !h.effectiveMemoryTrace() || len(traces) == 0 {
+		return
+	}
+	for _, trace := range traces {
+		card := renderTelegramMemoryTraceCard(
+			trace,
+			h.effectiveMemoryTraceLevel(),
+			h.effectiveMemoryTraceMaxResults(),
+			h.effectiveMemoryTraceMaxHops(),
+		)
+		if strings.TrimSpace(card) == "" {
+			continue
+		}
+		h.sendProgressMessageHTML(msg, card)
+	}
 }
 
 func shouldPrependToolNarratives(showToolDetails, narrativeMode bool) bool {
@@ -1869,7 +1970,7 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 	if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
 		return err
 	}
-	return h.sendRandomMemeIfNeeded(ctx, msg, text)
+	return nil
 }
 
 func (h *Handler) sendAssistantMedia(ctx context.Context, msg *gateway.Message, media []outboundMedia) error {
@@ -2096,6 +2197,8 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	var toolTraceSteps []telegramToolTraceStep
 	toolTraceSent := false
 	agentTraceSent := false
+	var memoryTraceCards []memory.SearchTrace
+	memoryTraceSent := false
 	currentRound := 1
 	var roundObservations []string
 	var progressHistory []string
@@ -2149,6 +2252,14 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				}
 
 			case agent.ChatEventToolResult:
+				if evt.Name == telegramMemoryTraceEventName {
+					if h.effectiveMemoryTrace() {
+						if trace, ok := parseTelegramMemoryTracePayload(evt.Result); ok {
+							memoryTraceCards = append(memoryTraceCards, trace)
+						}
+					}
+					break
+				}
 				if len(toolTraceSteps) > 0 {
 					for i := len(toolTraceSteps) - 1; i >= 0; i-- {
 						if toolTraceSteps[i].Name == evt.Name && toolTraceSteps[i].Result == "" {
@@ -2171,6 +2282,10 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				if summaryMode {
 					h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress, emitProgressForMsg)
 					roundObservations = nil
+				}
+				if !memoryTraceSent {
+					h.sendMemoryTraceCards(msg, memoryTraceCards)
+					memoryTraceSent = true
 				}
 				if !toolTraceSent {
 					if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
@@ -2220,6 +2335,10 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		case finalOutput != "":
 			if summaryMode {
 				h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress, emitProgressForMsg)
+			}
+			if !memoryTraceSent {
+				h.sendMemoryTraceCards(msg, memoryTraceCards)
+				memoryTraceSent = true
 			}
 			if !toolTraceSent {
 				if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
@@ -2285,6 +2404,8 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	var toolTraceSteps []telegramToolTraceStep
 	toolTraceSent := false
 	agentTraceSent := false
+	var memoryTraceCards []memory.SearchTrace
+	memoryTraceSent := false
 	narrativeMode := h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage()
 	summaryMode := narrativeMode && h.effectiveProgressSummaryWithLLM()
 	currentRound := 1
@@ -2356,6 +2477,14 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				}
 
 			case agent.ChatEventToolResult:
+				if evt.Name == telegramMemoryTraceEventName {
+					if h.effectiveMemoryTrace() {
+						if trace, ok := parseTelegramMemoryTracePayload(evt.Result); ok {
+							memoryTraceCards = append(memoryTraceCards, trace)
+						}
+					}
+					break
+				}
 				if len(toolTraceSteps) > 0 {
 					for i := len(toolTraceSteps) - 1; i >= 0; i-- {
 						if toolTraceSteps[i].Name == evt.Name && toolTraceSteps[i].Result == "" {
@@ -2386,6 +2515,10 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				if summaryMode {
 					h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress)
 					roundObservations = nil
+				}
+				if !memoryTraceSent {
+					h.sendMemoryTraceCards(msg, memoryTraceCards)
+					memoryTraceSent = true
 				}
 				if narrativeMode && !toolTraceSent {
 					if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
@@ -2461,6 +2594,10 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 		finalOutput := finalContent.String()
 		if summaryMode && finalOutput != "" {
 			h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress)
+		}
+		if !memoryTraceSent && finalOutput != "" {
+			h.sendMemoryTraceCards(msg, memoryTraceCards)
+			memoryTraceSent = true
 		}
 		if narrativeMode && !toolTraceSent && finalOutput != "" {
 			if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
@@ -2792,6 +2929,14 @@ func configSnapshotValue(cfg agentConfigSnapshot, key string) (string, bool) {
 		return maskSecret(cfg.MsgGatewayTelegramToken), true
 	case "msg_gateway.telegram.proxy":
 		return valueOrUnset(cfg.MsgGatewayTelegramProxy), true
+	case "msg_gateway.telegram.memory_trace":
+		return strconv.FormatBool(cfg.MemoryTrace), true
+	case "msg_gateway.telegram.memory_trace_level":
+		return valueOrUnset(cfg.MemoryTraceLevel), true
+	case "msg_gateway.telegram.memory_trace_max_results":
+		return strconv.Itoa(cfg.MemoryTraceMaxResults), true
+	case "msg_gateway.telegram.memory_trace_max_hops":
+		return strconv.Itoa(cfg.MemoryTraceMaxHops), true
 	default:
 		return "", false
 	}

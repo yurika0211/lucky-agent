@@ -31,6 +31,118 @@ type ShortTermBuffer struct {
 	summary  string             // 更早对话的压缩摘要
 }
 
+// SessionShortTermStore owns one short-term buffer per conversation session.
+//
+// Short-term context is volatile conversation state, so it must not be shared
+// by all sessions in a process.  The store keeps the ownership and lookup
+// policy in the memory package while leaving ShortTermBuffer focused on the
+// window/compression mechanics.
+type SessionShortTermStore struct {
+	mu       sync.RWMutex
+	maxTurns int
+	buffers  map[string]*ShortTermBuffer
+}
+
+// NewSessionShortTermStore creates an empty per-session short-term store.
+func NewSessionShortTermStore(maxTurns int) *SessionShortTermStore {
+	if maxTurns <= 0 {
+		maxTurns = 10
+	}
+	return &SessionShortTermStore{
+		maxTurns: maxTurns,
+		buffers:  make(map[string]*ShortTermBuffer),
+	}
+}
+
+// Buffer returns the buffer for sessionID, creating it on first use.  Empty
+// session IDs intentionally do not resolve to a shared "default" buffer:
+// sessionless work must not contaminate any real conversation.
+func (s *SessionShortTermStore) Buffer(sessionID string) *ShortTermBuffer {
+	if s == nil {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if b := s.buffers[sessionID]; b != nil {
+		return b
+	}
+	b := NewShortTermBuffer(s.maxTurns)
+	s.buffers[sessionID] = b
+	return b
+}
+
+// Get returns an existing session buffer without allocating one.
+func (s *SessionShortTermStore) Get(sessionID string) (*ShortTermBuffer, bool) {
+	if s == nil {
+		return nil, false
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil, false
+	}
+	s.mu.RLock()
+	b, ok := s.buffers[sessionID]
+	s.mu.RUnlock()
+	return b, ok && b != nil
+}
+
+// Add appends a message to a session's short-term window.  It is a no-op for
+// nil stores or empty session IDs.
+func (s *SessionShortTermStore) Add(sessionID, role, content string) {
+	if b := s.Buffer(sessionID); b != nil {
+		b.Add(role, content)
+	}
+}
+
+// Summary returns the existing session summary, or an empty string when the
+// session has not accumulated short-term state yet.
+func (s *SessionShortTermStore) Summary(sessionID string) string {
+	if b, ok := s.Get(sessionID); ok {
+		return b.Summary()
+	}
+	return ""
+}
+
+// GetContext returns the existing session context without allocating a
+// buffer.  The returned messages are safe for the caller to modify.
+func (s *SessionShortTermStore) GetContext(sessionID string) []provider.Message {
+	if b, ok := s.Get(sessionID); ok {
+		return b.GetContext()
+	}
+	return nil
+}
+
+// Clear removes volatile short-term state for a session.  It also releases
+// the buffer so a deleted/undone session cannot retain stale summaries.
+func (s *SessionShortTermStore) Clear(sessionID string) {
+	if s == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	s.mu.Lock()
+	delete(s.buffers, sessionID)
+	s.mu.Unlock()
+}
+
+// SessionCount reports how many sessions currently have a buffer.  It is
+// useful for diagnostics and bounded-lifecycle tests.
+func (s *SessionShortTermStore) SessionCount() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.buffers)
+}
+
 // NewShortTermBuffer 创建短期记忆缓冲区
 func NewShortTermBuffer(maxTurns int) *ShortTermBuffer {
 	if maxTurns <= 0 {

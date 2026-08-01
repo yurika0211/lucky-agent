@@ -15,6 +15,15 @@
     "api_base": "https://proxy.pieixan.icu/v1",
     "dimension": 2048
   },
+  "rag": {
+    "top_k": 5,
+    "min_score": 0.3,
+    "use_hybrid": true,
+    "dense_weight": 0.65,
+    "use_mmr": false,
+    "mmr_lambda": 0.5,
+    "rewrite_followups": true
+  },
   "multimodal": {
     "provider": "openai",
     "api_key": "",
@@ -123,6 +132,13 @@
     "max_history_turns": 50,
     "max_context_tokens": 8000,
     "compression_threshold": 0.8,
+    "auto_compact": true,
+    "auto_compact_threshold": 0.82,
+    "auto_compact_target_ratio": 0.5,
+    "auto_compact_min_messages": 24,
+    "auto_compact_cooldown_turns": 8,
+    "auto_compact_retain_turns": 6,
+    "auto_compact_reserved_summary_tokens": 1200,
     "memory_hygiene_before_context": false,
     "memory_hygiene_action": "quarantine",
     "memory_hygiene_min_severity": "high",
@@ -177,7 +193,24 @@
     "dry_run": true,
     "confidence_threshold": 0.6,
     "horizon_seconds": 300,
-    "store_path": ""
+    "store_path": "",
+    "action_interval_seconds": 300,
+    "max_actions": 2,
+    "action_cooldown_seconds": 300,
+    "kernel_learning_enabled": true,
+    "kernel_learning_rate": 0.08,
+    "kernel_min_samples": 2,
+    "allowed_actions": [
+      "preload_recent_project_context",
+      "warm_memory_context",
+      "preload_recent_session_summary",
+      "prefer_lightweight_tasks"
+    ]
+  },
+  "tools": {
+    "filesystem": {
+      "allowed_read_roots": []
+    }
   },
   "msg_gateway": {
     "platform": "telegram",
@@ -190,7 +223,11 @@
       "progress_as_messages": true,
       "progress_as_natural_language": false,
       "progress_summary_with_llm": false,
-      "show_tool_details_in_result": false
+      "show_tool_details_in_result": false,
+      "memory_trace": true,
+      "memory_trace_level": "summary",
+      "memory_trace_max_results": 6,
+      "memory_trace_max_hops": 8
     },
     "qqofficial": {
       "app_id": "",
@@ -212,6 +249,19 @@
       "listen_addr": "127.0.0.1:6701",
       "path": "/onebot/v11/ws",
       "access_token": "",
+      "allowed_chats": [],
+      "allowed_users": [],
+      "remove_at": true,
+      "group_trigger_mode": "mention"
+    },
+    "feishu": {
+      "app_id": "",
+      "app_secret": "",
+      "verification_token": "",
+      "encrypt_key": "",
+      "listen_addr": "127.0.0.1:6710",
+      "path": "/feishu/events",
+      "api_base_url": "https://open.feishu.cn",
       "allowed_chats": [],
       "allowed_users": [],
       "remove_at": true,
@@ -247,9 +297,21 @@
     "fail_closed": false,
     "pre_tool_use": [
       {
-        "match": ["file_delete", "shell"],
+        "match": [],
         "sources": [],
-        "command": "/path/to/pre_guard.sh",
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/audit_log.py",
+        "script": ""
+      },
+      {
+        "match": ["file_write", "file_patch", "file_delete", "file_move", "file_mkdir", "shell", "terminal"],
+        "sources": [],
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/workspace_guard.py",
+        "script": ""
+      },
+      {
+        "match": ["shell", "terminal", "sql_query"],
+        "sources": [],
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/block_dangerous.py",
         "script": ""
       }
     ],
@@ -257,7 +319,13 @@
       {
         "match": [],
         "sources": [],
-        "command": "/path/to/redact_secrets.sh",
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/redact_secrets.py",
+        "script": ""
+      },
+      {
+        "match": [],
+        "sources": [],
+        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/truncate_output.py",
         "script": ""
       }
     ]

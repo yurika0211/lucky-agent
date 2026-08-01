@@ -9,6 +9,7 @@ import (
 
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/session"
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
@@ -271,6 +272,35 @@ func TestBuildFinalAnswerRAGDocumentSkipsEmptyAnswer(t *testing.T) {
 	source, title, content, ok := buildFinalAnswerRAGDocument("hello", "   ")
 	if ok {
 		t.Fatalf("expected empty answer to be skipped, got source=%q title=%q content=%q", source, title, content)
+	}
+}
+
+func TestAppendRunningTaskNotice(t *testing.T) {
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	if _, err := store.Create(taskstore.Record{
+		ID:          "task-running",
+		Status:      taskstore.StatusRunning,
+		Description: "still running",
+	}); err != nil {
+		t.Fatalf("Create running task: %v", err)
+	}
+	if _, err := store.Create(taskstore.Record{
+		ID:          "task-done",
+		Status:      taskstore.StatusCompleted,
+		Description: "done",
+	}); err != nil {
+		t.Fatalf("Create completed task: %v", err)
+	}
+	a := &Agent{taskStore: store}
+	got := a.appendRunningTaskNotice("base answer")
+	if !strings.Contains(got, "base answer") || !strings.Contains(got, "task-running") {
+		t.Fatalf("expected running task notice, got %q", got)
+	}
+	if strings.Contains(got, "task-done") {
+		t.Fatalf("completed task should not be included, got %q", got)
 	}
 }
 

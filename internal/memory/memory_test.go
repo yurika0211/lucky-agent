@@ -93,6 +93,9 @@ func TestObsidianVaultPersistenceWritesNotes(t *testing.T) {
 	if len(matches) != 1 {
 		t.Fatalf("expected one Obsidian note, got %d: %v", len(matches), matches)
 	}
+	if got := filepath.Base(matches[0]); got != "My Daughter has Pollen Allergy.md" {
+		t.Fatalf("expected human-readable note filename, got %q", got)
+	}
 	raw, err := os.ReadFile(matches[0])
 	if err != nil {
 		t.Fatalf("read note: %v", err)
@@ -241,6 +244,30 @@ func TestSaveWithMetadataPersistsAliasesAndLinks(t *testing.T) {
 	if !foundAlias {
 		t.Fatalf("expected alias to persist, got %#v", results[0].Aliases)
 	}
+	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "Daughter.md")); err != nil {
+		t.Fatalf("expected generic concept note for Daughter: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "Pollen Allergy.md")); err != nil {
+		t.Fatalf("expected generic concept note for Pollen Allergy: %v", err)
+	}
+}
+
+func TestSaveWithOptionsCreatesConceptNotesForContentWikilinks(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithOptions("Project uses [[Project Graph]] with [[Obsidian]].", "project", TierLong, 0.9, SaveOptions{}); err != nil {
+		t.Fatalf("SaveWithOptions: %v", err)
+	}
+
+	for _, name := range []string{"Project Graph.md", "Obsidian.md", "LuckyAgent Memory.md"} {
+		if _, err := os.Stat(filepath.Join(dir, "70_Concepts", name)); err != nil {
+			t.Fatalf("expected concept note %q: %v", name, err)
+		}
+	}
 }
 
 func TestSaveWithOptionsInfersObsidianConceptLinks(t *testing.T) {
@@ -273,8 +300,52 @@ func TestSaveWithOptionsInfersObsidianConceptLinks(t *testing.T) {
 			t.Fatalf("expected inferred link %q, got %#v", want, fact.Links)
 		}
 	}
-	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "qq-official.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "QQ Official.md")); err != nil {
 		t.Fatalf("expected QQ Official concept note: %v", err)
+	}
+}
+
+func TestHumanReadableNotePathsPreserveUnicodeAndDeduplicate(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	if err := s.SaveWithOptions("用户偏好是中文输出\n细节 A", "preference", TierLong, 0.9, SaveOptions{}); err != nil {
+		t.Fatalf("save first: %v", err)
+	}
+	if err := s.SaveWithOptions("用户偏好是中文输出\n细节 B", "preference", TierLong, 0.8, SaveOptions{}); err != nil {
+		t.Fatalf("save second: %v", err)
+	}
+
+	for _, name := range []string{"用户偏好是中文输出.md", "用户偏好是中文输出 2.md"} {
+		if _, err := os.Stat(filepath.Join(dir, "10_Profile", name)); err != nil {
+			t.Fatalf("expected readable note %q: %v", name, err)
+		}
+	}
+}
+
+func TestMemoryNoteDoesNotWikilinkInternalSummaryIDs(t *testing.T) {
+	note := renderMemoryNote(&Entry{
+		ID:         "mem_1_3",
+		Content:    "Conversation summary.",
+		Category:   "conversation",
+		Tier:       TierMedium,
+		CreatedAt:  time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		AccessedAt: time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		Status:     "active",
+		ValidFrom:  time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+		SummaryOf:  []string{"mem_1_1", "mem_1_2"},
+		BlockID:    "mem-1-3",
+	})
+	if strings.Contains(note, "[[mem_") {
+		t.Fatalf("summary source IDs should not become Obsidian wikilinks:\n%s", note)
+	}
+	for _, want := range []string{"Summary source: `mem_1_1`", "Summary source: `mem_1_2`"} {
+		if !strings.Contains(note, want) {
+			t.Fatalf("expected note to contain %q:\n%s", want, note)
+		}
 	}
 }
 
@@ -331,22 +402,65 @@ func TestSearchUsesInferredConceptAliasesForGraphMemory(t *testing.T) {
 	}
 }
 
-func TestRouteDerivesToolAndHealthConstraints(t *testing.T) {
+func testOutdoorRoutePolicy() RoutePolicy {
+	return RoutePolicy{
+		ID: "family-outdoor-live-check",
+		Match: RoutePolicyMatch{
+			QueryAll: []RouteTermGroup{
+				{Any: []string{"出门", "户外", "outdoor", "park"}},
+				{Any: []string{"女儿", "孩子", "daughter", "child"}},
+			},
+			States: []RouteStateMatch{{Key: "family.daughter.pollen_allergy", Values: []string{"active"}}},
+		},
+		Risks: []RouteRisk{
+			{Name: "child_health_outdoor_plan", Priority: 100},
+			{Name: "pollen_allergy", Priority: 80},
+			{Name: "outdoor_exposure", Priority: 60},
+			{Name: "child_or_family_context", Priority: 50},
+		},
+		RequiredTools: []RouteToolRequirement{
+			{Name: "current_time", Calls: []RouteToolCall{{Arguments: map[string]any{"location": "{{state.family.location}}"}}}},
+			{Name: "web_search", Calls: []RouteToolCall{
+				{Arguments: map[string]any{"query": "{{state.family.location}} weather forecast wind outdoor afternoon", "count": 5, "mode": "quick"}},
+				{Arguments: map[string]any{"query": "{{state.family.location}} pollen forecast allergy level", "count": 5, "mode": "quick"}},
+				{Arguments: map[string]any{"query": "{{state.family.location}} air quality AQI PM2.5", "count": 5, "mode": "quick"}},
+			}},
+		},
+		Constraints: []string{
+			"Check current or forecast conditions before the final answer.",
+			"Include pollen exposure, wind/weather, and air quality uncertainty.",
+		},
+	}
+}
+
+func TestRouteDerivesTypedPolicyConstraints(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewStore(dir)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
 
-	mustSave := func(content, category string, links []string) {
-		t.Helper()
-		if err := s.SaveWithMetadata(content, category, TierLong, 0.95, nil, links, nil); err != nil {
-			t.Fatalf("save %s: %v", category, err)
-		}
+	if err := s.SaveWithOptions("[[Daughter]] has [[Pollen Allergy]].", "health", TierLong, 0.95, SaveOptions{
+		Links:      []string{"Daughter", "Pollen Allergy"},
+		StateKey:   "family.daughter.pollen_allergy",
+		StateValue: "active",
+	}); err != nil {
+		t.Fatalf("save health: %v", err)
 	}
-	mustSave("[[Daughter]] has [[Pollen Allergy]].", "health", []string{"Daughter", "Pollen Allergy"})
-	mustSave("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", []string{"Outdoor Plan", "Daughter", "Pollen Allergy", "Weather Forecast", "Air Quality"})
-	mustSave("Default family [[Outdoor Plan]] location is [[Shanghai]].", "location", []string{"Outdoor Plan", "Shanghai"})
+	if err := s.SaveWithOptions("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check live conditions.", "rule", TierLong, 0.95, SaveOptions{
+		Links:         []string{"Outdoor Plan", "Daughter", "Pollen Allergy", "Weather Forecast", "Air Quality"},
+		Aliases:       []string{"女儿出门", "family outdoor plan"},
+		RoutePolicies: []RoutePolicy{testOutdoorRoutePolicy()},
+	}); err != nil {
+		t.Fatalf("save rule: %v", err)
+	}
+	if err := s.SaveWithOptions("Default family location is [[Shanghai]].", "location", TierLong, 0.95, SaveOptions{
+		Links:      []string{"Outdoor Plan", "Shanghai"},
+		StateKey:   "family.location",
+		StateValue: "Shanghai",
+	}); err != nil {
+		t.Fatalf("save location: %v", err)
+	}
 
 	route := s.Route("明天下午适合和女儿出门吗")
 	for _, want := range []string{"current_time", "web_search"} {
@@ -364,6 +478,64 @@ func TestRouteDerivesToolAndHealthConstraints(t *testing.T) {
 	}
 	if len(route.EvidenceRefs) == 0 {
 		t.Fatalf("expected evidence refs")
+	}
+}
+
+func TestRouteDoesNotInferActionsFromDomainKeywords(t *testing.T) {
+	s, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := s.SaveWithMetadata("[[Daughter]] has [[Pollen Allergy]].", "health", TierLong, 0.95, nil, []string{"Daughter", "Pollen Allergy"}, nil); err != nil {
+		t.Fatalf("save health memory: %v", err)
+	}
+	if err := s.SaveWithMetadata("Check weather before an [[Outdoor Plan]].", "rule", TierLong, 0.9, nil, []string{"Outdoor Plan", "Weather"}, nil); err != nil {
+		t.Fatalf("save rule memory: %v", err)
+	}
+
+	route := s.Route("今天适合和女儿出门吗")
+	if len(route.RequiredTools) != 0 || len(route.RiskFlags) != 0 || len(route.AppliedPolicies) != 0 {
+		t.Fatalf("domain words without typed policies must not create actions: %#v", route)
+	}
+}
+
+func TestRoutePolicyPersistsAndRendersStructuredArguments(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	policy := RoutePolicy{
+		ID:    "verify-deploy",
+		Match: RoutePolicyMatch{QueryAny: []string{"deploy"}},
+		RequiredTools: []RouteToolRequirement{{
+			Name:  "policy_probe",
+			Calls: []RouteToolCall{{Arguments: map[string]any{"subject": "{{query}}", "limit": 2}}},
+		}},
+		Risks:       []RouteRisk{{Name: "release_risk", Priority: 42}},
+		Constraints: []string{"Verify {{query}} before finalizing."},
+	}
+	if err := s.SaveWithOptions("Deployment verification policy.", "rule", TierLong, 0.9, SaveOptions{
+		Aliases:       []string{"deploy"},
+		RoutePolicies: []RoutePolicy{policy},
+	}); err != nil {
+		t.Fatalf("save policy: %v", err)
+	}
+
+	reloaded, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("reload store: %v", err)
+	}
+	route := reloaded.Route("deploy release")
+	if len(route.ToolRequirements) != 1 || len(route.ToolRequirements[0].Calls) != 1 {
+		t.Fatalf("expected persisted typed requirement, got %#v", route.ToolRequirements)
+	}
+	args := route.ToolRequirements[0].Calls[0].Arguments
+	if args["subject"] != "deploy release" || args["limit"] != 2 {
+		t.Fatalf("unexpected rendered arguments: %#v", args)
+	}
+	if len(route.AppliedPolicies) != 1 || route.AppliedPolicies[0].ID != policy.ID {
+		t.Fatalf("expected applied policy trace, got %#v", route.AppliedPolicies)
 	}
 }
 
@@ -397,13 +569,17 @@ func TestRouteTemporalResolutionPrefersLatestState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save new state: %v", err)
 	}
+	if err := s.SaveWithOptions("Typed policy for [[Daughter]] and [[Outdoor Plan]].", "rule", TierLong, 0.9, SaveOptions{
+		Links:         []string{"Daughter", "Pollen Allergy", "Outdoor Plan"},
+		Aliases:       []string{"女儿出门"},
+		RoutePolicies: []RoutePolicy{testOutdoorRoutePolicy()},
+	}); err != nil {
+		t.Fatalf("save route policy: %v", err)
+	}
 
 	route := s.Route("明天下午适合和女儿出门吗")
 	if stringSliceContains(route.RiskFlags, "pollen_allergy") {
 		t.Fatalf("expected resolved pollen state not to route active allergy risk, got %#v", route.RiskFlags)
-	}
-	if !stringSliceContains(route.RiskFlags, "pollen_allergy_inactive_or_resolved") {
-		t.Fatalf("expected inactive/resolved risk flag, got %#v", route.RiskFlags)
 	}
 	if len(route.SupersededRefs) == 0 || len(route.TemporalNotes) == 0 {
 		t.Fatalf("expected superseded refs and temporal notes, refs=%#v notes=%#v", route.SupersededRefs, route.TemporalNotes)

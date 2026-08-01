@@ -163,11 +163,11 @@ func newRootCmd() *cobra.Command {
 		Short: "消息平台网关管理",
 	}
 	msgGatewayStartCmd := &cobra.Command{
-		Use:   "start [--platform telegram --token TOKEN]",
+		Use:   "start [--platform PLATFORM]",
 		Short: "启动消息网关",
 		RunE:  runMsgGatewayStart,
 	}
-	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial, napcat, weixin, openclawweixin)")
+	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial, napcat, feishu, weixin, openclawweixin)")
 	msgGatewayStartCmd.Flags().String("token", "", "Bot token (Telegram)")
 	msgGatewayStartCmd.Flags().String("qq-appid", "", "QQ 官方机器人 AppID")
 	msgGatewayStartCmd.Flags().String("qq-appsecret", "", "QQ 官方机器人 AppSecret")
@@ -175,6 +175,11 @@ func newRootCmd() *cobra.Command {
 	msgGatewayStartCmd.Flags().String("napcat-listen", "", "NapCat OneBot 反向 WebSocket 监听地址")
 	msgGatewayStartCmd.Flags().String("napcat-path", "", "NapCat OneBot 反向 WebSocket 路径")
 	msgGatewayStartCmd.Flags().String("napcat-access-token", "", "NapCat OneBot 访问令牌")
+	msgGatewayStartCmd.Flags().String("feishu-app-id", "", "飞书应用 App ID")
+	msgGatewayStartCmd.Flags().String("feishu-app-secret", "", "飞书应用 App Secret")
+	msgGatewayStartCmd.Flags().String("feishu-verification-token", "", "飞书事件订阅 Verification Token")
+	msgGatewayStartCmd.Flags().String("feishu-listen", "", "飞书事件回调监听地址")
+	msgGatewayStartCmd.Flags().String("feishu-path", "", "飞书事件回调路径")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
 	msgGatewayStopCmd := &cobra.Command{
 		Use:   "stop [platform]",
@@ -235,6 +240,13 @@ func newRootCmd() *cobra.Command {
 	memoryMigrateGraphCmd.Flags().Bool("apply", false, "实际写入迁移结果；默认只 dry-run")
 	memoryMigrateGraphCmd.Flags().Bool("archive-dirty", true, "将 high/critical 脏记忆归档到 90_Archive/dirty")
 	memoryMigrateGraphCmd.Flags().Int("limit", 200, "最多审计/展示的脏记忆数量")
+	memoryRenameNotesCmd := &cobra.Command{
+		Use:   "rename-notes",
+		Short: "Rename memory notes to human-readable Obsidian filenames",
+		RunE:  runMemoryRenameNotes,
+	}
+	memoryRenameNotesCmd.Flags().Bool("apply", false, "Write renamed files; default is dry-run")
+	memoryRenameNotesCmd.Flags().Int("limit", 1000, "Maximum planned note renames")
 	memoryTidalStatsCmd := &cobra.Command{
 		Use:   "tidal-stats",
 		Short: "查看潮汐记忆 reranker 的持久化统计",
@@ -250,7 +262,7 @@ func newRootCmd() *cobra.Command {
 		RunE:  runMemoryTidalStats,
 	}
 	memoryTidalCmd.AddCommand(memoryTidalNestedStatsCmd)
-	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryTidalStatsCmd, memoryTidalCmd)
+	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryRenameNotesCmd, memoryTidalStatsCmd, memoryTidalCmd)
 
 	proactiveCmd := &cobra.Command{
 		Use:   "proactive",
@@ -271,6 +283,12 @@ func newRootCmd() *cobra.Command {
 		Short: "运行一次 proactive gate dry-run",
 		RunE:  runProactiveDryRun,
 	}
+	proactiveActCmd := &cobra.Command{
+		Use:   "act",
+		Short: "执行一次受安全策略限制的 proactive action run",
+		RunE:  runProactiveAct,
+	}
+	proactiveActCmd.Flags().Bool("apply", false, "实际执行 allowlist 内的安全动作；默认只 dry-run")
 	proactiveFeedbackCmd := &cobra.Command{
 		Use:   "feedback <actual-state>",
 		Short: "记录最近一次 proactive 预测的实际结果",
@@ -287,12 +305,24 @@ func newRootCmd() *cobra.Command {
 		RunE:  runProactiveEvents,
 	}
 	proactiveEventsCmd.Flags().Int("limit", 20, "最多显示的事件数量")
-	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd, proactiveFeedbackCmd, proactiveEventsCmd)
+	proactiveExecutionsCmd := &cobra.Command{
+		Use:   "executions",
+		Short: "查看最近 proactive action executions",
+		RunE:  runProactiveExecutions,
+	}
+	proactiveExecutionsCmd.Flags().Int("limit", 20, "最多显示的执行记录数量")
+	proactiveKernelsCmd := &cobra.Command{
+		Use:   "kernels",
+		Short: "查看最近 learned proactive signal kernels",
+		RunE:  runProactiveKernels,
+	}
+	proactiveKernelsCmd.Flags().Int("limit", 20, "最多显示的 kernel 权重数量")
+	proactiveCmd.AddCommand(proactiveStatusCmd, proactiveSampleCmd, proactiveDryRunCmd, proactiveActCmd, proactiveFeedbackCmd, proactiveEventsCmd, proactiveExecutionsCmd, proactiveKernelsCmd)
 
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)
 	addLearnCmd(rootCmd)
-	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd)
+	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd, newSessionCmd())
 
 	return rootCmd
 }

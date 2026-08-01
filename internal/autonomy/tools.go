@@ -49,19 +49,36 @@ func (td *ToolDefinitions) HandleQueueAdd(args map[string]any) (string, error) {
 				tags = append(tags, s)
 			}
 		}
+	} else if t, ok := args["tags"].([]string); ok {
+		tags = append(tags, t...)
 	}
 
-	task, err := td.kit.AddTaskWithError(title, description, priority, tags)
+	metadata := map[string]string{}
+	if key, _ := args["idempotency_key"].(string); strings.TrimSpace(key) != "" {
+		metadata["idempotency_key"] = strings.TrimSpace(key)
+	}
+	task, err := td.kit.AddTaskWithMetadata(title, description, priority, tags, metadata)
 	if err != nil {
 		return "", err
 	}
+	ready, inProgress, blocked, done := td.kit.Queue().Stats()
 
 	result, _ := json.Marshal(map[string]any{
-		"task_id":  task.ID,
-		"title":    task.Title,
-		"priority": task.Priority.String(),
-		"state":    task.State,
-		"message":  fmt.Sprintf("Task '%s' added to queue with %s priority", title, priority),
+		"ok":                true,
+		"action":            "add",
+		"task_id":           task.ID,
+		"title":             task.Title,
+		"priority":          task.Priority.String(),
+		"state":             task.State,
+		"tags":              task.Tags,
+		"metadata":          task.Metadata,
+		"deduped":           false,
+		"queue_ready":       ready,
+		"queue_in_progress": inProgress,
+		"queue_blocked":     blocked,
+		"queue_done":        done,
+		"worker_count":      safeWorkerCount(td.kit),
+		"message":           fmt.Sprintf("Task '%s' added to queue with %s priority", title, priority),
 	})
 
 	return string(result), nil
@@ -114,12 +131,15 @@ func (td *ToolDefinitions) HandleQueueList(args map[string]any) (string, error) 
 	}
 
 	result, _ := json.Marshal(map[string]any{
-		"tasks":       items,
-		"total":       len(items),
-		"ready":       ready,
-		"in_progress": inProgress,
-		"blocked":     blocked,
-		"done":        done,
+		"ok":           true,
+		"action":       "list",
+		"state_filter": stateFilter,
+		"tasks":        items,
+		"total":        len(items),
+		"ready":        ready,
+		"in_progress":  inProgress,
+		"blocked":      blocked,
+		"done":         done,
 	})
 
 	return string(result), nil
@@ -173,6 +193,8 @@ func (td *ToolDefinitions) HandleReport(args map[string]any) (string, error) {
 	}
 
 	result, _ := json.Marshal(map[string]any{
+		"ok":       true,
+		"action":   "report",
 		"state":    state,
 		"total":    total,
 		"returned": len(items),
@@ -230,6 +252,7 @@ func (td *ToolDefinitions) HandleQueueUpdate(args map[string]any) (string, error
 	}
 
 	result, _ := json.Marshal(map[string]any{
+		"ok":      true,
 		"task_id": taskID,
 		"action":  action,
 		"message": msg,
@@ -271,6 +294,8 @@ func (td *ToolDefinitions) HandleWorkerSpawn(args map[string]any) (string, error
 	go td.kit.Pool().executeTask(context.Background(), worker, pulled)
 
 	result, _ := json.Marshal(map[string]any{
+		"ok":        true,
+		"action":    "spawn",
 		"task_id":   taskID,
 		"worker_id": worker.ID,
 		"status":    "dispatched",
@@ -287,6 +312,8 @@ func (td *ToolDefinitions) HandleWorkerList(args map[string]any) (string, error)
 	stats := td.kit.Pool().Stats()
 
 	result, _ := json.Marshal(map[string]any{
+		"ok":           true,
+		"action":       "workers",
 		"workers":      workers,
 		"total":        stats.WorkerCount,
 		"idle":         stats.IdleWorkers,
@@ -304,6 +331,8 @@ func (td *ToolDefinitions) HandleHeartbeatTrigger(args map[string]any) (string, 
 	event := td.kit.Heartbeat().Trigger(nil)
 
 	result, _ := json.Marshal(map[string]any{
+		"ok":           true,
+		"action":       "heartbeat",
 		"timestamp":    event.Timestamp.Format("2006-01-02 15:04:05"),
 		"mode":         event.Mode,
 		"tasks_pulled": event.TasksPulled,
@@ -319,7 +348,20 @@ func (td *ToolDefinitions) HandleHeartbeatTrigger(args map[string]any) (string, 
 func (td *ToolDefinitions) HandleStatus(args map[string]any) (string, error) {
 	status := td.kit.Status()
 
-	result, _ := json.Marshal(status)
+	result, _ := json.Marshal(map[string]any{
+		"ok":     true,
+		"action": "status",
+		"status": status,
+		// Keep top-level status fields for existing callers.
+		"started":           status.Started,
+		"queue_ready":       status.QueueReady,
+		"queue_in_progress": status.QueueInProgress,
+		"queue_blocked":     status.QueueBlocked,
+		"queue_done":        status.QueueDone,
+		"pool_stats":        status.PoolStats,
+		"last_heartbeat":    status.LastHeartbeat,
+		"queue_store":       status.QueueStore,
+	})
 	return string(result), nil
 }
 
@@ -381,4 +423,11 @@ func truncateToolText(text string, max int) string {
 		return text
 	}
 	return strings.TrimSpace(text[:max]) + "\n...（truncated）"
+}
+
+func safeWorkerCount(kit *AutonomyKit) int {
+	if kit == nil || kit.Pool() == nil {
+		return 0
+	}
+	return kit.Pool().Stats().WorkerCount
 }

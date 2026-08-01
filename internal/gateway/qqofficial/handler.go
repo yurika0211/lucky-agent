@@ -64,10 +64,11 @@ type messageFeedbackSender interface {
 }
 
 type HandlerOptions struct {
-	PlatformName    string
-	DisplayName     string
-	LogPrefix       string
-	FinalAnswerOnly bool
+	PlatformName     string
+	DisplayName      string
+	LogPrefix        string
+	FinalAnswerOnly  bool
+	DeliveryGuidance func(string) string
 }
 
 type Handler struct {
@@ -88,6 +89,7 @@ type Handler struct {
 	displayName       string
 	logPrefix         string
 	finalAnswerOnly   bool
+	deliveryGuidance  func(string) string
 }
 
 func NewHandler(adapter sender, agentRuntime *agent.Agent) *Handler {
@@ -107,6 +109,10 @@ func NewHandlerWithOptions(adapter sender, agentRuntime *agent.Agent, opts Handl
 	if logPrefix == "" {
 		logPrefix = platformName
 	}
+	deliveryGuidance := opts.DeliveryGuidance
+	if deliveryGuidance == nil {
+		deliveryGuidance = qqMediaDeliveryGuidance
+	}
 
 	h := &Handler{
 		adapter:           adapter,
@@ -123,6 +129,7 @@ func NewHandlerWithOptions(adapter sender, agentRuntime *agent.Agent, opts Handl
 		displayName:       displayName,
 		logPrefix:         logPrefix,
 		finalAnswerOnly:   opts.FinalAnswerOnly,
+		deliveryGuidance:  deliveryGuidance,
 	}
 	h.commands = h.buildCommandRegistry()
 	return h
@@ -349,7 +356,7 @@ func (h *Handler) saveChatSessions() {
 }
 
 func (h *Handler) handleStart(ctx context.Context, msg *gateway.Message) error {
-	return h.reply(ctx, msg, "已连接 LuckyAgent QQ 机器人。\n可直接发送消息开始对话，或使用 /help 查看命令。")
+	return h.reply(ctx, msg, fmt.Sprintf("已连接 LuckyAgent %s。\n可直接发送消息开始对话，或使用 /help 查看命令。", h.display()))
 }
 
 func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
@@ -483,7 +490,7 @@ func (h *Handler) handleConfig(ctx context.Context, msg *gateway.Message) error 
 		}
 		value, ok := h.configValue(args[1])
 		if !ok {
-			return h.reply(ctx, msg, fmt.Sprintf("%s 不在 QQ 配置视图里。", args[1]))
+			return h.reply(ctx, msg, fmt.Sprintf("%s 不在当前渠道配置视图里。", args[1]))
 		}
 		return h.reply(ctx, msg, fmt.Sprintf("%s = %s", args[1], value))
 	}
@@ -493,14 +500,14 @@ func (h *Handler) handleConfig(ctx context.Context, msg *gateway.Message) error 
 		}
 	}
 	if args[0] == "set" {
-		return h.reply(ctx, msg, "QQ 里暂不开放写配置。请在主机运行 lh config set <key> <value>。")
+		return h.reply(ctx, msg, fmt.Sprintf("%s内暂不开放写配置。请在主机运行 lh config set <key> <value>。", h.display()))
 	}
 	return h.reply(ctx, msg, "用法：/config [list|get <key>]")
 }
 
 func (h *Handler) sendConfigList(ctx context.Context, msg *gateway.Message) error {
 	cfg := h.agent.Config().Get()
-	info := fmt.Sprintf("配置：\nprovider: %s\napi_key: %s\napi_base: %s\nmodel: %s\nsoul_path: %s\nmax_tokens: %d\ntemperature: %.1f\nserver.addr: %s\ndashboard.addr: %s\nmsg_gateway.platform: %s\nmsg_gateway.api_addr: %s\nmsg_gateway.telegram.token: %s\nmsg_gateway.qqofficial.app_id: %s\nmsg_gateway.qqofficial.sandbox: %t\nmsg_gateway.napcat.listen_addr: %s\nmsg_gateway.napcat.path: %s",
+	info := fmt.Sprintf("配置：\nprovider: %s\napi_key: %s\napi_base: %s\nmodel: %s\nsoul_path: %s\nmax_tokens: %d\ntemperature: %.1f\nserver.addr: %s\ndashboard.addr: %s\nmsg_gateway.platform: %s\nmsg_gateway.api_addr: %s\nmsg_gateway.telegram.token: %s\nmsg_gateway.qqofficial.app_id: %s\nmsg_gateway.qqofficial.sandbox: %t\nmsg_gateway.napcat.listen_addr: %s\nmsg_gateway.napcat.path: %s\nmsg_gateway.feishu.app_id: %s\nmsg_gateway.feishu.listen_addr: %s\nmsg_gateway.feishu.path: %s",
 		valueOrUnset(cfg.Provider),
 		maskSecret(cfg.APIKey),
 		valueOrUnset(cfg.APIBase),
@@ -517,6 +524,9 @@ func (h *Handler) sendConfigList(ctx context.Context, msg *gateway.Message) erro
 		cfg.MsgGateway.QQOfficial.Sandbox,
 		valueOrUnset(cfg.MsgGateway.NapCat.ListenAddr),
 		valueOrUnset(cfg.MsgGateway.NapCat.Path),
+		valueOrUnset(cfg.MsgGateway.Feishu.AppID),
+		valueOrUnset(cfg.MsgGateway.Feishu.ListenAddr),
+		valueOrUnset(cfg.MsgGateway.Feishu.Path),
 	)
 	return h.reply(ctx, msg, info)
 }
@@ -563,6 +573,18 @@ func (h *Handler) configValue(key string) (string, bool) {
 		return valueOrUnset(cfg.MsgGateway.NapCat.ListenAddr), true
 	case "msg_gateway.napcat.path":
 		return valueOrUnset(cfg.MsgGateway.NapCat.Path), true
+	case "msg_gateway.feishu.app_id":
+		return valueOrUnset(cfg.MsgGateway.Feishu.AppID), true
+	case "msg_gateway.feishu.app_secret":
+		return maskSecret(cfg.MsgGateway.Feishu.AppSecret), true
+	case "msg_gateway.feishu.verification_token":
+		return maskSecret(cfg.MsgGateway.Feishu.VerificationToken), true
+	case "msg_gateway.feishu.listen_addr":
+		return valueOrUnset(cfg.MsgGateway.Feishu.ListenAddr), true
+	case "msg_gateway.feishu.path":
+		return valueOrUnset(cfg.MsgGateway.Feishu.Path), true
+	case "msg_gateway.feishu.group_trigger_mode":
+		return valueOrUnset(cfg.MsgGateway.Feishu.GroupTriggerMode), true
 	default:
 		return "", false
 	}
@@ -1123,7 +1145,7 @@ func (h *Handler) handleDashboard(ctx context.Context, msg *gateway.Message) err
 	case "status", "list", "":
 		return h.reply(ctx, msg, fmt.Sprintf("Dashboard：\nconfigured addr: %s\nurl hint: %s\n\nstart/stop 属于本机进程管理，请在主机运行 lh dashboard start 或 lh dashboard stop。", addr, dashboardURLHint(addr)))
 	case "start", "stop":
-		return h.reply(ctx, msg, "QQ 里不直接启停 Dashboard。请在主机运行 lh dashboard start 或 lh dashboard stop。")
+		return h.reply(ctx, msg, fmt.Sprintf("%s内不直接启停 Dashboard。请在主机运行 lh dashboard start 或 lh dashboard stop。", h.display()))
 	default:
 		return h.reply(ctx, msg, "用法：/dashboard [status]")
 	}
@@ -1138,7 +1160,7 @@ func (h *Handler) handleMsgGateway(ctx context.Context, msg *gateway.Message) er
 	cfg := h.agent.Config().Get()
 	switch subcmd {
 	case "status", "":
-		info := fmt.Sprintf("Message Gateway：\nplatform: %s\nstart_all: %t\napi_addr: %s\ntelegram.token: %s\ntelegram.proxy: %s\nqqofficial.app_id: %s\nqqofficial.sandbox: %t\nnapcat.listen_addr: %s\nnapcat.path: %s\nweixin.account_id: %s\nopenclawweixin.account_id: %s\n\n运行状态需要看启动该网关的主机终端。",
+		info := fmt.Sprintf("Message Gateway：\nplatform: %s\nstart_all: %t\napi_addr: %s\ntelegram.token: %s\ntelegram.proxy: %s\nqqofficial.app_id: %s\nqqofficial.sandbox: %t\nnapcat.listen_addr: %s\nnapcat.path: %s\nfeishu.app_id: %s\nfeishu.listen_addr: %s\nfeishu.path: %s\nweixin.account_id: %s\nopenclawweixin.account_id: %s\n\n运行状态需要看启动该网关的主机终端。",
 			valueOrUnset(cfg.MsgGateway.Platform),
 			cfg.MsgGateway.StartAll,
 			valueOrUnset(cfg.MsgGateway.APIAddr),
@@ -1148,12 +1170,15 @@ func (h *Handler) handleMsgGateway(ctx context.Context, msg *gateway.Message) er
 			cfg.MsgGateway.QQOfficial.Sandbox,
 			valueOrUnset(cfg.MsgGateway.NapCat.ListenAddr),
 			valueOrUnset(cfg.MsgGateway.NapCat.Path),
+			valueOrUnset(cfg.MsgGateway.Feishu.AppID),
+			valueOrUnset(cfg.MsgGateway.Feishu.ListenAddr),
+			valueOrUnset(cfg.MsgGateway.Feishu.Path),
 			valueOrUnset(cfg.MsgGateway.Weixin.AccountID),
 			valueOrUnset(cfg.MsgGateway.OpenClawWeixin.AccountID),
 		)
 		return h.reply(ctx, msg, info)
 	case "start", "stop":
-		return h.reply(ctx, msg, "QQ 里不直接启停 Message Gateway。请在主机终端运行 lh msg-gateway start，并用 Ctrl+C 停止。")
+		return h.reply(ctx, msg, fmt.Sprintf("%s内不直接启停 Message Gateway。请在主机终端运行 lh msg-gateway start，并用 Ctrl+C 停止。", h.display()))
 	default:
 		return h.reply(ctx, msg, "用法：/msg_gateway [status]")
 	}
@@ -1884,7 +1909,7 @@ func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, i
 	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
 		return nil
 	}
-	input = qqInputWithMediaDeliveryGuidance(input)
+	input = inputWithMediaDeliveryGuidance(input, h.deliveryGuidance)
 	h.acknowledgeIncomingMessage(msg)
 
 	req := &queuedChatRequest{
@@ -1917,11 +1942,18 @@ func (h *Handler) acknowledgeIncomingMessage(msg *gateway.Message) {
 }
 
 func qqInputWithMediaDeliveryGuidance(input agent.UserTurnInput) agent.UserTurnInput {
+	return inputWithMediaDeliveryGuidance(input, qqMediaDeliveryGuidance)
+}
+
+func inputWithMediaDeliveryGuidance(input agent.UserTurnInput, guidance func(string) string) agent.UserTurnInput {
 	input = input.Normalize()
 	if strings.TrimSpace(input.RoutingText) == "" && strings.TrimSpace(input.Message.Content) == "" {
 		return input
 	}
-	input.RoutingText = qqMediaDeliveryGuidance(input.RoutingText)
+	if guidance == nil {
+		return input
+	}
+	input.RoutingText = guidance(input.RoutingText)
 	input.Message.Content = input.RoutingText
 	input.Message.ContentParts = nil
 	return input.Normalize()
@@ -2141,13 +2173,21 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 	if err != nil {
 		return err
 	}
+	mediaFirst := h.platform() == "napcat" && len(media) > 0
+	if mediaFirst {
+		if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(text) != "" {
 		if err := h.sendAssistantText(ctx, msg, text); err != nil {
 			return err
 		}
 	}
-	if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
-		return err
+	if !mediaFirst {
+		if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(text) == "" && len(media) == 0 {
 		return h.reply(ctx, msg, "我这边暂时还没有整理出可发送的结果。")

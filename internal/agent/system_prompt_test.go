@@ -268,12 +268,18 @@ func TestBuildSystemPromptPinsLuckyAgentMarkdownMemoryVault(t *testing.T) {
 	for _, want := range []string{
 		filepath.Join(mgr.HomeDir(), "memory"),
 		"Obsidian-compatible Markdown",
-		"does not require an external Obsidian app vault",
-		"RAG SQLite storage is not the memory source of truth",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected memory policy to contain %q:\n%s", want, prompt)
 		}
+	}
+	if !strings.Contains(prompt, "does not require an external Obsidian app vault") &&
+		!strings.Contains(prompt, "不需要外部Obsidian应用") {
+		t.Fatalf("expected memory policy to reject external Obsidian vault requirement:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "RAG SQLite storage is not the memory source of truth") &&
+		!strings.Contains(prompt, "SQLite RAG存储不是记忆的真实来源") {
+		t.Fatalf("expected memory policy to distinguish RAG storage from memory source of truth:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "~/Documents/Obsidian Vault is required") ||
 		strings.Contains(prompt, "OBSIDIAN_VAULT_PATH is required") ||

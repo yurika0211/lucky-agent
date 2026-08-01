@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/workflow"
 )
 
@@ -142,6 +144,44 @@ func TestHandleContext(t *testing.T) {
 	}
 	if resp["strategy"] == nil {
 		t.Error("expected strategy to be set")
+	}
+}
+
+func TestHandleContextIncludesCompactTraceForSession(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	sess := a.Sessions().Ensure("context-compact-trace")
+	sess.AddCompactBoundary(session.CompactMetadata{
+		ID:                  "compact-context-test",
+		Trigger:             "manual-api",
+		Summary:             "Current user goal: expose compact trace. Pending work: keep tests passing.",
+		CreatedAt:           time.Now(),
+		PreTokenEstimate:    100,
+		PostTokenEstimate:   20,
+		SummaryTokens:       20,
+		DroppedMessages:     2,
+		RestoredAttachments: 1,
+		SummarySource:       "local",
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/context?session_id=context-compact-trace", nil)
+	w := httptest.NewRecorder()
+	s.handleContext(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	trace, ok := resp["compact_trace"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected compact_trace object, got %+v", resp)
+	}
+	if trace["boundary_id"] != "compact-context-test" || trace["summary_source"] != "local" {
+		t.Fatalf("unexpected compact_trace: %+v", trace)
 	}
 }
 

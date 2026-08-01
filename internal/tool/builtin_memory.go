@@ -90,11 +90,28 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 				Description: "Optional RFC3339 or YYYY-MM-DD end date after which this memory is no longer valid.",
 				Required:    false,
 			},
+			"route_policies": {
+				Type:        "string",
+				Description: "Optional JSON array of typed routing policies attached to this memory. Each policy may define match.query_all/query_any/query_none/states, risks, required_tools with structured calls.arguments, constraints, and clarifications. Only tools marked PolicySafe can auto-execute.",
+				Required:    false,
+			},
 			"long_term": {
 				Type:        "boolean",
 				Description: "Set true only for durable core facts like identity, strong preferences, or long-lived project constraints.",
 				Required:    false,
 				Default:     false,
+			},
+			"mode": {
+				Type:        "string",
+				Description: "Write mode: append, upsert_state, or supersede. upsert_state requires state_key and supersedes older active state memories.",
+				Required:    false,
+				Default:     "append",
+			},
+			"format": {
+				Type:        "string",
+				Description: "Output format: text or json.",
+				Required:    false,
+				Default:     "text",
 			},
 		},
 		Handler:      handler,
@@ -103,11 +120,15 @@ func RememberTool(handler func(args map[string]any) (string, error)) *Tool {
 }
 
 // RecallTool 搜索记忆工具
-func RecallTool(handler func(args map[string]any) (string, error)) *Tool {
+func RecallTool(handler func(args map[string]any) (string, error), detailed ...func(args map[string]any) (ToolCallResult, error)) *Tool {
 	if handler == nil {
 		handler = func(args map[string]any) (string, error) {
 			return "", fmt.Errorf("recall handler not configured")
 		}
+	}
+	var detailedHandler func(args map[string]any) (ToolCallResult, error)
+	if len(detailed) > 0 {
+		detailedHandler = detailed[0]
 	}
 	return &Tool{
 		Name:        "recall",
@@ -121,9 +142,65 @@ func RecallTool(handler func(args map[string]any) (string, error)) *Tool {
 				Description: "Query for the fact or preference you want to recover. Leave empty to inspect recent memories.",
 				Required:    false,
 			},
+			"mode": {
+				Type:        "string",
+				Description: "Recall mode: search or recent. Defaults to recent when query is empty and search otherwise.",
+				Required:    false,
+			},
+			"limit": {
+				Type:        "number",
+				Description: "Maximum number of memories to return, from 1 to 50.",
+				Required:    false,
+			},
+			"category": {
+				Type:        "string",
+				Description: "Optional category filter such as preference, project, health, rule, location, or knowledge.",
+				Required:    false,
+			},
+			"tier": {
+				Type:        "string",
+				Description: "Optional tier filter: short, medium, or long.",
+				Required:    false,
+			},
+			"include_inactive": {
+				Type:        "boolean",
+				Description: "Whether to include archived, superseded, conflict, future-dated, or otherwise inactive memories.",
+				Required:    false,
+				Default:     false,
+			},
+			"include_expired": {
+				Type:        "boolean",
+				Description: "Whether to include expired memories when searching with as_of or inactive filters.",
+				Required:    false,
+				Default:     false,
+			},
+			"as_of": {
+				Type:        "string",
+				Description: "Optional RFC3339 or YYYY-MM-DD time used for temporal validity checks.",
+				Required:    false,
+			},
+			"graph_depth": {
+				Type:        "number",
+				Description: "Graph expansion depth. 0 disables graph expansion; 1 is the current default; max 3.",
+				Required:    false,
+				Default:     1,
+			},
+			"explain_graph": {
+				Type:        "boolean",
+				Description: "Include graph path evidence in json output when available.",
+				Required:    false,
+				Default:     false,
+			},
+			"format": {
+				Type:        "string",
+				Description: "Output format: text or json.",
+				Required:    false,
+				Default:     "text",
+			},
 		},
-		Handler:      handler,
-		ParallelSafe: true,
+		Handler:         handler,
+		DetailedHandler: detailedHandler,
+		ParallelSafe:    true,
 	}
 }
 
@@ -143,7 +220,7 @@ func MemoryHygieneTool(handler func(args map[string]any) (string, error)) *Tool 
 		Parameters: map[string]Param{
 			"action": {
 				Type:        "string",
-				Description: "Action: audit, quarantine, or delete. Use audit first unless the user explicitly asks to clean.",
+				Description: "Action: audit, quarantine, delete, or restore. Use audit first unless the user explicitly asks to clean.",
 				Required:    false,
 				Default:     "audit",
 			},
@@ -161,9 +238,32 @@ func MemoryHygieneTool(handler func(args map[string]any) (string, error)) *Tool 
 			},
 			"limit": {
 				Type:        "number",
-				Description: "Maximum number of findings to return or apply.",
+				Description: "Maximum number of findings to return or apply. Use 0 only with allow_unlimited=true.",
 				Required:    false,
 				Default:     50,
+			},
+			"dry_run": {
+				Type:        "boolean",
+				Description: "Preview quarantine or delete without modifying memory.",
+				Required:    false,
+				Default:     false,
+			},
+			"confirm_delete": {
+				Type:        "boolean",
+				Description: "Required true for action=delete because delete physically removes memory files.",
+				Required:    false,
+				Default:     false,
+			},
+			"ids": {
+				Type:        "array",
+				Description: "Optional memory IDs to audit, quarantine, delete, or restore precisely.",
+				Required:    false,
+			},
+			"allow_unlimited": {
+				Type:        "boolean",
+				Description: "Required true to allow limit=0 unlimited scans.",
+				Required:    false,
+				Default:     false,
 			},
 		},
 		Handler:      handler,
@@ -192,9 +292,26 @@ func RAGSearchTool(handler func(args map[string]any) (string, error)) *Tool {
 			},
 			"top_k": {
 				Type:        "number",
-				Description: "Maximum number of relevant passages to return.",
+				Description: "Maximum number of relevant passages to return. Defaults to 5 and cannot exceed 20.",
 				Required:    false,
 				Default:     5,
+			},
+			"min_score": {
+				Type:        "number",
+				Description: "Optional minimum similarity score from 0.0 to 1.0.",
+				Required:    false,
+			},
+			"timeout_seconds": {
+				Type:        "number",
+				Description: "Per-call search timeout in seconds, from 1 to 120.",
+				Required:    false,
+				Default:     30,
+			},
+			"format": {
+				Type:        "string",
+				Description: "Output format: text or json.",
+				Required:    false,
+				Default:     "text",
 			},
 		},
 		Handler:      handler,
@@ -220,6 +337,52 @@ func RAGIndexTool(handler func(args map[string]any) (string, error)) *Tool {
 				Type:        "string",
 				Description: "Local file or directory to add to the indexed knowledge base.",
 				Required:    true,
+			},
+			"recursive": {
+				Type:        "boolean",
+				Description: "Whether to recursively scan directories. Defaults to false.",
+				Required:    false,
+				Default:     false,
+			},
+			"max_files": {
+				Type:        "number",
+				Description: "Maximum files to index in one call, from 1 to 200.",
+				Required:    false,
+				Default:     200,
+			},
+			"max_file_bytes": {
+				Type:        "number",
+				Description: "Maximum bytes per file. Defaults to 5 MiB.",
+				Required:    false,
+				Default:     5242880,
+			},
+			"max_total_bytes": {
+				Type:        "number",
+				Description: "Maximum total bytes for this indexing call. Defaults to 100 MiB.",
+				Required:    false,
+				Default:     104857600,
+			},
+			"include": {
+				Type:        "array",
+				Description: "Optional include glob list. Defaults to text-like extensions.",
+				Required:    false,
+			},
+			"exclude": {
+				Type:        "array",
+				Description: "Optional exclude glob list added to built-in sensitive defaults.",
+				Required:    false,
+			},
+			"dry_run": {
+				Type:        "boolean",
+				Description: "Return the index plan without writing to the RAG store.",
+				Required:    false,
+				Default:     false,
+			},
+			"format": {
+				Type:        "string",
+				Description: "Output format: text or json.",
+				Required:    false,
+				Default:     "text",
 			},
 		},
 		Handler:      handler,

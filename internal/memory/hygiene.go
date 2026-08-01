@@ -7,12 +7,15 @@ import (
 	"time"
 )
 
+const MaxDurableMemoryContentRunes = 4000
+
 // HygieneOptions configures deterministic memory hygiene scans.
 type HygieneOptions struct {
 	IncludeInactive bool
 	MinSeverity     string
 	MaxFindings     int
 	Now             time.Time
+	IDs             []string
 }
 
 // HygieneIssue describes one memory entry that should be reviewed or cleaned.
@@ -34,6 +37,8 @@ type HygieneReport struct {
 	Findings    []HygieneIssue `json:"findings"`
 	Quarantined int            `json:"quarantined,omitempty"`
 	Deleted     int            `json:"deleted,omitempty"`
+	Restored    int            `json:"restored,omitempty"`
+	DryRun      bool           `json:"dry_run,omitempty"`
 	Action      string         `json:"action"`
 }
 
@@ -42,6 +47,58 @@ var (
 	secretLikeRe            = regexp.MustCompile(`(?i)(api[_-]?key|access[_-]?token|secret|password|passwd|bearer\s+[a-z0-9._~+/-]{16,}|sk-[a-z0-9]{16,}|xox[baprs]-[a-z0-9-]{10,})`)
 	promptInjectionRe       = regexp.MustCompile(`(?i)(ignore (all )?(previous|prior) instructions|system prompt|developer message|you are now|jailbreak|do not obey|泄露.*提示词|忽略.*指令|越狱)`)
 )
+
+// AnalyzeMemoryContent applies deterministic hygiene checks to proposed durable
+// memory content before it is written.
+func AnalyzeMemoryContent(content string) []HygieneIssue {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return []HygieneIssue{{
+			Severity:        "high",
+			Reason:          "empty",
+			SuggestedAction: "reject",
+			Score:           0.85,
+		}}
+	}
+	issues := make([]HygieneIssue, 0, 4)
+	if rawConversationPrefixRe.MatchString(content) || rawConversationText(content) {
+		issues = append(issues, HygieneIssue{
+			Severity:        "high",
+			Reason:          "raw_conversation",
+			SuggestedAction: "reject",
+			Score:           0.82,
+			Preview:         truncateRunes(strings.ReplaceAll(content, "\n", " "), 160),
+		})
+	}
+	if secretLikeRe.MatchString(content) {
+		issues = append(issues, HygieneIssue{
+			Severity:        "critical",
+			Reason:          "secret_like",
+			SuggestedAction: "reject",
+			Score:           0.98,
+			Preview:         truncateRunes(strings.ReplaceAll(content, "\n", " "), 160),
+		})
+	}
+	if promptInjectionRe.MatchString(content) {
+		issues = append(issues, HygieneIssue{
+			Severity:        "high",
+			Reason:          "prompt_injection",
+			SuggestedAction: "reject",
+			Score:           0.86,
+			Preview:         truncateRunes(strings.ReplaceAll(content, "\n", " "), 160),
+		})
+	}
+	if len([]rune(content)) > MaxDurableMemoryContentRunes {
+		issues = append(issues, HygieneIssue{
+			Severity:        "low",
+			Reason:          "oversized",
+			SuggestedAction: "reject",
+			Score:           0.40,
+			Preview:         truncateRunes(strings.ReplaceAll(content, "\n", " "), 160),
+		})
+	}
+	return issues
+}
 
 // AuditHygiene scans memory entries for deterministic dirty-memory signals.
 func (s *Store) AuditHygiene(opts HygieneOptions) HygieneReport {
@@ -69,6 +126,44 @@ func (s *Store) QuarantineDirty(opts HygieneOptions) (HygieneReport, error) {
 // the caller explicitly requested physical deletion.
 func (s *Store) DeleteDirty(opts HygieneOptions) (HygieneReport, error) {
 	return s.applyHygiene(opts, "delete")
+}
+
+// RestoreHygiene restores archived entries previously tagged by hygiene.
+func (s *Store) RestoreHygiene(opts HygieneOptions) (HygieneReport, error) {
+	if s == nil {
+		return HygieneReport{Action: "restore"}, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := hygieneNow(opts)
+	idSet := hygieneIDSet(opts.IDs)
+	report := HygieneReport{
+		Scanned: s.hygieneScannedLocked(opts, now),
+		Action:  "restore",
+	}
+	for _, e := range s.entries {
+		if e == nil {
+			continue
+		}
+		if len(idSet) > 0 && !idSet[e.ID] {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(e.Status), "archived") {
+			continue
+		}
+		if !entryHasTag(e, "hygiene") && !entryHasTag(e, "dirty") {
+			continue
+		}
+		e.Status = "active"
+		e.Tags = mergeTags(e.Tags, []string{"hygiene-restored"})
+		report.Restored++
+	}
+	if report.Restored > 0 {
+		if err := s.persist(); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
 }
 
 func (s *Store) applyHygiene(opts HygieneOptions, action string) (HygieneReport, error) {
@@ -119,8 +214,12 @@ func (s *Store) hygieneIssuesLocked(opts HygieneOptions, now time.Time) []Hygien
 	seenIssue := make(map[string]bool)
 	normalizedByContent := make(map[string]*Entry)
 	activeState := make(map[string]*Entry)
+	idSet := hygieneIDSet(opts.IDs)
 	ids := make([]string, 0, len(s.entries))
 	for id := range s.entries {
+		if len(idSet) > 0 && !idSet[id] {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -167,7 +266,7 @@ func (s *Store) hygieneIssuesLocked(opts HygieneOptions, now time.Time) []Hygien
 				activeState[stateKey] = e
 			}
 		}
-		if len([]rune(content)) > 4000 && e.Tier != TierLong {
+		if len([]rune(content)) > MaxDurableMemoryContentRunes && e.Tier != TierLong {
 			issues = appendHygieneIssue(issues, seenIssue, e, "low", "oversized", "quarantine", 0.40, content)
 		}
 	}
@@ -182,13 +281,43 @@ func (s *Store) hygieneIssuesLocked(opts HygieneOptions, now time.Time) []Hygien
 
 func (s *Store) hygieneScannedLocked(opts HygieneOptions, now time.Time) int {
 	scanned := 0
+	idSet := hygieneIDSet(opts.IDs)
 	for _, e := range s.entries {
+		if e != nil && len(idSet) > 0 && !idSet[e.ID] {
+			continue
+		}
 		if e == nil || (!opts.IncludeInactive && !entryIsActive(e, now)) {
 			continue
 		}
 		scanned++
 	}
 	return scanned
+}
+
+func hygieneIDSet(ids []string) map[string]bool {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+func entryHasTag(e *Entry, tag string) bool {
+	if e == nil {
+		return false
+	}
+	for _, existing := range e.Tags {
+		if strings.EqualFold(strings.TrimSpace(existing), tag) {
+			return true
+		}
+	}
+	return false
 }
 
 func appendHygieneIssue(issues []HygieneIssue, seen map[string]bool, e *Entry, severity, reason, action string, score float64, preview string) []HygieneIssue {
@@ -225,6 +354,10 @@ func rawConversationMemory(e *Entry) bool {
 		return false
 	}
 	content := strings.TrimSpace(e.Content)
+	return rawConversationText(content)
+}
+
+func rawConversationText(content string) bool {
 	return strings.Contains(content, "\nUser:") || strings.Contains(content, "\nAssistant:") || strings.HasPrefix(content, "User:") || strings.HasPrefix(content, "Assistant:")
 }
 

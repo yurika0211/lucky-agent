@@ -16,6 +16,41 @@ import (
 	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
+func sendAndAcknowledgeAction(t *testing.T, conn *websocket.Conn, send func() error) actionRequest {
+	t.Helper()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- send()
+	}()
+
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode action: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "ok",
+		"retcode": 0,
+		"echo":    req.Echo,
+		"data":    map[string]any{},
+	}); err != nil {
+		t.Fatalf("write action response: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("send action: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for confirmed action")
+	}
+	return req
+}
+
 func TestParseOneBotCQMessage(t *testing.T) {
 	parsed := parseOneBotMessage(json.RawMessage(`"[CQ:reply,id=12][CQ:at,qq=10001] 看图 [CQ:image,file=abc.jpg,url=http://example.test/a.jpg]"`), "")
 	if parsed.Text != "看图" {
@@ -918,20 +953,15 @@ func TestAdapterSendForwardedMediaWritesForwardAction(t *testing.T) {
 		t.Fatalf("write second image: %v", err)
 	}
 
-	if err := adapter.SendForwardedMedia(context.Background(), "group:345", "LuckyAgent", []gateway.ForwardedMediaItem{
-		{Type: gateway.AttachmentImage, Source: img1, Caption: "one"},
-		{Type: gateway.AttachmentImage, Source: img2, Caption: "two"},
-	}); err != nil {
-		t.Fatalf("send forwarded media: %v", err)
-	}
-
-	_, data, err := conn.ReadMessage()
+	req := sendAndAcknowledgeAction(t, conn, func() error {
+		return adapter.SendForwardedMedia(context.Background(), "group:345", "LuckyAgent", []gateway.ForwardedMediaItem{
+			{Type: gateway.AttachmentImage, Source: img1, Caption: "one"},
+			{Type: gateway.AttachmentImage, Source: img2, Caption: "two"},
+		})
+	})
+	data, err := json.Marshal(req)
 	if err != nil {
-		t.Fatalf("read action: %v", err)
-	}
-	var req actionRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		t.Fatalf("decode action: %v", err)
+		t.Fatalf("marshal action: %v", err)
 	}
 	if req.Action != "send_group_forward_msg" {
 		t.Fatalf("unexpected action: %s", req.Action)
@@ -997,18 +1027,9 @@ func TestAdapterSendPhotoLocalFileUsesBase64CQSource(t *testing.T) {
 	if err := os.WriteFile(img, []byte("fake image"), 0o600); err != nil {
 		t.Fatalf("write image: %v", err)
 	}
-	if err := adapter.SendPhoto(context.Background(), "group:345", "12", img, "caption"); err != nil {
-		t.Fatalf("send photo: %v", err)
-	}
-
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read action: %v", err)
-	}
-	var req actionRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		t.Fatalf("decode action: %v", err)
-	}
+	req := sendAndAcknowledgeAction(t, conn, func() error {
+		return adapter.SendPhoto(context.Background(), "group:345", "12", img, "caption")
+	})
 	message, _ := req.Params["message"].(string)
 	want := "base64://" + base64.StdEncoding.EncodeToString([]byte("fake image"))
 	if !strings.Contains(message, "[CQ:image,file="+want+"]") {
@@ -1036,18 +1057,9 @@ func TestAdapterSendDocumentLocalFileUsesBase64UploadSource(t *testing.T) {
 	if err := os.WriteFile(doc, []byte("hello report"), 0o600); err != nil {
 		t.Fatalf("write doc: %v", err)
 	}
-	if err := adapter.SendDocument(context.Background(), "group:345", "", doc, ""); err != nil {
-		t.Fatalf("send document: %v", err)
-	}
-
-	_, data, err := conn.ReadMessage()
-	if err != nil {
-		t.Fatalf("read action: %v", err)
-	}
-	var req actionRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		t.Fatalf("decode action: %v", err)
-	}
+	req := sendAndAcknowledgeAction(t, conn, func() error {
+		return adapter.SendDocument(context.Background(), "group:345", "", doc, "")
+	})
 	if req.Action != "upload_group_file" {
 		t.Fatalf("unexpected action: %s", req.Action)
 	}
@@ -1057,6 +1069,101 @@ func TestAdapterSendDocumentLocalFileUsesBase64UploadSource(t *testing.T) {
 	}
 	if req.Params["name"] != "report.txt" {
 		t.Fatalf("unexpected upload name: %#v", req.Params["name"])
+	}
+}
+
+func TestAdapterSendDocumentAcceptsSandboxSource(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	doc := filepath.Join(t.TempDir(), "report.docx")
+	if err := os.WriteFile(doc, []byte("sandbox docx"), 0o600); err != nil {
+		t.Fatalf("write doc: %v", err)
+	}
+	req := sendAndAcknowledgeAction(t, conn, func() error {
+		return adapter.SendDocument(context.Background(), "group:345", "", "sandbox:"+doc, "")
+	})
+	want := "base64://" + base64.StdEncoding.EncodeToString([]byte("sandbox docx"))
+	if req.Action != "upload_group_file" || req.Params["file"] != want || req.Params["name"] != "report.docx" {
+		t.Fatalf("unexpected sandbox upload action: %#v", req)
+	}
+}
+
+func TestAdapterSendRemoteDocumentUsesUploadAction(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	source := "https://example.test/files/report.pdf"
+	req := sendAndAcknowledgeAction(t, conn, func() error {
+		return adapter.SendDocument(context.Background(), "group:345", "", source, "")
+	})
+	if req.Action != "upload_group_file" || req.Params["file"] != source || req.Params["name"] != "report.pdf" {
+		t.Fatalf("unexpected remote upload action: %#v", req)
+	}
+}
+
+func TestAdapterSendPhotoReturnsActionFailure(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	img := filepath.Join(t.TempDir(), "photo.png")
+	if err := os.WriteFile(img, []byte("image"), 0o600); err != nil {
+		t.Fatalf("write image: %v", err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- adapter.SendPhoto(context.Background(), "group:345", "", img, "")
+	}()
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode action: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "failed",
+		"retcode": 100,
+		"echo":    req.Echo,
+		"message": "media rejected",
+	}); err != nil {
+		t.Fatalf("write failed action response: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "media rejected") {
+			t.Fatalf("expected action failure, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for failed action")
 	}
 }
 

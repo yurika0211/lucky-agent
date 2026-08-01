@@ -50,6 +50,16 @@ type RAGConfig struct {
 	EnableGraph     bool // 是否启用知识图谱
 }
 
+// SearchOptions configures a single RAG search without mutating shared
+// retriever state.
+type SearchOptions struct {
+	TopK         int
+	MinScore     float64
+	UseMMR       bool
+	MMRLambda    float64
+	FilterSource string
+}
+
 func DefaultRAGConfig() RAGConfig {
 	return RAGConfig{
 		EmbeddingDim:    0, // 0 = auto-detect from embedder
@@ -93,6 +103,11 @@ func NewRAGManagerWithSQLite(embedder embedderpkg.Embedder, config RAGConfig, db
 	if err != nil {
 		return nil, fmt.Errorf("create sqlite store: %w", err)
 	}
+	fingerprint := fmt.Sprintf("%s|%s|%d", embedder.Name(), embedder.Model(), dim)
+	if err := store.EnsureEmbeddingFingerprint(fingerprint); err != nil {
+		_ = store.Close()
+		return nil, fmt.Errorf("validate sqlite embedding index: %w", err)
+	}
 
 	indexer := NewIndexerWithBackend(store, embedder)
 
@@ -111,6 +126,7 @@ func NewRAGManagerWithSQLite(embedder embedderpkg.Embedder, config RAGConfig, db
 			indexer.chunks[id] = chunk
 		}
 		indexer.stats.ChunkCount = len(chunks)
+		indexer.stats.TotalTokens = estimateChunkMapTokens(chunks)
 		indexer.mu.Unlock()
 	}
 	if stats, err := store.LoadIndexStats(); err == nil {
@@ -137,9 +153,19 @@ func (m *RAGManager) IndexFile(path string) (*Document, error) {
 	return m.indexer.IndexFile(path)
 }
 
+// IndexFileContext indexes a file with cancellation support.
+func (m *RAGManager) IndexFileContext(ctx context.Context, path string) (*Document, error) {
+	return m.indexer.IndexFileContext(ctx, path)
+}
+
 // IndexText indexes raw text content.
 func (m *RAGManager) IndexText(source, title, content string) (*Document, error) {
 	return m.indexer.IndexText(source, title, content)
+}
+
+// IndexTextContext indexes text with cancellation support.
+func (m *RAGManager) IndexTextContext(ctx context.Context, source, title, content string) (*Document, error) {
+	return m.indexer.IndexTextContext(ctx, source, title, content)
 }
 
 // IndexDirectory indexes all .md/.txt files in a directory.
@@ -150,6 +176,25 @@ func (m *RAGManager) IndexDirectory(dir string) ([]*Document, error) {
 // Search queries the knowledge base.
 func (m *RAGManager) Search(ctx context.Context, query string) ([]RetrievalResult, error) {
 	return m.retriever.Search(ctx, query)
+}
+
+// SearchWithOptions queries the knowledge base with per-call retrieval options.
+func (m *RAGManager) SearchWithOptions(ctx context.Context, query string, opts SearchOptions) ([]RetrievalResult, error) {
+	cfg := m.RetrieverConfig()
+	if opts.TopK > 0 {
+		cfg.TopK = opts.TopK
+	}
+	if opts.MinScore > 0 {
+		cfg.MinScore = opts.MinScore
+	}
+	cfg.UseMMR = opts.UseMMR
+	if opts.MMRLambda > 0 {
+		cfg.MMRLambda = opts.MMRLambda
+	}
+	if strings.TrimSpace(opts.FilterSource) != "" {
+		cfg.FilterSource = strings.TrimSpace(opts.FilterSource)
+	}
+	return m.retriever.SearchWithConfig(ctx, query, cfg)
 }
 
 // SearchWithContext queries and returns assembled context string.
@@ -264,7 +309,23 @@ func NewRAGManagerWithSQLiteAndGraph(embedder embedderpkg.Embedder, config RAGCo
 		return nil, err
 	}
 	if config.EnableGraph && llmProvider != nil {
-		m.graph = NewKnowledgeGraph()
+		// 获取 SQLite 连接用于图谱持久化
+		sqliteStore := m.SQLiteStore()
+		if sqliteStore != nil {
+			graphStore, err := NewGraphStore(sqliteStore.DB())
+			if err != nil {
+				return nil, fmt.Errorf("create graph store: %w", err)
+			}
+			// 创建带持久化的知识图谱
+			graph, err := NewKnowledgeGraphWithStore(graphStore)
+			if err != nil {
+				return nil, fmt.Errorf("create knowledge graph with store: %w", err)
+			}
+			m.graph = graph
+		} else {
+			// 回退到内存图谱
+			m.graph = NewKnowledgeGraph()
+		}
 		m.graphExtractor = NewEntityExtractor(llmProvider)
 	}
 	return m, nil

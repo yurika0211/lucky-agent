@@ -19,6 +19,16 @@ const (
 	openCLIActionSite            = "site"
 	openCLIActionBrowser         = "browser"
 	openCLIActionTwitterTimeline = "twitter_timeline"
+
+	openCLIRiskNetworkRead        = "network_read"
+	openCLIRiskAuthenticatedRead  = "authenticated_read"
+	openCLIRiskBrowserState       = "browser_state"
+	openCLIRiskFilesystemDownload = "filesystem_download"
+	openCLIRiskExternalMutation   = "external_mutation"
+	openCLIRiskRaw                = "raw_opencli"
+
+	maxOpenCLITimeoutSeconds = 120
+	maxOpenCLIChars          = 200000
 )
 
 // OpenCLITool exposes OpenCLI as one entrypoint for website adapters, browser
@@ -47,19 +57,38 @@ func OpenCLITool(cfg *OpenCLIConfig, fallbackCfg *WebSearchConfig) *Tool {
 			"download_dir":    {Type: "string", Description: "Directory used as the OpenCLI working/download directory. Defaults to ~/.luckyagent/workspace/downloads/opencli. Explicit values must stay under ~/.luckyagent/workspace; relative values are resolved there.", Required: false},
 			"max_chars":       {Type: "number", Description: "Maximum characters returned to the model.", Required: false, Default: normalized.MaxChars},
 			"timeout_seconds": {Type: "number", Description: "Per-command timeout in seconds.", Required: false, Default: normalized.TimeoutSeconds},
+			"dry_run":         {Type: "boolean", Description: "Preview the OpenCLI invocation plan without executing it.", Required: false, Default: false},
+			"verbose":         {Type: "boolean", Description: "Include action, risk, workdir, source, and fallback metadata.", Required: false, Default: false},
+			"format_result":   {Type: "string", Description: "LuckyAgent tool return format: text or json.", Required: false, Default: "text"},
 		},
 		Handler: func(args map[string]any) (string, error) { return handleOpenCLI(normalized, fallbackCfg, args) },
 	}
 }
 
 type openCLIInvocation struct {
-	Action         string
-	Command        string
-	Args           []string
-	URL            string
-	MaxChars       int
-	TimeoutSeconds int
-	WorkDir        string
+	Action          string
+	Command         string
+	Args            []string
+	URL             string
+	Site            string
+	SiteCommand     string
+	MaxChars        int
+	TimeoutSeconds  int
+	WorkDir         string
+	Risk            string
+	UsesBrowser     bool
+	MayDownload     bool
+	FallbackEnabled bool
+}
+
+type openCLIRunner interface {
+	Run(ctx context.Context, command string, args []string, maxChars int, workDir string) (string, error)
+}
+
+type defaultOpenCLIRunner struct{}
+
+func (defaultOpenCLIRunner) Run(ctx context.Context, command string, args []string, maxChars int, workDir string) (string, error) {
+	return runOpenCLI(ctx, command, args, maxChars, workDir)
 }
 
 func normalizeOpenCLIConfig(cfg *OpenCLIConfig) *OpenCLIConfig {
@@ -97,26 +126,46 @@ func defaultOpenCLIWebReadArgs() []string {
 }
 
 func handleOpenCLI(cfg *OpenCLIConfig, fallbackCfg *WebSearchConfig, args map[string]any) (string, error) {
+	return handleOpenCLIWithRunner(cfg, fallbackCfg, args, defaultOpenCLIRunner{})
+}
+
+func handleOpenCLIWithRunner(cfg *OpenCLIConfig, fallbackCfg *WebSearchConfig, args map[string]any, runner openCLIRunner) (string, error) {
+	if cfg == nil {
+		cfg = normalizeOpenCLIConfig(&OpenCLIConfig{})
+	}
+	if !cfg.Enabled {
+		return "", fmt.Errorf("opencli is disabled by config: opencli.enabled=false")
+	}
 	inv, err := buildOpenCLIInvocation(cfg, args)
 	if err != nil {
 		return "", err
+	}
+	if mapBoolArg(args, "dry_run", false) {
+		return formatOpenCLIPlan(inv), nil
+	}
+	formatResult := strings.ToLower(strings.TrimSpace(openCLIStringArgDefault(args, "format_result", "text")))
+	if formatResult != "text" && formatResult != "json" {
+		return "", fmt.Errorf("unsupported opencli format_result %q (expected text or json)", formatResult)
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(inv.TimeoutSeconds)*time.Second)
 	defer cancel()
 
-	output, err := runOpenCLI(ctx, inv.Command, inv.Args, inv.MaxChars, inv.WorkDir)
+	if runner == nil {
+		runner = defaultOpenCLIRunner{}
+	}
+	output, err := runner.Run(ctx, inv.Command, inv.Args, inv.MaxChars, inv.WorkDir)
 	if inv.Action == openCLIActionWebRead {
 		if saved := readOpenCLISavedMarkdown(output, inv.MaxChars, inv.WorkDir); saved != "" {
-			return formatOpenCLIResult(saved, inv.MaxChars), nil
+			return formatOpenCLIOutputResult(inv, saved, inv.MaxChars, "opencli_saved_markdown", "", mapBoolArg(args, "verbose", false), formatResult)
 		}
 	}
 	if err == nil && strings.TrimSpace(output) != "" {
-		return formatOpenCLIResult(output, inv.MaxChars), nil
+		return formatOpenCLIOutputResult(inv, output, inv.MaxChars, "opencli", "", mapBoolArg(args, "verbose", false), formatResult)
 	}
 	if inv.Action == openCLIActionWebRead && cfg.FallbackToWebFetch && fallbackCfg != nil && strings.TrimSpace(inv.URL) != "" {
 		if result, fallbackErr := handleWebFetch(fallbackCfg, map[string]any{"url": inv.URL, "max_chars": inv.MaxChars}); fallbackErr == nil && strings.TrimSpace(result) != "" {
-			return result, nil
+			return formatOpenCLIOutputResult(inv, result, inv.MaxChars, "web_fetch_fallback", errorString(err), mapBoolArg(args, "verbose", false), formatResult)
 		}
 	}
 	if err != nil {
@@ -144,6 +193,12 @@ func buildOpenCLIInvocation(cfg *OpenCLIConfig, raw map[string]any) (openCLIInvo
 	}
 	if inv.TimeoutSeconds <= 0 {
 		inv.TimeoutSeconds = cfg.TimeoutSeconds
+	}
+	if inv.MaxChars > maxOpenCLIChars {
+		inv.MaxChars = maxOpenCLIChars
+	}
+	if inv.TimeoutSeconds > maxOpenCLITimeoutSeconds {
+		return inv, fmt.Errorf("timeout_seconds must be <= %d", maxOpenCLITimeoutSeconds)
 	}
 
 	action := normalizeOpenCLIAction(openCLIStringArg(raw, "action"))
@@ -184,7 +239,7 @@ func buildOpenCLIInvocation(cfg *OpenCLIConfig, raw map[string]any) (openCLIInvo
 		args = appendFormatArg(args, openCLIStringArgDefault(raw, "format", "md"))
 		inv.URL = url
 		inv.Args = append(args, extraArgs...)
-		return inv, nil
+		return finalizeOpenCLIInvocation(inv, cfg), nil
 
 	case openCLIActionTwitterTimeline:
 		limit := openCLINumberArg(raw, "limit", 10)
@@ -198,12 +253,16 @@ func buildOpenCLIInvocation(cfg *OpenCLIConfig, raw map[string]any) (openCLIInvo
 		args := []string{"twitter", "timeline", "--type", feedType, "--limit", strconv.Itoa(limit)}
 		args = append(args, extraArgs...)
 		inv.Args = appendFormatArg(args, openCLIStringArgDefault(raw, "format", "md"))
-		return inv, nil
+		inv.Site = "twitter"
+		inv.SiteCommand = "timeline"
+		return finalizeOpenCLIInvocation(inv, cfg), nil
 
 	case openCLIActionSite:
 		if site == "" {
 			return inv, fmt.Errorf("site is required for opencli action=site")
 		}
+		inv.Site = site
+		inv.SiteCommand = commandName
 		args := []string{site}
 		if commandName != "" {
 			args = append(args, commandName)
@@ -218,7 +277,7 @@ func buildOpenCLIInvocation(cfg *OpenCLIConfig, raw map[string]any) (openCLIInvo
 			args = ensureOpenCLIOption(args, "--limit", strconv.Itoa(limit))
 		}
 		inv.Args = appendFormatArg(args, openCLIStringArgDefault(raw, "format", "md"))
-		return inv, nil
+		return finalizeOpenCLIInvocation(inv, cfg), nil
 
 	case openCLIActionBrowser:
 		session := strings.TrimSpace(openCLIStringArgDefault(raw, "browser_session", "luckyagent"))
@@ -234,10 +293,14 @@ func buildOpenCLIInvocation(cfg *OpenCLIConfig, raw map[string]any) (openCLIInvo
 				return inv, fmt.Errorf("command or args is required for opencli action=browser")
 			}
 			inv.Args = append([]string{"browser", session}, extraArgs...)
-			return inv, nil
+			inv.Site = "browser"
+			inv.SiteCommand = strings.Join(extraArgs, " ")
+			return finalizeOpenCLIInvocation(inv, cfg), nil
 		}
 		inv.Args = append([]string{"browser", session, browserCommand}, extraArgs...)
-		return inv, nil
+		inv.Site = "browser"
+		inv.SiteCommand = browserCommand
+		return finalizeOpenCLIInvocation(inv, cfg), nil
 
 	case openCLIActionRaw:
 		if len(extraArgs) == 0 {
@@ -248,11 +311,70 @@ func buildOpenCLIInvocation(cfg *OpenCLIConfig, raw map[string]any) (openCLIInvo
 			return inv, err
 		}
 		inv.Args = args
-		return inv, nil
+		return finalizeOpenCLIInvocation(inv, cfg), nil
 
 	default:
 		return inv, fmt.Errorf("unsupported opencli action %q", action)
 	}
+}
+
+func finalizeOpenCLIInvocation(inv openCLIInvocation, cfg *OpenCLIConfig) openCLIInvocation {
+	if cfg != nil {
+		inv.FallbackEnabled = cfg.FallbackToWebFetch
+	}
+	inv.UsesBrowser = inv.Action == openCLIActionBrowser
+	inv.MayDownload = openCLIArgsMayDownload(inv.Args)
+	inv.Risk = classifyOpenCLIRisk(inv)
+	return inv
+}
+
+func classifyOpenCLIRisk(inv openCLIInvocation) string {
+	if openCLIArgsLookMutating(inv.Args) {
+		return openCLIRiskExternalMutation
+	}
+	if inv.MayDownload {
+		return openCLIRiskFilesystemDownload
+	}
+	switch inv.Action {
+	case openCLIActionWebRead:
+		return openCLIRiskNetworkRead
+	case openCLIActionTwitterTimeline:
+		return openCLIRiskAuthenticatedRead
+	case openCLIActionBrowser:
+		return openCLIRiskBrowserState
+	case openCLIActionRaw:
+		return openCLIRiskRaw
+	case openCLIActionSite:
+		return openCLIRiskNetworkRead
+	default:
+		return openCLIRiskRaw
+	}
+}
+
+func openCLIArgsMayDownload(args []string) bool {
+	for i, arg := range args {
+		lower := strings.ToLower(strings.TrimSpace(arg))
+		if lower == "--download-images" && i+1 < len(args) && strings.EqualFold(strings.TrimSpace(args[i+1]), "true") {
+			return true
+		}
+		if strings.Contains(lower, "download") && lower != "--download-images" && lower != "--download-images=false" {
+			return true
+		}
+	}
+	return false
+}
+
+func openCLIArgsLookMutating(args []string) bool {
+	keywords := []string{"post", "publish", "send", "delete", "remove", "follow", "unfollow", "like", "unlike", "upload", "create", "update", "edit"}
+	for _, arg := range args {
+		lower := strings.ToLower(strings.TrimSpace(arg))
+		for _, keyword := range keywords {
+			if lower == keyword || strings.Contains(lower, keyword+"-") || strings.Contains(lower, keyword+"_") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func normalizeRawOpenCLIArgs(args []string) ([]string, error) {
@@ -676,6 +798,70 @@ func formatOpenCLIResult(output string, maxChars int) string {
 		return fmt.Sprintf("# %s\n\n%s", title, cleaned)
 	}
 	return cleaned
+}
+
+func formatOpenCLIPlan(inv openCLIInvocation) string {
+	var b strings.Builder
+	b.WriteString("Would run OpenCLI\n")
+	b.WriteString("Action: " + inv.Action + "\n")
+	b.WriteString("Command: " + inv.Command + "\n")
+	b.WriteString("Args: " + strings.Join(inv.Args, " ") + "\n")
+	b.WriteString("WorkDir: " + inv.WorkDir + "\n")
+	b.WriteString(fmt.Sprintf("Timeout: %ds\n", inv.TimeoutSeconds))
+	b.WriteString(fmt.Sprintf("MaxChars: %d\n", inv.MaxChars))
+	b.WriteString("Risk: " + inv.Risk + "\n")
+	if inv.FallbackEnabled {
+		b.WriteString("Fallback: web_fetch\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatOpenCLIOutputResult(inv openCLIInvocation, output string, maxChars int, source string, openCLIErr string, verbose bool, formatResult string) (string, error) {
+	content := formatOpenCLIResult(output, maxChars)
+	if formatResult == "json" {
+		payload := map[string]any{
+			"action":       inv.Action,
+			"command":      inv.Command,
+			"args":         inv.Args,
+			"work_dir":     inv.WorkDir,
+			"risk":         inv.Risk,
+			"source":       source,
+			"content":      content,
+			"truncated":    maxChars > 0 && len(normalizeOpenCLIOutput(output)) > maxChars,
+			"fallback":     inv.FallbackEnabled,
+			"uses_browser": inv.UsesBrowser,
+			"may_download": inv.MayDownload,
+		}
+		if openCLIErr != "" {
+			payload["opencli_error"] = openCLIErr
+		}
+		data, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	if !verbose {
+		return content, nil
+	}
+	var b strings.Builder
+	b.WriteString("Action: " + inv.Action + "\n")
+	b.WriteString("Source: " + source + "\n")
+	b.WriteString("Risk: " + inv.Risk + "\n")
+	b.WriteString("WorkDir: " + inv.WorkDir + "\n")
+	if openCLIErr != "" {
+		b.WriteString("OpenCLI error: " + openCLIErr + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(content)
+	return b.String(), nil
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func normalizeOpenCLIOutput(output string) string {

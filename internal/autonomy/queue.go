@@ -128,9 +128,21 @@ func (q *TaskQueue) Add(title, description string, priority TaskPriority, tags [
 // AddWithError adds a task and returns persistence errors to callers that need
 // to surface operational failures.
 func (q *TaskQueue) AddWithError(title, description string, priority TaskPriority, tags []string) (*QueueTask, error) {
+	return q.AddWithMetadata(title, description, priority, tags, nil)
+}
+
+// AddWithMetadata adds a task with caller-supplied metadata.
+func (q *TaskQueue) AddWithMetadata(title, description string, priority TaskPriority, tags []string, metadata map[string]string) (*QueueTask, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
+	meta := make(map[string]string, len(metadata))
+	for k, v := range metadata {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		meta[k] = v
+	}
 	id := fmt.Sprintf("tq-%d", q.nextID.Add(1))
 	task := &QueueTask{
 		ID:          id,
@@ -139,7 +151,7 @@ func (q *TaskQueue) AddWithError(title, description string, priority TaskPriorit
 		Priority:    priority,
 		State:       TaskReady,
 		Tags:        tags,
-		Metadata:    make(map[string]string),
+		Metadata:    meta,
 		CreatedAt:   time.Now(),
 	}
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -11,7 +12,9 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/collab"
 	"github.com/yurika0211/luckyagent/internal/config"
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
@@ -80,6 +83,28 @@ func TestNew(t *testing.T) {
 	if s.rateLimiter == nil {
 		t.Error("rate limiter should not be nil")
 	}
+	if a.TaskStore() == nil {
+		t.Fatal("agent task store should be initialized")
+	}
+	if err := s.collabRegistry.Register(&collab.AgentProfile{ID: "agent-test", Name: "Agent Test"}); err != nil {
+		t.Fatalf("register collab agent: %v", err)
+	}
+	task, err := s.delegateManager.Delegate(context.Background(), collab.ModeParallel, "test unified store", "input", []string{"agent-test"}, time.Second)
+	if err != nil {
+		t.Fatalf("delegate collab task: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		record, ok, err := a.TaskStore().Get(task.ID)
+		if err != nil {
+			t.Fatalf("get task store record: %v", err)
+		}
+		if ok && record.Status == taskstore.StatusCompleted {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task store record: %s", task.ID)
 }
 
 func TestDefaultServerConfig(t *testing.T) {
@@ -131,6 +156,42 @@ func TestHandleMemoryStats(t *testing.T) {
 	}
 	if _, ok := resp["tidal"].(map[string]interface{}); !ok {
 		t.Fatalf("expected tidal stats in response, got %#v", resp)
+	}
+}
+
+func TestHandleProactiveStatus(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/proactive/status?limit=5", nil)
+	w := httptest.NewRecorder()
+	s.handleProactiveStatus(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["enabled"] != false {
+		t.Fatalf("expected proactive disabled by default, got %#v", resp)
+	}
+	if _, ok := resp["stats"].(map[string]interface{}); !ok {
+		t.Fatalf("expected proactive stats, got %#v", resp)
+	}
+}
+
+func TestHandleProactiveStatusRejectsInvalidLimit(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/proactive/status?limit=bad", nil)
+	w := httptest.NewRecorder()
+	s.handleProactiveStatus(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", w.Code, w.Body.String())
 	}
 }
 
@@ -382,6 +443,196 @@ func TestHandleSessionsPagination(t *testing.T) {
 	}
 	if resp["has_more"] != false {
 		t.Fatalf("expected has_more false, got %v", resp["has_more"])
+	}
+}
+
+func TestHandleTasksAPI(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	record, err := a.TaskStore().Create(taskstore.Record{
+		ID:          "task-api-test",
+		Source:      taskstore.SourceHTTP,
+		Mode:        taskstore.ModeParallel,
+		Status:      taskstore.StatusCompleted,
+		Description: "test task api",
+	})
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := a.TaskStore().AppendEvent(taskstore.Event{
+		Type:    taskstore.EventCompleted,
+		TaskID:  record.ID,
+		Status:  taskstore.StatusCompleted,
+		Message: "done",
+		Files:   []string{"internal/server/task_handlers.go"},
+	}); err != nil {
+		t.Fatalf("append event: %v", err)
+	}
+	if err := a.TaskStore().SavePlannerTrace(record.ID, map[string]any{"planner": "test"}); err != nil {
+		t.Fatalf("save trace: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks?source=http", nil)
+	w := httptest.NewRecorder()
+	s.handleTasks(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 list, got %d: %s", w.Code, w.Body.String())
+	}
+	var listResp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&listResp); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if listResp["count"] != float64(1) {
+		t.Fatalf("expected one task, got %+v", listResp)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 detail, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/events", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 events, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/trace", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 trace, got %d: %s", w.Code, w.Body.String())
+	}
+	var trace map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&trace); err != nil {
+		t.Fatalf("decode trace: %v", err)
+	}
+	if trace["planner"] != "test" {
+		t.Fatalf("unexpected trace: %+v", trace)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/observation", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 observation, got %d: %s", w.Code, w.Body.String())
+	}
+	var obs map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&obs); err != nil {
+		t.Fatalf("decode observation: %v", err)
+	}
+	if obs["recommended_next"] != "verify" {
+		t.Fatalf("expected verify recommendation, got %+v", obs)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-api-test/feedback", bytes.NewBufferString(`{"status":"completed","verified":true,"verifier":"test","user_feedback":"accepted","score":0.9,"recommended_next":"finalize"}`))
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 feedback, got %d: %s", w.Code, w.Body.String())
+	}
+	updated, ok, err := a.TaskStore().Get(record.ID)
+	if err != nil || !ok {
+		t.Fatalf("get feedback task: ok=%t err=%v", ok, err)
+	}
+	if !updated.Outcome.Verified || updated.Outcome.UserFeedback != "accepted" || updated.Outcome.RecommendedNext != "finalize" {
+		t.Fatalf("unexpected outcome: %+v", updated.Outcome)
+	}
+	events, err := a.TaskStore().Events(record.ID)
+	if err != nil {
+		t.Fatalf("events after feedback: %v", err)
+	}
+	if events[len(events)-1].Type != taskstore.EventOutcomeRecorded {
+		t.Fatalf("expected outcome event, got %+v", events[len(events)-1])
+	}
+
+	cancelRecord, err := a.TaskStore().Create(taskstore.Record{
+		ID:          "task-cancel-test",
+		Source:      taskstore.SourceTool,
+		Mode:        taskstore.ModeSingle,
+		Status:      taskstore.StatusRunning,
+		Description: "cancel me",
+	})
+	if err != nil {
+		t.Fatalf("create cancel task: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-cancel-test/cancel", bytes.NewBufferString(`{"reason":"stop now"}`))
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 cancel, got %d: %s", w.Code, w.Body.String())
+	}
+	cancelled, ok, err := a.TaskStore().Get(cancelRecord.ID)
+	if err != nil || !ok {
+		t.Fatalf("get cancel task: ok=%t err=%v", ok, err)
+	}
+	if cancelled.Status != taskstore.StatusCancelled || cancelled.Outcome.UserFeedback != "stop now" {
+		t.Fatalf("unexpected cancelled task: %+v", cancelled)
+	}
+}
+
+func TestHandleSessionCompactDryRun(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	sess := a.Sessions().Ensure("compact-api-dry")
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and keep compact API dry-run safe.")
+	sess.AddToolMessage("terminal", "go test ./internal/server will verify dry-run compact behavior")
+	before := sess.MessageCount()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/compact-api-dry/compact", bytes.NewReader([]byte(`{"dry_run":true,"force_local":true}`)))
+	w := httptest.NewRecorder()
+	s.handleSessionByID(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := sess.MessageCount(); got != before {
+		t.Fatalf("dry-run must not append boundary: got %d messages, want %d", got, before)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["dry_run"] != true || resp["summary_source"] != "local" {
+		t.Fatalf("unexpected compact response: %+v", resp)
+	}
+}
+
+func TestHandleSessionCompactLatestTrace(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	sess := a.Sessions().Ensure("compact-api-write")
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and expose compact API trace.")
+	sess.AddToolMessage("terminal", "go test ./internal/server should pass for compact API trace")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/compact-api-write/compact", bytes.NewReader([]byte(`{"force_local":true}`)))
+	w := httptest.NewRecorder()
+	s.handleSessionByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/sessions/compact-api-write/compact/latest", nil)
+	w = httptest.NewRecorder()
+	s.handleSessionByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	trace, ok := resp["trace"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected trace object, got %+v", resp)
+	}
+	if trace["summary_source"] != "local" || trace["dropped_messages"] != float64(2) {
+		t.Fatalf("unexpected compact trace: %+v", trace)
 	}
 }
 
@@ -1000,6 +1251,46 @@ func TestHandleRAGSearchNoQuery(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleRAGSearchOptionsDoNotMutateGlobalRetriever(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	if _, err := a.RAG().IndexText("isolated-source", "Isolated", "search option isolation evidence"); err != nil {
+		t.Fatal(err)
+	}
+	before := a.RAG().RetrieverConfig()
+	body := map[string]any{
+		"query":      "isolation evidence",
+		"top_k":      1,
+		"min_score":  0.8,
+		"source":     "isolated-source",
+		"use_mmr":    true,
+		"mmr_lambda": 0.4,
+	}
+	b, _ := json.Marshal(body)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/search", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	s.handleRAGSearch(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	after := a.RAG().RetrieverConfig()
+	if after != before {
+		t.Fatalf("per-request options mutated global retriever: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestHandleRAGSearchRejectsUnsafeOptions(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	b, _ := json.Marshal(map[string]any{"query": "test", "top_k": 21})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/search", bytes.NewReader(b))
+	w := httptest.NewRecorder()
+	s.handleRAGSearch(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

@@ -50,6 +50,11 @@ func newMsgGatewayStartTestCmd() *cobra.Command {
 	cmd.Flags().String("napcat-listen", "", "")
 	cmd.Flags().String("napcat-path", "", "")
 	cmd.Flags().String("napcat-access-token", "", "")
+	cmd.Flags().String("feishu-app-id", "", "")
+	cmd.Flags().String("feishu-app-secret", "", "")
+	cmd.Flags().String("feishu-verification-token", "", "")
+	cmd.Flags().String("feishu-listen", "", "")
+	cmd.Flags().String("feishu-path", "", "")
 	cmd.Flags().Bool("all", false, "")
 	return cmd
 }
@@ -65,6 +70,11 @@ func TestResolveMsgGatewayStartOptionsUsesConfigDefaults(t *testing.T) {
 	cfg.MsgGateway.NapCat.ListenAddr = "127.0.0.1:6701"
 	cfg.MsgGateway.NapCat.Path = "/onebot/v11/ws"
 	cfg.MsgGateway.NapCat.AccessToken = "nap-token"
+	cfg.MsgGateway.Feishu.AppID = "cli-feishu-app"
+	cfg.MsgGateway.Feishu.AppSecret = "feishu-secret"
+	cfg.MsgGateway.Feishu.VerificationToken = "feishu-verify"
+	cfg.MsgGateway.Feishu.ListenAddr = "127.0.0.1:6710"
+	cfg.MsgGateway.Feishu.Path = "/feishu/events"
 
 	opts := resolveMsgGatewayStartOptions(cmd, cfg)
 	if opts.Platform != "telegram" {
@@ -82,11 +92,18 @@ func TestResolveMsgGatewayStartOptionsUsesConfigDefaults(t *testing.T) {
 	if opts.NapCatListenAddr != "127.0.0.1:6701" || opts.NapCatPath != "/onebot/v11/ws" || opts.NapCatAccessToken != "nap-token" {
 		t.Fatalf("expected napcat config defaults, got listen=%q path=%q token=%q", opts.NapCatListenAddr, opts.NapCatPath, opts.NapCatAccessToken)
 	}
+	if opts.FeishuAppID != "cli-feishu-app" || opts.FeishuAppSecret != "feishu-secret" || opts.FeishuVerifyToken != "feishu-verify" {
+		t.Fatalf("expected feishu credentials from config, got app=%q secret=%q token=%q", opts.FeishuAppID, opts.FeishuAppSecret, opts.FeishuVerifyToken)
+	}
+	if opts.FeishuListenAddr != "127.0.0.1:6710" || opts.FeishuPath != "/feishu/events" {
+		t.Fatalf("expected feishu callback defaults, got listen=%q path=%q", opts.FeishuListenAddr, opts.FeishuPath)
+	}
 }
 
 func TestRunConfigGetSupportsMultimodalKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	configDir := filepath.Join(home, ".luckyagent")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
@@ -126,6 +143,49 @@ func TestRunConfigGetSupportsMultimodalKeys(t *testing.T) {
 	}
 }
 
+func TestRunConfigGetSupportsFeishuKeys(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configDir := filepath.Join(home, ".luckyagent")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	data := []byte(`{
+  "msg_gateway": {
+    "feishu": {
+      "app_id": "cli_test",
+      "app_secret": "secret-1234567890",
+      "verification_token": "verify-1234567890",
+      "listen_addr": "127.0.0.1:7710"
+    }
+  }
+}`)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := captureStdout(t, func() error {
+		return runConfigGet(&cobra.Command{}, []string{"msg_gateway.feishu.listen_addr"})
+	})
+	if err != nil {
+		t.Fatalf("runConfigGet feishu listen_addr: %v", err)
+	}
+	if strings.TrimSpace(out) != "127.0.0.1:7710" {
+		t.Fatalf("unexpected listen_addr output: %q", out)
+	}
+
+	out, err = captureStdout(t, func() error {
+		return runConfigGet(&cobra.Command{}, []string{"msg_gateway.feishu.app_secret"})
+	})
+	if err != nil {
+		t.Fatalf("runConfigGet feishu app_secret: %v", err)
+	}
+	if strings.TrimSpace(out) != "secret-1..." {
+		t.Fatalf("unexpected masked app_secret output: %q", out)
+	}
+}
+
 func TestResolveMsgGatewayStartOptionsFlagsOverrideConfig(t *testing.T) {
 	cmd := newMsgGatewayStartTestCmd()
 	if err := cmd.Flags().Set("platform", "qqofficial"); err != nil {
@@ -140,11 +200,19 @@ func TestResolveMsgGatewayStartOptionsFlagsOverrideConfig(t *testing.T) {
 	if err := cmd.Flags().Set("napcat-listen", "0.0.0.0:6701"); err != nil {
 		t.Fatal(err)
 	}
+	if err := cmd.Flags().Set("feishu-app-id", "flag-feishu-app"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Flags().Set("feishu-listen", "0.0.0.0:6710"); err != nil {
+		t.Fatal(err)
+	}
 	cfg := &config.Config{}
 	cfg.MsgGateway.Platform = "telegram"
 	cfg.MsgGateway.QQOfficial.AppID = "config-app"
 	cfg.MsgGateway.QQOfficial.AppSecret = "config-secret"
 	cfg.MsgGateway.NapCat.ListenAddr = "127.0.0.1:6701"
+	cfg.MsgGateway.Feishu.AppID = "config-feishu-app"
+	cfg.MsgGateway.Feishu.ListenAddr = "127.0.0.1:6710"
 
 	opts := resolveMsgGatewayStartOptions(cmd, cfg)
 	if opts.Platform != "qqofficial" {
@@ -155,6 +223,9 @@ func TestResolveMsgGatewayStartOptionsFlagsOverrideConfig(t *testing.T) {
 	}
 	if opts.NapCatListenAddr != "0.0.0.0:6701" {
 		t.Fatalf("expected napcat listen from flag, got %q", opts.NapCatListenAddr)
+	}
+	if opts.FeishuAppID != "flag-feishu-app" || opts.FeishuListenAddr != "0.0.0.0:6710" {
+		t.Fatalf("expected feishu overrides from flags, got app=%q listen=%q", opts.FeishuAppID, opts.FeishuListenAddr)
 	}
 }
 
@@ -191,6 +262,28 @@ func TestValidateMsgGatewayStartOptionsRejectsMissingOpenClawWeixinAccount(t *te
 func TestValidateMsgGatewayStartOptionsAcceptsNapCatWithoutCredentials(t *testing.T) {
 	if err := validateMsgGatewayStartOptions(msgGatewayStartOptions{Platform: "napcat"}); err != nil {
 		t.Fatalf("expected napcat to validate without credentials, got %v", err)
+	}
+}
+
+func TestValidateMsgGatewayStartOptionsRejectsMissingFeishuCredentials(t *testing.T) {
+	err := validateMsgGatewayStartOptions(msgGatewayStartOptions{Platform: "feishu"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "verification_token") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateMsgGatewayStartOptionsAcceptsFeishuCredentials(t *testing.T) {
+	err := validateMsgGatewayStartOptions(msgGatewayStartOptions{
+		Platform:          "feishu",
+		FeishuAppID:       "cli_xxx",
+		FeishuAppSecret:   "secret",
+		FeishuVerifyToken: "verify",
+	})
+	if err != nil {
+		t.Fatalf("expected feishu options to validate, got %v", err)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,17 +104,56 @@ func (s *SQLiteStore) initSchema() error {
 		}
 	}
 
-	// Store dimension
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO store_meta (key, value) VALUES ('dimension', ?)`, fmt.Sprintf("%d", s.dim))
-	if err != nil {
-		return fmt.Errorf("store dimension: %w", err)
+	var storedDimension string
+	err := s.db.QueryRow(`SELECT value FROM store_meta WHERE key = 'dimension'`).Scan(&storedDimension)
+	switch err {
+	case nil:
+		stored, parseErr := strconv.Atoi(storedDimension)
+		if parseErr != nil || stored != s.dim {
+			return fmt.Errorf("vector dimension mismatch: index=%q runtime=%d; rebuild the RAG index", storedDimension, s.dim)
+		}
+	case sql.ErrNoRows:
+		if _, err := s.db.Exec(`INSERT INTO store_meta (key, value) VALUES ('dimension', ?)`, fmt.Sprintf("%d", s.dim)); err != nil {
+			return fmt.Errorf("store dimension: %w", err)
+		}
+	default:
+		return fmt.Errorf("read stored dimension: %w", err)
 	}
 
 	return nil
 }
 
+// EnsureEmbeddingFingerprint prevents vectors from different embedding models
+// from being mixed in one index.
+func (s *SQLiteStore) EnsureEmbeddingFingerprint(fingerprint string) error {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return fmt.Errorf("embedding fingerprint is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var stored string
+	err := s.db.QueryRow(`SELECT value FROM store_meta WHERE key = 'embedding_fingerprint'`).Scan(&stored)
+	switch err {
+	case nil:
+		if stored != fingerprint {
+			return fmt.Errorf("embedding fingerprint mismatch: index=%q runtime=%q; rebuild the RAG index", stored, fingerprint)
+		}
+		return nil
+	case sql.ErrNoRows:
+		_, err = s.db.Exec(`INSERT INTO store_meta (key, value) VALUES ('embedding_fingerprint', ?)`, fingerprint)
+		return err
+	default:
+		return err
+	}
+}
+
 // Dimension returns the expected vector dimension.
 func (s *SQLiteStore) Dimension() int { return s.dim }
+
+// DB returns the underlying database connection (for advanced use).
+func (s *SQLiteStore) DB() *sql.DB { return s.db }
 
 // Len returns the number of stored vectors.
 func (s *SQLiteStore) Len() int {
@@ -399,6 +440,101 @@ func decodeVectorBlob(blob []byte) ([]float64, error) {
 
 // --- Document and Chunk persistence ---
 
+// ReplaceDocument atomically replaces a document, its chunks, and vectors.
+// Embeddings must be fully staged before this method is called.
+func (s *SQLiteStore) ReplaceDocument(doc *Document, chunks map[string]*Chunk, vectors map[string][]float64, oldChunkIDs []string) error {
+	if doc == nil {
+		return fmt.Errorf("document is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin replace transaction: %w", err)
+	}
+	rollback := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+
+	for _, id := range oldChunkIDs {
+		if _, err := tx.Exec("DELETE FROM vectors WHERE id = ?", id); err != nil {
+			return rollback(fmt.Errorf("delete old vector %s: %w", id, err))
+		}
+	}
+	if _, err := tx.Exec("DELETE FROM chunks WHERE doc_id = ?", doc.ID); err != nil {
+		return rollback(fmt.Errorf("delete old chunks for %s: %w", doc.ID, err))
+	}
+
+	for _, id := range doc.Chunks {
+		chunk := chunks[id]
+		vector := vectors[id]
+		if chunk == nil || len(vector) != s.dim {
+			return rollback(fmt.Errorf("invalid staged chunk %s", id))
+		}
+		normalized := normalizeVector(vector)
+		blob, err := encodeVectorBlob(normalized)
+		if err != nil {
+			return rollback(fmt.Errorf("encode vector %s: %w", id, err))
+		}
+		metadataJSON, err := json.Marshal(chunk.Metadata)
+		if err != nil {
+			return rollback(fmt.Errorf("marshal metadata %s: %w", id, err))
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO vectors (id, dimension, vector, metadata, updated_at)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET dimension=excluded.dimension, vector=excluded.vector, metadata=excluded.metadata, updated_at=excluded.updated_at`,
+			id, s.dim, blob, string(metadataJSON), time.Now().UTC().Format(time.RFC3339),
+		); err != nil {
+			return rollback(fmt.Errorf("upsert vector %s: %w", id, err))
+		}
+		if _, err := tx.Exec(
+			`INSERT INTO chunks (id, content, metadata, doc_id)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(id) DO UPDATE SET content=excluded.content, metadata=excluded.metadata, doc_id=excluded.doc_id`,
+			id, chunk.Content, string(metadataJSON), doc.ID,
+		); err != nil {
+			return rollback(fmt.Errorf("upsert chunk %s: %w", id, err))
+		}
+	}
+
+	chunkIDsJSON, err := json.Marshal(doc.Chunks)
+	if err != nil {
+		return rollback(fmt.Errorf("marshal document chunks: %w", err))
+	}
+	docMetaJSON, err := json.Marshal(doc.Metadata)
+	if err != nil {
+		return rollback(fmt.Errorf("marshal document metadata: %w", err))
+	}
+	if _, err := tx.Exec(
+		`INSERT INTO documents (id, path, title, chunk_ids, indexed_at, metadata)
+		 VALUES (?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET path=excluded.path, title=excluded.title, chunk_ids=excluded.chunk_ids, indexed_at=excluded.indexed_at, metadata=excluded.metadata`,
+		doc.ID, doc.Path, doc.Title, string(chunkIDsJSON), doc.IndexedAt.Format(time.RFC3339), string(docMetaJSON),
+	); err != nil {
+		return rollback(fmt.Errorf("upsert document %s: %w", doc.ID, err))
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit document %s: %w", doc.ID, err)
+	}
+
+	if s.loaded {
+		for _, id := range oldChunkIDs {
+			delete(s.cache, id)
+		}
+		for _, id := range doc.Chunks {
+			s.cache[id] = &VectorEntry{
+				ID:       id,
+				Vector:   normalizeVector(vectors[id]),
+				Metadata: copyMap(chunks[id].Metadata),
+			}
+		}
+	}
+	return nil
+}
+
 // SaveDocument persists a document and its chunks to SQLite.
 func (s *SQLiteStore) SaveDocument(doc *Document, chunks map[string]*Chunk) error {
 	s.mu.Lock()
@@ -527,15 +663,32 @@ func (s *SQLiteStore) DeleteDocument(docID string) error {
 	var chunkIDs []string
 	json.Unmarshal([]byte(chunkIDsJSON), &chunkIDs)
 
-	// Delete chunks
-	for _, cid := range chunkIDs {
-		s.db.Exec("DELETE FROM chunks WHERE id = ?", cid)
-	}
-
-	// Delete document
-	_, err = s.db.Exec("DELETE FROM documents WHERE id = ?", docID)
+	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("delete document %s: %w", docID, err)
+		return fmt.Errorf("begin delete document %s: %w", docID, err)
+	}
+	rollback := func(cause error) error {
+		_ = tx.Rollback()
+		return cause
+	}
+	for _, cid := range chunkIDs {
+		if _, err := tx.Exec("DELETE FROM vectors WHERE id = ?", cid); err != nil {
+			return rollback(fmt.Errorf("delete vector %s: %w", cid, err))
+		}
+	}
+	if _, err := tx.Exec("DELETE FROM chunks WHERE doc_id = ?", docID); err != nil {
+		return rollback(fmt.Errorf("delete chunks for %s: %w", docID, err))
+	}
+	if _, err := tx.Exec("DELETE FROM documents WHERE id = ?", docID); err != nil {
+		return rollback(fmt.Errorf("delete document %s: %w", docID, err))
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete document %s: %w", docID, err)
+	}
+	if s.loaded {
+		for _, cid := range chunkIDs {
+			delete(s.cache, cid)
+		}
 	}
 
 	return nil

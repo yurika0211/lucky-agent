@@ -14,6 +14,53 @@ import (
 	"github.com/yurika0211/luckyagent/internal/utils"
 )
 
+const CompactBoundaryName = "compact_boundary"
+
+// CompactMetadata records a session compaction boundary.
+type CompactMetadata struct {
+	ID                  string              `json:"id"`
+	Trigger             string              `json:"trigger"`
+	Summary             string              `json:"summary"`
+	FromMessage         int                 `json:"from_message,omitempty"`
+	ToMessage           int                 `json:"to_message,omitempty"`
+	ContentHash         string              `json:"content_hash,omitempty"`
+	PolicyVersion       string              `json:"policy_version,omitempty"`
+	CreatedAt           time.Time           `json:"created_at"`
+	PreTokenEstimate    int                 `json:"pre_token_estimate,omitempty"`
+	PostTokenEstimate   int                 `json:"post_token_estimate,omitempty"`
+	SummaryTokens       int                 `json:"summary_tokens,omitempty"`
+	DroppedMessages     int                 `json:"dropped_messages,omitempty"`
+	RetainedMessages    int                 `json:"retained_messages,omitempty"`
+	RestoredAttachments int                 `json:"restored_attachments,omitempty"`
+	SummarySource       string              `json:"summary_source,omitempty"`
+	Attachments         []CompactAttachment `json:"attachments,omitempty"`
+}
+
+type CompactAttachment struct {
+	Kind     string `json:"kind"`
+	Source   string `json:"source,omitempty"`
+	Content  string `json:"content"`
+	Priority int    `json:"priority,omitempty"`
+	Tokens   int    `json:"tokens,omitempty"`
+}
+
+type CompactTrace struct {
+	BoundaryID          string    `json:"boundary_id"`
+	Trigger             string    `json:"trigger"`
+	CreatedAt           time.Time `json:"created_at"`
+	PreTokenEstimate    int       `json:"pre_token_estimate,omitempty"`
+	PostTokenEstimate   int       `json:"post_token_estimate,omitempty"`
+	SummaryTokens       int       `json:"summary_tokens,omitempty"`
+	DroppedMessages     int       `json:"dropped_messages,omitempty"`
+	RetainedMessages    int       `json:"retained_messages,omitempty"`
+	RestoredAttachments int       `json:"restored_attachments,omitempty"`
+	SummarySource       string    `json:"summary_source,omitempty"`
+	FromMessage         int       `json:"from_message,omitempty"`
+	ToMessage           int       `json:"to_message,omitempty"`
+	ContentHash         string    `json:"content_hash,omitempty"`
+	PolicyVersion       string    `json:"policy_version,omitempty"`
+}
+
 // Session 代表一次对话会话
 type Session struct {
 	mu        sync.RWMutex
@@ -161,6 +208,178 @@ func (s *Session) AddToolMessageWithCallID(callID, toolName, result string) {
 		ToolCallID: callID,
 		Name:       toolName,
 	})
+}
+
+// AddCompactBoundary appends a compact boundary marker. The marker summary
+// represents prior raw history for future context construction.
+func (s *Session) AddCompactBoundary(meta CompactMetadata) provider.Message {
+	if strings.TrimSpace(meta.ID) == "" {
+		meta.ID = fmt.Sprintf("compact-%d", time.Now().UnixNano())
+	}
+	if strings.TrimSpace(meta.Trigger) == "" {
+		meta.Trigger = "manual"
+	}
+	if meta.CreatedAt.IsZero() {
+		meta.CreatedAt = time.Now()
+	}
+	msg := CompactBoundaryMessage(meta)
+	s.AddProviderMessage(msg)
+	return msg
+}
+
+func (s *Session) UndoLatestCompactBoundary(keepAfter bool) (CompactMetadata, error) {
+	if err := s.loadMessages(); err != nil {
+		return CompactMetadata{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	last := -1
+	for i, msg := range s.Messages {
+		if IsCompactBoundary(msg) {
+			last = i
+		}
+	}
+	if last < 0 {
+		return CompactMetadata{}, fmt.Errorf("compact boundary not found")
+	}
+	if last < len(s.Messages)-1 && !keepAfter {
+		return CompactMetadata{}, fmt.Errorf("compact boundary has newer messages; pass keepAfter to preserve them while removing the boundary")
+	}
+	meta, _ := ParseCompactMetadata(s.Messages[last])
+	s.Messages = append(s.Messages[:last], s.Messages[last+1:]...)
+	s.messageCount = len(s.Messages)
+	s.UpdatedAt = time.Now()
+	return meta, nil
+}
+
+// CompactBoundaryMessage converts metadata to a system marker message.
+func CompactBoundaryMessage(meta CompactMetadata) provider.Message {
+	meta.Summary = strings.TrimSpace(meta.Summary)
+	data, err := json.Marshal(meta)
+	content := meta.Summary
+	if err == nil {
+		content = string(data)
+	}
+	return provider.Message{
+		Role:    "system",
+		Name:    CompactBoundaryName,
+		Content: content,
+	}
+}
+
+func IsCompactBoundary(msg provider.Message) bool {
+	return msg.Role == "system" && msg.Name == CompactBoundaryName
+}
+
+func ParseCompactMetadata(msg provider.Message) (CompactMetadata, bool) {
+	if !IsCompactBoundary(msg) {
+		return CompactMetadata{}, false
+	}
+	var meta CompactMetadata
+	if err := json.Unmarshal([]byte(strings.TrimSpace(msg.Content)), &meta); err == nil {
+		return meta, true
+	}
+	summary := strings.TrimSpace(msg.Content)
+	if summary == "" {
+		return CompactMetadata{}, false
+	}
+	return CompactMetadata{Summary: summary}, true
+}
+
+// CompactSegments returns immutable compact summaries in append order and the
+// raw message tail not covered by any summary. Ranges count non-boundary
+// provider messages and use [FromMessage, ToMessage) semantics.
+func CompactSegments(messages []provider.Message) ([]CompactMetadata, []provider.Message, int) {
+	if len(messages) == 0 {
+		return nil, nil, 0
+	}
+
+	raw := make([]provider.Message, 0, len(messages))
+	segments := make([]CompactMetadata, 0, 4)
+	covered := 0
+	for _, msg := range messages {
+		if !IsCompactBoundary(msg) {
+			raw = append(raw, msg)
+			continue
+		}
+		meta, ok := ParseCompactMetadata(msg)
+		if !ok {
+			continue
+		}
+		// Legacy compaction folded the previous summary into each new boundary.
+		// Treat it as one cumulative segment so old sessions do not inject every
+		// superseded summary alongside the latest one.
+		legacyRange := meta.ToMessage <= meta.FromMessage
+		if legacyRange {
+			segments = segments[:0]
+			covered = 0
+			meta.FromMessage = 0
+			meta.ToMessage = len(raw)
+		}
+		if meta.FromMessage < covered {
+			meta.FromMessage = covered
+		}
+		if meta.ToMessage > len(raw) {
+			meta.ToMessage = len(raw)
+		}
+		if meta.ToMessage <= meta.FromMessage {
+			// Some legacy sessions persist only the boundary marker because their
+			// raw history was already removed. Keep the summary and trace visible.
+			if legacyRange && strings.TrimSpace(meta.Summary) != "" {
+				segments = append(segments, meta)
+			}
+			continue
+		}
+		segments = append(segments, meta)
+		if meta.ToMessage > covered {
+			covered = meta.ToMessage
+		}
+	}
+	if covered > len(raw) {
+		covered = len(raw)
+	}
+	return segments, append([]provider.Message(nil), raw[covered:]...), covered
+}
+
+// MessagesAfterLastCompactBoundary returns the logical raw tail after all
+// compact segments, the latest segment metadata, and the cumulative number of
+// raw messages represented by summaries.
+func MessagesAfterLastCompactBoundary(messages []provider.Message) ([]provider.Message, CompactMetadata, int, bool) {
+	segments, after, covered := CompactSegments(messages)
+	if len(segments) == 0 {
+		return messages, CompactMetadata{}, 0, false
+	}
+	return after, segments[len(segments)-1], covered, true
+}
+
+func (s *Session) LatestCompactTrace() (CompactTrace, bool) {
+	messages := s.GetMessages()
+	_, meta, _, ok := MessagesAfterLastCompactBoundary(messages)
+	if !ok {
+		return CompactTrace{}, false
+	}
+	return CompactTraceFromMetadata(meta), true
+}
+
+func CompactTraceFromMetadata(meta CompactMetadata) CompactTrace {
+	return CompactTrace{
+		BoundaryID:          meta.ID,
+		Trigger:             meta.Trigger,
+		CreatedAt:           meta.CreatedAt,
+		PreTokenEstimate:    meta.PreTokenEstimate,
+		PostTokenEstimate:   meta.PostTokenEstimate,
+		SummaryTokens:       meta.SummaryTokens,
+		DroppedMessages:     meta.DroppedMessages,
+		RetainedMessages:    meta.RetainedMessages,
+		RestoredAttachments: meta.RestoredAttachments,
+		SummarySource:       meta.SummarySource,
+		FromMessage:         meta.FromMessage,
+		ToMessage:           meta.ToMessage,
+		ContentHash:         meta.ContentHash,
+		PolicyVersion:       meta.PolicyVersion,
+	}
 }
 
 // GetMessages 获取消息（懒加载 + 滑动窗口）

@@ -158,13 +158,16 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
 |---|---|---|
 | Gravitational Field Sampler | 采样 `time_of_day`、`day_of_week`、`workspace_context`、最近 runtime activity，暂不做侵入式活动窗口监听 | `internal/proactive/sampler.go` |
 | State Estimator | 启发式估计 `coding`、`planning`、`low_energy`、`unknown`，输出 confidence / noise_variance / reasons | `internal/proactive/estimator.go` |
-| Feedback Calibrator | 根据最近 feedback accuracy 保守校准 confidence；少于 3 条反馈时不介入 | `internal/proactive/calibrator.go` |
-| Tidal Gate | 按 `confidence_threshold` 生成 dry-run action；当前只记录 `would do`，不执行真实动作 | `internal/proactive/gate.go` |
-| Persistence | SQLite 持久化 signals、state estimates、dry-run actions、feedback events | `internal/proactive/store.go` |
+| Learned Response Kernel | 将 estimate 使用过的 signals 与 feedback 关联，在线学习 `state/channel/label` 权重；当前是保守一阶在线权重，不是大矩阵 RLS | `internal/proactive/store.go`, `internal/proactive/calibrator.go` |
+| Feedback Calibrator | 根据最近 feedback accuracy 和 learned signal kernel 保守校准 confidence；少于最小样本时不介入 | `internal/proactive/calibrator.go` |
+| Tidal Gate | 按 `confidence_threshold` 生成 action decision；默认仍是 dry-run | `internal/proactive/gate.go` |
+| Safe Action Executor | 仅执行 allowlist 内的低风险元数据预热动作；支持 max actions 和 action cooldown；默认 dry-run，禁止 shell/写文件/推送 | `internal/proactive/executor.go` |
+| Persistence | SQLite 持久化 signals、state estimates、estimate-signal links、dry-run actions、feedback events、signal weights、action executions | `internal/proactive/store.go` |
 | Runtime Event Stream | 持久化 chat/tool/runtime event；`proactive.enabled=true` 时 agent 记录 chat turn、tool call、blocked tool | `internal/proactive/store.go`, `internal/agent/proactive_events.go` |
-| Runtime config | `proactive.enabled`、`proactive.dry_run`、`proactive.confidence_threshold`、`proactive.horizon_seconds`、`proactive.store_path` | `internal/config/config.go` |
-| Observability | `la proactive status`、`la proactive sample`、`la proactive dry-run`、`la proactive feedback <actual-state>`、`la proactive events` | `internal/cli/lhcmd` |
-| Benchmark | 合成信号回放 benchmark，可选 SQLite 持久化 | `cmd/la-proactive-bench` |
+| Runtime Service | `proactive.enabled=true` 时 agent 启动后台 proactive loop，按 `action_interval_seconds` 运行 sample → estimate → gate → executor → persist | `internal/proactive/service.go`, `internal/agent/agent.go` |
+| Runtime config | `proactive.enabled`、`proactive.dry_run`、`proactive.confidence_threshold`、`proactive.horizon_seconds`、`proactive.store_path`、`proactive.action_interval_seconds`、`proactive.max_actions`、`proactive.action_cooldown_seconds`、`proactive.allowed_actions`、`proactive.kernel_learning_enabled`、`proactive.kernel_learning_rate`、`proactive.kernel_min_samples` | `internal/config/config.go` |
+| Observability | `la proactive status`、`la proactive sample`、`la proactive dry-run`、`la proactive act`、`la proactive feedback <actual-state>`、`la proactive events`、`la proactive executions`、`la proactive kernels`、`GET /api/v1/proactive/status` | `internal/cli/lhcmd`, `internal/server/server.go` |
+| Benchmark | 合成信号回放 benchmark，覆盖 estimate / gate / executor，可选 SQLite 持久化 | `cmd/la-proactive-bench` |
 
 默认配置：
 
@@ -174,7 +177,19 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
     "enabled": false,
     "dry_run": true,
     "confidence_threshold": 0.6,
-    "horizon_seconds": 300
+    "horizon_seconds": 300,
+    "action_interval_seconds": 300,
+    "max_actions": 2,
+    "action_cooldown_seconds": 300,
+    "kernel_learning_enabled": true,
+    "kernel_learning_rate": 0.08,
+    "kernel_min_samples": 2,
+    "allowed_actions": [
+      "preload_recent_project_context",
+      "warm_memory_context",
+      "preload_recent_session_summary",
+      "prefer_lightweight_tasks"
+    ]
   }
 }
 ```
@@ -184,9 +199,10 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
 - 不主动发消息。
 - 不自动打开文件、静音通知或执行 shell。
 - 不采集系统活动窗口、日历、天气等敏感或外部信号。
-- 不做 RLS 响应核学习；`Estimator` 是可替换边界，后续可以把 learned kernel 插进去。
-- 已支持人工/运行时反馈事件，并用 feedback accuracy 做保守 confidence 校准；下一步可以进入响应核学习。
-- `proactive.enabled=false` 时 agent runtime 不采集事件；设置为 true 后仍默认 dry-run，只开始记录 chat/tool 事件。
+- 不做完整大矩阵 RLS；当前 learned response kernel 是按 `predicted_state + signal channel + label` 学习的小权重表，用 feedback 在线更新，足够先验证真实对话中的信号有效性。
+- 已支持人工 feedback 事件驱动 kernel learning，并用 feedback accuracy + learned kernel 做保守 confidence 校准。
+- `proactive.enabled=false` 时 agent runtime 不采集事件、不启动后台 proactive loop；设置为 true 后仍默认 dry-run，会记录 chat/tool 事件并按 `action_interval_seconds` 周期记录预测和 action execution。
+- `la proactive act` 只有在 `proactive.enabled=true`、`proactive.dry_run=false` 且传入 `--apply` 时，才会执行 allowlist 内动作；当前动作只读取目录元数据，并受 `max_actions` / `action_cooldown_seconds` 限制。
 
 可运行命令：
 
@@ -194,7 +210,11 @@ Phase 1 已落地为 Go 原生、可插拔、默认安全的 dry-run TSE：
 la proactive status
 la proactive sample
 la proactive dry-run
+la proactive act
+la proactive act --apply
 la proactive feedback coding
 la proactive events --limit 20
+la proactive executions --limit 20
+la proactive kernels --limit 20
 go run ./cmd/la-proactive-bench --events 10000 --rounds 3
 ```

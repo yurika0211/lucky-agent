@@ -25,6 +25,8 @@ import (
 
 const (
 	defaultNapCatAttachmentDownloadLimit = 1 << 30
+	defaultNapCatConnectGrace            = 500 * time.Millisecond
+	defaultNapCatActionResponseTimeout   = 15 * time.Second
 	defaultNapCatAckEmojiID              = "76" // QQ /赞
 )
 
@@ -301,15 +303,17 @@ func (a *Adapter) SendForwardedMedia(ctx context.Context, chatID string, title s
 
 	switch parts[0] {
 	case "private", "c2c":
-		return a.sendAction(ctx, "send_private_forward_msg", map[string]any{
+		_, err := a.sendActionWithResponse(ctx, "send_private_forward_msg", map[string]any{
 			"user_id":  oneBotIDValue(parts[1]),
 			"messages": nodes,
-		})
+		}, true)
+		return err
 	case "group":
-		return a.sendAction(ctx, "send_group_forward_msg", map[string]any{
+		_, err := a.sendActionWithResponse(ctx, "send_group_forward_msg", map[string]any{
 			"group_id": oneBotIDValue(parts[1]),
 			"messages": nodes,
-		})
+		}, true)
+		return err
 	default:
 		return fmt.Errorf("napcat: unsupported chat type %q", parts[0])
 	}
@@ -414,7 +418,7 @@ func (a *Adapter) SendPhoto(ctx context.Context, chatID string, replyToMsgID str
 	body.WriteString("[CQ:image,file=")
 	body.WriteString(escapeCQParam(cqSource))
 	body.WriteString("]")
-	return a.sendRawMessage(ctx, chatID, replyToMsgID, body.String())
+	return a.sendRawMessageConfirmed(ctx, chatID, replyToMsgID, body.String())
 }
 
 func (a *Adapter) SendDocument(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
@@ -422,15 +426,6 @@ func (a *Adapter) SendDocument(ctx context.Context, chatID string, replyToMsgID 
 	if source == "" {
 		return fmt.Errorf("napcat: empty document source")
 	}
-	if strings.TrimSpace(caption) != "" {
-		if err := a.SendWithReply(ctx, chatID, replyToMsgID, caption); err != nil {
-			return err
-		}
-	}
-	if strings.HasPrefix(strings.ToLower(source), "http://") || strings.HasPrefix(strings.ToLower(source), "https://") {
-		return a.SendWithReply(ctx, chatID, replyToMsgID, "文件："+source)
-	}
-
 	parts := strings.SplitN(chatID, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("napcat: invalid chat id %q", chatID)
@@ -443,16 +438,24 @@ func (a *Adapter) SendDocument(ctx context.Context, chatID string, replyToMsgID 
 		"file": filePath,
 		"name": mediaUploadFileName(source),
 	}
+	action := ""
 	switch parts[0] {
 	case "private", "c2c":
 		params["user_id"] = oneBotIDValue(parts[1])
-		return a.sendAction(ctx, "upload_private_file", params)
+		action = "upload_private_file"
 	case "group":
 		params["group_id"] = oneBotIDValue(parts[1])
-		return a.sendAction(ctx, "upload_group_file", params)
+		action = "upload_group_file"
 	default:
 		return fmt.Errorf("napcat: unsupported chat type %q", parts[0])
 	}
+	if _, err := a.sendActionWithResponse(ctx, action, params, true); err != nil {
+		return err
+	}
+	if strings.TrimSpace(caption) != "" {
+		return a.SendWithReply(ctx, chatID, replyToMsgID, caption)
+	}
+	return nil
 }
 
 func (a *Adapter) SendStream(_ context.Context, chatID string, replyToMsgID string) (gateway.StreamSender, error) {
@@ -675,6 +678,14 @@ func (a *Adapter) sendTextMessage(ctx context.Context, chatID string, replyToMsg
 }
 
 func (a *Adapter) sendRawMessage(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	return a.sendRawMessageWithResponse(ctx, chatID, replyToMsgID, message, false)
+}
+
+func (a *Adapter) sendRawMessageConfirmed(ctx context.Context, chatID string, replyToMsgID string, message string) error {
+	return a.sendRawMessageWithResponse(ctx, chatID, replyToMsgID, message, true)
+}
+
+func (a *Adapter) sendRawMessageWithResponse(ctx context.Context, chatID string, replyToMsgID string, message string, wait bool) error {
 	parts := strings.SplitN(chatID, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("napcat: invalid chat id %q", chatID)
@@ -689,15 +700,17 @@ func (a *Adapter) sendRawMessage(ctx context.Context, chatID string, replyToMsgI
 
 	switch parts[0] {
 	case "private", "c2c":
-		return a.sendAction(ctx, "send_private_msg", map[string]any{
+		_, err := a.sendActionWithResponse(ctx, "send_private_msg", map[string]any{
 			"user_id": oneBotIDValue(parts[1]),
 			"message": message,
-		})
+		}, wait)
+		return err
 	case "group":
-		return a.sendAction(ctx, "send_group_msg", map[string]any{
+		_, err := a.sendActionWithResponse(ctx, "send_group_msg", map[string]any{
 			"group_id": oneBotIDValue(parts[1]),
 			"message":  message,
-		})
+		}, wait)
+		return err
 	default:
 		return fmt.Errorf("napcat: unsupported chat type %q", parts[0])
 	}
@@ -709,6 +722,9 @@ func (a *Adapter) sendAction(ctx context.Context, action string, params map[stri
 }
 
 func (a *Adapter) sendActionWithResponse(ctx context.Context, action string, params map[string]any, wait bool) (actionResponse, error) {
+	if err := a.waitForConnection(ctx, defaultNapCatConnectGrace); err != nil {
+		return actionResponse{}, err
+	}
 	a.mu.RLock()
 	conn := a.conn
 	connected := a.connected
@@ -750,6 +766,8 @@ func (a *Adapter) sendActionWithResponse(ctx context.Context, action string, par
 	if !wait {
 		return actionResponse{}, nil
 	}
+	timer := time.NewTimer(defaultNapCatActionResponseTimeout)
+	defer timer.Stop()
 	select {
 	case resp := <-respCh:
 		if resp.RetCode != 0 || strings.EqualFold(strings.TrimSpace(resp.Status), "failed") {
@@ -759,6 +777,35 @@ func (a *Adapter) sendActionWithResponse(ctx context.Context, action string, par
 		return resp, nil
 	case <-ctx.Done():
 		return actionResponse{}, fmt.Errorf("napcat: action %s response timeout: %w", action, ctx.Err())
+	case <-timer.C:
+		return actionResponse{}, fmt.Errorf("napcat: action %s response timeout after %s", action, defaultNapCatActionResponseTimeout)
+	}
+}
+
+func (a *Adapter) waitForConnection(ctx context.Context, grace time.Duration) error {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		a.mu.RLock()
+		running := a.running
+		connected := a.connected && a.conn != nil
+		a.mu.RUnlock()
+		if connected {
+			return nil
+		}
+		if !running {
+			return fmt.Errorf("napcat: adapter is not running")
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("napcat: reverse websocket connection wait canceled: %w", ctx.Err())
+		case <-timer.C:
+			return fmt.Errorf("napcat: reverse websocket is not connected")
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -1332,6 +1379,12 @@ func oneBotUploadFileSource(source string) (string, error) {
 }
 
 func mediaUploadFileName(source string) string {
+	trimmed := strings.TrimSpace(source)
+	if u, err := url.Parse(trimmed); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		if name := slashPathBase(u.Path); name != "" {
+			return name
+		}
+	}
 	source = normalizeMediaSource(source)
 	name := filepath.Base(source)
 	if strings.TrimSpace(name) == "" || name == "." || strings.HasPrefix(strings.ToLower(source), "base64://") {
@@ -1342,9 +1395,16 @@ func mediaUploadFileName(source string) string {
 
 func normalizeMediaSource(source string) string {
 	source = strings.TrimSpace(source)
+	if strings.HasPrefix(strings.ToLower(source), "sandbox:") {
+		source = strings.TrimPrefix(source, "sandbox:")
+	}
 	if strings.HasPrefix(strings.ToLower(source), "file://") {
 		if u, err := url.Parse(source); err == nil && u.Path != "" {
-			return u.Path
+			value := u.Path
+			if len(value) >= 3 && value[0] == '/' && isASCIIAlpha(value[1]) && value[2] == ':' {
+				value = value[1:]
+			}
+			return filepath.FromSlash(value)
 		}
 	}
 	if strings.HasPrefix(source, "~/") {
@@ -1353,6 +1413,19 @@ func normalizeMediaSource(source string) string {
 		}
 	}
 	return source
+}
+
+func slashPathBase(value string) string {
+	value = strings.Trim(strings.TrimSpace(value), "/")
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, "/")
+	return strings.TrimSpace(parts[len(parts)-1])
+}
+
+func isASCIIAlpha(value byte) bool {
+	return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
 }
 
 func mimeForAttachment(kind gateway.AttachmentType, values ...string) string {

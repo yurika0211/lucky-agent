@@ -23,11 +23,11 @@ func DefaultGraphActivationOptions() GraphActivationOptions {
 		MaxGraphBoost: 0.6,
 		MaxSeeds:      10,
 		RelationWeights: map[string]float64{
-			"works_at":    0.7,
-			"located_in":  0.6,
-			"part_of":     0.5,
-			"related_to":  0.3,
-			"mention":     0.2,
+			"works_at":   0.7,
+			"located_in": 0.6,
+			"part_of":    0.5,
+			"related_to": 0.3,
+			"mention":    0.2,
 		},
 		IncludeChunks: true,
 		UpdateAccess:  true,
@@ -78,8 +78,10 @@ func (kg *KnowledgeGraph) ActivateGraph(query string, opts GraphActivationOption
 		return nil
 	}
 
-	kg.mu.RLock()
-	defer kg.mu.RUnlock()
+	// Activation updates access counters by default, so it requires an exclusive
+	// lock even though most of the operation reads graph structure.
+	kg.mu.Lock()
+	defer kg.mu.Unlock()
 
 	queryLower := strings.ToLower(strings.TrimSpace(query))
 	queryTerms := extractQueryTerms(queryLower)

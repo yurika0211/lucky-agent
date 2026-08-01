@@ -2,10 +2,13 @@ package collab
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 )
 
 func TestPlannerChoosesParallelForIndependentWork(t *testing.T) {
@@ -172,6 +175,11 @@ func TestDelegateManagerAutoModeUsesPlanner(t *testing.T) {
 		return "result_from_" + task.AgentID, nil
 	})
 	dm := NewDelegateManager(r, handler)
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	dm.SetTaskStore(store)
 
 	task, err := dm.Delegate(context.Background(), ModeAuto, "分别检查三个独立模块", "input", []string{"agent-1", "agent-2", "agent-3"}, 10*time.Second)
 	if err != nil {
@@ -198,4 +206,55 @@ func TestDelegateManagerAutoModeUsesPlanner(t *testing.T) {
 	if updated.Metadata["mdp_state"] == "" {
 		t.Fatalf("missing mdp state metadata: %+v", updated.Metadata)
 	}
+	record, ok, err := store.Get(task.ID)
+	if err != nil || !ok {
+		t.Fatalf("expected unified task record, ok=%t err=%v", ok, err)
+	}
+	if record.Status != taskstore.StatusCompleted || record.Mode != taskstore.ModeParallel {
+		t.Fatalf("unexpected unified task record: %+v", record)
+	}
+	events, err := store.Events(task.ID)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if len(events) < 6 {
+		t.Fatalf("expected lifecycle and child events, got %+v", events)
+	}
+	if _, err := os.Stat(filepath.Join(store.Root(), task.ID, "planner_trace.json")); err != nil {
+		t.Fatalf("missing planner trace artifact: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(store.Root(), task.ID, "result.md")); err != nil {
+		t.Fatalf("missing result artifact: %v", err)
+	}
+}
+
+func TestDelegateManagerPersistsMDPSnapshot(t *testing.T) {
+	r := NewRegistry()
+	_ = r.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"})
+	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
+		return "result", nil
+	})
+	path := filepath.Join(t.TempDir(), "mdp.json")
+	dm := NewDelegateManager(r, handler)
+	if err := dm.SetMDPSnapshotPath(path); err != nil {
+		t.Fatalf("SetMDPSnapshotPath: %v", err)
+	}
+	if _, err := dm.Delegate(context.Background(), ModeParallel, "single runtime task", "input", []string{"agent-1"}, time.Second); err != nil {
+		t.Fatalf("delegate: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			restored := NewDelegateManager(r, handler)
+			if err := restored.SetMDPSnapshotPath(path); err != nil {
+				t.Fatalf("restore mdp snapshot: %v", err)
+			}
+			if restored.planner.MDPModel() == nil {
+				t.Fatal("expected restored MDP model")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for mdp snapshot")
 }

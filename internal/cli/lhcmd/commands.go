@@ -20,6 +20,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/cron"
 	"github.com/yurika0211/luckyagent/internal/gateway"
 	luckycollector "github.com/yurika0211/luckyagent/internal/gateway/collector"
+	"github.com/yurika0211/luckyagent/internal/gateway/feishu"
 	"github.com/yurika0211/luckyagent/internal/gateway/napcat"
 	"github.com/yurika0211/luckyagent/internal/gateway/openclawweixin"
 	"github.com/yurika0211/luckyagent/internal/gateway/qqofficial"
@@ -208,6 +209,22 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Proactive.HorizonSeconds)
 	case "proactive.store_path":
 		fmt.Println(cfg.Proactive.StorePath)
+	case "proactive.action_interval_seconds":
+		fmt.Println(cfg.Proactive.ActionIntervalSecs)
+	case "proactive.max_actions":
+		fmt.Println(cfg.Proactive.MaxActions)
+	case "proactive.action_cooldown_seconds":
+		fmt.Println(cfg.Proactive.ActionCooldownSecs)
+	case "proactive.allowed_actions":
+		fmt.Println(strings.Join(cfg.Proactive.AllowedActions, ","))
+	case "proactive.kernel_learning_enabled":
+		fmt.Println(proactiveKernelLearningEnabled(cfg))
+	case "proactive.kernel_learning_rate":
+		fmt.Println(cfg.Proactive.KernelLearningRate)
+	case "proactive.kernel_min_samples":
+		fmt.Println(cfg.Proactive.KernelMinSamples)
+	case "tools.filesystem.allowed_read_roots":
+		fmt.Println(strings.Join(cfg.Tools.Filesystem.AllowedReadRoots, ","))
 	case "msg_gateway.platform":
 		fmt.Println(cfg.MsgGateway.Platform)
 	case "msg_gateway.api_addr":
@@ -236,6 +253,28 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(maskKey(cfg.MsgGateway.NapCat.AccessToken))
 	case "msg_gateway.napcat.group_trigger_mode":
 		fmt.Println(cfg.MsgGateway.NapCat.GroupTriggerMode)
+	case "msg_gateway.feishu.app_id":
+		fmt.Println(cfg.MsgGateway.Feishu.AppID)
+	case "msg_gateway.feishu.app_secret":
+		fmt.Println(maskKey(cfg.MsgGateway.Feishu.AppSecret))
+	case "msg_gateway.feishu.verification_token":
+		fmt.Println(maskKey(cfg.MsgGateway.Feishu.VerificationToken))
+	case "msg_gateway.feishu.encrypt_key":
+		fmt.Println(maskKey(cfg.MsgGateway.Feishu.EncryptKey))
+	case "msg_gateway.feishu.listen_addr":
+		fmt.Println(cfg.MsgGateway.Feishu.ListenAddr)
+	case "msg_gateway.feishu.path":
+		fmt.Println(cfg.MsgGateway.Feishu.Path)
+	case "msg_gateway.feishu.api_base_url":
+		fmt.Println(cfg.MsgGateway.Feishu.APIBaseURL)
+	case "msg_gateway.feishu.allowed_chats":
+		fmt.Println(strings.Join(cfg.MsgGateway.Feishu.AllowedChats, ","))
+	case "msg_gateway.feishu.allowed_users":
+		fmt.Println(strings.Join(cfg.MsgGateway.Feishu.AllowedUsers, ","))
+	case "msg_gateway.feishu.remove_at":
+		fmt.Println(cfg.MsgGateway.Feishu.RemoveAt)
+	case "msg_gateway.feishu.group_trigger_mode":
+		fmt.Println(cfg.MsgGateway.Feishu.GroupTriggerMode)
 	default:
 		if v, ok := cfg.Extra[args[0]]; ok {
 			fmt.Println(v)
@@ -291,6 +330,13 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  proactive.dry_run: %t\n", proactiveDryRunEnabled(cfg))
 	fmt.Printf("  proactive.confidence_threshold: %.2f\n", cfg.Proactive.ConfidenceThreshold)
 	fmt.Printf("  proactive.horizon_seconds: %d\n", cfg.Proactive.HorizonSeconds)
+	fmt.Printf("  proactive.action_interval_seconds: %d\n", cfg.Proactive.ActionIntervalSecs)
+	fmt.Printf("  proactive.max_actions: %d\n", cfg.Proactive.MaxActions)
+	fmt.Printf("  proactive.action_cooldown_seconds: %d\n", cfg.Proactive.ActionCooldownSecs)
+	fmt.Printf("  proactive.allowed_actions: %s\n", strings.Join(cfg.Proactive.AllowedActions, ","))
+	fmt.Printf("  proactive.kernel_learning_enabled: %t\n", proactiveKernelLearningEnabled(cfg))
+	fmt.Printf("  proactive.kernel_learning_rate: %.2f\n", cfg.Proactive.KernelLearningRate)
+	fmt.Printf("  proactive.kernel_min_samples: %d\n", cfg.Proactive.KernelMinSamples)
 	return nil
 }
 
@@ -414,6 +460,11 @@ type msgGatewayStartOptions struct {
 	NapCatListenAddr   string
 	NapCatPath         string
 	NapCatAccessToken  string
+	FeishuAppID        string
+	FeishuAppSecret    string
+	FeishuVerifyToken  string
+	FeishuListenAddr   string
+	FeishuPath         string
 	WeixinToken        string
 	WeixinAcct         string
 	OpenClawWeixinAcct string
@@ -479,6 +530,27 @@ func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGa
 		opts.NapCatAccessToken = cfg.MsgGateway.NapCat.AccessToken
 	}
 
+	opts.FeishuAppID, _ = cmd.Flags().GetString("feishu-app-id")
+	if !cmd.Flags().Changed("feishu-app-id") && cfg != nil {
+		opts.FeishuAppID = cfg.MsgGateway.Feishu.AppID
+	}
+	opts.FeishuAppSecret, _ = cmd.Flags().GetString("feishu-app-secret")
+	if !cmd.Flags().Changed("feishu-app-secret") && cfg != nil {
+		opts.FeishuAppSecret = cfg.MsgGateway.Feishu.AppSecret
+	}
+	opts.FeishuVerifyToken, _ = cmd.Flags().GetString("feishu-verification-token")
+	if !cmd.Flags().Changed("feishu-verification-token") && cfg != nil {
+		opts.FeishuVerifyToken = cfg.MsgGateway.Feishu.VerificationToken
+	}
+	opts.FeishuListenAddr, _ = cmd.Flags().GetString("feishu-listen")
+	if !cmd.Flags().Changed("feishu-listen") && cfg != nil {
+		opts.FeishuListenAddr = cfg.MsgGateway.Feishu.ListenAddr
+	}
+	opts.FeishuPath, _ = cmd.Flags().GetString("feishu-path")
+	if !cmd.Flags().Changed("feishu-path") && cfg != nil {
+		opts.FeishuPath = cfg.MsgGateway.Feishu.Path
+	}
+
 	if cfg != nil {
 		opts.WeixinToken = strings.TrimSpace(cfg.MsgGateway.Weixin.Token)
 		opts.WeixinAcct = strings.TrimSpace(cfg.MsgGateway.Weixin.AccountID)
@@ -517,11 +589,15 @@ func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
 		}
 	case "napcat":
 		return nil
+	case "feishu":
+		if strings.TrimSpace(opts.FeishuAppID) == "" || strings.TrimSpace(opts.FeishuAppSecret) == "" || strings.TrimSpace(opts.FeishuVerifyToken) == "" {
+			return fmt.Errorf("feishu 需要 app_id、app_secret 和 verification_token（可通过 --feishu-* 参数或 msg_gateway.feishu.* 配置）")
+		}
 	default:
 		if opts.Platform == "" {
 			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
 		}
-		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial, napcat, weixin, openclawweixin)", opts.Platform)
+		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial, napcat, feishu, weixin, openclawweixin)", opts.Platform)
 	}
 
 	return nil
@@ -921,6 +997,38 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			napcatPath = "/" + napcatPath
 		}
 		fmt.Printf("NapCat QQ 网关已启动，等待 NapCat 连接 ws://%s%s\n", napcatAdapter.ListenAddr(), napcatPath)
+	case "feishu":
+		feishuAdapter := feishu.NewAdapter(feishu.Config{
+			AppID:             opts.FeishuAppID,
+			AppSecret:         opts.FeishuAppSecret,
+			VerificationToken: opts.FeishuVerifyToken,
+			EncryptKey:        cfg.MsgGateway.Feishu.EncryptKey,
+			ListenAddr:        opts.FeishuListenAddr,
+			Path:              opts.FeishuPath,
+			APIBaseURL:        cfg.MsgGateway.Feishu.APIBaseURL,
+			AllowedChats:      append([]string(nil), cfg.MsgGateway.Feishu.AllowedChats...),
+			AllowedUsers:      append([]string(nil), cfg.MsgGateway.Feishu.AllowedUsers...),
+			RemoveAt:          cfg.MsgGateway.Feishu.RemoveAt,
+			GroupTriggerMode:  cfg.MsgGateway.Feishu.GroupTriggerMode,
+		})
+		handler := qqofficial.NewHandlerWithOptions(feishuAdapter, a, qqofficial.HandlerOptions{
+			PlatformName:     "feishu",
+			DisplayName:      "飞书网关",
+			LogPrefix:        "feishu",
+			FinalAnswerOnly:  true,
+			DeliveryGuidance: feishu.MediaDeliveryGuidance,
+		})
+		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "feishu"))
+		feishuAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			return handler.HandleMessage(ctx, msg)
+		})
+		if err := gm.Register(feishuAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "feishu"); err != nil {
+			return err
+		}
+		fmt.Printf("飞书网关已启动，本地事件回调 http://%s%s（飞书控制台需配置公网 HTTPS 反向代理地址）\n", feishuAdapter.ListenAddr(), feishuAdapter.Path())
 	case "weixin":
 		wxAdapter := weixin.NewAdapter(weixin.Config{
 			Token:                   cfg.MsgGateway.Weixin.Token,
@@ -1275,6 +1383,71 @@ func runMemoryMigrateGraph(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func runMemoryRenameNotes(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	apply, _ := cmd.Flags().GetBool("apply")
+	limit, _ := cmd.Flags().GetInt("limit")
+	store, err := memory.NewStore(filepath.Join(mgr.HomeDir(), "memory"))
+	if err != nil {
+		return fmt.Errorf("open memory store: %w", err)
+	}
+	report, err := store.RenameNotes(memory.NoteRenameOptions{
+		Apply: apply,
+		Limit: limit,
+	})
+	if err != nil {
+		return err
+	}
+	if apply {
+		fmt.Println("Memory note rename applied.")
+	} else {
+		fmt.Println("Memory note rename dry-run. Re-run with --apply to rename files.")
+	}
+	fmt.Printf("  Scanned: %d\n", report.Scanned)
+	fmt.Printf("  Renames: %d", report.WouldRename)
+	if apply {
+		fmt.Printf(" (applied %d)", report.Renamed)
+	}
+	fmt.Println()
+	fmt.Printf("  Duplicate prunes: %d", report.WouldPruneDuplicates)
+	if apply {
+		fmt.Printf(" (pruned %d)", report.PrunedDuplicates)
+	}
+	fmt.Println()
+
+	maxShow := 20
+	if len(report.Entries) > 0 {
+		fmt.Println("  Planned renames:")
+		for i, entry := range report.Entries {
+			if i >= maxShow {
+				fmt.Printf("    ... %d more\n", len(report.Entries)-maxShow)
+				break
+			}
+			fmt.Printf("    - %s\n", entry.From)
+			fmt.Printf("      -> %s\n", entry.To)
+		}
+	}
+	if len(report.DuplicatePruneEntries) > 0 {
+		fmt.Println("  Duplicate notes:")
+		for i, entry := range report.DuplicatePruneEntries {
+			if i >= maxShow {
+				fmt.Printf("    ... %d more\n", len(report.DuplicatePruneEntries)-maxShow)
+				break
+			}
+			fmt.Printf("    - keep %s\n", entry.Keep)
+			fmt.Printf("      prune %s\n", entry.Remove)
+		}
+	}
+	return nil
+}
+
 func runMemoryTidalStats(cmd *cobra.Command, args []string) error {
 	mgr, err := config.NewManager()
 	if err != nil {
@@ -1352,6 +1525,13 @@ func runProactiveStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Dry-run: %t\n", proactiveDryRunEnabled(cfg))
 	fmt.Printf("Confidence threshold: %.2f\n", cfg.Proactive.ConfidenceThreshold)
 	fmt.Printf("Horizon seconds: %d\n", cfg.Proactive.HorizonSeconds)
+	fmt.Printf("Action interval seconds: %d\n", cfg.Proactive.ActionIntervalSecs)
+	fmt.Printf("Max actions per run: %d\n", cfg.Proactive.MaxActions)
+	fmt.Printf("Action cooldown seconds: %d\n", cfg.Proactive.ActionCooldownSecs)
+	fmt.Printf("Allowed actions: %s\n", strings.Join(cfg.Proactive.AllowedActions, ","))
+	fmt.Printf("Kernel learning: %t\n", proactiveKernelLearningEnabled(cfg))
+	fmt.Printf("Kernel learning rate: %.2f\n", cfg.Proactive.KernelLearningRate)
+	fmt.Printf("Kernel min samples: %d\n", cfg.Proactive.KernelMinSamples)
 	fmt.Printf("Store: %s\n", path)
 
 	if _, err := os.Stat(path); err != nil {
@@ -1376,6 +1556,7 @@ func runProactiveStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Dry-run actions: %d\n", stats.Actions)
 	fmt.Printf("Feedback events: %d\n", stats.FeedbackEvents)
 	fmt.Printf("Runtime events: %d\n", stats.RuntimeEvents)
+	fmt.Printf("Action executions: %d\n", stats.Executions)
 	if feedbackStats, err := store.FeedbackStats(100); err != nil {
 		return err
 	} else if feedbackStats.Events > 0 {
@@ -1385,6 +1566,11 @@ func runProactiveStatus(cmd *cobra.Command, args []string) error {
 		return err
 	} else if runtimeStats.Events > 0 {
 		fmt.Printf("Runtime event types: %s\n", formatRuntimeEventTypes(runtimeStats.ByType))
+	}
+	if kernelStats, err := store.KernelStats(); err != nil {
+		return err
+	} else if kernelStats.Weights > 0 {
+		fmt.Printf("Kernel weights: %d samples=%d\n", kernelStats.Weights, kernelStats.Samples)
 	}
 	if estimate, ok, err := store.LatestEstimate(); err != nil {
 		return err
@@ -1450,7 +1636,7 @@ func runProactiveDryRun(cmd *cobra.Command, args []string) error {
 	runner := proactive.NewRunnerWithCalibrator(
 		proactive.NewSamplerWithStore("", store),
 		proactive.NewEstimator(),
-		proactive.NewFeedbackCalibrator(store),
+		cliProactiveCalibrator(store, cfg),
 		proactive.NewGate(gateCfg),
 		store,
 	)
@@ -1472,6 +1658,79 @@ func runProactiveDryRun(cmd *cobra.Command, args []string) error {
 	fmt.Println("Dry-run actions:")
 	for _, action := range decision.Actions {
 		fmt.Printf("  - %s allowed=%t confidence=%.2f reason=%s\n", action.Action, action.Allowed, action.Confidence, action.Reason)
+	}
+	return nil
+}
+
+func runProactiveAct(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	apply, _ := cmd.Flags().GetBool("apply")
+	dryRun := proactiveDryRunEnabled(cfg) || !apply
+	gateCfg := proactive.Config{
+		Enabled:             cfg.Proactive.Enabled,
+		DryRun:              dryRun,
+		ConfidenceThreshold: cfg.Proactive.ConfidenceThreshold,
+		Horizon:             time.Duration(cfg.Proactive.HorizonSeconds) * time.Second,
+	}
+	runner := proactive.NewRunnerWithCalibrator(
+		proactive.NewSamplerWithStore("", store),
+		proactive.NewEstimator(),
+		cliProactiveCalibrator(store, cfg),
+		proactive.NewGate(gateCfg),
+		store,
+	)
+	decision, err := runner.RunDryRun(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("run proactive decision: %w", err)
+	}
+
+	wd, _ := os.Getwd()
+	executor := proactive.NewActionExecutor(proactive.ActionPolicy{
+		Enabled:        cfg.Proactive.Enabled,
+		DryRun:         dryRun,
+		MaxActions:     cfg.Proactive.MaxActions,
+		Cooldown:       time.Duration(cfg.Proactive.ActionCooldownSecs) * time.Second,
+		WorkspaceDir:   wd,
+		HomeDir:        mgr.HomeDir(),
+		Allowed:        allowedActionMap(cfg.Proactive.AllowedActions),
+		ExecutionStore: store,
+	})
+	executions, err := executor.Execute(cmd.Context(), decision)
+	if err != nil {
+		return fmt.Errorf("execute proactive actions: %w", err)
+	}
+	if err := store.RecordActionExecutions(executions); err != nil {
+		return fmt.Errorf("persist proactive action executions: %w", err)
+	}
+
+	fmt.Printf("Predicted state: %s confidence=%.2f dry_run=%t enabled=%t\n",
+		decision.Estimate.PredictedState,
+		decision.Estimate.Confidence,
+		dryRun,
+		cfg.Proactive.Enabled,
+	)
+	fmt.Println("Action executions:")
+	for _, execution := range executions {
+		fmt.Printf("  - %s status=%s reason=%s\n", execution.Action, execution.Status, execution.Reason)
+		if len(execution.Metadata) > 0 {
+			fmt.Printf("    metadata=%s\n", formatStringMap(execution.Metadata))
+		}
+	}
+	if apply && proactiveDryRunEnabled(cfg) {
+		fmt.Println("Note: --apply was requested, but proactive.dry_run=true kept this run in dry-run mode.")
 	}
 	return nil
 }
@@ -1516,6 +1775,81 @@ func runProactiveEvents(cmd *cobra.Command, args []string) error {
 		if len(event.Metadata) > 0 {
 			fmt.Printf("  metadata=%s\n", formatStringMap(event.Metadata))
 		}
+	}
+	return nil
+}
+
+func runProactiveExecutions(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	limit, _ := cmd.Flags().GetInt("limit")
+	executions, err := store.RecentActionExecutions(limit)
+	if err != nil {
+		return err
+	}
+	if len(executions) == 0 {
+		fmt.Println("No proactive action executions found.")
+		return nil
+	}
+	for _, execution := range executions {
+		fmt.Printf("%s action=%s status=%s reason=%s\n",
+			execution.CreatedAt.Local().Format(time.RFC3339),
+			execution.Action,
+			execution.Status,
+			execution.Reason,
+		)
+		if len(execution.Metadata) > 0 {
+			fmt.Printf("  metadata=%s\n", formatStringMap(execution.Metadata))
+		}
+	}
+	return nil
+}
+
+func runProactiveKernels(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	store, err := proactive.OpenStore(cliProactiveStorePath(mgr.HomeDir(), cfg.Proactive.StorePath))
+	if err != nil {
+		return fmt.Errorf("open proactive store: %w", err)
+	}
+	defer store.Close()
+
+	limit, _ := cmd.Flags().GetInt("limit")
+	weights, err := store.RecentSignalWeights(limit)
+	if err != nil {
+		return err
+	}
+	if len(weights) == 0 {
+		fmt.Println("No proactive signal kernels found.")
+		return nil
+	}
+	for _, weight := range weights {
+		fmt.Printf("%s state=%s signal=%s/%s weight=%.3f samples=%d\n",
+			weight.UpdatedAt.Local().Format(time.RFC3339),
+			weight.PredictedState,
+			weight.Channel,
+			weight.Label,
+			weight.Weight,
+			weight.Samples,
+		)
 	}
 	return nil
 }
@@ -1575,9 +1909,19 @@ func runProactiveFeedback(cmd *cobra.Command, args []string) error {
 	if err := store.RecordFeedback(event); err != nil {
 		return fmt.Errorf("record proactive feedback: %w", err)
 	}
+	kernelUpdates, err := store.LearnFromFeedback(event, proactive.KernelLearningConfig{
+		Enabled:      proactiveKernelLearningEnabled(cfg),
+		LearningRate: cfg.Proactive.KernelLearningRate,
+	})
+	if err != nil {
+		return fmt.Errorf("learn proactive kernel from feedback: %w", err)
+	}
 
 	correct := strings.EqualFold(estimate.PredictedState, actualState)
 	fmt.Printf("Recorded feedback: predicted=%s actual=%s correct=%t\n", estimate.PredictedState, actualState, correct)
+	if proactiveKernelLearningEnabled(cfg) {
+		fmt.Printf("Kernel updates: %d\n", kernelUpdates)
+	}
 	if feedbackStats, err := store.FeedbackStats(100); err == nil && feedbackStats.Events > 0 {
 		fmt.Printf("Recent feedback accuracy: %.2f (%d/%d)\n", feedbackStats.Accuracy, feedbackStats.Correct, feedbackStats.Events)
 	}
@@ -1591,6 +1935,21 @@ func proactiveDryRunEnabled(cfg *config.Config) bool {
 	return *cfg.Proactive.DryRun
 }
 
+func proactiveKernelLearningEnabled(cfg *config.Config) bool {
+	if cfg == nil || cfg.Proactive.KernelLearning == nil {
+		return true
+	}
+	return *cfg.Proactive.KernelLearning
+}
+
+func cliProactiveCalibrator(store *proactive.Store, cfg *config.Config) proactive.FeedbackCalibrator {
+	calibrator := proactive.NewFeedbackCalibrator(store)
+	if cfg != nil {
+		calibrator.KernelMinSamples = cfg.Proactive.KernelMinSamples
+	}
+	return calibrator
+}
+
 func cliProactiveStorePath(homeDir, configured string) string {
 	configured = strings.TrimSpace(configured)
 	if configured == "" {
@@ -1600,6 +1959,20 @@ func cliProactiveStorePath(homeDir, configured string) string {
 		return configured
 	}
 	return filepath.Join(homeDir, configured)
+}
+
+func allowedActionMap(actions []string) map[string]bool {
+	if actions == nil {
+		return nil
+	}
+	allowed := make(map[string]bool, len(actions))
+	for _, action := range actions {
+		action = strings.TrimSpace(action)
+		if action != "" {
+			allowed[action] = true
+		}
+	}
+	return allowed
 }
 
 func formatRuntimeEventTypes(byType map[string]int) string {

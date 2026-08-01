@@ -45,6 +45,16 @@ type FeedbackEvent struct {
 	CreatedAt      time.Time
 }
 
+// SignalWeight is a learned response-kernel coefficient for one signal label.
+type SignalWeight struct {
+	PredictedState string
+	Channel        string
+	Label          string
+	Weight         float64
+	Samples        int
+	UpdatedAt      time.Time
+}
+
 // RuntimeEvent captures passive runtime telemetry used by proactive modeling.
 type RuntimeEvent struct {
 	ID        string
@@ -68,6 +78,18 @@ type DryRunAction struct {
 	CreatedAt  time.Time
 }
 
+// ActionExecution records the safety decision and result for an action.
+type ActionExecution struct {
+	ID        string
+	ActionID  string
+	StateID   string
+	Action    string
+	Status    string
+	Reason    string
+	Metadata  map[string]string
+	CreatedAt time.Time
+}
+
 // Decision is the complete output of one proactive dry-run cycle.
 type Decision struct {
 	Enabled  bool
@@ -84,6 +106,7 @@ type Stats struct {
 	Actions        int `json:"actions"`
 	FeedbackEvents int `json:"feedback_events"`
 	RuntimeEvents  int `json:"runtime_events"`
+	Executions     int `json:"executions"`
 }
 
 // FeedbackStats summarizes prediction feedback.
@@ -91,6 +114,12 @@ type FeedbackStats struct {
 	Events   int     `json:"events"`
 	Correct  int     `json:"correct"`
 	Accuracy float64 `json:"accuracy"`
+}
+
+// KernelStats summarizes learned response-kernel coverage.
+type KernelStats struct {
+	Weights int `json:"weights"`
+	Samples int `json:"samples"`
 }
 
 // RuntimeEventStats summarizes passive runtime event collection.

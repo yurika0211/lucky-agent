@@ -16,28 +16,42 @@ const (
 	StatusOffline AgentStatus = "offline"
 )
 
+type AgentRuntimeProfile struct {
+	AgentID         string        `json:"agent_id,omitempty"`
+	Provider        string        `json:"provider,omitempty"`
+	Model           string        `json:"model,omitempty"`
+	ToolAllowlist   []string      `json:"tool_allowlist,omitempty"`
+	CWD             string        `json:"cwd,omitempty"`
+	MemoryNamespace string        `json:"memory_namespace,omitempty"`
+	MaxIterations   int           `json:"max_iterations,omitempty"`
+	Timeout         time.Duration `json:"timeout,omitempty"`
+	ApprovalPolicy  string        `json:"approval_policy,omitempty"`
+	AllowDelegate   bool          `json:"allow_delegate,omitempty"`
+}
+
 // AgentProfile Agent 注册信息
 type AgentProfile struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Capabilities []string         `json:"capabilities"`  // 能力标签列表
-	Status      AgentStatus       `json:"status"`
-	LastSeen    time.Time         `json:"last_seen"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
+	ID           string              `json:"id"`
+	Name         string              `json:"name"`
+	Description  string              `json:"description"`
+	Capabilities []string            `json:"capabilities"` // 能力标签列表
+	Status       AgentStatus         `json:"status"`
+	LastSeen     time.Time           `json:"last_seen"`
+	Runtime      AgentRuntimeProfile `json:"runtime,omitempty"`
+	Metadata     map[string]string   `json:"metadata,omitempty"`
 }
 
 // Registry Agent 注册中心
 type Registry struct {
-	mu      sync.RWMutex
-	agents  map[string]*AgentProfile
-	hooks   []RegistryHook // 注册/注销钩子
+	mu     sync.RWMutex
+	agents map[string]*AgentProfile
+	hooks  []RegistryHook // 注册/注销钩子
 }
 
 // RegistryHook 注册中心钩子
 type RegistryHook struct {
-	OnRegister   func(profile *AgentProfile)
-	OnDeregister func(agentID string)
+	OnRegister     func(profile *AgentProfile)
+	OnDeregister   func(agentID string)
 	OnStatusChange func(agentID string, oldStatus, newStatus AgentStatus)
 }
 
@@ -71,6 +85,9 @@ func (r *Registry) Register(profile *AgentProfile) error {
 	}
 	if profile.Metadata == nil {
 		profile.Metadata = make(map[string]string)
+	}
+	if profile.Runtime.AgentID == "" {
+		profile.Runtime.AgentID = profile.ID
 	}
 
 	r.agents[profile.ID] = profile
@@ -116,8 +133,7 @@ func (r *Registry) Get(agentID string) (*AgentProfile, bool) {
 		return nil, false
 	}
 	// 返回副本
-	cp := *p
-	return &cp, true
+	return cloneAgentProfile(p), true
 }
 
 // List 列出所有 Agent
@@ -127,8 +143,7 @@ func (r *Registry) List() []*AgentProfile {
 
 	result := make([]*AgentProfile, 0, len(r.agents))
 	for _, p := range r.agents {
-		cp := *p
-		result = append(result, &cp)
+		result = append(result, cloneAgentProfile(p))
 	}
 	return result
 }
@@ -142,8 +157,7 @@ func (r *Registry) ListByCapability(capability string) []*AgentProfile {
 	for _, p := range r.agents {
 		for _, cap := range p.Capabilities {
 			if cap == capability {
-				cp := *p
-				result = append(result, &cp)
+				result = append(result, cloneAgentProfile(p))
 				break
 			}
 		}
@@ -159,8 +173,7 @@ func (r *Registry) ListOnline() []*AgentProfile {
 	var result []*AgentProfile
 	for _, p := range r.agents {
 		if p.Status == StatusOnline {
-			cp := *p
-			result = append(result, &cp)
+			result = append(result, cloneAgentProfile(p))
 		}
 	}
 	return result
@@ -266,4 +279,20 @@ func (r *Registry) StartHealthChecker(ctx context.Context, interval, timeout tim
 			}
 		}
 	}()
+}
+
+func cloneAgentProfile(p *AgentProfile) *AgentProfile {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	cp.Capabilities = append([]string(nil), p.Capabilities...)
+	cp.Runtime.ToolAllowlist = append([]string(nil), p.Runtime.ToolAllowlist...)
+	if len(p.Metadata) > 0 {
+		cp.Metadata = make(map[string]string, len(p.Metadata))
+		for k, v := range p.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
+	return &cp
 }

@@ -141,6 +141,9 @@ func TestNewInitializesProactiveStoreOnlyWhenEnabled(t *testing.T) {
 	if disabledAgent.proactiveStore != nil {
 		t.Fatalf("expected proactive store to be nil when disabled")
 	}
+	if disabledAgent.proactiveRuntime != nil {
+		t.Fatalf("expected proactive runtime to be nil when disabled")
+	}
 	if err := disabledAgent.Close(); err != nil {
 		t.Fatalf("Close disabled agent: %v", err)
 	}
@@ -162,6 +165,9 @@ func TestNewInitializesProactiveStoreOnlyWhenEnabled(t *testing.T) {
 	}
 	if enabledAgent.proactiveStore == nil {
 		t.Fatalf("expected proactive store to be initialized")
+	}
+	if enabledAgent.proactiveRuntime == nil || !enabledAgent.proactiveRuntime.Started() {
+		t.Fatalf("expected proactive runtime to be started")
 	}
 	if err := enabledAgent.Close(); err != nil {
 		t.Fatalf("Close enabled agent: %v", err)
@@ -380,12 +386,42 @@ func TestToContextMessages_MemoryPriority(t *testing.T) {
 	}
 }
 
-func TestContextPlannerInjectsMemoryGateForDaughterOutdoorPrompt(t *testing.T) {
+func testAgentOutdoorRoutePolicy() memory.RoutePolicy {
+	return memory.RoutePolicy{
+		ID: "family-outdoor-live-check",
+		Match: memory.RoutePolicyMatch{
+			QueryAll: []memory.RouteTermGroup{
+				{Any: []string{"出门", "户外", "outdoor", "park"}},
+				{Any: []string{"女儿", "孩子", "daughter", "child"}},
+			},
+			States: []memory.RouteStateMatch{{Key: "family.daughter.pollen_allergy", Values: []string{"active"}}},
+		},
+		Risks: []memory.RouteRisk{
+			{Name: "child_health_outdoor_plan", Priority: 100},
+			{Name: "pollen_allergy", Priority: 80},
+		},
+		RequiredTools: []memory.RouteToolRequirement{
+			{Name: "current_time"},
+			{Name: "web_search", Calls: []memory.RouteToolCall{{Arguments: map[string]any{"query": "{{query}} weather pollen AQI", "count": 5, "mode": "quick"}}}},
+		},
+		Constraints: []string{"Check live weather, pollen, and air quality before the final answer."},
+	}
+}
+
+func TestContextPlannerInjectsTypedMemoryPolicy(t *testing.T) {
 	a := newTestAgentWithMemory(t)
-	if err := a.memory.SaveWithTierAndTags("My [[Daughter]] has [[Pollen Allergy]].", "health", memory.TierLong, 0.98, []string{"health"}); err != nil {
+	if err := a.memory.SaveWithOptions("My [[Daughter]] has [[Pollen Allergy]].", "health", memory.TierLong, 0.98, memory.SaveOptions{
+		Tags:       []string{"health"},
+		StateKey:   "family.daughter.pollen_allergy",
+		StateValue: "active",
+	}); err != nil {
 		t.Fatalf("save allergy: %v", err)
 	}
-	if err := a.memory.SaveWithTierAndTags("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", memory.TierLong, 0.92, []string{"tool-routing"}); err != nil {
+	if err := a.memory.SaveWithOptions("When [[Outdoor Plan]] involves [[Daughter]] and [[Pollen Allergy]], check [[Weather Forecast]] and [[Air Quality]].", "rule", memory.TierLong, 0.92, memory.SaveOptions{
+		Tags:          []string{"tool-routing"},
+		Aliases:       []string{"女儿出门"},
+		RoutePolicies: []memory.RoutePolicy{testAgentOutdoorRoutePolicy()},
+	}); err != nil {
 		t.Fatalf("save rule: %v", err)
 	}
 
@@ -711,6 +747,42 @@ func TestSaveConversationMemory_ShortTermBuffer(t *testing.T) {
 
 	if a.shortTerm.MessageCount() != 2 {
 		t.Errorf("expected 2 messages in short term buffer, got %d", a.shortTerm.MessageCount())
+	}
+}
+
+func TestShortTermContextIsIsolatedPerSession(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	a.shortTerms = memory.NewSessionShortTermStore(2)
+	sessA := session.NewSession("short-a", t.TempDir())
+	sessB := session.NewSession("short-b", t.TempDir())
+
+	// Two turns per session force the small windows to create summaries while
+	// retaining distinct recent messages.
+	a.saveConversationMemoryFromSession(sessA, TextUserTurnInput("private alpha one"), "alpha answer one")
+	a.saveConversationMemoryFromSession(sessA, TextUserTurnInput("private alpha two"), "alpha answer two")
+	a.saveConversationMemoryFromSession(sessB, TextUserTurnInput("private beta one"), "beta answer one")
+	a.saveConversationMemoryFromSession(sessB, TextUserTurnInput("private beta two"), "beta answer two")
+
+	bufA := a.shortTermBufferForSession(sessA, false)
+	bufB := a.shortTermBufferForSession(sessB, false)
+	if bufA == nil || bufB == nil {
+		t.Fatal("expected one short-term buffer per session")
+	}
+	if strings.Contains(bufA.Summary(), "beta") || strings.Contains(bufA.GetContext()[0].Content, "beta") {
+		t.Fatalf("session A short-term state contains session B data: summary=%q context=%#v", bufA.Summary(), bufA.GetContext())
+	}
+	if strings.Contains(bufB.Summary(), "alpha") || strings.Contains(bufB.GetContext()[0].Content, "alpha") {
+		t.Fatalf("session B short-term state contains session A data: summary=%q context=%#v", bufB.Summary(), bufB.GetContext())
+	}
+
+	planner := newContextPlanner(a, defaultContextBuildOptions())
+	msgA := planner.buildShortTermSummaryMessageForSession(sessA)
+	msgB := planner.buildShortTermSummaryMessageForSession(sessB)
+	if !strings.Contains(msgA.Content, "alpha") || strings.Contains(msgA.Content, "beta") {
+		t.Fatalf("session A planner summary drifted: %q", msgA.Content)
+	}
+	if !strings.Contains(msgB.Content, "beta") || strings.Contains(msgB.Content, "alpha") {
+		t.Fatalf("session B planner summary drifted: %q", msgB.Content)
 	}
 }
 
@@ -1078,6 +1150,46 @@ func TestAgent_ProviderWithMock(t *testing.T) {
 	}
 }
 
+func TestRetryPredicateFromConfigHonorsServerErrorFlag(t *testing.T) {
+	err502 := fmt.Errorf("API error 502: upstream unavailable")
+	noServerRetry := retryPredicateFromConfig(config.RetryConfig{
+		Enabled:            true,
+		RetryOnServerError: false,
+		RetryOnTimeout:     true,
+		RetryOnRateLimit:   true,
+	})
+	if noServerRetry(err502) {
+		t.Fatal("expected retry_on_server_error=false to block 502 retries")
+	}
+
+	withServerRetry := retryPredicateFromConfig(config.RetryConfig{
+		Enabled:            true,
+		RetryOnServerError: true,
+	})
+	if !withServerRetry(err502) {
+		t.Fatal("expected retry_on_server_error=true to allow 502 retries")
+	}
+}
+
+func TestRetryPredicateFromConfigHonorsTimeoutFlag(t *testing.T) {
+	timeoutErr := context.DeadlineExceeded
+	noTimeoutRetry := retryPredicateFromConfig(config.RetryConfig{
+		Enabled:        true,
+		RetryOnTimeout: false,
+	})
+	if noTimeoutRetry(timeoutErr) {
+		t.Fatal("expected retry_on_timeout=false to block timeout retries")
+	}
+
+	withTimeoutRetry := retryPredicateFromConfig(config.RetryConfig{
+		Enabled:        true,
+		RetryOnTimeout: true,
+	})
+	if !withTimeoutRetry(timeoutErr) {
+		t.Fatal("expected retry_on_timeout=true to allow timeout retries")
+	}
+}
+
 // mockProvider 用于测试的 mock provider
 type mockProvider struct {
 	name string
@@ -1425,6 +1537,264 @@ func (p *staticChatProvider) ChatStream(ctx context.Context, messages []provider
 	return nil, fmt.Errorf("unexpected ChatStream call")
 }
 func (p *staticChatProvider) Validate() error { return nil }
+
+func TestCompactSessionRejectsLowQualitySummary(t *testing.T) {
+	sess := session.NewSession("compact-bad", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and run go test ./internal/agent.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent failed: context planner dropped latest user turn")
+	before := sess.MessageCount()
+
+	a := &Agent{
+		provider:   &staticChatProvider{name: "static", content: "Looks good."},
+		contextEst: contextx.NewTokenEstimator(4096),
+	}
+	_, err := a.CompactSession(context.Background(), sess, "manual")
+	if err == nil || !strings.Contains(err.Error(), "invalid summary") {
+		t.Fatalf("expected invalid summary error, got %v", err)
+	}
+	if got := sess.MessageCount(); got != before {
+		t.Fatalf("failed compact must not append boundary: got %d messages, want %d", got, before)
+	}
+}
+
+func TestCompactSessionAcceptsValidatedSummary(t *testing.T) {
+	sess := session.NewSession("compact-good", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and run go test ./internal/agent.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent passed after preserving latest user turn.")
+	summary := strings.Join([]string{
+		"Current user goal:",
+		"Continue implementing LuckyAgent compact behavior and keep internal/agent/context_planner.go consistent with session compact boundaries.",
+		"Completed work:",
+		"Added a compact boundary marker and verified go test ./internal/agent passed for the context planner compact case.",
+		"Pending work:",
+		"Add restore attachments and trace output before considering auto compact.",
+		"Key files and functions:",
+		"internal/agent/context_planner.go, internal/session/session.go, Agent.CompactSession.",
+		"Commands and test results:",
+		"go test ./internal/agent passed for the compact boundary tests.",
+		"User constraints:",
+		"Commit small chunks after each optimization phase.",
+		"Uncertain facts:",
+		"No unresolved provider-specific compact behavior was verified.",
+	}, "\n")
+	a := &Agent{
+		provider:   &staticChatProvider{name: "static", content: summary},
+		contextEst: contextx.NewTokenEstimator(4096),
+	}
+	result, err := a.CompactSession(context.Background(), sess, "manual")
+	if err != nil {
+		t.Fatalf("CompactSession: %v", err)
+	}
+	if result.BoundaryID == "" || result.DroppedMessages != 2 || result.RestoredAttachments == 0 || result.SummarySource != "llm" || result.SummaryTokens == 0 {
+		t.Fatalf("unexpected compact result: %+v", result)
+	}
+	messages := sess.GetMessages()
+	last := messages[len(messages)-1]
+	if !session.IsCompactBoundary(last) {
+		t.Fatalf("expected compact boundary as last message, got %+v", last)
+	}
+	meta, ok := session.ParseCompactMetadata(last)
+	if !ok || len(meta.Attachments) == 0 {
+		t.Fatalf("expected compact metadata attachments, got ok=%t meta=%+v", ok, meta)
+	}
+	if meta.SummarySource != "llm" || meta.SummaryTokens == 0 || meta.RestoredAttachments == 0 {
+		t.Fatalf("expected compact trace metadata, got %+v", meta)
+	}
+}
+
+func TestCompactSessionProviderFailureDoesNotWriteBoundary(t *testing.T) {
+	sess := session.NewSession("compact-provider-fail", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and run go test ./internal/agent.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent failed: provider compact summary timed out")
+	before := sess.MessageCount()
+
+	a := &Agent{
+		provider:   &staticChatProvider{name: "static", err: fmt.Errorf("timeout")},
+		contextEst: contextx.NewTokenEstimator(4096),
+	}
+	_, err := a.CompactSession(context.Background(), sess, "manual")
+	if err == nil || !strings.Contains(err.Error(), "generate summary") {
+		t.Fatalf("expected provider summary error, got %v", err)
+	}
+	if got := sess.MessageCount(); got != before {
+		t.Fatalf("provider failure must not append boundary: got %d messages, want %d", got, before)
+	}
+}
+
+func TestCompactSessionForceLocalWritesFallbackBoundary(t *testing.T) {
+	sess := session.NewSession("compact-local", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks.")
+	sess.AddMessage("assistant", "Updated Agent.CompactSession options and prepared local fallback handling.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent failed before fallback validation was implemented")
+
+	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
+	result, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
+	if err != nil {
+		t.Fatalf("CompactSessionWithOptions force local: %v", err)
+	}
+	if result.SummarySource != "local" || result.BoundaryID == "" || result.SummaryTokens == 0 {
+		t.Fatalf("unexpected force-local result: %+v", result)
+	}
+	messages := sess.GetMessages()
+	last := messages[len(messages)-1]
+	meta, ok := session.ParseCompactMetadata(last)
+	if !ok || meta.SummarySource != "local" {
+		t.Fatalf("expected local compact metadata, got ok=%t meta=%+v", ok, meta)
+	}
+	if !strings.Contains(meta.Summary, "Current user goal:") || !strings.Contains(meta.Summary, "Pending work:") {
+		t.Fatalf("expected structured local summary, got:\n%s", meta.Summary)
+	}
+}
+
+func TestCompactSessionCreatesIndependentImmutableSegments(t *testing.T) {
+	sess := session.NewSession("compact-segments", t.TempDir())
+	sess.AddMessage("user", "first segment request about alpha.go")
+	sess.AddMessage("assistant", "first segment answer about alpha.go")
+	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
+	first, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
+	if err != nil {
+		t.Fatalf("first compact segment: %v", err)
+	}
+
+	sess.AddMessage("user", "second segment request about beta.go")
+	sess.AddMessage("assistant", "second segment answer about beta.go")
+	second, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
+	if err != nil {
+		t.Fatalf("second compact segment: %v", err)
+	}
+
+	segments, tail, covered := session.CompactSegments(sess.GetMessages())
+	if len(segments) != 2 || len(tail) != 0 || covered != 4 {
+		t.Fatalf("unexpected segments: segments=%+v tail=%+v covered=%d", segments, tail, covered)
+	}
+	if first.FromMessage != 0 || first.ToMessage != 2 || second.FromMessage != 2 || second.ToMessage != 4 {
+		t.Fatalf("unexpected segment ranges: first=%+v second=%+v", first, second)
+	}
+	if first.ContentHash == "" || second.ContentHash == "" || first.ContentHash == second.ContentHash {
+		t.Fatalf("segments need distinct stable hashes: first=%+v second=%+v", first, second)
+	}
+	if strings.Contains(segments[1].Summary, "alpha.go") {
+		t.Fatalf("new segment must not rewrite or absorb the prior summary: %s", segments[1].Summary)
+	}
+}
+
+func TestSelectCompactSegmentInputRetainsRecentCompleteTurns(t *testing.T) {
+	est := contextx.NewTokenEstimator(4096)
+	var raw []provider.Message
+	for i := 0; i < 4; i++ {
+		raw = append(raw,
+			provider.Message{Role: "user", Content: fmt.Sprintf("request-%d %s", i, strings.Repeat("context ", 40))},
+			provider.Message{Role: "assistant", Content: fmt.Sprintf("answer-%d %s", i, strings.Repeat("result ", 40))},
+		)
+	}
+	target := estimateProviderMessages(est, raw[4:]) + 4
+	compact, retained := selectCompactSegmentInput(raw, est, 2, target)
+	if len(compact) != 4 || len(retained) != 4 {
+		t.Fatalf("expected two compacted and two retained turns, compact=%d retained=%d", len(compact), len(retained))
+	}
+	if retained[0].Role != "user" || !strings.Contains(retained[0].Content, "request-2") {
+		t.Fatalf("retained tail must start at a complete user turn: %+v", retained)
+	}
+}
+
+func TestCompactSessionDryRunDoesNotWriteBoundary(t *testing.T) {
+	sess := session.NewSession("compact-dry-run", t.TempDir())
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks.")
+	sess.AddToolMessage("terminal", "go test ./internal/agent passed for dry-run compact behavior")
+	before := sess.MessageCount()
+
+	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
+	result, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{
+		ForceLocal: true,
+		DryRun:     true,
+	})
+	if err != nil {
+		t.Fatalf("CompactSessionWithOptions dry-run: %v", err)
+	}
+	if !result.DryRun || result.SummarySource != "local" {
+		t.Fatalf("unexpected dry-run result: %+v", result)
+	}
+	if got := sess.MessageCount(); got != before {
+		t.Fatalf("dry-run must not append boundary: got %d messages, want %d", got, before)
+	}
+	if _, ok := sess.LatestCompactTrace(); ok {
+		t.Fatal("dry-run must not expose a latest compact trace")
+	}
+}
+
+func TestMaybeAutoCompactSessionWritesBoundary(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	_ = cfg.Set("context.auto_compact", "true")
+	_ = cfg.Set("context.max_context_tokens", "50")
+	_ = cfg.Set("context.auto_compact_threshold", "0.1")
+	_ = cfg.Set("context.auto_compact_min_messages", "2")
+	_ = cfg.Set("context.auto_compact_cooldown_turns", "1")
+
+	sess := session.NewSession("auto-compact", t.TempDir())
+	longText := strings.Repeat("Fix internal/agent/context_planner.go and verify go test ./internal/agent. ", 20)
+	sess.AddMessage("user", longText)
+	sess.AddToolMessage("terminal", "go test ./internal/agent passed for auto compact behavior")
+	summary := strings.Join([]string{
+		"Current user goal:",
+		"Continue implementing LuckyAgent auto compact for internal/agent/context_planner.go and session compact boundaries.",
+		"Completed work:",
+		"Prepared the automatic compact trigger and verified go test ./internal/agent covers compact behavior.",
+		"Pending work:",
+		"Keep the latest user turn outside the compacted range and commit small chunks.",
+		"Key files and functions:",
+		"internal/agent/compact_auto.go, internal/agent/loop.go, Agent.CompactSession.",
+		"Commands and test results:",
+		"go test ./internal/agent passed for compact tests.",
+		"User constraints:",
+		"Commit one small optimization phase at a time.",
+		"Uncertain facts:",
+		"No provider-specific behavior was verified.",
+	}, "\n")
+	a := &Agent{
+		cfg:                 cfg,
+		provider:            &staticChatProvider{name: "static", content: summary},
+		contextEst:          contextx.NewTokenEstimator(4096),
+		autoCompactFailures: make(map[string]int),
+	}
+
+	a.maybeAutoCompactSession(context.Background(), sess, "continue", false)
+
+	trace, ok := sess.LatestCompactTrace()
+	if !ok {
+		t.Fatal("expected auto compact boundary")
+	}
+	if trace.Trigger != "auto" || trace.SummarySource != "llm" || trace.DroppedMessages != 2 {
+		t.Fatalf("unexpected auto compact trace: %+v", trace)
+	}
+}
+
+func TestMaybeAutoCompactSessionSkipsShortSession(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	_ = cfg.Set("context.auto_compact", "true")
+	_ = cfg.Set("context.max_context_tokens", "50")
+	_ = cfg.Set("context.auto_compact_threshold", "0.1")
+	_ = cfg.Set("context.auto_compact_min_messages", "10")
+
+	sess := session.NewSession("auto-compact-short", t.TempDir())
+	sess.AddMessage("user", strings.Repeat("Fix internal/agent/context_planner.go. ", 20))
+	a := &Agent{
+		cfg:                 cfg,
+		provider:            &staticChatProvider{name: "static", content: "should not be called"},
+		contextEst:          contextx.NewTokenEstimator(4096),
+		autoCompactFailures: make(map[string]int),
+	}
+
+	a.maybeAutoCompactSession(context.Background(), sess, "continue", false)
+	if _, ok := sess.LatestCompactTrace(); ok {
+		t.Fatal("short session must not auto compact")
+	}
+}
 
 // --- v0.64.0 Agent Package Coverage Improvements ---
 

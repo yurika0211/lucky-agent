@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -30,8 +31,33 @@ type WebSearchConfig struct {
 	Proxy      string
 }
 
+const (
+	defaultWebSearchCount   = 5
+	maxWebSearchCount       = 10
+	defaultWebFetchMaxChars = 50000
+	maxWebFetchChars        = 100000
+	defaultWebSearchFormat  = "text"
+	defaultWebFetchFormat   = "text"
+	webSearchTimeout        = 8 * time.Second
+)
+
+type webSearchOptions struct {
+	Query   string
+	Count   int
+	Mode    string
+	Format  string
+	Verbose bool
+}
+
+type webFetchOptions struct {
+	URL      string
+	MaxChars int
+	Format   string
+	Verbose  bool
+}
+
 func defaultWebSearchConfig() *WebSearchConfig {
-	return &WebSearchConfig{Provider: "brave", MaxResults: 5}
+	return &WebSearchConfig{Provider: "brave", MaxResults: defaultWebSearchCount}
 }
 
 func WebSearchTool(cfg *WebSearchConfig) *Tool {
@@ -45,63 +71,49 @@ func WebSearchTool(cfg *WebSearchConfig) *Tool {
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
-			"query": {Type: "string", Description: "Search query phrased around the actual fact, identifier, or concept you need to verify.", Required: true},
-			"count": {Type: "number", Description: "Number of results to return (1-10). Use smaller values when you already know what you are looking for.", Required: false, Default: 5},
-			"mode":  {Type: "string", Description: "Search mode: 'quick' for fast single-path lookup, 'deep' for multi-source cross-validation and merged evidence.", Required: false, Default: "quick"},
+			"query":   {Type: "string", Description: "Search query phrased around the actual fact, identifier, or concept you need to verify.", Required: true},
+			"count":   {Type: "number", Description: "Number of results to return (1-10). Use smaller values when you already know what you are looking for.", Required: false, Default: 5},
+			"mode":    {Type: "string", Description: "Search mode: 'quick' for fast single-path lookup, 'deep' for multi-source cross-validation and merged evidence.", Required: false, Default: "quick"},
+			"format":  {Type: "string", Description: "Return format: text or json.", Required: false, Default: "text"},
+			"verbose": {Type: "boolean", Description: "Include engine attempts and failure diagnostics.", Required: false, Default: false},
 		},
 		Handler:      func(args map[string]any) (string, error) { return handleWebSearch(cfg, args) },
 		ParallelSafe: true,
+		PolicySafe:   true,
 	}
 }
 
 func handleWebSearch(cfg *WebSearchConfig, args map[string]any) (string, error) {
-	query, ok := args["query"].(string)
-	if !ok {
-		return "", fmt.Errorf("query is required")
+	opts, err := parseWebSearchOptions(cfg, args)
+	if err != nil {
+		return "", err
 	}
-	count := cfg.MaxResults
-	if count <= 0 {
-		count = 5
-	}
-	if c, ok := args["count"]; ok {
-		switch v := c.(type) {
-		case float64:
-			count = int(v)
-		case int:
-			count = v
-		}
-	}
-	if count < 1 {
-		count = 1
-	}
-	if count > 10 {
-		count = 10
-	}
-
-	mode := "quick"
-	if m, ok := args["mode"].(string); ok {
-		mode = strings.ToLower(m)
+	if cfg == nil {
+		cfg = defaultWebSearchConfig()
 	}
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	if provider == "" {
 		provider = "brave"
 	}
-	if mode == "deep" {
-		return handleDeepSearch(cfg, query, count, provider)
+	if opts.Mode == "deep" {
+		return handleDeepSearchWithOptions(cfg, opts, provider)
 	}
 
 	manager := searchpkg.NewManager(buildSearchManagerConfig(cfg, provider))
-	searchCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	searchCtx, cancel := context.WithTimeout(context.Background(), webSearchTimeout)
 	defer cancel()
-	results, err := manager.QuickSearch(searchCtx, query, count)
-	if err != nil || len(results) == 0 {
-		return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
+	result := manager.QuickSearchDiagnostics(searchCtx, opts.Query, opts.Count)
+	result.Results = sanitizeSearchResults(result.Results, opts.Count)
+	if opts.Format == "json" {
+		return formatWebSearchJSON(opts, provider, result)
 	}
-
-	out := formatEntries(query, toSearchEntries(results), count)
+	if len(result.Results) == 0 {
+		return formatQuickSearchFailure(opts.Query, result, opts.Verbose), nil
+	}
+	out := formatEntries(opts.Query, toSearchEntries(result.Results), opts.Count)
 	label := ""
-	if len(results) > 0 {
-		label = sourceDisplayName(results[0].Source)
+	if len(result.Results) > 0 {
+		label = sourceDisplayName(result.Results[0].Source)
 	}
 	if label == "" {
 		label = sourceDisplayName(provider)
@@ -109,22 +121,102 @@ func handleWebSearch(cfg *WebSearchConfig, args map[string]any) (string, error) 
 	if label != "" {
 		out = annotateSource(out, label)
 	}
+	if opts.Verbose {
+		out += formatSearchAttempts(result)
+	}
 	return out, nil
 }
 
+func parseWebSearchOptions(cfg *WebSearchConfig, args map[string]any) (webSearchOptions, error) {
+	if cfg == nil {
+		cfg = defaultWebSearchConfig()
+	}
+	query, ok := args["query"].(string)
+	if !ok {
+		return webSearchOptions{}, fmt.Errorf("query is required")
+	}
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return webSearchOptions{}, fmt.Errorf("query must not be empty")
+	}
+	count := cfg.MaxResults
+	if count <= 0 {
+		count = defaultWebSearchCount
+	}
+	if c, ok := args["count"]; ok {
+		switch v := c.(type) {
+		case float64:
+			count = int(v)
+		case float32:
+			count = int(v)
+		case int:
+			count = v
+		case json.Number:
+			if n, err := strconv.Atoi(v.String()); err == nil {
+				count = n
+			}
+		}
+	}
+	if count < 1 {
+		count = 1
+	}
+	if count > maxWebSearchCount {
+		count = maxWebSearchCount
+	}
+	mode := "quick"
+	if m, ok := args["mode"].(string); ok && strings.TrimSpace(m) != "" {
+		mode = strings.ToLower(strings.TrimSpace(m))
+	}
+	if mode != "quick" && mode != "deep" {
+		return webSearchOptions{}, fmt.Errorf("unsupported web_search mode %q (expected quick or deep)", mode)
+	}
+	format := defaultWebSearchFormat
+	if f, ok := args["format"].(string); ok && strings.TrimSpace(f) != "" {
+		format = strings.ToLower(strings.TrimSpace(f))
+	}
+	if format != "text" && format != "json" {
+		return webSearchOptions{}, fmt.Errorf("unsupported web_search format %q (expected text or json)", format)
+	}
+	return webSearchOptions{
+		Query:   query,
+		Count:   count,
+		Mode:    mode,
+		Format:  format,
+		Verbose: mapBoolArg(args, "verbose", false),
+	}, nil
+}
+
 func quickSearchOrder(provider string, cfg *WebSearchConfig) []string {
-	return []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
+	return webSearchEngineOrder(provider)
 }
 
 func handleDeepSearch(cfg *WebSearchConfig, query string, count int, provider string) (string, error) {
-	manager := searchpkg.NewManager(buildSearchManagerConfig(cfg, provider))
-	searchCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	dr, err := manager.DeepSearch(searchCtx, query, count)
-	if err != nil || dr == nil || len(dr.Results) == 0 {
-		return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
+	opts := webSearchOptions{Query: strings.TrimSpace(query), Count: count, Mode: "deep", Format: "text"}
+	if opts.Count <= 0 {
+		opts.Count = defaultWebSearchCount
 	}
-	return searchpkg.FormatDeepResults(query, dr), nil
+	return handleDeepSearchWithOptions(cfg, opts, provider)
+}
+
+func handleDeepSearchWithOptions(cfg *WebSearchConfig, opts webSearchOptions, provider string) (string, error) {
+	manager := searchpkg.NewManager(buildSearchManagerConfig(cfg, provider))
+	searchCtx, cancel := context.WithTimeout(context.Background(), webSearchTimeout)
+	defer cancel()
+	dr, err := manager.DeepSearch(searchCtx, opts.Query, opts.Count)
+	if dr != nil {
+		dr.Results = sanitizeSearchResults(dr.Results, opts.Count)
+	}
+	if opts.Format == "json" {
+		return formatDeepSearchJSON(opts, provider, dr)
+	}
+	if err != nil || dr == nil || len(dr.Results) == 0 {
+		return formatDeepSearchFailure(opts.Query, dr, opts.Verbose), nil
+	}
+	out := searchpkg.FormatDeepResults(opts.Query, dr)
+	if opts.Verbose {
+		out += "\nNext: use web_fetch on selected URLs before quoting or relying on page content.\n"
+	}
+	return out, nil
 }
 
 func buildSearchManagerConfig(cfg *WebSearchConfig, provider string) *searchpkg.SearchConfig {
@@ -144,21 +236,18 @@ func buildSearchManagerConfig(cfg *WebSearchConfig, provider string) *searchpkg.
 		baseURL = strings.TrimSpace(os.Getenv("SEARXNG_BASE_URL"))
 	}
 
-	sc := &searchpkg.SearchConfig{
-		DefaultProvider: provider,
-		BraveAPIKey:     resolveBraveAPIKey(cfg),
-		SearXNGBaseURL:  baseURL,
-		ExaAPIKey:       resolveExaAPIKey(cfg),
-		JinaAPIKey:      os.Getenv("JINA_API_KEY"),
-		MaxResults:      cfg.MaxResults,
-		Proxy:           cfg.Proxy,
-		CacheTTL:        10 * time.Minute,
-		CacheSize:       100,
-	}
+	sc := searchpkg.DefaultSearchConfig()
+	sc.DefaultProvider = provider
+	sc.BraveAPIKey = resolveBraveAPIKey(cfg)
+	sc.SearXNGBaseURL = baseURL
+	sc.ExaAPIKey = resolveExaAPIKey(cfg)
+	sc.JinaAPIKey = os.Getenv("JINA_API_KEY")
+	sc.MaxResults = cfg.MaxResults
+	sc.Proxy = cfg.Proxy
 	if sc.MaxResults <= 0 {
-		sc.MaxResults = 5
+		sc.MaxResults = defaultWebSearchCount
 	}
-	return sc
+	return searchpkg.SearchConfigFromEnv(sc)
 }
 
 func sourceDisplayName(source string) string {
@@ -179,21 +268,7 @@ func sourceDisplayName(source string) string {
 }
 
 func deepSearchOrder(provider string, cfg *WebSearchConfig) []string {
-	order := []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
-	if resolveExaAPIKey(cfg) == "" {
-		order = []string{"ddgs", "searxng", "ddg-lite", "brave"}
-	}
-	if cfg == nil || strings.TrimSpace(cfg.BaseURL) == "" {
-		filtered := make([]string, 0, len(order))
-		for _, name := range order {
-			if name == "searxng" {
-				continue
-			}
-			filtered = append(filtered, name)
-		}
-		return filtered
-	}
-	return order
+	return webSearchEngineOrder(provider)
 }
 
 type searchEntry struct {
@@ -208,6 +283,156 @@ func toSearchEntries(results []searchpkg.SearchResult) []searchEntry {
 		entries = append(entries, searchEntry{Title: r.Title, URL: r.URL, Snippet: r.Snippet})
 	}
 	return entries
+}
+
+func webSearchEngineOrder(provider string) []string {
+	base := []string{"exa", "ddgs", "searxng", "ddg-lite", "brave"}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	out := make([]string, 0, len(base))
+	for _, name := range base {
+		if name == provider {
+			out = append(out, name)
+			break
+		}
+	}
+	for _, name := range base {
+		if name != provider {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func sanitizeSearchResults(results []searchpkg.SearchResult, count int) []searchpkg.SearchResult {
+	if count <= 0 {
+		count = defaultWebSearchCount
+	}
+	out := make([]searchpkg.SearchResult, 0, len(results))
+	seen := make(map[string]bool, len(results))
+	for _, r := range results {
+		r.URL = strings.TrimSpace(r.URL)
+		if r.URL == "" {
+			continue
+		}
+		key := utils.NormalizeURL(r.URL)
+		if key == "" {
+			key = r.URL
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		r.Title = strings.TrimSpace(r.Title)
+		if r.Title == "" {
+			r.Title = titleFromURL(r.URL)
+		}
+		r.Snippet = strings.TrimSpace(r.Snippet)
+		if len(r.Snippet) > 500 {
+			r.Snippet = r.Snippet[:500] + "... (truncated)"
+		}
+		r.Source = strings.TrimSpace(r.Source)
+		out = append(out, r)
+		if len(out) >= count {
+			break
+		}
+	}
+	return out
+}
+
+func titleFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return rawURL
+}
+
+func formatQuickSearchFailure(query string, result *searchpkg.QuickSearchResult, verbose bool) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("No results found for '%s'\n", query))
+	if result != nil && len(result.Tried) > 0 {
+		b.WriteString("Tried: " + strings.Join(result.Tried, ", ") + "\n")
+	}
+	if verbose && result != nil && len(result.Errors) > 0 {
+		b.WriteString("Errors:\n")
+		for _, e := range result.Errors {
+			b.WriteString("  - " + e + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatDeepSearchFailure(query string, result *searchpkg.DeepSearchResult, verbose bool) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("No results found for '%s'\n", query))
+	if result != nil && len(result.Sources) > 0 {
+		b.WriteString("Sources: " + strings.Join(result.Sources, ", ") + "\n")
+	}
+	if verbose && result != nil && len(result.Errors) > 0 {
+		b.WriteString("Errors:\n")
+		for _, e := range result.Errors {
+			b.WriteString("  - " + e + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatSearchAttempts(result *searchpkg.QuickSearchResult) string {
+	if result == nil || (len(result.Tried) == 0 && len(result.Errors) == 0) {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Diagnostics:\n")
+	if len(result.Tried) > 0 {
+		b.WriteString("Tried: " + strings.Join(result.Tried, ", ") + "\n")
+	}
+	if len(result.Errors) > 0 {
+		b.WriteString("Errors:\n")
+		for _, e := range result.Errors {
+			b.WriteString("  - " + e + "\n")
+		}
+	}
+	b.WriteString("Next: use web_fetch on selected URLs before quoting or relying on page content.\n")
+	return "\n" + b.String()
+}
+
+func formatWebSearchJSON(opts webSearchOptions, provider string, result *searchpkg.QuickSearchResult) (string, error) {
+	payload := map[string]any{
+		"query":    opts.Query,
+		"mode":     opts.Mode,
+		"provider": provider,
+		"results":  result.Results,
+		"tried":    result.Tried,
+		"errors":   result.Errors,
+		"next":     "use web_fetch on selected URLs before quoting or relying on page content",
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func formatDeepSearchJSON(opts webSearchOptions, provider string, result *searchpkg.DeepSearchResult) (string, error) {
+	payload := map[string]any{
+		"query":    opts.Query,
+		"mode":     opts.Mode,
+		"provider": provider,
+		"results":  []searchpkg.SearchResult{},
+		"sources":  []string{},
+		"errors":   []string{},
+		"next":     "use web_fetch on selected URLs before quoting or relying on page content",
+	}
+	if result != nil {
+		payload["results"] = result.Results
+		payload["sources"] = result.Sources
+		payload["errors"] = result.Errors
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 func resolveBraveAPIKey(cfg *WebSearchConfig) string {
@@ -371,7 +596,9 @@ func WebFetchTool(cfg *WebSearchConfig) *Tool {
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
 			"url":       {Type: "string", Description: "Exact URL to fetch and convert into readable text.", Required: true},
-			"max_chars": {Type: "number", Description: "Maximum readable text to return. Lower this when you only need a focused excerpt.", Required: false, Default: 50000},
+			"max_chars": {Type: "number", Description: "Maximum readable text to return. Lower this when you only need a focused excerpt.", Required: false, Default: defaultWebFetchMaxChars},
+			"format":    {Type: "string", Description: "Return format: text or json.", Required: false, Default: "text"},
+			"verbose":   {Type: "boolean", Description: "Include fetch engine, URL, title, and failure diagnostics.", Required: false, Default: false},
 		},
 		Handler:      func(args map[string]any) (string, error) { return handleWebFetch(cfg, args) },
 		ParallelSafe: true,
@@ -379,32 +606,73 @@ func WebFetchTool(cfg *WebSearchConfig) *Tool {
 }
 
 func handleWebFetch(cfg *WebSearchConfig, args map[string]any) (string, error) {
+	opts, err := parseWebFetchOptions(args)
+	if err != nil {
+		return "", err
+	}
+	if cfg == nil {
+		cfg = defaultWebSearchConfig()
+	}
+	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
+	manager := searchpkg.NewManager(buildSearchManagerConfig(cfg, provider))
+	fetchCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, attempts, err := manager.FetchURLWithDiagnostics(fetchCtx, opts.URL, opts.MaxChars)
+	if opts.Format == "json" {
+		return formatWebFetchJSON(opts, result, attempts, err)
+	}
+	if err != nil || result == nil || strings.TrimSpace(result.Content) == "" {
+		return formatWebFetchFailure(opts.URL, attempts, opts.Verbose), nil
+	}
+	out := formatFetchResult(result, result.Source == "jina")
+	out = truncateWebFetchContent(out, opts.MaxChars)
+	if opts.Verbose {
+		out = formatWebFetchMeta(result, attempts) + "\n\n" + out
+	}
+	return out, nil
+}
+
+func parseWebFetchOptions(args map[string]any) (webFetchOptions, error) {
 	fetchURL, ok := args["url"].(string)
 	if !ok {
-		return "", fmt.Errorf("url is required")
+		return webFetchOptions{}, fmt.Errorf("url is required")
+	}
+	fetchURL = strings.TrimSpace(fetchURL)
+	if fetchURL == "" {
+		return webFetchOptions{}, fmt.Errorf("url must not be empty")
 	}
 	if err := validateFetchURL(fetchURL); err != nil {
-		return "", fmt.Errorf("url validation failed: %w", err)
+		return webFetchOptions{}, fmt.Errorf("url validation failed: %w", err)
 	}
-	maxChars := 50000
+	maxChars := defaultWebFetchMaxChars
 	if mc, ok := args["max_chars"]; ok {
 		switch v := mc.(type) {
 		case float64:
 			maxChars = int(v)
+		case float32:
+			maxChars = int(v)
 		case int:
 			maxChars = v
+		case json.Number:
+			if n, err := strconv.Atoi(v.String()); err == nil {
+				maxChars = n
+			}
 		}
 	}
-	if result, err := fetchWithDefuddle(fetchURL, maxChars); err == nil && result != "" {
-		return result, nil
+	if maxChars <= 0 {
+		maxChars = defaultWebFetchMaxChars
 	}
-	if result, err := fetchWithJina(cfg, fetchURL, maxChars); err == nil && result != "" {
-		return result, nil
+	if maxChars > maxWebFetchChars {
+		maxChars = maxWebFetchChars
 	}
-	if result, err := fetchWithCurl(cfg, fetchURL, maxChars); err == nil && result != "" {
-		return result, nil
+	format := defaultWebFetchFormat
+	if f, ok := args["format"].(string); ok && strings.TrimSpace(f) != "" {
+		format = strings.ToLower(strings.TrimSpace(f))
 	}
-	return fmt.Sprintf("Failed to fetch %s (all methods failed)", fetchURL), nil
+	if format != "text" && format != "json" {
+		return webFetchOptions{}, fmt.Errorf("unsupported web_fetch format %q (expected text or json)", format)
+	}
+	return webFetchOptions{URL: fetchURL, MaxChars: maxChars, Format: format, Verbose: mapBoolArg(args, "verbose", false)}, nil
 }
 
 func fetchWithDefuddle(fetchURL string, maxChars int) (string, error) {
@@ -442,6 +710,94 @@ func formatFetchResult(result *searchpkg.FetchResult, includeTitle bool) string 
 	return fmt.Sprintf("# %s\n\n%s", result.Title, result.Content)
 }
 
+func formatWebFetchFailure(fetchURL string, attempts []searchpkg.FetchAttempt, verbose bool) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Failed to fetch %s\n", fetchURL))
+	if len(attempts) > 0 {
+		names := make([]string, 0, len(attempts))
+		for _, a := range attempts {
+			names = append(names, a.Engine)
+		}
+		b.WriteString("Tried: " + strings.Join(names, ", ") + "\n")
+	}
+	if verbose && len(attempts) > 0 {
+		b.WriteString("Errors:\n")
+		for _, a := range attempts {
+			b.WriteString(fmt.Sprintf("  - %s: %s\n", a.Engine, a.Error))
+		}
+	}
+	b.WriteString("If the page requires JavaScript or login, use opencli for browser/session extraction.")
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func formatWebFetchMeta(result *searchpkg.FetchResult, attempts []searchpkg.FetchAttempt) string {
+	var b strings.Builder
+	b.WriteString("URL: " + strings.TrimSpace(result.URL) + "\n")
+	b.WriteString("Source: " + strings.TrimSpace(result.Source) + "\n")
+	if strings.TrimSpace(result.Title) != "" {
+		b.WriteString("Title: " + strings.TrimSpace(result.Title) + "\n")
+	}
+	if len(attempts) > 0 {
+		names := make([]string, 0, len(attempts))
+		for _, a := range attempts {
+			names = append(names, a.Engine)
+		}
+		b.WriteString("Fallbacks: " + strings.Join(names, ", ") + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+func truncateWebFetchContent(content string, maxChars int) string {
+	if maxChars > 0 && len(content) > maxChars {
+		return content[:maxChars] + "\n... (truncated; increase max_chars to continue)"
+	}
+	return content
+}
+
+func formatWebFetchJSON(opts webFetchOptions, result *searchpkg.FetchResult, attempts []searchpkg.FetchAttempt, fetchErr error) (string, error) {
+	payload := map[string]any{
+		"url":       opts.URL,
+		"max_chars": opts.MaxChars,
+		"attempts":  attempts,
+	}
+	if result != nil {
+		content := truncateWebFetchContent(result.Content, opts.MaxChars)
+		payload["final_url"] = result.URL
+		payload["title"] = result.Title
+		payload["source"] = result.Source
+		payload["content"] = content
+		payload["truncated"] = len(content) != len(result.Content)
+	}
+	if fetchErr != nil {
+		payload["error"] = fetchErr.Error()
+	}
+	data, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func mapBoolArg(args map[string]any, key string, def bool) bool {
+	if args == nil {
+		return def
+	}
+	raw, ok := args[key]
+	if !ok {
+		return def
+	}
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err == nil {
+			return parsed
+		}
+	}
+	return def
+}
+
 func CurrentTimeTool() *Tool {
 	return &Tool{
 		Name:        "current_time",
@@ -455,6 +811,7 @@ func CurrentTimeTool() *Tool {
 		},
 		Handler:      handleCurrentTime,
 		ParallelSafe: true,
+		PolicySafe:   true,
 	}
 }
 

@@ -29,7 +29,7 @@ func TestBuildSkillRouteSystemHint_ExplicitSkillMention(t *testing.T) {
 	if !strings.Contains(hint, `matches the "obsidian" skill`) {
 		t.Fatalf("expected obsidian skill hint, got %q", hint)
 	}
-	if !strings.Contains(hint, "skill_read(name=\"obsidian\")") {
+	if !strings.Contains(hint, `skill_read(action="read", name="obsidian", detail="summary")`) {
 		t.Fatalf("expected skill_read guidance, got %q", hint)
 	}
 	if !strings.Contains(hint, "skill_obsidian_run") {
@@ -84,7 +84,7 @@ func TestBuildSkillRouteSystemHint_LuckyAgentMemoryDoesNotRouteToExternalObsidia
 	if !strings.Contains(hint, "LuckyAgent memory backend") {
 		t.Fatalf("expected LuckyAgent memory backend guardrail, got %q", hint)
 	}
-	if strings.Contains(hint, `skill_read(name="obsidian")`) || strings.Contains(hint, "skill_obsidian_run") {
+	if strings.Contains(hint, `skill_read(action="read", name="obsidian"`) || strings.Contains(hint, "skill_obsidian_run") {
 		t.Fatalf("expected no external obsidian skill routing, got %q", hint)
 	}
 }
@@ -220,8 +220,12 @@ func TestBuildFunctionCallOptionsForInput_LuckyAgentMemoryKeepsAutoTools(t *test
 	}
 }
 
-func TestRelaxForcedSkillToolChoice_ReleasesAfterSkillRead(t *testing.T) {
+func TestConstrainForcedToolChoiceLimitsToolsBeforeSkillRead(t *testing.T) {
 	opts := provider.CallOptions{
+		Tools: []map[string]any{
+			{"function": map[string]any{"name": "skill_read"}},
+			{"function": map[string]any{"name": "file_write"}},
+		},
 		ToolChoice: map[string]any{
 			"type": "function",
 			"function": map[string]any{
@@ -230,6 +234,28 @@ func TestRelaxForcedSkillToolChoice_ReleasesAfterSkillRead(t *testing.T) {
 		},
 	}
 
+	got := constrainForcedToolChoice(nil, opts)
+	if len(got.Tools) != 1 || functionToolName(got.Tools[0]) != "skill_read" {
+		t.Fatalf("expected only skill_read before forced call, got %#v", got.Tools)
+	}
+	if forcedToolChoiceName(got.ToolChoice) != "skill_read" {
+		t.Fatalf("expected forced skill_read to remain, got %#v", got.ToolChoice)
+	}
+}
+
+func TestConstrainForcedToolChoiceReleasesAfterSkillRead(t *testing.T) {
+	opts := provider.CallOptions{
+		Tools: []map[string]any{
+			{"function": map[string]any{"name": "skill_read"}},
+			{"function": map[string]any{"name": "file_write"}},
+		},
+		ToolChoice: map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "skill_read",
+			},
+		},
+	}
 	messages := []provider.Message{
 		{
 			Role: "assistant",
@@ -243,8 +269,11 @@ func TestRelaxForcedSkillToolChoice_ReleasesAfterSkillRead(t *testing.T) {
 		},
 	}
 
-	got := relaxForcedSkillToolChoice(messages, opts)
+	got := constrainForcedToolChoice(messages, opts)
 	if got.ToolChoice != "auto" {
 		t.Fatalf("expected auto tool choice after skill_read, got %#v", got.ToolChoice)
+	}
+	if len(got.Tools) != 2 {
+		t.Fatalf("expected full tool list after skill_read, got %#v", got.Tools)
 	}
 }

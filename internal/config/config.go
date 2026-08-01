@@ -38,6 +38,9 @@ type Config struct {
 	// Embedding 配置（供 RAG / 记忆向量化使用）
 	Embedding EmbeddingConfig `json:"embedding,omitempty"`
 
+	// RAG retrieval and reranking configuration.
+	RAG RAGConfig `json:"rag,omitempty"`
+
 	// 多模态配置
 	Multimodal MultimodalConfig `json:"multimodal,omitempty"`
 
@@ -86,11 +89,22 @@ type Config struct {
 	// Proactive 配置
 	Proactive ProactiveConfig `json:"proactive,omitempty"`
 
+	// Tool runtime configuration.
+	Tools ToolsConfig `json:"tools,omitempty"`
+
 	// Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
 
 	// Hooks 配置工具执行前后的可插拔 hook（PreToolUse / PostToolUse）
 	Hooks HooksConfig `json:"hooks,omitempty"`
+}
+
+type ToolsConfig struct {
+	Filesystem FilesystemToolConfig `json:"filesystem,omitempty"`
+}
+
+type FilesystemToolConfig struct {
+	AllowedReadRoots []string `json:"allowed_read_roots,omitempty"`
 }
 
 // HooksConfig 配置工具执行边界上的 hook。Enabled 为 false 时所有 hook 不生效，
@@ -136,6 +150,16 @@ type EmbeddingConfig struct {
 	APIKey    string `json:"api_key,omitempty"`
 	APIBase   string `json:"api_base,omitempty"`
 	Dimension int    `json:"dimension,omitempty"`
+}
+
+type RAGConfig struct {
+	TopK             int     `json:"top_k,omitempty"`
+	MinScore         float64 `json:"min_score,omitempty"`
+	UseHybrid        bool    `json:"use_hybrid,omitempty"`
+	DenseWeight      float64 `json:"dense_weight,omitempty"`
+	UseMMR           bool    `json:"use_mmr,omitempty"`
+	MMRLambda        float64 `json:"mmr_lambda,omitempty"`
+	RewriteFollowUps bool    `json:"rewrite_followups,omitempty"`
 }
 
 type MultimodalConfig struct {
@@ -212,13 +236,20 @@ type RateLimitConfig struct {
 
 // ContextConfig 上下文配置
 type ContextConfig struct {
-	MaxHistoryTurns            int     `json:"max_history_turns"`
-	MaxContextTokens           int     `json:"max_context_tokens"`
-	CompressionThreshold       float64 `json:"compression_threshold"`
-	MemoryHygieneBeforeContext bool    `json:"memory_hygiene_before_context,omitempty"`
-	MemoryHygieneAction        string  `json:"memory_hygiene_action,omitempty"`
-	MemoryHygieneMinSeverity   string  `json:"memory_hygiene_min_severity,omitempty"`
-	MemoryHygieneMaxFindings   int     `json:"memory_hygiene_max_findings,omitempty"`
+	MaxHistoryTurns                  int     `json:"max_history_turns"`
+	MaxContextTokens                 int     `json:"max_context_tokens"`
+	CompressionThreshold             float64 `json:"compression_threshold"`
+	AutoCompact                      bool    `json:"auto_compact,omitempty"`
+	AutoCompactThreshold             float64 `json:"auto_compact_threshold,omitempty"`
+	AutoCompactTargetRatio           float64 `json:"auto_compact_target_ratio,omitempty"`
+	AutoCompactMinMessages           int     `json:"auto_compact_min_messages,omitempty"`
+	AutoCompactCooldownTurns         int     `json:"auto_compact_cooldown_turns,omitempty"`
+	AutoCompactRetainTurns           int     `json:"auto_compact_retain_turns,omitempty"`
+	AutoCompactReservedSummaryTokens int     `json:"auto_compact_reserved_summary_tokens,omitempty"`
+	MemoryHygieneBeforeContext       bool    `json:"memory_hygiene_before_context,omitempty"`
+	MemoryHygieneAction              string  `json:"memory_hygiene_action,omitempty"`
+	MemoryHygieneMinSeverity         string  `json:"memory_hygiene_min_severity,omitempty"`
+	MemoryHygieneMaxFindings         int     `json:"memory_hygiene_max_findings,omitempty"`
 }
 
 // AgentLoopConfig Agent Loop 配置
@@ -279,11 +310,18 @@ type AutonomyConfig struct {
 // disabled and dry-run by default so runtime behavior remains passive unless
 // the user explicitly opts in.
 type ProactiveConfig struct {
-	Enabled             bool    `json:"enabled,omitempty"`
-	DryRun              *bool   `json:"dry_run,omitempty"`
-	ConfidenceThreshold float64 `json:"confidence_threshold,omitempty"`
-	HorizonSeconds      int     `json:"horizon_seconds,omitempty"`
-	StorePath           string  `json:"store_path,omitempty"`
+	Enabled             bool     `json:"enabled,omitempty"`
+	DryRun              *bool    `json:"dry_run,omitempty"`
+	ConfidenceThreshold float64  `json:"confidence_threshold,omitempty"`
+	HorizonSeconds      int      `json:"horizon_seconds,omitempty"`
+	StorePath           string   `json:"store_path,omitempty"`
+	ActionIntervalSecs  int      `json:"action_interval_seconds,omitempty"`
+	MaxActions          int      `json:"max_actions,omitempty"`
+	ActionCooldownSecs  int      `json:"action_cooldown_seconds,omitempty"`
+	AllowedActions      []string `json:"allowed_actions,omitempty"`
+	KernelLearning      *bool    `json:"kernel_learning_enabled,omitempty"`
+	KernelLearningRate  float64  `json:"kernel_learning_rate,omitempty"`
+	KernelMinSamples    int      `json:"kernel_min_samples,omitempty"`
 }
 
 // MsgGatewayConfig 消息网关配置
@@ -294,6 +332,7 @@ type MsgGatewayConfig struct {
 	Telegram       MsgGatewayTelegram       `json:"telegram,omitempty"`
 	QQOfficial     MsgGatewayQQOfficial     `json:"qqofficial,omitempty"`
 	NapCat         MsgGatewayNapCat         `json:"napcat,omitempty"`
+	Feishu         MsgGatewayFeishu         `json:"feishu,omitempty"`
 	Weixin         MsgGatewayWeixin         `json:"weixin,omitempty"`
 	OpenClawWeixin MsgGatewayOpenClawWeixin `json:"openclawweixin,omitempty"`
 }
@@ -307,6 +346,10 @@ type MsgGatewayTelegram struct {
 	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
 	ProgressSummaryWithLLM    bool   `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
 	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
+	MemoryTrace               bool   `json:"memory_trace,omitempty"`                 // 是否发送 Memory Trace 卡片
+	MemoryTraceLevel          string `json:"memory_trace_level,omitempty"`           // summary 或 full
+	MemoryTraceMaxResults     int    `json:"memory_trace_max_results,omitempty"`     // Memory Trace 最多展示的结果数
+	MemoryTraceMaxHops        int    `json:"memory_trace_max_hops,omitempty"`        // Memory Trace 最多展示的图路径数
 }
 
 // MsgGatewayQQOfficial QQ 官方机器人配置
@@ -333,6 +376,21 @@ type MsgGatewayNapCat struct {
 	AllowedUsers     []string `json:"allowed_users,omitempty"`
 	RemoveAt         bool     `json:"remove_at,omitempty"`
 	GroupTriggerMode string   `json:"group_trigger_mode,omitempty"`
+}
+
+// MsgGatewayFeishu configures the Feishu event callback and Open API client.
+type MsgGatewayFeishu struct {
+	AppID             string   `json:"app_id,omitempty"`
+	AppSecret         string   `json:"app_secret,omitempty"`
+	VerificationToken string   `json:"verification_token,omitempty"`
+	EncryptKey        string   `json:"encrypt_key,omitempty"`
+	ListenAddr        string   `json:"listen_addr,omitempty"`
+	Path              string   `json:"path,omitempty"`
+	APIBaseURL        string   `json:"api_base_url,omitempty"`
+	AllowedChats      []string `json:"allowed_chats,omitempty"`
+	AllowedUsers      []string `json:"allowed_users,omitempty"`
+	RemoveAt          bool     `json:"remove_at,omitempty"`
+	GroupTriggerMode  string   `json:"group_trigger_mode,omitempty"`
 }
 
 // MemoryConfig 记忆系统配置
@@ -585,6 +643,15 @@ func DefaultConfig() *Config {
 				MinSamples:   1,
 			},
 		},
+		RAG: RAGConfig{
+			TopK:             5,
+			MinScore:         0.3,
+			UseHybrid:        true,
+			DenseWeight:      0.65,
+			UseMMR:           false,
+			MMRLambda:        0.5,
+			RewriteFollowUps: true,
+		},
 		Limits: LimitsConfig{
 			MaxTokens:              4096,
 			Temperature:            0.7,
@@ -616,13 +683,19 @@ func DefaultConfig() *Config {
 			BurstSize:         10,
 		},
 		Context: ContextConfig{
-			MaxHistoryTurns:            50,
-			MaxContextTokens:           8000,
-			CompressionThreshold:       0.8,
-			MemoryHygieneBeforeContext: false,
-			MemoryHygieneAction:        "quarantine",
-			MemoryHygieneMinSeverity:   "high",
-			MemoryHygieneMaxFindings:   25,
+			MaxHistoryTurns:                  50,
+			MaxContextTokens:                 8000,
+			CompressionThreshold:             0.8,
+			AutoCompactThreshold:             0.82,
+			AutoCompactTargetRatio:           0.50,
+			AutoCompactMinMessages:           24,
+			AutoCompactCooldownTurns:         8,
+			AutoCompactRetainTurns:           6,
+			AutoCompactReservedSummaryTokens: 1200,
+			MemoryHygieneBeforeContext:       false,
+			MemoryHygieneAction:              "quarantine",
+			MemoryHygieneMinSeverity:         "high",
+			MemoryHygieneMaxFindings:         25,
 		},
 		Agent: AgentLoopConfig{
 			MaxIterations:          10,
@@ -667,6 +740,18 @@ func DefaultConfig() *Config {
 			DryRun:              boolPtr(true),
 			ConfidenceThreshold: 0.60,
 			HorizonSeconds:      300,
+			ActionIntervalSecs:  300,
+			MaxActions:          2,
+			ActionCooldownSecs:  300,
+			KernelLearning:      boolPtr(true),
+			KernelLearningRate:  0.08,
+			KernelMinSamples:    2,
+			AllowedActions: []string{
+				"preload_recent_project_context",
+				"warm_memory_context",
+				"preload_recent_session_summary",
+				"prefer_lightweight_tasks",
+			},
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
@@ -675,6 +760,10 @@ func DefaultConfig() *Config {
 				ProgressAsMessages:        true, // 默认启用独立步骤消息
 				ProgressAsNaturalLanguage: false,
 				ShowToolDetailsInResult:   false,
+				MemoryTrace:               true,
+				MemoryTraceLevel:          "summary",
+				MemoryTraceMaxResults:     6,
+				MemoryTraceMaxHops:        8,
 			},
 			QQOfficial: MsgGatewayQQOfficial{
 				RemoveAt:      true,
@@ -688,6 +777,13 @@ func DefaultConfig() *Config {
 			NapCat: MsgGatewayNapCat{
 				ListenAddr:       "127.0.0.1:6701",
 				Path:             "/onebot/v11/ws",
+				RemoveAt:         true,
+				GroupTriggerMode: "mention",
+			},
+			Feishu: MsgGatewayFeishu{
+				ListenAddr:       "127.0.0.1:6710",
+				Path:             "/feishu/events",
+				APIBaseURL:       "https://open.feishu.cn",
 				RemoveAt:         true,
 				GroupTriggerMode: "mention",
 			},
@@ -893,6 +989,18 @@ func normalizeConfig(cfg *Config) {
 	if cfg.RateLimit.BurstSize <= 0 {
 		cfg.RateLimit.BurstSize = def.RateLimit.BurstSize
 	}
+	if cfg.RAG.TopK <= 0 {
+		cfg.RAG.TopK = def.RAG.TopK
+	}
+	if cfg.RAG.MinScore <= 0 || cfg.RAG.MinScore > 1 {
+		cfg.RAG.MinScore = def.RAG.MinScore
+	}
+	if cfg.RAG.DenseWeight <= 0 || cfg.RAG.DenseWeight >= 1 {
+		cfg.RAG.DenseWeight = def.RAG.DenseWeight
+	}
+	if cfg.RAG.MMRLambda <= 0 || cfg.RAG.MMRLambda > 1 {
+		cfg.RAG.MMRLambda = def.RAG.MMRLambda
+	}
 
 	if cfg.Context.MaxHistoryTurns <= 0 {
 		cfg.Context.MaxHistoryTurns = def.Context.MaxHistoryTurns
@@ -902,6 +1010,24 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Context.CompressionThreshold <= 0 {
 		cfg.Context.CompressionThreshold = def.Context.CompressionThreshold
+	}
+	if cfg.Context.AutoCompactThreshold <= 0 {
+		cfg.Context.AutoCompactThreshold = def.Context.AutoCompactThreshold
+	}
+	if cfg.Context.AutoCompactTargetRatio <= 0 || cfg.Context.AutoCompactTargetRatio >= cfg.Context.AutoCompactThreshold {
+		cfg.Context.AutoCompactTargetRatio = def.Context.AutoCompactTargetRatio
+	}
+	if cfg.Context.AutoCompactMinMessages <= 0 {
+		cfg.Context.AutoCompactMinMessages = def.Context.AutoCompactMinMessages
+	}
+	if cfg.Context.AutoCompactCooldownTurns <= 0 {
+		cfg.Context.AutoCompactCooldownTurns = def.Context.AutoCompactCooldownTurns
+	}
+	if cfg.Context.AutoCompactRetainTurns < 0 {
+		cfg.Context.AutoCompactRetainTurns = def.Context.AutoCompactRetainTurns
+	}
+	if cfg.Context.AutoCompactReservedSummaryTokens <= 0 {
+		cfg.Context.AutoCompactReservedSummaryTokens = def.Context.AutoCompactReservedSummaryTokens
 	}
 	if strings.TrimSpace(cfg.Context.MemoryHygieneAction) == "" {
 		cfg.Context.MemoryHygieneAction = def.Context.MemoryHygieneAction
@@ -970,6 +1096,27 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Proactive.HorizonSeconds <= 0 {
 		cfg.Proactive.HorizonSeconds = def.Proactive.HorizonSeconds
 	}
+	if cfg.Proactive.ActionIntervalSecs <= 0 {
+		cfg.Proactive.ActionIntervalSecs = def.Proactive.ActionIntervalSecs
+	}
+	if cfg.Proactive.MaxActions <= 0 {
+		cfg.Proactive.MaxActions = def.Proactive.MaxActions
+	}
+	if cfg.Proactive.ActionCooldownSecs <= 0 {
+		cfg.Proactive.ActionCooldownSecs = def.Proactive.ActionCooldownSecs
+	}
+	if cfg.Proactive.AllowedActions == nil {
+		cfg.Proactive.AllowedActions = append([]string(nil), def.Proactive.AllowedActions...)
+	}
+	if cfg.Proactive.KernelLearning == nil {
+		cfg.Proactive.KernelLearning = def.Proactive.KernelLearning
+	}
+	if cfg.Proactive.KernelLearningRate <= 0 || cfg.Proactive.KernelLearningRate > 1 {
+		cfg.Proactive.KernelLearningRate = def.Proactive.KernelLearningRate
+	}
+	if cfg.Proactive.KernelMinSamples <= 0 {
+		cfg.Proactive.KernelMinSamples = def.Proactive.KernelMinSamples
+	}
 
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = def.Server.Addr
@@ -1018,6 +1165,18 @@ func normalizeConfig(cfg *Config) {
 	if strings.TrimSpace(cfg.MsgGateway.NapCat.GroupTriggerMode) == "" {
 		cfg.MsgGateway.NapCat.GroupTriggerMode = def.MsgGateway.NapCat.GroupTriggerMode
 	}
+	if strings.TrimSpace(cfg.MsgGateway.Feishu.ListenAddr) == "" {
+		cfg.MsgGateway.Feishu.ListenAddr = def.MsgGateway.Feishu.ListenAddr
+	}
+	if strings.TrimSpace(cfg.MsgGateway.Feishu.Path) == "" {
+		cfg.MsgGateway.Feishu.Path = def.MsgGateway.Feishu.Path
+	}
+	if strings.TrimSpace(cfg.MsgGateway.Feishu.APIBaseURL) == "" {
+		cfg.MsgGateway.Feishu.APIBaseURL = def.MsgGateway.Feishu.APIBaseURL
+	}
+	if strings.TrimSpace(cfg.MsgGateway.Feishu.GroupTriggerMode) == "" {
+		cfg.MsgGateway.Feishu.GroupTriggerMode = def.MsgGateway.Feishu.GroupTriggerMode
+	}
 	if cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds <= 0 {
 		cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds = def.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds
 	}
@@ -1052,11 +1211,14 @@ func cloneConfig(in *Config) *Config {
 	cp.Fallbacks = append([]FallbackEntry(nil), in.Fallbacks...)
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
+	cp.Tools.Filesystem.AllowedReadRoots = append([]string(nil), in.Tools.Filesystem.AllowedReadRoots...)
 	cp.MsgGateway.QQOfficial.AllowedChats = append([]string(nil), in.MsgGateway.QQOfficial.AllowedChats...)
 	cp.MsgGateway.QQOfficial.AllowedUsers = append([]string(nil), in.MsgGateway.QQOfficial.AllowedUsers...)
 	cp.MsgGateway.QQOfficial.Intents = append([]string(nil), in.MsgGateway.QQOfficial.Intents...)
 	cp.MsgGateway.NapCat.AllowedChats = append([]string(nil), in.MsgGateway.NapCat.AllowedChats...)
 	cp.MsgGateway.NapCat.AllowedUsers = append([]string(nil), in.MsgGateway.NapCat.AllowedUsers...)
+	cp.MsgGateway.Feishu.AllowedChats = append([]string(nil), in.MsgGateway.Feishu.AllowedChats...)
+	cp.MsgGateway.Feishu.AllowedUsers = append([]string(nil), in.MsgGateway.Feishu.AllowedUsers...)
 	cp.MsgGateway.Weixin.AllowedUsers = append([]string(nil), in.MsgGateway.Weixin.AllowedUsers...)
 	cp.MsgGateway.Weixin.GroupAllowedUsers = append([]string(nil), in.MsgGateway.Weixin.GroupAllowedUsers...)
 	cp.MsgGateway.OpenClawWeixin.AllowedUsers = append([]string(nil), in.MsgGateway.OpenClawWeixin.AllowedUsers...)
@@ -1071,6 +1233,13 @@ func cloneConfig(in *Config) *Config {
 	if in.Proactive.DryRun != nil {
 		v := *in.Proactive.DryRun
 		cp.Proactive.DryRun = &v
+	}
+	if in.Proactive.KernelLearning != nil {
+		v := *in.Proactive.KernelLearning
+		cp.Proactive.KernelLearning = &v
+	}
+	if in.Proactive.AllowedActions != nil {
+		cp.Proactive.AllowedActions = append([]string{}, in.Proactive.AllowedActions...)
 	}
 	return &cp
 }
@@ -1189,6 +1358,28 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Embedding.Dimension = n
+	case "rag.top_k":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.RAG.TopK = n
+	case "rag.min_score":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.RAG.MinScore = f
+	case "rag.use_hybrid":
+		m.config.RAG.UseHybrid = parseBool(value)
+	case "rag.dense_weight":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.RAG.DenseWeight = f
+	case "rag.use_mmr":
+		m.config.RAG.UseMMR = parseBool(value)
+	case "rag.mmr_lambda":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.RAG.MMRLambda = f
+	case "rag.rewrite_followups":
+		m.config.RAG.RewriteFollowUps = parseBool(value)
 	case "multimodal.provider":
 		m.config.Multimodal.Provider = value
 	case "multimodal.api_key":
@@ -1408,6 +1599,33 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Proactive.HorizonSeconds = n
 	case "proactive.store_path":
 		m.config.Proactive.StorePath = value
+	case "proactive.action_interval_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.ActionIntervalSecs = n
+	case "proactive.max_actions":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.MaxActions = n
+	case "proactive.action_cooldown_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.ActionCooldownSecs = n
+	case "proactive.allowed_actions":
+		m.config.Proactive.AllowedActions = splitCSV(value)
+	case "proactive.kernel_learning_enabled":
+		v := parseBool(value)
+		m.config.Proactive.KernelLearning = &v
+	case "proactive.kernel_learning_rate":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Proactive.KernelLearningRate = f
+	case "proactive.kernel_min_samples":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Proactive.KernelMinSamples = n
+	case "tools.filesystem.allowed_read_roots":
+		m.config.Tools.Filesystem.AllowedReadRoots = splitCSV(value)
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":
@@ -1432,6 +1650,18 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.telegram.show_tool_chain":
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
+	case "msg_gateway.telegram.memory_trace":
+		m.config.MsgGateway.Telegram.MemoryTrace = parseBool(value)
+	case "msg_gateway.telegram.memory_trace_level":
+		m.config.MsgGateway.Telegram.MemoryTraceLevel = value
+	case "msg_gateway.telegram.memory_trace_max_results":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Telegram.MemoryTraceMaxResults = n
+	case "msg_gateway.telegram.memory_trace_max_hops":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Telegram.MemoryTraceMaxHops = n
 	case "msg_gateway.qqofficial.app_id":
 		m.config.MsgGateway.QQOfficial.AppID = value
 	case "msg_gateway.qqofficial.app_secret":
@@ -1470,6 +1700,28 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.NapCat.RemoveAt = parseBool(value)
 	case "msg_gateway.napcat.group_trigger_mode":
 		m.config.MsgGateway.NapCat.GroupTriggerMode = value
+	case "msg_gateway.feishu.app_id":
+		m.config.MsgGateway.Feishu.AppID = value
+	case "msg_gateway.feishu.app_secret":
+		m.config.MsgGateway.Feishu.AppSecret = value
+	case "msg_gateway.feishu.verification_token":
+		m.config.MsgGateway.Feishu.VerificationToken = value
+	case "msg_gateway.feishu.encrypt_key":
+		m.config.MsgGateway.Feishu.EncryptKey = value
+	case "msg_gateway.feishu.listen_addr":
+		m.config.MsgGateway.Feishu.ListenAddr = value
+	case "msg_gateway.feishu.path":
+		m.config.MsgGateway.Feishu.Path = value
+	case "msg_gateway.feishu.api_base_url":
+		m.config.MsgGateway.Feishu.APIBaseURL = value
+	case "msg_gateway.feishu.allowed_chats":
+		m.config.MsgGateway.Feishu.AllowedChats = splitCSV(value)
+	case "msg_gateway.feishu.allowed_users":
+		m.config.MsgGateway.Feishu.AllowedUsers = splitCSV(value)
+	case "msg_gateway.feishu.remove_at":
+		m.config.MsgGateway.Feishu.RemoveAt = parseBool(value)
+	case "msg_gateway.feishu.group_trigger_mode":
+		m.config.MsgGateway.Feishu.GroupTriggerMode = value
 	case "msg_gateway.weixin.token":
 		m.config.MsgGateway.Weixin.Token = value
 	case "msg_gateway.weixin.account_id":
@@ -1606,6 +1858,32 @@ func (m *Manager) Set(key, value string) error {
 		var f float64
 		fmt.Sscanf(value, "%f", &f)
 		m.config.Context.CompressionThreshold = f
+	case "context.auto_compact":
+		m.config.Context.AutoCompact = parseBool(value)
+	case "context.auto_compact_threshold":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Context.AutoCompactThreshold = f
+	case "context.auto_compact_target_ratio":
+		var f float64
+		fmt.Sscanf(value, "%f", &f)
+		m.config.Context.AutoCompactTargetRatio = f
+	case "context.auto_compact_min_messages":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.AutoCompactMinMessages = n
+	case "context.auto_compact_cooldown_turns":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.AutoCompactCooldownTurns = n
+	case "context.auto_compact_retain_turns":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.AutoCompactRetainTurns = n
+	case "context.auto_compact_reserved_summary_tokens":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.AutoCompactReservedSummaryTokens = n
 	case "context.memory_hygiene_before_context":
 		m.config.Context.MemoryHygieneBeforeContext = parseBool(value)
 	case "context.memory_hygiene_action":
@@ -1690,6 +1968,7 @@ func (m *Manager) InitHome() error {
 		filepath.Join(m.homeDir, "data"),
 		filepath.Join(m.homeDir, "data", "telegram"),
 		filepath.Join(m.homeDir, "description"),
+		filepath.Join(m.homeDir, "hooks"), // 添加 hooks 目录
 	}
 
 	for _, dir := range dirs {
@@ -1760,6 +2039,11 @@ Prompts 目录位于 memory 文件夹内，与记忆系统放在一起，便于�
 		}
 	}
 
+	// 写入默认 hooks 脚本
+	if err := m.initDefaultHooks(); err != nil {
+		return fmt.Errorf("init hooks: %w", err)
+	}
+
 	return nil
 }
 
@@ -1788,4 +2072,255 @@ type MsgGatewayOpenClawWeixin struct {
 	SplitMultilineMessages  bool     `json:"split_multiline_messages,omitempty"`
 	PollTimeoutMilliseconds int      `json:"poll_timeout_ms,omitempty"`
 	SendChunkDelayMS        int      `json:"send_chunk_delay_ms,omitempty"`
+}
+
+// initDefaultHooks 初始化默认的 hooks 脚本
+func (m *Manager) initDefaultHooks() error {
+	hooksDir := filepath.Join(m.homeDir, "hooks")
+
+	hooks := map[string]string{
+		"audit_log.py":       defaultAuditLogHook(),
+		"protect_paths.py":   defaultProtectPathsHook(),
+		"block_dangerous.py": defaultBlockDangerousHook(),
+		"redact_secrets.py":  defaultRedactSecretsHook(),
+	}
+
+	for filename, content := range hooks {
+		hookPath := filepath.Join(hooksDir, filename)
+		// 只在文件不存在时写入，避免覆盖用户自定义的 hooks
+		if _, err := os.Stat(hookPath); os.IsNotExist(err) {
+			if err := os.WriteFile(hookPath, []byte(content), 0o755); err != nil {
+				return fmt.Errorf("write %s: %w", filename, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// defaultAuditLogHook 返回默认的审计日志 hook
+func defaultAuditLogHook() string {
+	return `#!/usr/bin/env python3
+"""PreToolUse hook: append every tool call to a JSONL audit file.
+
+Reads the hook Payload as JSON on stdin, records it, and always allows.
+Match this on: [] (all tools). Put it FIRST in pre_tool_use so attempts are
+logged even when a later hook blocks them.
+
+Audit file path: $LH_HOOK_AUDIT, else ~/.luckyagent/hook-audit.jsonl
+"""
+import sys
+import json
+import os
+from datetime import datetime
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    record = {
+        "time": datetime.now().isoformat(timespec="seconds"),
+        "event": payload.get("event", ""),
+        "tool": payload.get("tool", ""),
+        "source": payload.get("source", ""),
+        "session_id": payload.get("session_id", ""),
+        "arguments": payload.get("arguments", ""),
+    }
+
+    path = os.environ.get(
+        "LH_HOOK_AUDIT",
+        os.path.join(os.path.expanduser("~"), ".luckyagent", "hook-audit.jsonl"),
+    )
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        # Never let an audit failure break tool execution.
+        pass
+
+    print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
+}
+
+// defaultProtectPathsHook 返回默认的路径保护 hook
+func defaultProtectPathsHook() string {
+	return `#!/usr/bin/env python3
+"""PreToolUse hook: block writes/deletes to sensitive files.
+
+Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
+Match this on: file_write, file_patch, file_delete, file_move, file_mkdir,
+shell, terminal.
+
+This is a starter policy — tune PROTECTED to your deployment.
+"""
+import sys
+import json
+import re
+
+# Substrings that mark a path as protected. Conservative: ".env" also covers
+# ".env.prod" etc., which is the safe direction.
+PROTECTED = (
+    "config.json",
+    ".env",
+    "accounts.db",
+    ".git/",
+    "/.ssh/",
+    "/etc/",
+    "/tokens/",
+    ".luckyagent/",
+)
+
+# Shell tokens that indicate the command mutates the filesystem.
+MUTATING = re.compile(r"(>>?|\brm\b|\bmv\b|\bcp\b|\btee\b|sed\s+-i|truncate|chmod|chown|dd\b)")
+
+
+def hits(value: str) -> bool:
+    return any(p in (value or "") for p in PROTECTED)
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    tool = payload.get("tool", "")
+    try:
+        args = json.loads(payload.get("arguments") or "{}")
+    except (ValueError, TypeError):
+        args = {}
+
+    blocked = False
+    if tool in ("file_write", "file_patch", "file_delete", "file_move", "file_mkdir"):
+        for key in ("path", "dest", "to", "target", "src", "source"):
+            if hits(str(args.get(key, ""))):
+                blocked = True
+                break
+    elif tool in ("shell", "terminal"):
+        cmd = str(args.get("command", ""))
+        if MUTATING.search(cmd) and hits(cmd):
+            blocked = True
+
+    if blocked:
+        print(json.dumps({
+            "decision": "block",
+            "reason": "writing or deleting protected files (config/secrets/db/.git) is not allowed",
+        }))
+    else:
+        print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
+}
+
+// defaultBlockDangerousHook 返回默认的危险命令阻止 hook
+func defaultBlockDangerousHook() string {
+	return `#!/usr/bin/env python3
+"""PreToolUse hook: block destructive shell and database commands.
+
+Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
+Match this on: shell, terminal, sql_query.
+
+The shell checks are heuristics — harden them for your threat model.
+"""
+import sys
+import json
+import re
+
+
+def block(reason: str) -> None:
+    print(json.dumps({"decision": "block", "reason": reason}))
+    sys.exit(0)
+
+
+def check_shell(cmd: str) -> None:
+    low = cmd.lower()
+    # rm -rf / -fr / -r ... -f / --recursive --force
+    if re.search(r"\brm\b", low) and (
+        re.search(r"-\s*[a-z]*r[a-z]*f|-\s*[a-z]*f[a-z]*r", low)
+        or (re.search(r"-[a-z]*r", low) and re.search(r"-[a-z]*f", low))
+        or ("--recursive" in low and "--force" in low)
+    ):
+        block("rm -rf (recursive force delete) is blocked")
+    if "git push" in low and ("--force" in low or re.search(r"\s-f(\s|$)", low) or "+refs" in low):
+        block("git force-push is blocked")
+    if "git reset --hard" in low:
+        block("git reset --hard is blocked")
+    if re.search(r":\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:", cmd):
+        block("fork bomb is blocked")
+    if re.search(r"\bdd\b.*\bof=/dev/", low) or "mkfs" in low:
+        block("raw disk write is blocked")
+
+
+def check_sql(args: dict) -> None:
+    query = str(args.get("query", args.get("sql", ""))).upper()
+    if re.search(r"\b(DROP|DELETE|UPDATE|INSERT|ALTER|TRUNCATE|REPLACE)\b", query):
+        block("only read-only SELECT queries are allowed")
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    tool = payload.get("tool", "")
+    try:
+        args = json.loads(payload.get("arguments") or "{}")
+    except (ValueError, TypeError):
+        args = {}
+
+    if tool in ("shell", "terminal"):
+        check_shell(str(args.get("command", "")))
+    elif tool == "sql_query":
+        check_sql(args)
+
+    print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
+}
+
+// defaultRedactSecretsHook 返回默认的密钥脱敏 hook
+func defaultRedactSecretsHook() string {
+	return `#!/usr/bin/env python3
+"""PostToolUse hook: redact secrets from tool output.
+
+Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
+Match this on: [] (all tools) — secrets can surface in any output, and lh
+forwards output to Telegram/QQ/Weixin, so redact before it leaves.
+"""
+import sys
+import json
+import re
+
+# (pattern, replacement). Patterns are intentionally broad; false positives
+# only cost a redaction, never a leak.
+RULES = [
+    (re.compile(r"sk-[A-Za-z0-9_\-]{8,}"), "sk-[REDACTED]"),
+    (re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"), "[REDACTED_GH_TOKEN]"),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{8,}"), "Bearer [REDACTED]"),
+    (re.compile(
+        r"(?i)\b(api[_-]?key|secret|token|password|passwd|access[_-]?token)\b\s*[=:]\s*[\"']?[A-Za-z0-9._\-]{6,}"
+    ), r"\1=[REDACTED]"),
+]
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    out = payload.get("output", "") or ""
+
+    redacted = out
+    for pattern, repl in RULES:
+        redacted = pattern.sub(repl, redacted)
+
+    if redacted != out:
+        print(json.dumps({"decision": "modify", "modified_output": redacted}))
+    else:
+        print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
 }

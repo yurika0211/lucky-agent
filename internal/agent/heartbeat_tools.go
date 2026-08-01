@@ -36,7 +36,8 @@ type externalReplyAnchor struct {
 initHeartbeatService 初始化并启动 HEARTBEAT.md 驱动的心跳服务。
 */
 func (a *Agent) initHeartbeatService() error {
-	if a == nil || a.cfg == nil || a.provider == nil {
+	turnProvider := a.baseProviderSnapshot()
+	if a == nil || a.cfg == nil || !turnProvider.valid() {
 		return nil
 	}
 
@@ -56,8 +57,8 @@ func (a *Agent) initHeartbeatService() error {
 
 	svc := appheartbeat.New(appheartbeat.Config{
 		Workspace: filepath.Join(a.cfg.HomeDir(), "memory", "prompts"),
-		Provider:  a.provider,
-		Model:     a.activeModel,
+		Provider:  turnProvider.provider,
+		Model:     turnProvider.model,
 		Enabled:   enabled,
 		Interval:  interval,
 		OnExecute: a.executeHeartbeatTasks,

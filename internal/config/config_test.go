@@ -75,6 +75,27 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Proactive.HorizonSeconds != 300 {
 		t.Errorf("expected proactive.horizon_seconds 300, got %d", cfg.Proactive.HorizonSeconds)
 	}
+	if cfg.Proactive.ActionIntervalSecs != 300 {
+		t.Errorf("expected proactive.action_interval_seconds 300, got %d", cfg.Proactive.ActionIntervalSecs)
+	}
+	if cfg.Proactive.MaxActions != 2 {
+		t.Errorf("expected proactive.max_actions 2, got %d", cfg.Proactive.MaxActions)
+	}
+	if cfg.Proactive.ActionCooldownSecs != 300 {
+		t.Errorf("expected proactive.action_cooldown_seconds 300, got %d", cfg.Proactive.ActionCooldownSecs)
+	}
+	if len(cfg.Proactive.AllowedActions) != 4 {
+		t.Errorf("expected 4 proactive.allowed_actions, got %v", cfg.Proactive.AllowedActions)
+	}
+	if cfg.Proactive.KernelLearning == nil || !*cfg.Proactive.KernelLearning {
+		t.Errorf("expected proactive.kernel_learning_enabled true by default")
+	}
+	if cfg.Proactive.KernelLearningRate != 0.08 {
+		t.Errorf("expected proactive.kernel_learning_rate 0.08, got %.2f", cfg.Proactive.KernelLearningRate)
+	}
+	if cfg.Proactive.KernelMinSamples != 2 {
+		t.Errorf("expected proactive.kernel_min_samples 2, got %d", cfg.Proactive.KernelMinSamples)
+	}
 	if cfg.ImageGeneration.Provider != "openai" {
 		t.Errorf("expected image_generation.provider openai, got %s", cfg.ImageGeneration.Provider)
 	}
@@ -131,6 +152,92 @@ func TestManagerSetTelegramProxy(t *testing.T) {
 	cfg := mgr.Get()
 	if cfg.MsgGateway.Telegram.Proxy != "http://127.0.0.1:7897" {
 		t.Errorf("expected telegram proxy to be set, got %q", cfg.MsgGateway.Telegram.Proxy)
+	}
+}
+
+func TestDefaultFeishuConfig(t *testing.T) {
+	cfg := DefaultConfig().MsgGateway.Feishu
+	if cfg.ListenAddr != "127.0.0.1:6710" {
+		t.Fatalf("unexpected listen address %q", cfg.ListenAddr)
+	}
+	if cfg.Path != "/feishu/events" {
+		t.Fatalf("unexpected callback path %q", cfg.Path)
+	}
+	if cfg.APIBaseURL != "https://open.feishu.cn" {
+		t.Fatalf("unexpected API base URL %q", cfg.APIBaseURL)
+	}
+	if !cfg.RemoveAt {
+		t.Fatal("expected remove_at to default to true")
+	}
+	if cfg.GroupTriggerMode != "mention" {
+		t.Fatalf("unexpected group trigger mode %q", cfg.GroupTriggerMode)
+	}
+}
+
+func TestParseConfigDataAppliesFeishuDefaults(t *testing.T) {
+	cfg, err := parseConfigData([]byte(`{"msg_gateway":{"feishu":{"app_id":"cli_test","listen_addr":"","path":"","api_base_url":"","group_trigger_mode":""}}}`))
+	if err != nil {
+		t.Fatalf("parseConfigData: %v", err)
+	}
+	if cfg.MsgGateway.Feishu.AppID != "cli_test" {
+		t.Fatalf("expected custom app ID, got %q", cfg.MsgGateway.Feishu.AppID)
+	}
+	if cfg.MsgGateway.Feishu.ListenAddr != "127.0.0.1:6710" || cfg.MsgGateway.Feishu.Path != "/feishu/events" {
+		t.Fatalf("unexpected callback defaults: %q %q", cfg.MsgGateway.Feishu.ListenAddr, cfg.MsgGateway.Feishu.Path)
+	}
+	if cfg.MsgGateway.Feishu.APIBaseURL != "https://open.feishu.cn" {
+		t.Fatalf("unexpected API base URL %q", cfg.MsgGateway.Feishu.APIBaseURL)
+	}
+	if cfg.MsgGateway.Feishu.GroupTriggerMode != "mention" {
+		t.Fatalf("unexpected group trigger mode %q", cfg.MsgGateway.Feishu.GroupTriggerMode)
+	}
+}
+
+func TestManagerSetFeishuConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	values := map[string]string{
+		"msg_gateway.feishu.app_id":             "cli_app",
+		"msg_gateway.feishu.app_secret":         "secret",
+		"msg_gateway.feishu.verification_token": "verify",
+		"msg_gateway.feishu.encrypt_key":        "encrypt",
+		"msg_gateway.feishu.listen_addr":        "0.0.0.0:7000",
+		"msg_gateway.feishu.path":               "/callbacks/feishu",
+		"msg_gateway.feishu.api_base_url":       "https://open.feishu.example",
+		"msg_gateway.feishu.allowed_chats":      "oc_1,oc_2",
+		"msg_gateway.feishu.allowed_users":      "ou_1,ou_2",
+		"msg_gateway.feishu.remove_at":          "false",
+		"msg_gateway.feishu.group_trigger_mode": "all",
+	}
+	for key, value := range values {
+		if err := mgr.Set(key, value); err != nil {
+			t.Fatalf("Set %s: %v", key, err)
+		}
+	}
+
+	cfg := mgr.Get()
+	feishu := cfg.MsgGateway.Feishu
+	if feishu.AppID != "cli_app" || feishu.AppSecret != "secret" || feishu.VerificationToken != "verify" || feishu.EncryptKey != "encrypt" {
+		t.Fatalf("unexpected credentials: %+v", feishu)
+	}
+	if feishu.ListenAddr != "0.0.0.0:7000" || feishu.Path != "/callbacks/feishu" || feishu.APIBaseURL != "https://open.feishu.example" {
+		t.Fatalf("unexpected endpoints: %+v", feishu)
+	}
+	if len(feishu.AllowedChats) != 2 || feishu.AllowedChats[0] != "oc_1" || len(feishu.AllowedUsers) != 2 || feishu.AllowedUsers[0] != "ou_1" {
+		t.Fatalf("unexpected allowlists: chats=%v users=%v", feishu.AllowedChats, feishu.AllowedUsers)
+	}
+	if feishu.RemoveAt || feishu.GroupTriggerMode != "all" {
+		t.Fatalf("unexpected message policy: remove_at=%v group_trigger_mode=%q", feishu.RemoveAt, feishu.GroupTriggerMode)
+	}
+
+	cfg.MsgGateway.Feishu.AllowedChats[0] = "mutated_chat"
+	cfg.MsgGateway.Feishu.AllowedUsers[0] = "mutated_user"
+	again := mgr.Get().MsgGateway.Feishu
+	if again.AllowedChats[0] != "oc_1" || again.AllowedUsers[0] != "ou_1" {
+		t.Fatalf("Get should return cloned Feishu allowlists, got chats=%v users=%v", again.AllowedChats, again.AllowedUsers)
 	}
 }
 
@@ -205,6 +312,27 @@ func TestManagerSetProactiveConfig(t *testing.T) {
 	if err := mgr.Set("proactive.store_path", "runtime/custom-proactive.db"); err != nil {
 		t.Fatalf("Set proactive.store_path: %v", err)
 	}
+	if err := mgr.Set("proactive.action_interval_seconds", "180"); err != nil {
+		t.Fatalf("Set proactive.action_interval_seconds: %v", err)
+	}
+	if err := mgr.Set("proactive.max_actions", "3"); err != nil {
+		t.Fatalf("Set proactive.max_actions: %v", err)
+	}
+	if err := mgr.Set("proactive.action_cooldown_seconds", "120"); err != nil {
+		t.Fatalf("Set proactive.action_cooldown_seconds: %v", err)
+	}
+	if err := mgr.Set("proactive.allowed_actions", "warm_memory_context,prefer_lightweight_tasks"); err != nil {
+		t.Fatalf("Set proactive.allowed_actions: %v", err)
+	}
+	if err := mgr.Set("proactive.kernel_learning_enabled", "false"); err != nil {
+		t.Fatalf("Set proactive.kernel_learning_enabled: %v", err)
+	}
+	if err := mgr.Set("proactive.kernel_learning_rate", "0.12"); err != nil {
+		t.Fatalf("Set proactive.kernel_learning_rate: %v", err)
+	}
+	if err := mgr.Set("proactive.kernel_min_samples", "4"); err != nil {
+		t.Fatalf("Set proactive.kernel_min_samples: %v", err)
+	}
 
 	cfg := mgr.Get()
 	if !cfg.Proactive.Enabled {
@@ -221,6 +349,52 @@ func TestManagerSetProactiveConfig(t *testing.T) {
 	}
 	if cfg.Proactive.StorePath != "runtime/custom-proactive.db" {
 		t.Fatalf("unexpected store path %q", cfg.Proactive.StorePath)
+	}
+	if cfg.Proactive.ActionIntervalSecs != 180 {
+		t.Fatalf("expected action interval 180, got %d", cfg.Proactive.ActionIntervalSecs)
+	}
+	if cfg.Proactive.MaxActions != 3 {
+		t.Fatalf("expected max actions 3, got %d", cfg.Proactive.MaxActions)
+	}
+	if cfg.Proactive.ActionCooldownSecs != 120 {
+		t.Fatalf("expected action cooldown 120, got %d", cfg.Proactive.ActionCooldownSecs)
+	}
+	if len(cfg.Proactive.AllowedActions) != 2 || cfg.Proactive.AllowedActions[0] != "warm_memory_context" {
+		t.Fatalf("unexpected allowed actions %v", cfg.Proactive.AllowedActions)
+	}
+	if cfg.Proactive.KernelLearning == nil || *cfg.Proactive.KernelLearning {
+		t.Fatalf("expected kernel learning false, got %#v", cfg.Proactive.KernelLearning)
+	}
+	if cfg.Proactive.KernelLearningRate != 0.12 {
+		t.Fatalf("expected kernel learning rate 0.12, got %.2f", cfg.Proactive.KernelLearningRate)
+	}
+	if cfg.Proactive.KernelMinSamples != 4 {
+		t.Fatalf("expected kernel min samples 4, got %d", cfg.Proactive.KernelMinSamples)
+	}
+}
+
+func TestManagerSetFilesystemAllowedReadRoots(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("tools.filesystem.allowed_read_roots", `G:\Obsidian\Notes,C:\Docs`); err != nil {
+		t.Fatalf("Set filesystem allowed roots: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if len(cfg.Tools.Filesystem.AllowedReadRoots) != 2 {
+		t.Fatalf("expected two allowed read roots, got %v", cfg.Tools.Filesystem.AllowedReadRoots)
+	}
+	if cfg.Tools.Filesystem.AllowedReadRoots[0] != `G:\Obsidian\Notes` {
+		t.Fatalf("unexpected first root %q", cfg.Tools.Filesystem.AllowedReadRoots[0])
+	}
+
+	cfg.Tools.Filesystem.AllowedReadRoots[0] = `C:\Mutated`
+	again := mgr.Get()
+	if again.Tools.Filesystem.AllowedReadRoots[0] != `G:\Obsidian\Notes` {
+		t.Fatalf("Get should return cloned filesystem roots, got %v", again.Tools.Filesystem.AllowedReadRoots)
 	}
 }
 
@@ -1121,6 +1295,82 @@ func TestSet_ContextMemoryHygieneOptions(t *testing.T) {
 	}
 	if cfg.Context.MemoryHygieneMaxFindings != 7 {
 		t.Fatalf("unexpected hygiene max findings: %d", cfg.Context.MemoryHygieneMaxFindings)
+	}
+}
+
+func TestSet_ContextAutoCompactOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	if err := mgr.Set("context.auto_compact", "true"); err != nil {
+		t.Fatalf("set auto_compact: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_threshold", "0.75"); err != nil {
+		t.Fatalf("set auto_compact_threshold: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_target_ratio", "0.45"); err != nil {
+		t.Fatalf("set auto_compact_target_ratio: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_min_messages", "12"); err != nil {
+		t.Fatalf("set auto_compact_min_messages: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_cooldown_turns", "4"); err != nil {
+		t.Fatalf("set auto_compact_cooldown_turns: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_retain_turns", "5"); err != nil {
+		t.Fatalf("set auto_compact_retain_turns: %v", err)
+	}
+	if err := mgr.Set("context.auto_compact_reserved_summary_tokens", "900"); err != nil {
+		t.Fatalf("set auto_compact_reserved_summary_tokens: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if !cfg.Context.AutoCompact {
+		t.Fatal("expected auto compact to be enabled")
+	}
+	if cfg.Context.AutoCompactThreshold != 0.75 {
+		t.Fatalf("unexpected auto compact threshold: %v", cfg.Context.AutoCompactThreshold)
+	}
+	if cfg.Context.AutoCompactTargetRatio != 0.45 {
+		t.Fatalf("unexpected auto compact target ratio: %v", cfg.Context.AutoCompactTargetRatio)
+	}
+	if cfg.Context.AutoCompactMinMessages != 12 {
+		t.Fatalf("unexpected auto compact min messages: %d", cfg.Context.AutoCompactMinMessages)
+	}
+	if cfg.Context.AutoCompactCooldownTurns != 4 {
+		t.Fatalf("unexpected auto compact cooldown turns: %d", cfg.Context.AutoCompactCooldownTurns)
+	}
+	if cfg.Context.AutoCompactRetainTurns != 5 {
+		t.Fatalf("unexpected auto compact retain turns: %d", cfg.Context.AutoCompactRetainTurns)
+	}
+	if cfg.Context.AutoCompactReservedSummaryTokens != 900 {
+		t.Fatalf("unexpected auto compact reserved tokens: %d", cfg.Context.AutoCompactReservedSummaryTokens)
+	}
+}
+
+func TestSet_RAGRetrievalOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{
+		"rag.top_k":             "8",
+		"rag.min_score":         "0.42",
+		"rag.use_hybrid":        "true",
+		"rag.dense_weight":      "0.7",
+		"rag.use_mmr":           "true",
+		"rag.mmr_lambda":        "0.55",
+		"rag.rewrite_followups": "true",
+	} {
+		if err := mgr.Set(key, value); err != nil {
+			t.Fatalf("Set(%s): %v", key, err)
+		}
+	}
+	cfg := mgr.Get().RAG
+	if cfg.TopK != 8 || cfg.MinScore != 0.42 || !cfg.UseHybrid || cfg.DenseWeight != 0.7 || !cfg.UseMMR || cfg.MMRLambda != 0.55 || !cfg.RewriteFollowUps {
+		t.Fatalf("unexpected RAG config: %+v", cfg)
 	}
 }
 

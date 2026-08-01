@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,10 +26,12 @@ type namedImageTestProvider struct{}
 type fakeImageGenerator struct {
 	lastReq multimodal.ImageGenerationRequest
 	result  *multimodal.ImageGenerationResult
+	calls   int
 }
 type fakeSpeechSynthesizer struct {
 	lastReq multimodal.SpeechSynthesisRequest
 	result  *multimodal.SpeechSynthesisResult
+	calls   int
 }
 
 func testLuckyAgentWorkspace(t *testing.T) string {
@@ -40,6 +43,7 @@ func testLuckyAgentWorkspace(t *testing.T) string {
 
 func (g *fakeImageGenerator) Name() string { return "fake-image-generator" }
 func (g *fakeImageGenerator) GenerateImage(ctx context.Context, req multimodal.ImageGenerationRequest) (*multimodal.ImageGenerationResult, error) {
+	g.calls++
 	g.lastReq = req
 	if g.result != nil {
 		return g.result, nil
@@ -54,6 +58,7 @@ func (g *fakeImageGenerator) GenerateImage(ctx context.Context, req multimodal.I
 }
 func (s *fakeSpeechSynthesizer) Name() string { return "fake-speech-synthesizer" }
 func (s *fakeSpeechSynthesizer) SynthesizeSpeech(ctx context.Context, req multimodal.SpeechSynthesisRequest) (*multimodal.SpeechSynthesisResult, error) {
+	s.calls++
 	s.lastReq = req
 	if s.result != nil {
 		return s.result, nil
@@ -245,6 +250,30 @@ func TestLogTailAndLogGrepTools(t *testing.T) {
 	if !strings.Contains(grep, "> 2| error first") || !strings.Contains(grep, "> 5| error second") {
 		t.Fatalf("unexpected grep output: %q", grep)
 	}
+
+	noMatch, err := r.Call("log_grep", map[string]any{"path": testFile, "pattern": "panic"})
+	if err != nil {
+		t.Fatalf("log_grep no match should not fail: %v", err)
+	}
+	if !strings.Contains(noMatch, "No matches") {
+		t.Fatalf("unexpected no-match output: %q", noMatch)
+	}
+
+	ignoreCase, err := r.Call("log_grep", map[string]any{"path": testFile, "pattern": "ERROR", "ignore_case": true, "max_matches": 1})
+	if err != nil {
+		t.Fatalf("log_grep ignore_case: %v", err)
+	}
+	if !strings.Contains(ignoreCase, "> 2| error first") {
+		t.Fatalf("unexpected ignore_case output: %q", ignoreCase)
+	}
+
+	numberedTail, err := r.Call("log_tail", map[string]any{"path": testFile, "lines": 2, "with_line_numbers": true})
+	if err != nil {
+		t.Fatalf("log_tail with line numbers: %v", err)
+	}
+	if !strings.Contains(numberedTail, "5| error second") || !strings.Contains(numberedTail, "6| four") {
+		t.Fatalf("unexpected numbered tail output: %q", numberedTail)
+	}
 }
 
 func TestHTTPRequestToolValidation(t *testing.T) {
@@ -266,7 +295,7 @@ func TestStructuredQueryTools(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	jsonPath := filepath.Join(tmpDir, "sample.json")
-	if err := os.WriteFile(jsonPath, []byte(`{"user":{"name":"Ada"},"items":[{"id":1},{"id":2}]}`), 0644); err != nil {
+	if err := os.WriteFile(jsonPath, []byte(`{"user":{"name":"Ada"},"metadata":{"app.kubernetes.io/name":"api"},"items":[{"id":1},{"id":2}]}`), 0644); err != nil {
 		t.Fatalf("write json: %v", err)
 	}
 	jsonResult, err := r.Call("json_query", map[string]any{"path": jsonPath, "query": "items[1].id"})
@@ -276,9 +305,23 @@ func TestStructuredQueryTools(t *testing.T) {
 	if strings.TrimSpace(jsonResult) != "2" {
 		t.Fatalf("unexpected json_query output: %q", jsonResult)
 	}
+	jsonBracketResult, err := r.Call("json_query", map[string]any{"path": jsonPath, "query": `metadata["app.kubernetes.io/name"]`})
+	if err != nil {
+		t.Fatalf("json_query bracket key: %v", err)
+	}
+	if strings.TrimSpace(jsonBracketResult) != `"api"` {
+		t.Fatalf("unexpected json_query bracket output: %q", jsonBracketResult)
+	}
+	jsonWildcardResult, err := r.Call("json_query", map[string]any{"path": jsonPath, "query": "items[*].id"})
+	if err != nil {
+		t.Fatalf("json_query wildcard: %v", err)
+	}
+	if !strings.Contains(jsonWildcardResult, "1") || !strings.Contains(jsonWildcardResult, "2") {
+		t.Fatalf("unexpected json_query wildcard output: %q", jsonWildcardResult)
+	}
 
 	yamlPath := filepath.Join(tmpDir, "sample.yaml")
-	if err := os.WriteFile(yamlPath, []byte("service:\n  name: api\n"), 0644); err != nil {
+	if err := os.WriteFile(yamlPath, []byte("service:\n  name: api\n---\nservice:\n  name: worker\n"), 0644); err != nil {
 		t.Fatalf("write yaml: %v", err)
 	}
 	yamlResult, err := r.Call("yaml_query", map[string]any{"path": yamlPath, "query": "service.name"})
@@ -287,6 +330,20 @@ func TestStructuredQueryTools(t *testing.T) {
 	}
 	if strings.TrimSpace(yamlResult) != `"api"` {
 		t.Fatalf("unexpected yaml_query output: %q", yamlResult)
+	}
+	yamlDocResult, err := r.Call("yaml_query", map[string]any{"path": yamlPath, "query": "service.name", "document": 1})
+	if err != nil {
+		t.Fatalf("yaml_query document: %v", err)
+	}
+	if strings.TrimSpace(yamlDocResult) != `"worker"` {
+		t.Fatalf("unexpected yaml_query document output: %q", yamlDocResult)
+	}
+	yamlAllResult, err := r.Call("yaml_query", map[string]any{"path": yamlPath, "query": "service.name", "all_documents": true})
+	if err != nil {
+		t.Fatalf("yaml_query all_documents: %v", err)
+	}
+	if !strings.Contains(yamlAllResult, `"api"`) || !strings.Contains(yamlAllResult, `"worker"`) {
+		t.Fatalf("unexpected yaml_query all_documents output: %q", yamlAllResult)
 	}
 
 	csvPath := filepath.Join(tmpDir, "sample.csv")
@@ -384,6 +441,95 @@ func TestImageAnalyzeToolUsesConfiguredDefaultProvider(t *testing.T) {
 	}
 	if !strings.Contains(result, "named provider summary") {
 		t.Fatalf("expected configured provider output, got %q", result)
+	}
+}
+
+func TestImageAnalyzeToolRejectsMultipleInputSources(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(multimodal.ModalityImage), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, ""))
+
+	_, err := r.Call("image_analyze", map[string]any{
+		"path":        "/tmp/example.png",
+		"base64_data": "ZmFrZS1pbWFnZS1ieXRlcw==",
+		"mime_type":   "image/png",
+	})
+	if err == nil {
+		t.Fatal("expected multiple input sources to be rejected")
+	}
+	if !strings.Contains(err.Error(), "mutually exclusive") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageAnalyzeToolRejectsPrivateURL(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(multimodal.ModalityImage), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, ""))
+
+	_, err := r.Call("image_analyze", map[string]any{
+		"url":       "http://127.0.0.1/image.png",
+		"mime_type": "image/png",
+	})
+	if err == nil {
+		t.Fatal("expected private url to be rejected")
+	}
+	if !strings.Contains(err.Error(), "url validation failed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageAnalyzeToolRejectsUnsupportedMIME(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(multimodal.ModalityImage), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, ""))
+
+	_, err := r.Call("image_analyze", map[string]any{
+		"base64_data": base64.StdEncoding.EncodeToString([]byte("not an image")),
+		"mime_type":   "text/plain",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported MIME to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported image_analyze MIME type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageAnalyzeToolSupportsJSONFormat(t *testing.T) {
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(multimodal.NewLocalProvider(multimodal.ModalityImage), true); err != nil {
+		t.Fatalf("register provider: %v", err)
+	}
+	r := NewRegistry()
+	r.Register(ImageAnalyzeTool(processor, ""))
+
+	result, err := r.Call("image_analyze", map[string]any{
+		"base64_data": "ZmFrZS1pbWFnZS1ieXRlcw==",
+		"mime_type":   "image/png",
+		"format":      "json",
+	})
+	if err != nil {
+		t.Fatalf("image_analyze call: %v", err)
+	}
+	var payload struct {
+		Available bool   `json:"available"`
+		Modality  string `json:"modality"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal tool output: %v", err)
+	}
+	if !payload.Available || payload.Modality != "image" {
+		t.Fatalf("unexpected payload: %+v", payload)
 	}
 }
 
@@ -614,8 +760,190 @@ func TestImageGenerateToolRejectsFilenamePrefixEscapingWorkspace(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected escaping filename_prefix to be rejected")
 	}
-	if !strings.Contains(err.Error(), "outside workspace") {
+	if !strings.Contains(err.Error(), "filename_prefix") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageGenerateToolDryRunReturnsPlanWithoutCallingProvider(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	gen := &fakeImageGenerator{}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{
+		Model:        "gpt-image-1.5",
+		Size:         "1024x1024",
+		Quality:      "high",
+		OutputFormat: "webp",
+	}))
+
+	result, err := r.Call("image_generate", map[string]any{
+		"prompt":     "plan an image",
+		"dry_run":    true,
+		"count":      2,
+		"output_dir": filepath.Join(workspace, "planned-images"),
+	})
+	if err != nil {
+		t.Fatalf("image_generate dry_run: %v", err)
+	}
+	if gen.calls != 0 {
+		t.Fatalf("expected provider not to be called, got %d calls", gen.calls)
+	}
+	var payload struct {
+		DryRun        bool     `json:"dry_run"`
+		Provider      string   `json:"provider"`
+		Model         string   `json:"model"`
+		Count         int      `json:"count"`
+		OutputTargets []string `json:"output_targets"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal dry_run payload: %v", err)
+	}
+	if !payload.DryRun || payload.Provider != "fake-image-generator" || payload.Model != "gpt-image-1.5" || payload.Count != 2 {
+		t.Fatalf("unexpected dry_run payload: %+v", payload)
+	}
+	if len(payload.OutputTargets) != 2 {
+		t.Fatalf("expected 2 output targets, got %d", len(payload.OutputTargets))
+	}
+}
+
+func TestImageGenerateToolRejectsTooManyInputs(t *testing.T) {
+	gen := &fakeImageGenerator{}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	inputs := make([]any, 0, maxImageGenerateInputs+1)
+	for i := 0; i < maxImageGenerateInputs+1; i++ {
+		inputs = append(inputs, base64.StdEncoding.EncodeToString([]byte("fake")))
+	}
+	_, err := r.Call("image_generate", map[string]any{
+		"prompt":              "too many references",
+		"input_base64_datas":  inputs,
+		"input_mime_types":    []any{"image/png", "image/png", "image/png", "image/png", "image/png", "image/png", "image/png", "image/png", "image/png"},
+		"filename_prefix":     "too-many",
+		"output_compression":  0,
+		"output_format":       "png",
+		"count":               1,
+		"allow_custom_format": false,
+	})
+	if err == nil {
+		t.Fatal("expected too many inputs to be rejected")
+	}
+	if !strings.Contains(err.Error(), "at most") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageGenerateToolRejectsUnsupportedInputMIME(t *testing.T) {
+	gen := &fakeImageGenerator{}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	_, err := r.Call("image_generate", map[string]any{
+		"prompt":            "bad input",
+		"input_base64_data": base64.StdEncoding.EncodeToString([]byte("not an image")),
+		"input_mime_type":   "text/plain",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported input MIME to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported image input MIME type") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestImageGenerateToolRejectsExistingOutputPathUnlessOverwrite(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	outputPath := filepath.Join(workspace, "generated-images", "existing.png")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		t.Fatalf("create output dir: %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider: "fake-image-generator",
+			Model:    "gpt-image-1.5",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("new"), MimeType: "image/png"},
+			},
+		},
+	}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	_, err := r.Call("image_generate", map[string]any{
+		"prompt":      "existing path",
+		"output_path": outputPath,
+	})
+	if err == nil {
+		t.Fatal("expected existing output_path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	_, err = r.Call("image_generate", map[string]any{
+		"prompt":      "overwrite path",
+		"output_path": outputPath,
+		"overwrite":   true,
+	})
+	if err != nil {
+		t.Fatalf("image_generate overwrite: %v", err)
+	}
+	written, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(written) != "new" {
+		t.Fatalf("expected overwritten bytes, got %q", string(written))
+	}
+}
+
+func TestImageGenerateToolAllocatesUniquePathForOutputDirConflict(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	outputDir := filepath.Join(workspace, "generated-images")
+	if err := os.MkdirAll(outputDir, 0o755); err != nil {
+		t.Fatalf("create output dir: %v", err)
+	}
+	existing := filepath.Join(outputDir, "generated-image-01.png")
+	if err := os.WriteFile(existing, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	gen := &fakeImageGenerator{
+		result: &multimodal.ImageGenerationResult{
+			Provider: "fake-image-generator",
+			Model:    "gpt-image-1.5",
+			Images: []multimodal.GeneratedImage{
+				{Data: []byte("new"), MimeType: "image/png"},
+			},
+		},
+	}
+	r := NewRegistry()
+	r.Register(ImageGenerateTool(gen, ImageGenerationDefaults{}))
+
+	result, err := r.Call("image_generate", map[string]any{
+		"prompt":     "avoid conflict",
+		"output_dir": outputDir,
+	})
+	if err != nil {
+		t.Fatalf("image_generate call: %v", err)
+	}
+	var payload struct {
+		Paths []string `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(payload.Paths) != 1 || payload.Paths[0] == existing {
+		t.Fatalf("expected unique path different from %q, got %+v", existing, payload.Paths)
+	}
+	original, err := os.ReadFile(existing)
+	if err != nil {
+		t.Fatalf("read existing: %v", err)
+	}
+	if string(original) != "old" {
+		t.Fatalf("existing file was overwritten: %q", string(original))
 	}
 }
 
@@ -808,6 +1136,173 @@ func TestTextToSpeechToolRejectsOutputPathOutsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestTextToSpeechToolDryRunReturnsPlanWithoutCallingProvider(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{
+		Model:  "gpt-4o-mini-tts",
+		Voice:  "alloy",
+		Format: "wav",
+		Speed:  1.25,
+	}))
+
+	result, err := r.Call("text_to_speech", map[string]any{
+		"text":        "hello dry run",
+		"dry_run":     true,
+		"output_path": filepath.Join(workspace, "audio", "hello.wav"),
+	})
+	if err != nil {
+		t.Fatalf("text_to_speech dry_run: %v", err)
+	}
+	if synth.calls != 0 {
+		t.Fatalf("expected provider not to be called, got %d calls", synth.calls)
+	}
+	var payload struct {
+		DryRun       bool    `json:"dry_run"`
+		Provider     string  `json:"provider"`
+		Model        string  `json:"model"`
+		Voice        string  `json:"voice"`
+		Format       string  `json:"format"`
+		Speed        float64 `json:"speed"`
+		TextChars    int     `json:"text_chars"`
+		OutputTarget string  `json:"output_target"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		t.Fatalf("unmarshal dry_run payload: %v", err)
+	}
+	if !payload.DryRun || payload.Provider != "fake-speech-synthesizer" || payload.Format != "wav" || payload.TextChars != len("hello dry run") {
+		t.Fatalf("unexpected dry_run payload: %+v", payload)
+	}
+	if payload.OutputTarget == "" {
+		t.Fatalf("expected output target in dry_run payload: %+v", payload)
+	}
+}
+
+func TestTextToSpeechToolRejectsLongText(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text": strings.Repeat("x", maxTTSInputChars+1),
+	})
+	if err == nil {
+		t.Fatal("expected long text to be rejected")
+	}
+	if !strings.Contains(err.Error(), "text exceeds") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTextToSpeechToolValidatesSpeedAndFormat(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text":   "bad speed",
+		"speed":  9.0,
+		"format": "mp3",
+	})
+	if err == nil {
+		t.Fatal("expected speed to be rejected")
+	}
+	if !strings.Contains(err.Error(), "speed must be between") {
+		t.Fatalf("unexpected speed error: %v", err)
+	}
+
+	_, err = r.Call("text_to_speech", map[string]any{
+		"text":   "bad format",
+		"format": "ogg",
+	})
+	if err == nil {
+		t.Fatal("expected unsupported format to be rejected")
+	}
+	if !strings.Contains(err.Error(), "unsupported audio format") {
+		t.Fatalf("unexpected format error: %v", err)
+	}
+
+	_, err = r.Call("text_to_speech", map[string]any{
+		"text":                "custom format",
+		"format":              "ogg",
+		"allow_custom_format": true,
+		"dry_run":             true,
+	})
+	if err != nil {
+		t.Fatalf("expected custom format with allow_custom_format to pass: %v", err)
+	}
+}
+
+func TestTextToSpeechToolRejectsFilenamePrefixEscapingWorkspace(t *testing.T) {
+	synth := &fakeSpeechSynthesizer{}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text":            "bad prefix",
+		"filename_prefix": "../audio",
+	})
+	if err == nil {
+		t.Fatal("expected invalid filename_prefix to be rejected")
+	}
+	if !strings.Contains(err.Error(), "filename_prefix") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTextToSpeechToolRejectsExistingOutputUnlessOverwrite(t *testing.T) {
+	workspace := testLuckyAgentWorkspace(t)
+	outputPath := filepath.Join(workspace, "generated-audio", "existing.mp3")
+	if err := os.MkdirAll(filepath.Dir(outputPath), 0o755); err != nil {
+		t.Fatalf("create output dir: %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("old"), 0o644); err != nil {
+		t.Fatalf("write existing file: %v", err)
+	}
+	synth := &fakeSpeechSynthesizer{
+		result: &multimodal.SpeechSynthesisResult{
+			Provider: "fake-speech-synthesizer",
+			Model:    "gpt-4o-mini-tts",
+			Voice:    "alloy",
+			Audio:    []byte("new"),
+			MimeType: "audio/mpeg",
+		},
+	}
+	r := NewRegistry()
+	r.Register(TextToSpeechTool(synth, TTSDefaults{}))
+
+	_, err := r.Call("text_to_speech", map[string]any{
+		"text":        "existing output",
+		"output_path": outputPath,
+	})
+	if err == nil {
+		t.Fatal("expected existing output_path to be rejected")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if synth.calls != 0 {
+		t.Fatalf("expected conflict before provider call, got %d calls", synth.calls)
+	}
+
+	_, err = r.Call("text_to_speech", map[string]any{
+		"text":        "overwrite output",
+		"output_path": outputPath,
+		"overwrite":   true,
+	})
+	if err != nil {
+		t.Fatalf("text_to_speech overwrite: %v", err)
+	}
+	written, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if string(written) != "new" {
+		t.Fatalf("expected overwritten bytes, got %q", string(written))
+	}
+}
+
 func TestFileReadWriteTool(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -840,6 +1335,138 @@ func TestFileReadWriteTool(t *testing.T) {
 	}
 }
 
+func TestFileWriteToolModesDryRunAndHash(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "write.txt")
+	dryRun, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "planned",
+		"mode":    "create",
+		"dry_run": true,
+	})
+	if err != nil {
+		t.Fatalf("file_write dry_run: %v", err)
+	}
+	if !strings.Contains(dryRun, "Dry run") || !strings.Contains(dryRun, `"action": "create"`) {
+		t.Fatalf("unexpected dry_run result: %q", dryRun)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry_run should not create file, got %v", err)
+	}
+
+	if _, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "initial",
+		"mode":    "create",
+	}); err != nil {
+		t.Fatalf("file_write create: %v", err)
+	}
+	if _, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "again",
+		"mode":    "create",
+	}); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected create mode existing error, got %v", err)
+	}
+
+	oldHash := sha256Hex([]byte("initial"))
+	if _, err := r.Call("file_write", map[string]any{
+		"path":            path,
+		"content":         "updated",
+		"expected_sha256": oldHash,
+	}); err != nil {
+		t.Fatalf("file_write expected hash: %v", err)
+	}
+	if _, err := r.Call("file_write", map[string]any{
+		"path":            path,
+		"content":         "bad",
+		"expected_sha256": oldHash,
+	}); err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("expected hash mismatch, got %v", err)
+	}
+
+	skip, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "updated",
+	})
+	if err != nil {
+		t.Fatalf("file_write same content: %v", err)
+	}
+	if !strings.Contains(skip, "Skipped write") {
+		t.Fatalf("expected same-content skip, got %q", skip)
+	}
+}
+
+func TestFileWriteToolPreservesPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bit preservation is platform-specific on Windows")
+	}
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "script.sh")
+	if err := os.WriteFile(path, []byte("old"), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	if _, err := r.Call("file_write", map[string]any{
+		"path":    path,
+		"content": "new",
+	}); err != nil {
+		t.Fatalf("file_write overwrite: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat script: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("expected permissions 0755, got %o", got)
+	}
+}
+
+func TestFileReadToolRangeAndContinuation(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "range.txt")
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\nfour\n"), 0o644); err != nil {
+		t.Fatalf("write range file: %v", err)
+	}
+
+	result, err := r.Call("file_read", map[string]any{
+		"path":   path,
+		"offset": 2,
+		"limit":  2,
+	})
+	if err != nil {
+		t.Fatalf("file_read range: %v", err)
+	}
+	for _, want := range []string{"File:", "Size:", "2| two", "3| three", "use offset=4"} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("expected %q in result:\n%s", want, result)
+		}
+	}
+	if strings.Contains(result, "4| four") {
+		t.Fatalf("limit should hide line 4:\n%s", result)
+	}
+}
+
+func TestFileReadToolRejectsBinary(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "blob.bin")
+	if err := os.WriteFile(path, []byte{0x00, 0x01, 0x02, 0x03}, 0o644); err != nil {
+		t.Fatalf("write binary file: %v", err)
+	}
+
+	_, err := r.Call("file_read", map[string]any{"path": path})
+	if err == nil || !strings.Contains(err.Error(), "binary") {
+		t.Fatalf("expected binary rejection, got %v", err)
+	}
+}
+
 func TestDocumentReadToolReadsDocx(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -847,13 +1474,15 @@ func TestDocumentReadToolReadsDocx(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sample.docx")
 	writeZipTestFile(t, path, map[string]string{
 		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Hello DOCX</w:t></w:r></w:p><w:p><w:r><w:t>Second paragraph</w:t></w:r></w:p></w:body></w:document>`,
+		"word/header1.xml":  `<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:p><w:r><w:t>Header text</w:t></w:r></w:p></w:hdr>`,
+		"word/comments.xml": `<w:comments xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:comment><w:p><w:r><w:t>Review comment</w:t></w:r></w:p></w:comment></w:comments>`,
 	})
 
 	result, err := r.Call("document_read", map[string]any{"path": path})
 	if err != nil {
 		t.Fatalf("document_read docx: %v", err)
 	}
-	if !strings.Contains(result, "Format: docx") || !strings.Contains(result, "Hello DOCX") || !strings.Contains(result, "Second paragraph") {
+	if !strings.Contains(result, "Format: docx") || !strings.Contains(result, "Hello DOCX") || !strings.Contains(result, "Header text") || !strings.Contains(result, "Review comment") {
 		t.Fatalf("unexpected docx extraction:\n%s", result)
 	}
 }
@@ -864,11 +1493,13 @@ func TestDocumentReadToolReadsPptxWithLimit(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "slides.pptx")
 	writeZipTestFile(t, path, map[string]string{
-		"ppt/slides/slide2.xml": `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Second slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
-		"ppt/slides/slide1.xml": `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>First slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+		"ppt/presentation.xml":            `<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>`,
+		"ppt/slides/slide2.xml":           `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Second slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+		"ppt/slides/slide1.xml":           `<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>First slide</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:sld>`,
+		"ppt/notesSlides/notesSlide1.xml": `<p:notes xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:cSld><p:spTree><p:sp><p:txBody><a:p><a:r><a:t>Speaker note</a:t></a:r></a:p></p:txBody></p:sp></p:spTree></p:cSld></p:notes>`,
 	})
 
-	result, err := r.Call("document_read", map[string]any{"path": path, "limit": 3})
+	result, err := r.Call("document_read", map[string]any{"path": path, "limit": 4})
 	if err != nil {
 		t.Fatalf("document_read pptx: %v", err)
 	}
@@ -880,6 +1511,24 @@ func TestDocumentReadToolReadsPptxWithLimit(t *testing.T) {
 	}
 	if !strings.Contains(result, "use offset=") {
 		t.Fatalf("expected continuation hint for limited output:\n%s", result)
+	}
+}
+
+func TestDocumentReadToolDetectsOfficeFormatByContent(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "misnamed.bin")
+	writeZipTestFile(t, path, map[string]string{
+		"word/document.xml": `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>Detected DOCX</w:t></w:r></w:p></w:body></w:document>`,
+	})
+
+	result, err := r.Call("document_read", map[string]any{"path": path})
+	if err != nil {
+		t.Fatalf("document_read detected docx: %v", err)
+	}
+	if !strings.Contains(result, "Format: docx") || !strings.Contains(result, "Detected DOCX") {
+		t.Fatalf("unexpected detected docx extraction:\n%s", result)
 	}
 }
 
@@ -975,6 +1624,173 @@ func TestFileMkdirMoveDeleteTools(t *testing.T) {
 	}
 	if !strings.Contains(missingResult, "already absent") {
 		t.Fatalf("unexpected missing_ok result: %q", missingResult)
+	}
+}
+
+func TestFileMoveToolDryRunAndSafetyChecks(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	src := filepath.Join(tmpDir, "src.txt")
+	dst := filepath.Join(tmpDir, "dst.txt")
+	if err := os.WriteFile(src, []byte("payload"), 0o644); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+	dryRun, err := r.Call("file_move", map[string]any{
+		"src":     src,
+		"dst":     dst,
+		"dry_run": true,
+	})
+	if err != nil {
+		t.Fatalf("file_move dry_run: %v", err)
+	}
+	if !strings.Contains(dryRun, "Dry run") || !strings.Contains(dryRun, `"kind": "file"`) {
+		t.Fatalf("unexpected dry_run result: %q", dryRun)
+	}
+	if _, err := os.Stat(src); err != nil {
+		t.Fatalf("dry_run should keep source: %v", err)
+	}
+
+	dir := filepath.Join(tmpDir, "dir")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir dir: %v", err)
+	}
+	_, err = r.Call("file_move", map[string]any{
+		"src": dir,
+		"dst": filepath.Join(dir, "child"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "into itself") {
+		t.Fatalf("expected self move rejection, got %v", err)
+	}
+
+	existingDir := filepath.Join(tmpDir, "existing-dir")
+	if err := os.MkdirAll(existingDir, 0o755); err != nil {
+		t.Fatalf("mkdir existing dir: %v", err)
+	}
+	_, err = r.Call("file_move", map[string]any{
+		"src":       src,
+		"dst":       existingDir,
+		"overwrite": true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot overwrite") {
+		t.Fatalf("expected overwrite type rejection, got %v", err)
+	}
+
+	link := filepath.Join(tmpDir, "src-link")
+	if err := os.Symlink(src, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	_, err = r.Call("file_move", map[string]any{
+		"src": src,
+		"dst": link,
+	})
+	if err == nil || !strings.Contains(err.Error(), "same path") {
+		t.Fatalf("expected resolved same path rejection, got %v", err)
+	}
+}
+
+func TestFileDeleteToolDryRunLimitTrashAndSymlink(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tmpDir := t.TempDir()
+	root := filepath.Join(tmpDir, "tree")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatalf("mkdir tree: %v", err)
+	}
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(name), 0o644); err != nil {
+			t.Fatalf("write tree file: %v", err)
+		}
+	}
+	dryRun, err := r.Call("file_delete", map[string]any{
+		"path":      root,
+		"recursive": true,
+		"dry_run":   true,
+	})
+	if err != nil {
+		t.Fatalf("file_delete dry_run: %v", err)
+	}
+	if !strings.Contains(dryRun, "Dry run") || !strings.Contains(dryRun, `"kind": "directory"`) {
+		t.Fatalf("unexpected dry_run result: %q", dryRun)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("dry_run should keep tree: %v", err)
+	}
+
+	_, err = r.Call("file_delete", map[string]any{
+		"path":        root,
+		"recursive":   true,
+		"max_entries": 1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "max_entries") {
+		t.Fatalf("expected recursive limit error, got %v", err)
+	}
+
+	trashResult, err := r.Call("file_delete", map[string]any{
+		"path":      root,
+		"recursive": true,
+		"trash":     true,
+	})
+	if err != nil {
+		t.Fatalf("file_delete trash: %v", err)
+	}
+	if !strings.Contains(trashResult, "Moved") || !strings.Contains(trashResult, ".luckyagent") {
+		t.Fatalf("unexpected trash result: %q", trashResult)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("trash should remove original path, got %v", err)
+	}
+
+	target := filepath.Join(tmpDir, "target.txt")
+	link := filepath.Join(tmpDir, "target-link")
+	if err := os.WriteFile(target, []byte("keep"), 0o644); err != nil {
+		t.Fatalf("write symlink target: %v", err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	if _, err := r.Call("file_delete", map[string]any{"path": link}); err != nil {
+		t.Fatalf("file_delete symlink: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("deleting symlink should keep target: %v", err)
+	}
+}
+
+func TestFileMkdirToolDryRunAndParentErrors(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	target := filepath.Join(tmpDir, "a", "b")
+	result, err := r.Call("file_mkdir", map[string]any{
+		"path":    target,
+		"dry_run": true,
+	})
+	if err != nil {
+		t.Fatalf("file_mkdir dry_run: %v", err)
+	}
+	if !strings.Contains(result, "Dry run") || !strings.Contains(result, `"create_dirs"`) {
+		t.Fatalf("unexpected dry_run result: %q", result)
+	}
+	if _, err := os.Stat(target); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("dry_run should not create target, got %v", err)
+	}
+
+	_, err = r.Call("file_mkdir", map[string]any{
+		"path":      target,
+		"recursive": false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "set recursive=true") {
+		t.Fatalf("expected clear recursive hint, got %v", err)
+	}
+
+	if _, err := r.Call("file_mkdir", map[string]any{"path": tmpDir}); err != nil {
+		t.Fatalf("existing directory should be idempotent: %v", err)
 	}
 }
 
@@ -1153,6 +1969,72 @@ func TestFilePatchToolDiffModeErrors(t *testing.T) {
 	}
 }
 
+func TestFilePatchToolDryRunHashNoopAndPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("permission bit preservation is platform-specific on Windows")
+	}
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	path := filepath.Join(t.TempDir(), "patch-plan.sh")
+	if err := os.WriteFile(path, []byte("alpha\nbeta\n"), 0o755); err != nil {
+		t.Fatalf("write patch target: %v", err)
+	}
+	oldHash := sha256Hex([]byte("alpha\nbeta\n"))
+	dryRun, err := r.Call("file_patch", map[string]any{
+		"path":            path,
+		"match":           "beta",
+		"replace":         "gamma",
+		"expected_sha256": oldHash,
+		"dry_run":         true,
+	})
+	if err != nil {
+		t.Fatalf("file_patch dry_run: %v", err)
+	}
+	if !strings.Contains(dryRun, "Dry run") || !strings.Contains(dryRun, `"kind": "replacement"`) {
+		t.Fatalf("unexpected dry_run result: %q", dryRun)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after dry_run: %v", err)
+	}
+	if string(data) != "alpha\nbeta\n" {
+		t.Fatalf("dry_run should not patch file: %q", data)
+	}
+
+	if _, err := r.Call("file_patch", map[string]any{
+		"path":            path,
+		"match":           "beta",
+		"replace":         "gamma",
+		"expected_sha256": oldHash,
+	}); err != nil {
+		t.Fatalf("file_patch expected hash: %v", err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after patch: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o755 {
+		t.Fatalf("expected permissions 0755, got %o", got)
+	}
+
+	if _, err := r.Call("file_patch", map[string]any{
+		"path":    path,
+		"match":   "gamma",
+		"replace": "gamma",
+	}); err == nil || !strings.Contains(err.Error(), "no changes") {
+		t.Fatalf("expected no-op error, got %v", err)
+	}
+	if _, err := r.Call("file_patch", map[string]any{
+		"path":            path,
+		"match":           "gamma",
+		"replace":         "delta",
+		"expected_sha256": oldHash,
+	}); err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("expected hash mismatch, got %v", err)
+	}
+}
+
 func TestFileListTool(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -1314,6 +2196,65 @@ func TestRAGToolServiceSearchAndIndex(t *testing.T) {
 	}
 	if !strings.Contains(searchResult, "alpha") && !strings.Contains(searchResult, "Demo") {
 		t.Fatalf("unexpected search result: %q", searchResult)
+	}
+}
+
+func TestRAGToolServiceSearchOptionsArePerCall(t *testing.T) {
+	emb := embedder.NewMockEmbedder(8)
+	mgr := rag.NewRAGManager(emb, rag.DefaultRAGConfig())
+	mgr.UpdateRetrieverConfig(rag.RetrieverConfig{TopK: 9, MinScore: 0.1})
+	svc := NewRAGToolService(mgr)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "doc.md")
+	if err := os.WriteFile(path, []byte("# Demo\n\nalpha beta gamma"), 0600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if _, err := svc.HandleIndex(map[string]any{"path": path}); err != nil {
+		t.Fatalf("HandleIndex: %v", err)
+	}
+
+	out, err := svc.HandleSearch(map[string]any{
+		"query":  "alpha",
+		"top_k":  1,
+		"format": "json",
+	})
+	if err != nil {
+		t.Fatalf("HandleSearch: %v", err)
+	}
+	var payload struct {
+		Query   string `json:"query"`
+		TopK    int    `json:"top_k"`
+		Count   int    `json:"count"`
+		Results []struct {
+			ChunkID string `json:"chunk_id"`
+			Source  string `json:"source"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(out), &payload); err != nil {
+		t.Fatalf("unmarshal search json: %v\n%s", err, out)
+	}
+	if payload.Query != "alpha" || payload.TopK != 1 || payload.Count > 1 {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+	if len(payload.Results) > 0 && (payload.Results[0].ChunkID == "" || payload.Results[0].Source == "") {
+		t.Fatalf("expected chunk/source references: %+v", payload.Results[0])
+	}
+	if got := mgr.RetrieverConfig().TopK; got != 9 {
+		t.Fatalf("retriever top_k mutated to %d, want 9", got)
+	}
+}
+
+func TestRAGToolServiceSearchRejectsUnsafeBounds(t *testing.T) {
+	emb := embedder.NewMockEmbedder(8)
+	mgr := rag.NewRAGManager(emb, rag.DefaultRAGConfig())
+	svc := NewRAGToolService(mgr)
+
+	if _, err := svc.HandleSearch(map[string]any{"query": "alpha", "top_k": maxRAGSearchTopK + 1}); err == nil {
+		t.Fatal("expected top_k bound error")
+	}
+	if _, err := svc.HandleSearch(map[string]any{"query": strings.Repeat("x", maxRAGSearchQueryRunes+1)}); err == nil {
+		t.Fatal("expected query length error")
 	}
 }
 
@@ -1522,6 +2463,103 @@ func TestSandboxPathValidationUsesWindowsHomeAndTemp(t *testing.T) {
 	}
 }
 
+func sandboxExternalTestRoot(t *testing.T) string {
+	t.Helper()
+	if wd, err := os.Getwd(); err == nil {
+		root, err := os.MkdirTemp(wd, "sandbox-external-*")
+		if err == nil {
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			return root
+		}
+	}
+	return t.TempDir()
+}
+
+func TestFileReadAllowsConfiguredReadRoot(t *testing.T) {
+	root := sandboxExternalTestRoot(t)
+	home := filepath.Join(root, "home")
+	tempRoot := filepath.Join(root, "runtime-temp")
+	externalRoot := filepath.Join(root, "external-notes")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	if err := os.MkdirAll(tempRoot, 0o755); err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	if err := os.MkdirAll(externalRoot, 0o755); err != nil {
+		t.Fatalf("mkdir external root: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("TEMP", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TMPDIR", tempRoot)
+
+	notePath := filepath.Join(externalRoot, "questions.md")
+	if err := os.WriteFile(notePath, []byte("classic interview question"), 0o644); err != nil {
+		t.Fatalf("write note: %v", err)
+	}
+
+	if _, err := FileReadTool().Handler(map[string]any{"path": notePath}); err == nil {
+		t.Logf("default sandbox already allows %s; skipping default rejection assertion", notePath)
+	} else if !strings.Contains(err.Error(), "outside sandbox") {
+		t.Fatalf("expected default sandbox rejection, got %v", err)
+	}
+
+	readTool := FileReadTool(FilesystemPolicy{AllowedReadRoots: []string{externalRoot}})
+	out, err := readTool.Handler(map[string]any{"path": notePath})
+	if err != nil {
+		t.Fatalf("configured read root should allow file_read: %v", err)
+	}
+	if !strings.Contains(out, "classic interview question") {
+		t.Fatalf("expected file contents in output, got %q", out)
+	}
+
+	listTool := FileListTool(FilesystemPolicy{AllowedReadRoots: []string{externalRoot}})
+	listOut, err := listTool.Handler(map[string]any{"path": externalRoot})
+	if err != nil {
+		t.Fatalf("configured read root should allow file_list: %v", err)
+	}
+	if !strings.Contains(listOut, "questions.md") {
+		t.Fatalf("expected listed note, got %q", listOut)
+	}
+}
+
+func TestConfiguredReadRootDoesNotAllowWrite(t *testing.T) {
+	root := sandboxExternalTestRoot(t)
+	home := filepath.Join(root, "home")
+	tempRoot := filepath.Join(root, "runtime-temp")
+	externalRoot := filepath.Join(root, "external-notes")
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatalf("mkdir home: %v", err)
+	}
+	if err := os.MkdirAll(tempRoot, 0o755); err != nil {
+		t.Fatalf("mkdir temp: %v", err)
+	}
+	if err := os.MkdirAll(externalRoot, 0o755); err != nil {
+		t.Fatalf("mkdir external root: %v", err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("TEMP", tempRoot)
+	t.Setenv("TMP", tempRoot)
+	t.Setenv("TMPDIR", tempRoot)
+
+	writePath := filepath.Join(externalRoot, "created.md")
+	if err := validatePath(writePath); err == nil {
+		t.Skipf("test external root is already inside the default sandbox: %s", writePath)
+	}
+	if _, err := FileWriteTool().Handler(map[string]any{
+		"path":    writePath,
+		"content": "should not write",
+	}); err == nil || !strings.Contains(err.Error(), "outside sandbox") {
+		t.Fatalf("expected write outside sandbox to be rejected, got %v", err)
+	}
+	if _, err := os.Stat(writePath); !os.IsNotExist(err) {
+		t.Fatalf("external file should not have been written, stat err %v", err)
+	}
+}
+
 func TestShellSandboxValidation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1568,18 +2606,18 @@ func TestResolveExaAPIKey(t *testing.T) {
 	}
 }
 
-func TestQuickSearchOrderPrefersExa(t *testing.T) {
+func TestQuickSearchOrderPrefersProvider(t *testing.T) {
 	order := quickSearchOrder("searxng", &WebSearchConfig{BaseURL: "https://search.shiokou.asia"})
-	if len(order) == 0 || order[0] != "exa" {
-		t.Fatalf("expected exa first, got %v", order)
+	if len(order) == 0 || order[0] != "searxng" {
+		t.Fatalf("expected provider first, got %v", order)
 	}
 }
 
-func TestDeepSearchOrderPrefersExa(t *testing.T) {
+func TestDeepSearchOrderPrefersProvider(t *testing.T) {
 	t.Setenv("EXA_API_KEY", "env-exa-key")
 	order := deepSearchOrder("searxng", &WebSearchConfig{BaseURL: "https://search.shiokou.asia"})
-	if len(order) == 0 || order[0] != "exa" {
-		t.Fatalf("expected exa first, got %v", order)
+	if len(order) == 0 || order[0] != "searxng" {
+		t.Fatalf("expected provider first, got %v", order)
 	}
 }
 

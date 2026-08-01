@@ -354,15 +354,31 @@ func (s *MidTermStore) persist() error {
 	if err := os.MkdirAll(s.dir, 0700); err != nil {
 		return fmt.Errorf("create midterm dir: %w", err)
 	}
-	for _, sm := range s.summaries {
+	ids := make([]string, 0, len(s.summaries))
+	for id := range s.summaries {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	usedPaths := make(map[string]string, len(ids))
+	for _, id := range ids {
+		if rel := filepath.ToSlash(strings.TrimSpace(s.paths[id])); rel != "" {
+			usedPaths[rel] = id
+		}
+	}
+	for _, id := range ids {
+		sm := s.summaries[id]
+		if sm == nil {
+			continue
+		}
 		normalizeSessionSummaryForSave(sm)
 		if sm.CreatedAt.IsZero() {
 			sm.CreatedAt = time.Now()
 		}
-		rel := s.paths[sm.SessionID]
+		rel := filepath.ToSlash(strings.TrimSpace(s.paths[sm.SessionID]))
 		if rel == "" {
-			rel = sessionNotePath(sm)
+			rel = uniqueSessionNotePath(s.dir, sm, usedPaths, "")
 			s.paths[sm.SessionID] = rel
+			usedPaths[rel] = sm.SessionID
 		}
 		path := filepath.Join(s.dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -444,18 +460,27 @@ type sessionSummaryFrontmatter struct {
 }
 
 func sessionNotePath(sm *SessionSummary) string {
-	created := sm.CreatedAt
-	if created.IsZero() {
-		created = time.Now()
+	return sessionSummaryFileBase(sm) + ".md"
+}
+
+func uniqueSessionNotePath(root string, sm *SessionSummary, used map[string]string, currentRel string) string {
+	return uniqueNotePath(root, "", sessionSummaryFileBase(sm), used, currentRel)
+}
+
+func sessionSummaryFileBase(sm *SessionSummary) string {
+	if sm == nil {
+		return "Session Summary"
 	}
-	slug := slugify(strings.Join(sm.Topics, "-"))
-	if slug == "" {
-		slug = slugify(sm.SessionID)
+	if len(sm.Topics) > 0 {
+		return humanFileTitle("Session - "+strings.Join(sm.Topics, ", "), "Session Summary")
 	}
-	if slug == "" {
-		slug = "session"
+	if text := firstHumanTitleLine(sm.RawSummary); text != "" {
+		return humanFileTitle("Session - "+text, "Session Summary")
 	}
-	return filepath.ToSlash(fmt.Sprintf("%s-%s-%s.md", created.Format("20060102-150405"), slug, sm.SessionID))
+	if strings.TrimSpace(sm.SessionID) != "" {
+		return humanFileTitle("Session - "+sm.SessionID, "Session Summary")
+	}
+	return "Session Summary"
 }
 
 func renderSessionSummaryNote(sm *SessionSummary) string {

@@ -55,7 +55,7 @@ Important context behavior:
 - `internal/server`: HTTP API, SSE chat, WebSocket, health, context, RAG,
   memory, sessions, soul endpoints.
 - `internal/gateway`: shared gateway abstractions and runtime state.
-- `internal/gateway/telegram`, `qqofficial`, `napcat`, `weixin`,
+- `internal/gateway/telegram`, `qqofficial`, `napcat`, `feishu`, `weixin`,
   `openclawweixin`: platform adapters.
 - `internal/cli/lhcmd`: Cobra command definitions and command handlers.
 - `UI/GUI` and `UI/TUI`: frontend workspaces. Run Node commands from the
@@ -90,15 +90,18 @@ Gateway startup uses:
 lh msg-gateway start --platform telegram
 lh msg-gateway start --platform qqofficial
 lh msg-gateway start --platform napcat
+lh msg-gateway start --platform feishu
 lh msg-gateway start --platform weixin
 lh msg-gateway start --platform openclawweixin
 ```
 
 Telegram supports progress-message modes and session commands. NapCat uses
 OneBot v11 reverse WebSocket settings (`listen_addr`, `path`, `access_token`).
-QQ Official and Weixin have their own auth/config paths. Verify adapter behavior
-and tests under the matching `internal/gateway/<platform>` package before
-changing platform-specific assumptions.
+Feishu uses an HTTP event callback and tenant access tokens; its Phase 1 adapter
+supports unencrypted text events. QQ Official and Weixin have their own
+auth/config paths. Verify adapter behavior and tests under the matching
+`internal/gateway/<platform>` package before changing platform-specific
+assumptions.
 
 `/lucky on` and `/lucky off` collect multiple gateway messages into one user
 turn through `internal/gateway/collector`, preserving segment boundaries and
@@ -167,6 +170,7 @@ go test ./internal/config
 go test ./internal/server
 go test ./internal/gateway/telegram
 go test ./internal/gateway/napcat
+go test ./internal/gateway/feishu
 go test ./internal/memory ./internal/rag
 ```
 

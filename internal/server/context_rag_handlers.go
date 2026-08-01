@@ -6,6 +6,7 @@ import (
 
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/contextx"
+	"github.com/yurika0211/luckyagent/internal/rag"
 )
 
 // ===== v0.13.0: Context Window API =====
@@ -20,7 +21,7 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	cw := s.agent.ContextWindow()
 	cfg := cw.Config()
 
-	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"max_tokens":             cfg.MaxTokens,
 		"reserved_tokens":        cfg.ReservedTokens,
 		"available_tokens":       cfg.MaxTokens - cfg.ReservedTokens,
@@ -29,7 +30,16 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		"max_conversation_turns": cfg.MaxConversationTurns,
 		"memory_budget":          cfg.MemoryBudget,
 		"summarize_threshold":    cfg.SummarizeThreshold,
-	})
+	}
+	if sessionID := r.URL.Query().Get("session_id"); sessionID != "" {
+		if sess, ok := s.agent.Sessions().Get(sessionID); ok {
+			if trace, ok := sess.LatestCompactTrace(); ok {
+				resp["compact_trace"] = trace
+			}
+		}
+	}
+
+	s.sendJSON(w, http.StatusOK, resp)
 }
 
 // handleContextFit 上下文裁剪接口
@@ -248,10 +258,12 @@ func (s *Server) handleRAGSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Query    string  `json:"query"`
-		TopK     int     `json:"top_k,omitempty"`
-		MinScore float64 `json:"min_score,omitempty"`
-		Source   string  `json:"source,omitempty"` // 按来源过滤
+		Query     string  `json:"query"`
+		TopK      int     `json:"top_k,omitempty"`
+		MinScore  float64 `json:"min_score,omitempty"`
+		UseMMR    *bool   `json:"use_mmr,omitempty"`
+		MMRLambda float64 `json:"mmr_lambda,omitempty"`
+		Source    string  `json:"source,omitempty"` // 按来源过滤
 	}
 
 	if err := jsonAPI.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -263,6 +275,18 @@ func (s *Server) handleRAGSearch(w http.ResponseWriter, r *http.Request) {
 		s.sendError(w, "query is required", http.StatusBadRequest, "")
 		return
 	}
+	if req.TopK < 0 || req.TopK > 20 {
+		s.sendError(w, "top_k must be between 1 and 20", http.StatusBadRequest, "")
+		return
+	}
+	if req.MinScore < 0 || req.MinScore > 1 {
+		s.sendError(w, "min_score must be between 0 and 1", http.StatusBadRequest, "")
+		return
+	}
+	if req.MMRLambda < 0 || req.MMRLambda > 1 {
+		s.sendError(w, "mmr_lambda must be between 0 and 1", http.StatusBadRequest, "")
+		return
+	}
 
 	ragMgr := s.agent.RAG()
 	if ragMgr == nil {
@@ -271,33 +295,24 @@ func (s *Server) handleRAGSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 应用临时检索配置
-	if req.TopK > 0 || req.MinScore > 0 || req.Source != "" {
-		cfg := ragMgr.RetrieverConfig()
-		if req.TopK > 0 {
-			cfg.TopK = req.TopK
-		}
-		if req.MinScore > 0 {
-			cfg.MinScore = req.MinScore
-		}
-		if req.Source != "" {
-			cfg.FilterSource = req.Source
-		}
-		ragMgr.UpdateRetrieverConfig(cfg)
+	opts := rag.SearchOptions{
+		TopK:         req.TopK,
+		MinScore:     req.MinScore,
+		FilterSource: req.Source,
+		MMRLambda:    req.MMRLambda,
 	}
-
-	results, err := ragMgr.Search(r.Context(), req.Query)
+	if req.UseMMR != nil {
+		opts.UseMMR = *req.UseMMR
+	} else {
+		opts.UseMMR = ragMgr.RetrieverConfig().UseMMR
+	}
+	results, err := ragMgr.SearchWithOptions(r.Context(), req.Query, opts)
 	if err != nil {
 		s.sendError(w, "search failed", http.StatusInternalServerError, err.Error())
 		return
 	}
 
 	// 重置过滤
-	if req.Source != "" {
-		cfg := ragMgr.RetrieverConfig()
-		cfg.FilterSource = ""
-		ragMgr.UpdateRetrieverConfig(cfg)
-	}
-
 	// 转换结果
 	searchResults := make([]map[string]interface{}, len(results))
 	for i, res := range results {
@@ -355,10 +370,12 @@ func (s *Server) handleRAGStats(w http.ResponseWriter, r *http.Request) {
 		"sources":        stats.Sources,
 		"documents":      docs,
 		"retriever": map[string]interface{}{
-			"top_k":      ragMgr.RetrieverConfig().TopK,
-			"min_score":  ragMgr.RetrieverConfig().MinScore,
-			"use_mmr":    ragMgr.RetrieverConfig().UseMMR,
-			"mmr_lambda": ragMgr.RetrieverConfig().MMRLambda,
+			"top_k":        ragMgr.RetrieverConfig().TopK,
+			"min_score":    ragMgr.RetrieverConfig().MinScore,
+			"use_hybrid":   ragMgr.RetrieverConfig().UseHybrid,
+			"dense_weight": ragMgr.RetrieverConfig().DenseWeight,
+			"use_mmr":      ragMgr.RetrieverConfig().UseMMR,
+			"mmr_lambda":   ragMgr.RetrieverConfig().MMRLambda,
 		},
 	})
 }

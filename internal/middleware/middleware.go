@@ -275,6 +275,18 @@ func NewRetryMiddleware(config resilience.RetryConfig) *RetryMiddleware {
 	}
 }
 
+// NewRetryMiddlewareWithPredicate creates a retry middleware with a caller
+// supplied retry classifier.
+func NewRetryMiddlewareWithPredicate(config resilience.RetryConfig, isRetryable resilience.IsRetryableFunc) *RetryMiddleware {
+	if isRetryable == nil {
+		isRetryable = resilience.DefaultIsRetryable
+	}
+	return &RetryMiddleware{
+		config:      config,
+		isRetryable: isRetryable,
+	}
+}
+
 func (m *RetryMiddleware) Name() string { return "retry" }
 
 func (m *RetryMiddleware) InterceptChat(ctx context.Context, info CallInfo, next ChatHandler) (*provider.Response, error) {

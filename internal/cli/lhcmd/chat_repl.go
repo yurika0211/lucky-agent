@@ -174,6 +174,7 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 		fmt.Println("  /session switch ID 切换会话")
 		fmt.Println("  /session search KW 搜索会话")
 		fmt.Println("  /session save      保存当前会话")
+		fmt.Println("  /session compact   压缩当前会话历史")
 		fmt.Println("  /session delete ID 删除会话")
 		fmt.Println("  /reload            重新加载配置")
 		fmt.Println("  /cron add [--bind-current|--session ID] <id> <schedule> <cmd>  添加定时任务")
@@ -375,10 +376,10 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 			return true, false
 		},
 		"/session": func(ctx replCommandContext, arg string) (bool, bool) {
-			return handleSessionCommand(arg, ctx.sessionMgr, ctx.currentSession), false
+			return handleSessionCommand(arg, ctx.agent, ctx.sessionMgr, ctx.currentSession), false
 		},
 		"/new": func(ctx replCommandContext, _ string) (bool, bool) {
-			return handleSessionCommand("new", ctx.sessionMgr, ctx.currentSession), false
+			return handleSessionCommand("new", ctx.agent, ctx.sessionMgr, ctx.currentSession), false
 		},
 		"/reload": func(ctx replCommandContext, _ string) (bool, bool) {
 			if err := ctx.cfgMgr.Reload(); err != nil {
@@ -1364,10 +1365,10 @@ func handleRAGCommand(arg string, a *agent.Agent) bool {
 }
 
 // handleSessionCommand 处理 /session 命令
-func handleSessionCommand(arg string, mgr *session.Manager, currentSession **session.Session) bool {
+func handleSessionCommand(arg string, a *agent.Agent, mgr *session.Manager, currentSession **session.Session) bool {
 	parts := strings.Fields(arg)
 	if len(parts) == 0 {
-		fmt.Println("用法: /session <new|switch|search|save|delete> [args]")
+		fmt.Println("用法: /session <new|switch|search|save|compact|delete> [args]")
 		return true
 	}
 
@@ -1426,6 +1427,30 @@ func handleSessionCommand(arg string, mgr *session.Manager, currentSession **ses
 			fmt.Printf("✅ 会话已保存: %s\n", (*currentSession).ID[:8])
 		}
 
+	case "compact":
+		if a == nil {
+			fmt.Println("❌ Agent 未初始化")
+			return true
+		}
+		if currentSession == nil || *currentSession == nil {
+			fmt.Println("❌ 当前会话为空")
+			return true
+		}
+		result, err := a.CompactSession(context.Background(), *currentSession, "manual")
+		if err != nil {
+			fmt.Printf("❌ compact 失败: %v\n", err)
+			return true
+		}
+		fmt.Printf("✅ 会话已 compact: %s\n", (*currentSession).ID[:8])
+		fmt.Printf("   boundary: %s\n", result.BoundaryID)
+		fmt.Printf("   covered messages: [%d, %d)\n", result.FromMessage, result.ToMessage)
+		fmt.Printf("   dropped messages: %d\n", result.DroppedMessages)
+		fmt.Printf("   retained messages: %d\n", result.RetainedMessages)
+		fmt.Printf("   restored attachments: %d\n", result.RestoredAttachments)
+		fmt.Printf("   summary source: %s\n", result.SummarySource)
+		fmt.Printf("   summary tokens: %d\n", result.SummaryTokens)
+		fmt.Printf("   tokens: %d -> %d\n", result.PreTokenEstimate, result.PostTokenEstimate)
+
 	case "delete":
 		if len(parts) < 2 {
 			fmt.Println("用法: /session delete <id-prefix>")
@@ -1448,13 +1473,16 @@ func handleSessionCommand(arg string, mgr *session.Manager, currentSession **ses
 			if err := mgr.Delete(targetID); err != nil {
 				fmt.Printf("❌ %v\n", err)
 			} else {
+				if a != nil {
+					a.ForgetShortTermSession(targetID)
+				}
 				fmt.Printf("✅ 会话已删除: %s\n", targetID[:8])
 			}
 		}
 
 	default:
 		fmt.Printf("未知 session 子命令: %s\n", parts[0])
-		fmt.Println("用法: /session <new|switch|search|save|delete> [args]")
+		fmt.Println("用法: /session <new|switch|search|save|compact|delete> [args]")
 	}
 	return true
 }

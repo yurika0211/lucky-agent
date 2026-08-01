@@ -31,27 +31,28 @@ type benchQuery struct {
 }
 
 type diskMemoryNote struct {
-	ID          string     `yaml:"id"`
-	Type        string     `yaml:"type"`
-	Tier        string     `yaml:"tier"`
-	Category    string     `yaml:"category"`
-	Importance  float64    `yaml:"importance"`
-	AccessCount int        `yaml:"access_count"`
-	CreatedAt   time.Time  `yaml:"created_at"`
-	AccessedAt  time.Time  `yaml:"accessed_at"`
-	Tags        []string   `yaml:"tags,omitempty"`
-	ExpiresAt   *time.Time `yaml:"expires_at,omitempty"`
-	Status      string     `yaml:"status,omitempty"`
-	ValidFrom   time.Time  `yaml:"valid_from,omitempty"`
-	ValidUntil  *time.Time `yaml:"valid_until,omitempty"`
-	Links       []string   `yaml:"links,omitempty"`
-	Aliases     []string   `yaml:"aliases,omitempty"`
-	StateKey    string     `yaml:"state_key,omitempty"`
-	StateValue  string     `yaml:"state_value,omitempty"`
-	Confidence  float64    `yaml:"confidence,omitempty"`
-	Supersedes  []string   `yaml:"supersedes,omitempty"`
-	BlockID     string     `yaml:"block_id,omitempty"`
-	Content     string     `yaml:"-"`
+	ID            string               `yaml:"id"`
+	Type          string               `yaml:"type"`
+	Tier          string               `yaml:"tier"`
+	Category      string               `yaml:"category"`
+	Importance    float64              `yaml:"importance"`
+	AccessCount   int                  `yaml:"access_count"`
+	CreatedAt     time.Time            `yaml:"created_at"`
+	AccessedAt    time.Time            `yaml:"accessed_at"`
+	Tags          []string             `yaml:"tags,omitempty"`
+	ExpiresAt     *time.Time           `yaml:"expires_at,omitempty"`
+	Status        string               `yaml:"status,omitempty"`
+	ValidFrom     time.Time            `yaml:"valid_from,omitempty"`
+	ValidUntil    *time.Time           `yaml:"valid_until,omitempty"`
+	Links         []string             `yaml:"links,omitempty"`
+	Aliases       []string             `yaml:"aliases,omitempty"`
+	StateKey      string               `yaml:"state_key,omitempty"`
+	StateValue    string               `yaml:"state_value,omitempty"`
+	Confidence    float64              `yaml:"confidence,omitempty"`
+	Supersedes    []string             `yaml:"supersedes,omitempty"`
+	RoutePolicies []memory.RoutePolicy `yaml:"route_policies,omitempty"`
+	BlockID       string               `yaml:"block_id,omitempty"`
+	Content       string               `yaml:"-"`
 }
 
 func loadBenchmarkDataset(cfg benchConfig) (*benchDataset, func(), error) {
@@ -187,14 +188,15 @@ func syntheticNotes(cfg benchConfig) []diskMemoryNote {
 			Content:    "User prefers [[Telegram Gateway]] for message delivery and status updates.",
 		},
 		{
-			ID:         "mem_bench_outdoor_plan",
-			Tier:       "medium",
-			Category:   "plan",
-			Importance: 0.72,
-			Tags:       []string{"family", "outdoor"},
-			Links:      []string{"Daughter"},
-			Aliases:    []string{"outdoor plan", "户外计划"},
-			Content:    "Outdoor walks often include [[Daughter]] and nearby parks.",
+			ID:            "mem_bench_outdoor_plan",
+			Tier:          "medium",
+			Category:      "plan",
+			Importance:    0.72,
+			Tags:          []string{"family", "outdoor"},
+			Links:         []string{"Daughter"},
+			Aliases:       []string{"outdoor plan", "户外计划"},
+			RoutePolicies: []memory.RoutePolicy{syntheticOutdoorRoutePolicy()},
+			Content:       "Outdoor walks often include [[Daughter]] and nearby parks.",
 		},
 		{
 			ID:         "mem_bench_daughter",
@@ -392,6 +394,33 @@ func syntheticNotes(cfg benchConfig) []diskMemoryNote {
 		}
 	}
 	return notes
+}
+
+func syntheticOutdoorRoutePolicy() memory.RoutePolicy {
+	return memory.RoutePolicy{
+		ID: "family-outdoor-live-check",
+		Match: memory.RoutePolicyMatch{
+			QueryAll: []memory.RouteTermGroup{
+				{Any: []string{"出门", "户外", "outdoor", "park"}},
+				{Any: []string{"女儿", "孩子", "daughter", "child"}},
+			},
+			States: []memory.RouteStateMatch{{Key: "daughter.pollen_allergy", Values: []string{"active"}}},
+		},
+		Risks: []memory.RouteRisk{
+			{Name: "child_health_outdoor_plan", Priority: 100},
+			{Name: "pollen_allergy", Priority: 80},
+			{Name: "outdoor_exposure", Priority: 60},
+			{Name: "child_or_family_context", Priority: 50},
+		},
+		RequiredTools: []memory.RouteToolRequirement{
+			{Name: "current_time"},
+			{Name: "web_search", Calls: []memory.RouteToolCall{
+				{Arguments: map[string]any{"query": "{{query}} weather forecast wind", "count": 5, "mode": "quick"}},
+				{Arguments: map[string]any{"query": "{{query}} pollen forecast AQI PM2.5", "count": 5, "mode": "quick"}},
+			}},
+		},
+		Constraints: []string{"Check live weather, pollen, and air quality before the final answer."},
+	}
 }
 
 func syntheticQueries() []benchQuery {

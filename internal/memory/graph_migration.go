@@ -124,7 +124,7 @@ func (s *Store) MigrateGraphMemory(opts GraphMigrationOptions) (GraphMigrationRe
 		report.WouldUpdateLinks++
 		if opts.Apply {
 			conceptLinks = append(conceptLinks, plan.AddLinks...)
-			e.Links = normalizeLinks(append(e.Links, plan.AddLinks...))
+			e.Links = normalizeMemoryLinks(append(e.Links, plan.AddLinks...))
 			e.Aliases = dedupSlice(append(e.Aliases, plan.AddAliases...))
 			e.Tags = mergeTags(e.Tags, plan.AddTags)
 			report.UpdatedLinks++

@@ -101,7 +101,7 @@ func TestMigrateGraphMemoryApplyEnrichesAndArchivesDirty(t *testing.T) {
 	if _, ok := store.entries["concept_qq_official"]; !ok {
 		t.Fatalf("expected QQ Official concept entry")
 	}
-	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "qq-official.md")); err != nil {
+	if _, err := os.Stat(filepath.Join(dir, "70_Concepts", "QQ Official.md")); err != nil {
 		t.Fatalf("expected QQ Official concept note: %v", err)
 	}
 }

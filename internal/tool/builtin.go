@@ -9,20 +9,21 @@ func RegisterBuiltinTools(r *Registry, mediaProcessor ...*multimodal.Processor) 
 
 // RegisterBuiltinToolsWithConfig 注册所有内置工具（带搜索配置）
 func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, opencliCfg *OpenCLIConfig, mediaProcessor ...*multimodal.Processor) {
+	policy := DefaultFilesystemPolicy()
 	var processor *multimodal.Processor
 	if len(mediaProcessor) > 0 {
 		processor = mediaProcessor[0]
 	}
 
 	r.Register(TerminalTool())
-	r.Register(FileReadTool())
-	r.Register(DocumentReadTool())
+	r.Register(FileReadTool(policy))
+	r.Register(DocumentReadTool(policy))
 	r.Register(FileWriteTool())
 	r.Register(FileMkdirTool())
 	r.Register(FileMoveTool())
 	r.Register(FileDeleteTool())
 	r.Register(FilePatchTool())
-	r.Register(FileListTool())
+	r.Register(FileListTool(policy))
 	r.Register(WebSearchTool(searchCfg))
 	r.Register(WebFetchTool(searchCfg))
 	r.Register(OpenCLITool(opencliCfg, searchCfg))

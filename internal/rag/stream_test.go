@@ -387,6 +387,66 @@ func TestStreamIndexerStartStop(t *testing.T) {
 
 	// Double stop should be no-op
 	si.Stop()
+
+	// A stopped indexer must be restartable with a fresh stop channel.
+	si.Start()
+	if !si.IsRunning() {
+		t.Error("expected running after restart")
+	}
+	si.Stop()
+}
+
+func TestStreamIndexerRetriesFailedIndexOnNextScan(t *testing.T) {
+	dir := t.TempDir()
+	emb := &toggleFailEmbedder{dim: 16, fail: true}
+	mgr := NewRAGManager(emb, DefaultRAGConfig())
+	si := NewStreamIndexer(mgr, StreamConfig{WatchDirs: []string{dir}, Extensions: []string{".md"}, Workers: 1})
+	if err := si.Snapshot(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "retry.md")
+	if err := os.WriteFile(path, []byte("# Retry\ncontent"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if changes := si.Scan(); len(changes) != 1 || si.Queue().Len() != 1 {
+		t.Fatalf("expected initial add job: changes=%+v queue=%d", changes, si.Queue().Len())
+	}
+	if _, _, err := si.ProcessOne(context.Background()); err == nil {
+		t.Fatal("expected forced indexing failure")
+	}
+	if changes := si.Scan(); len(changes) != 1 || si.Queue().Len() != 1 {
+		t.Fatalf("failed index was not retried: changes=%+v queue=%d", changes, si.Queue().Len())
+	}
+	emb.fail = false
+	if _, doc, err := si.ProcessOne(context.Background()); err != nil || doc == nil {
+		t.Fatalf("retry did not succeed: doc=%+v err=%v", doc, err)
+	}
+}
+
+func TestChangeDetectorDoesNotCrossDeleteWatchDirs(t *testing.T) {
+	root := t.TempDir()
+	dirA := filepath.Join(root, "a")
+	dirB := filepath.Join(root, "b")
+	if err := os.MkdirAll(dirA, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dirB, 0755); err != nil {
+		t.Fatal(err)
+	}
+	fileA := filepath.Join(dirA, "a.md")
+	fileB := filepath.Join(dirB, "b.md")
+	_ = os.WriteFile(fileA, []byte("a"), 0644)
+	_ = os.WriteFile(fileB, []byte("b"), 0644)
+	detector := NewChangeDetector()
+	if err := detector.Snapshot(dirA, []string{".md"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := detector.Snapshot(dirB, []string{".md"}); err != nil {
+		t.Fatal(err)
+	}
+	if changes := detector.DetectChanges(dirA, []string{".md"}); len(changes) != 0 {
+		t.Fatalf("scanning dir A affected dir B: %+v", changes)
+	}
 }
 
 func TestStreamIndexerOnChangeCallback(t *testing.T) {

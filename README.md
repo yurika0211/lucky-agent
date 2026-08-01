@@ -443,6 +443,7 @@ docker run -d \
 - `telegram`
 - `qqofficial`
 - `napcat`
+- `feishu`
 - `weixin`
 - `openclawweixin`
 
@@ -506,6 +507,40 @@ QQ 渠道内置了一组常用命令，可以直接在会话里调用：
 - `/restart`
 - `/session`
 - `/history`
+
+### 飞书机器人
+
+飞书渠道通过 HTTP 事件订阅接收 `im.message.receive_v1`，通过 tenant access token 调用飞书 Open API 回发文本。当前 Phase 1 支持私聊、群聊 mention/all/none 触发、会话绑定、通用命令和文本回复；暂不支持事件加密、附件和富卡片。
+
+先配置应用凭证和事件回调：
+
+```bash
+lh config set msg_gateway.platform feishu
+lh config set msg_gateway.feishu.app_id cli_xxx
+lh config set msg_gateway.feishu.app_secret your-app-secret
+lh config set msg_gateway.feishu.verification_token your-verification-token
+lh config set msg_gateway.feishu.listen_addr 127.0.0.1:6710
+lh config set msg_gateway.feishu.path /feishu/events
+lh msg-gateway start --platform feishu
+```
+
+也可以用 `--feishu-app-id`、`--feishu-app-secret`、`--feishu-verification-token`、`--feishu-listen` 和 `--feishu-path` 覆盖配置。
+
+飞书开放平台的事件订阅 URL 必须是公网 HTTPS 地址，例如：
+
+```text
+https://agent.example.com/feishu/events
+```
+
+反向代理需要把它转发到 LuckyAgent 的 `http://127.0.0.1:6710/feishu/events`。应用需要启用机器人能力、订阅 `im.message.receive_v1`，并授予读取与发送消息所需权限。Phase 1 要求使用明文事件回调，`msg_gateway.feishu.encrypt_key` 必须留空。
+
+可选访问策略：
+
+- `allowed_chats`、`allowed_users`：为空时不限制，配置后只允许匹配的会话或用户。
+- `group_trigger_mode=mention`：群聊只响应 @机器人或已知机器人消息的回复。
+- `group_trigger_mode=all`：响应所有允许的群聊文本消息。
+- `group_trigger_mode=none`：忽略群聊消息。
+- `remove_at=true`：把机器人 mention 占位符从送入 Agent 的文本中移除。
 
 ### NapCat QQ
 
