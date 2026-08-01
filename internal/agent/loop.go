@@ -283,8 +283,18 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 // RunLoopWithSessionInput 执行 Agent Loop（带结构化多模态输入）。
 func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Session, turnInput UserTurnInput, loopCfg LoopConfig) (result *LoopResult, err error) {
 	turnInput = turnInput.Normalize()
+	return a.runLoopWithProviderSnapshot(ctx, sess, turnInput, loopCfg, a.providerSnapshotForTurn(turnInput.RoutingText))
+}
+
+// runLoopWithProviderSnapshot executes one turn using the provider selected at
+// its boundary. Every model call in the loop receives this same snapshot,
+// including retries and tool-result follow-up iterations.
+func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.Session, turnInput UserTurnInput, loopCfg LoopConfig, turnProvider providerSnapshot) (result *LoopResult, err error) {
+	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
-	a.maybeRouteModel(routingText)
+	if !turnProvider.valid() {
+		return nil, fmt.Errorf("provider not initialized")
+	}
 
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
@@ -308,8 +318,8 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 	defer span.End()
 	logger.Info("agent loop started",
 		"session_id", sessionID,
-		"provider", providerNameForLog(a.provider),
-		"model", a.activeModel,
+		"provider", turnProvider.name(),
+		"model", turnProvider.model,
 		"max_iterations", loopCfg.MaxIterations,
 		"timeout_ms", loopCfg.Timeout.Milliseconds(),
 		"auto_approve", loopCfg.AutoApprove,
@@ -395,15 +405,16 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 		}
 	}
 	loopState := newLoopRuntimeState()
+	loopState.provider = turnProvider
 	loopState.toolExecutionGuard = newToolExecutionGuard(routingText)
 	loopState.artifactGuard = newArtifactFinalizationGuard(routingText)
 	memoryGate := a.buildMemoryToolGate(routingText, turnInput.Scope, loopCfg.DisabledTools)
 
 	// 构建初始消息
-	a.maybeAutoCompactSession(ctx, sess, routingText, loopCfg.Ephemeral)
+	a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider)
 	buildOpts := defaultContextBuildOptions()
 	buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
-	messages := a.buildContextMessagesForInput(ctx, sess, turnInput, buildOpts)
+	messages := a.buildContextMessagesForInputWithProvider(ctx, sess, turnInput, buildOpts, turnProvider)
 	if sess != nil {
 		sess.AddProviderMessage(turnInput.Message)
 	}
@@ -432,7 +443,7 @@ func (a *Agent) RunLoopWithSessionInput(ctx context.Context, sess *session.Sessi
 
 		// Reason: 调用 LLM（带 function calling 支持）
 		loopCtx, cancel := context.WithTimeout(ctx, loopCfg.Timeout)
-		resp, err := a.chatLoopIteration(loopCtx, messages, callOpts, loopState.forceSearchSynthesis)
+		resp, err := a.chatLoopIteration(loopCtx, messages, callOpts, loopState.forceSearchSynthesis, loopState.provider)
 		cancel()
 
 		if err != nil {
@@ -534,6 +545,9 @@ loopRuntimeState 收纳 RunLoopWithSession 在单次执行过程中的临时状�
 把它们集中到一个结构体里，能让主循环更容易阅读和后续拆分。
 */
 type loopRuntimeState struct {
+	// provider is captured once when the turn starts and must not be replaced
+	// while iterations or tool-recovery paths are running.
+	provider                 providerSnapshot
 	toolCallRepeatCount      map[string]int
 	toolCallLastResult       map[string]string
 	toolURLRepeatCount       map[string]int
@@ -1421,6 +1435,10 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 		err     error
 	}
 	resultCh := make(chan summarizeResult, 2)
+	turnProvider := a.baseProviderSnapshot()
+	if !turnProvider.valid() {
+		return messages, fmt.Errorf("provider not initialized")
+	}
 
 	// 定义摘要 prompt
 	summarizePrompt := func(msgs []provider.Message, part string) string {
@@ -1452,7 +1470,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 			{Role: "user", Content: prompt},
 		}
 
-		resp, err := a.provider.Chat(ctx, messages)
+		resp, err := turnProvider.provider.Chat(ctx, messages)
 		if err != nil {
 			resultCh <- summarizeResult{summary: "", err: err}
 			return
@@ -1468,7 +1486,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 			{Role: "user", Content: prompt},
 		}
 
-		resp, err := a.provider.Chat(ctx, messages)
+		resp, err := turnProvider.provider.Chat(ctx, messages)
 		if err != nil {
 			resultCh <- summarizeResult{summary: "", err: err}
 			return

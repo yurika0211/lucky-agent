@@ -68,10 +68,10 @@ type providerRuntime struct {
  * memoryRuntime 管理内存存储及其相关的短期和中期缓冲区。
  */
 type memoryRuntime struct {
-	store    *memory.Store
-	short    *memory.ShortTermBuffer
-	mid      *memory.MidTermStore
-	sessions *session.Manager
+	store     *memory.Store
+	shortTerm *memory.SessionShortTermStore
+	mid       *memory.MidTermStore
+	sessions  *session.Manager
 }
 
 /**
@@ -104,16 +104,21 @@ type supportRuntime struct {
 
 // Agent 是 LuckyAgent 的核心 Agent
 type Agent struct {
-	cfg                   *config.Manager
-	soul                  *soul.Soul
-	tmplMgr               *soul.TemplateManager  // SOUL 模板管理器
-	provider              provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
-	registry              *provider.Registry     // provider 注册表
-	catalog               *provider.ModelCatalog // 模型目录
-	tokenStore            *provider.TokenStore   // token 存储
-	memory                *memory.Store
-	shortTerm             *memory.ShortTermBuffer // 短期记忆滑动窗口
-	midTerm               *memory.MidTermStore    // 中期会话摘要存储
+	cfg        *config.Manager
+	soul       *soul.Soul
+	tmplMgr    *soul.TemplateManager  // SOUL 模板管理器
+	provider   provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	providerMu sync.RWMutex           // protects the default provider/model selection
+	registry   *provider.Registry     // provider 注册表
+	catalog    *provider.ModelCatalog // 模型目录
+	tokenStore *provider.TokenStore   // token 存储
+	memory     *memory.Store
+	// shortTerm is retained only for source compatibility with older in-package
+	// tests/callers. New agents leave it nil; production conversation state is
+	// owned by shortTerms and keyed by session ID.
+	shortTerm             *memory.ShortTermBuffer
+	shortTerms            *memory.SessionShortTermStore
+	midTerm               *memory.MidTermStore // 中期会话摘要存储
 	sessions              *session.Manager
 	tools                 *tool.Registry
 	gateway               *tool.Gateway           // 统一工具网关
@@ -149,7 +154,6 @@ type Agent struct {
 	taskStore             taskstore.Store
 	autoCompactMu         sync.Mutex
 	autoCompactFailures   map[string]int
-	chatCount             int // 对话计数，用于触发自动摘要
 	activeModel           string
 	activeAPIBase         string
 }
@@ -333,44 +337,6 @@ func retryPredicateFromConfig(cfg config.RetryConfig) resilience.IsRetryableFunc
 }
 
 /**
- * maybeRouteModel 根据输入内容与估算 token 数决定是否切换到更合适的模型。
- */
-func (a *Agent) maybeRouteModel(userInput string) {
-	if a == nil || a.cfg == nil || a.registry == nil {
-		return
-	}
-	cfg := a.cfg.Get()
-	if !cfg.ModelRouter.Enable || len(cfg.Fallbacks) > 0 {
-		return
-	}
-	router := config.NewModelRouter(cfg.ModelRouter)
-	tokenCount := len(userInput) / 4
-	if a.contextEst != nil {
-		tokenCount = a.contextEst.Estimate(userInput)
-	}
-	model, apiBase := router.SelectModelForTask(userInput, tokenCount)
-	if strings.TrimSpace(model) == "" {
-		return
-	}
-	if model == a.activeModel && strings.TrimSpace(apiBase) == strings.TrimSpace(a.activeAPIBase) {
-		return
-	}
-
-	pCfg := toProviderConfig(cfg, model, apiBase)
-	routedProvider, err := a.registry.Resolve(pCfg)
-	if err != nil {
-		return
-	}
-	a.provider = wrapProviderWithMiddleware(routedProvider, cfg)
-	a.activeModel = model
-	if strings.TrimSpace(apiBase) != "" {
-		a.activeAPIBase = apiBase
-	} else {
-		a.activeAPIBase = cfg.APIBase
-	}
-}
-
-/**
  * initSoulRuntime 初始化 soul 运行时，加载或使用默认的 soul 实例。
  */
 func initSoulRuntime(c *config.Config) soulRuntime {
@@ -483,7 +449,7 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	if shortTermMaxTurns <= 0 {
 		shortTermMaxTurns = 10
 	}
-	shortTerm := memory.NewShortTermBuffer(shortTermMaxTurns)
+	shortTerms := memory.NewSessionShortTermStore(shortTermMaxTurns)
 
 	midTermMaxSummaries := c.Memory.MidTermMaxSummaries
 	if midTermMaxSummaries <= 0 {
@@ -502,10 +468,10 @@ func initMemoryRuntime(cfg *config.Manager, c *config.Config) (memoryRuntime, er
 	}
 
 	return memoryRuntime{
-		store:    mem,
-		short:    shortTerm,
-		mid:      midTerm,
-		sessions: sessions,
+		store:     mem,
+		shortTerm: shortTerms,
+		mid:       midTerm,
+		sessions:  sessions,
 	}, nil
 }
 
@@ -1114,7 +1080,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		catalog:             providerRT.catalog,
 		tokenStore:          providerRT.tokenStore,
 		memory:              memoryRT.store,
-		shortTerm:           memoryRT.short,
+		shortTerms:          memoryRT.shortTerm,
 		midTerm:             memoryRT.mid,
 		sessions:            memoryRT.sessions,
 		tools:               supportRT.tools,
@@ -1267,7 +1233,8 @@ func (a *Agent) ChatWithSessionInput(ctx context.Context, sessionID string, inpu
 
 // ProgressFeedback generates a concise model-authored progress update for an unfinished round.
 func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error) {
-	if a == nil || a.provider == nil {
+	turnProvider := a.providerSnapshotForTurn(userInput)
+	if !turnProvider.valid() {
 		return "", fmt.Errorf("provider not initialized")
 	}
 	if len(observations) == 0 {
@@ -1352,7 +1319,7 @@ Style requirements:
 	}
 	userPrompt.WriteString("\nWrite a single progress update for the user that clearly continues from the previous updates and focuses on what changed.")
 
-	resp, err := a.provider.Chat(ctx, []provider.Message{
+	resp, err := turnProvider.provider.Chat(ctx, []provider.Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt.String()},
 	})
@@ -1365,7 +1332,7 @@ Style requirements:
 func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
 	input = input.Normalize()
 	routingText := input.RoutingText
-	a.maybeRouteModel(routingText)
+	turnProvider := a.providerSnapshotForTurn(routingText)
 
 	// 优先使用 RunLoop（支持 function calling / 工具调用）
 	loopCfg := DefaultLoopConfig()
@@ -1378,10 +1345,10 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 	applySimpleTaskLoopTuning(&loopCfg, routingText, agentLoopCfg)
 	loopCfg.AutoApprove = true // Telegram 场景自动批准工具调用
 
-	result, err := a.RunLoopWithSessionInput(ctx, sess, input, loopCfg)
+	result, err := a.runLoopWithProviderSnapshot(ctx, sess, input, loopCfg, turnProvider)
 	if err != nil {
 		// 如果 RunLoop 失败，回退到简单流式聊天
-		response, chatErr := a.chatStreamSimpleInput(ctx, sess, input)
+		response, chatErr := a.chatStreamSimpleInputWithProvider(ctx, sess, input, turnProvider)
 		if chatErr != nil {
 			a.recordProactiveChatEvent(sess, input, "", 0, fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr))
 			return "", fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr)
@@ -1394,25 +1361,11 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 
 	response := result.Response
 
-	// 自动记忆（去重 + 智能分类 + 截断）
-	a.chatCount++
-	a.saveConversationMemoryFromTurn(input, response)
-
-	if a.chatCount%10 == 0 {
-		a.memory.Decay(0.05)
-		a.memory.Expire()
-	}
-	if a.chatCount%20 == 0 {
-		a.autoSummarize()
-	}
-	// v0.43.0: 每 50 轮清理过期中期记忆
-	if a.chatCount%50 == 0 && a.midTerm != nil {
-		expireDays := a.cfg.Get().Memory.MidTermExpireDays
-		if expireDays <= 0 {
-			expireDays = 90
-		}
-		a.midTerm.ExpireOldSummaries(time.Duration(expireDays) * 24 * time.Hour)
-	}
+	// 自动记忆（去重 + 智能分类 + 截断）。计数和维护 cadence 由 memory
+	// runtime 持有，Agent 只执行返回的维护动作。
+	maintenance := a.recordMemoryTurn(sess)
+	a.saveConversationMemoryFromSession(sess, input, response)
+	a.applyMemoryMaintenance(maintenance)
 
 	// v0.36.0: 记录指标
 	a.metrics.RecordChatRequest()
@@ -1487,12 +1440,18 @@ func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string, cfg config
 
 func (a *Agent) chatStreamSimpleInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
 	input = input.Normalize()
-	routingText := input.RoutingText
-	a.maybeRouteModel(routingText)
-	messages := a.buildContextMessagesForInput(ctx, sess, input, defaultContextBuildOptions())
+	return a.chatStreamSimpleInputWithProvider(ctx, sess, input, a.providerSnapshotForTurn(input.RoutingText))
+}
+
+func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *session.Session, input UserTurnInput, turnProvider providerSnapshot) (string, error) {
+	input = input.Normalize()
+	if !turnProvider.valid() {
+		return "", fmt.Errorf("provider not initialized")
+	}
+	messages := a.buildContextMessagesForInputWithProvider(ctx, sess, input, defaultContextBuildOptions(), turnProvider)
 
 	// 调用 Provider
-	ch, err := a.provider.ChatStream(ctx, messages)
+	ch, err := turnProvider.provider.ChatStream(ctx, messages)
 	if err != nil {
 		return "", fmt.Errorf("chat: %w", err)
 	}
@@ -1512,29 +1471,11 @@ func (a *Agent) chatStreamSimpleInput(ctx context.Context, sess *session.Session
 	// 保存会话
 	_ = sess.Save()
 
-	// 自动记忆：将对话存为短期记忆（去重 + 智能分类 + 截断）
-	a.chatCount++
-	a.saveConversationMemoryFromTurn(input, response)
-
-	// 每 10 轮对话触发衰减 + 过期清理
-	if a.chatCount%10 == 0 {
-		a.memory.Decay(0.05)
-		a.memory.Expire()
-	}
-
-	// 每 20 轮对话触发自动摘要
-	if a.chatCount%20 == 0 {
-		a.autoSummarize()
-	}
-
-	// v0.43.0: 每 50 轮清理过期中期记忆
-	if a.chatCount%50 == 0 && a.midTerm != nil {
-		expireDays := a.cfg.Get().Memory.MidTermExpireDays
-		if expireDays <= 0 {
-			expireDays = 90
-		}
-		a.midTerm.ExpireOldSummaries(time.Duration(expireDays) * 24 * time.Hour)
-	}
+	// 自动记忆：将对话存为短期记忆（去重 + 智能分类 + 截断）。计数和
+	// 维护 cadence 由 memory runtime 持有。
+	maintenance := a.recordMemoryTurn(sess)
+	a.saveConversationMemoryFromSession(sess, input, response)
+	a.applyMemoryMaintenance(maintenance)
 
 	return response, nil
 }
@@ -1580,7 +1521,13 @@ func (a *Agent) buildContextMessages(ctx context.Context, sess *session.Session,
 }
 
 func (a *Agent) buildContextMessagesForInput(ctx context.Context, sess *session.Session, input UserTurnInput, opts contextBuildOptions) []provider.Message {
-	planner := newContextPlanner(a, opts)
+	return a.buildContextMessagesForInputWithProvider(ctx, sess, input, opts, a.baseProviderSnapshot())
+}
+
+// buildContextMessagesForInputWithProvider binds context construction to the
+// same immutable provider snapshot used by the surrounding turn.
+func (a *Agent) buildContextMessagesForInputWithProvider(ctx context.Context, sess *session.Session, input UserTurnInput, opts contextBuildOptions, turnProvider providerSnapshot) []provider.Message {
+	planner := newContextPlannerWithProvider(a, opts, turnProvider)
 	return planner.BuildInput(ctx, sess, input)
 }
 
@@ -1619,10 +1566,14 @@ func (a *Agent) CompactSession(ctx context.Context, sess *session.Session, trigg
 }
 
 func (a *Agent) CompactSessionWithOptions(ctx context.Context, sess *session.Session, trigger string, opts CompactSessionOptions) (*CompactSessionResult, error) {
+	return a.compactSessionWithProvider(ctx, sess, trigger, opts, a.providerSnapshotForTurn(""))
+}
+
+func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Session, trigger string, opts CompactSessionOptions, turnProvider providerSnapshot) (*CompactSessionResult, error) {
 	if sess == nil {
 		return nil, fmt.Errorf("compact session: session is nil")
 	}
-	if !opts.ForceLocal && (a == nil || a.provider == nil) {
+	if !opts.ForceLocal && !turnProvider.valid() {
 		return nil, fmt.Errorf("compact session: provider is not initialized")
 	}
 	if strings.TrimSpace(trigger) == "" {
@@ -1656,7 +1607,7 @@ func (a *Agent) CompactSessionWithOptions(ctx context.Context, sess *session.Ses
 		}
 	} else {
 		var err error
-		summary, err = a.generateCompactSummary(ctx, compactInput)
+		summary, err = a.generateCompactSummaryWithProvider(ctx, compactInput, turnProvider)
 		if err != nil {
 			return nil, err
 		}
@@ -1776,6 +1727,10 @@ func selectCompactSegmentInput(raw []provider.Message, est *contextx.TokenEstima
 }
 
 func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.Message) (string, error) {
+	return a.generateCompactSummaryWithProvider(ctx, messages, a.providerSnapshotForTurn(""))
+}
+
+func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot) (string, error) {
 	transcript := compactTranscript(messages)
 	if strings.TrimSpace(transcript) == "" {
 		return "", fmt.Errorf("compact session: no textual content to summarize")
@@ -1791,7 +1746,10 @@ func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.
 		"Conversation:\n" + transcript
 	sumCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	resp, err := a.provider.Chat(sumCtx, []provider.Message{
+	if !turnProvider.valid() {
+		return "", fmt.Errorf("compact session: provider is not initialized")
+	}
+	resp, err := turnProvider.provider.Chat(sumCtx, []provider.Message{
 		{Role: "system", Content: "You are a compaction agent. Tool use is not allowed. Produce only a factual text summary for future context."},
 		{Role: "user", Content: prompt},
 	})
@@ -1906,6 +1864,9 @@ func (a *Agent) getStreamMode() StreamMode {
 streamConvergenceState 保存流式对话在多轮推理中的收敛与去重状态。
 */
 type streamConvergenceState struct {
+	// provider is captured at stream-turn start and reused by every recursive
+	// iteration. It must remain immutable for the lifetime of the stream.
+	provider                 providerSnapshot
 	emptyResponseRetries     int
 	lengthRecoveryCount      int
 	continuedResponse        strings.Builder
@@ -2077,6 +2038,10 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 	}
 	input = input.Normalize()
 	routingText := input.RoutingText
+	turnProvider := a.providerSnapshotForTurn(routingText)
+	if !turnProvider.valid() {
+		return nil, fmt.Errorf("provider not initialized")
+	}
 
 	events := make(chan ChatEvent, 64)
 
@@ -2087,8 +2052,8 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 		a.applyIntentToolGating(&loopCfg, routingText)
 		logger.Info("agent stream loop started",
 			"session_id", sessionID,
-			"provider", providerNameForLog(a.provider),
-			"model", a.activeModel,
+			"provider", turnProvider.name(),
+			"model", turnProvider.model,
 			"stream_mode", a.getStreamMode(),
 			"max_iterations", loopCfg.MaxIterations,
 			"timeout_ms", loopCfg.Timeout.Milliseconds(),
@@ -2108,12 +2073,13 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 
 		buildOpts := defaultContextBuildOptions()
 		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
-		a.maybeAutoCompactSession(ctx, sess, routingText, loopCfg.Ephemeral)
-		messages := a.buildContextMessagesForInput(ctx, sess, input, buildOpts)
+		a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider)
+		messages := a.buildContextMessagesForInputWithProvider(ctx, sess, input, buildOpts, turnProvider)
 		sess.AddProviderMessage(input.Message)
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
 
 		state := &streamConvergenceState{
+			provider:               turnProvider,
 			repeatToolCallLimit:    loopCfg.RepeatToolCallLimit,
 			toolOnlyIterationLimit: loopCfg.ToolOnlyIterationLimit,
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
@@ -2185,7 +2151,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	)
 	iterCtx, cancel := streamIterationContext(ctx, state)
 	defer cancel()
-	ch, err := a.streamLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis)
+	ch, err := a.streamLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis, state.provider)
 	if err != nil {
 		logger.Warn("agent stream native iteration failed",
 			"session_id", sessionID,
@@ -2493,7 +2459,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	)
 	iterCtx, cancel := streamIterationContext(ctx, state)
 	defer cancel()
-	resp, err := a.chatLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis)
+	resp, err := a.chatLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis, state.provider)
 	if err != nil {
 		logger.Warn("agent stream simulated iteration failed",
 			"session_id", sessionID,
@@ -2704,24 +2670,9 @@ func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *sessi
 		_ = sess.Save()
 	}
 
-	a.chatCount++
-	a.saveConversationMemoryFromTurn(turnInput, response)
-	if a.chatCount%10 == 0 {
-		a.memory.Decay(0.05)
-		a.memory.Expire()
-	}
-	if a.chatCount%20 == 0 {
-		a.autoSummarize()
-	}
-
-	// v0.43.0: 每 50 轮清理过期中期记忆
-	if a.chatCount%50 == 0 && a.midTerm != nil {
-		expireDays := a.cfg.Get().Memory.MidTermExpireDays
-		if expireDays <= 0 {
-			expireDays = 90
-		}
-		a.midTerm.ExpireOldSummaries(time.Duration(expireDays) * 24 * time.Hour)
-	}
+	maintenance := a.recordMemoryTurn(sess)
+	a.saveConversationMemoryFromSession(sess, turnInput, response)
+	a.applyMemoryMaintenance(maintenance)
 
 	if a.ragManager != nil && autoIndexFinalAnswersEnabled() {
 		a.indexConversationTurn(routingText, response)
@@ -2789,6 +2740,13 @@ func splitIntoChunks(text string, chunkSize int) []string {
 
 // buildMemoryContext 构建分层记忆上下文
 func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Message {
+	return a.buildMemoryContextForSession(nil, messages)
+}
+
+// buildMemoryContextForSession is the session-aware variant used when callers
+// need to include volatile short-term summaries. Persistent memory remains
+// process-wide by design; only the short-term window is keyed by sess.ID.
+func (a *Agent) buildMemoryContextForSession(sess *session.Session, messages []provider.Message) []provider.Message {
 	var memCtx strings.Builder
 
 	// 长期记忆：全部注入（核心身份/偏好）
@@ -2824,8 +2782,8 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 	}
 
 	//  短期记忆 — 使用 ShortTermBuffer 的滑动窗口 + 摘要
-	if a.shortTerm != nil {
-		shortCtx := a.shortTerm.GetContext()
+	if short := a.shortTermBufferForSession(sess, false); short != nil {
+		shortCtx := short.GetContext()
 		if len(shortCtx) > 0 {
 			// ShortTermBuffer.GetContext() 已包含摘要 + 最近消息
 			// 只注入摘要部分（system role），对话消息由 session 管理
@@ -2854,17 +2812,64 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 // turn in memory.Store duplicates session history and can make later recall
 // treat ordinary conversation as hard Working Memory.
 func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
-	a.saveConversationMemoryFromTurn(TextUserTurnInput(userInput), assistantResponse)
+	a.saveConversationMemoryFromSession(nil, TextUserTurnInput(userInput), assistantResponse)
 }
 
 func (a *Agent) saveConversationMemoryFromTurn(turnInput UserTurnInput, assistantResponse string) {
+	a.saveConversationMemoryFromSession(nil, turnInput, assistantResponse)
+}
+
+// shortTermBufferForSession resolves volatile conversation state by session.
+// The legacy field is only a compatibility fallback for older in-package
+// callers that construct Agent values directly; New always initializes
+// shortTerms and leaves shortTerm nil.
+func (a *Agent) shortTermBufferForSession(sess *session.Session, create bool) *memory.ShortTermBuffer {
+	if a == nil {
+		return nil
+	}
+	sessionID := ""
+	if sess != nil {
+		sessionID = strings.TrimSpace(sess.ID)
+	}
+	if a.shortTerms != nil && sessionID != "" {
+		if create {
+			return a.shortTerms.Buffer(sessionID)
+		}
+		buf, _ := a.shortTerms.Get(sessionID)
+		return buf
+	}
+	// Do not use a process-wide fallback for a real session when a production
+	// store exists. This prevents accidental cross-session contamination if a
+	// malformed/partial Agent is assembled.
+	if sessionID != "" && a.shortTerms != nil {
+		return nil
+	}
+	return a.shortTerm
+}
+
+// ForgetShortTermSession releases volatile state after a session is deleted
+// or intentionally reset. It is safe to call when no store is configured.
+func (a *Agent) ForgetShortTermSession(sessionID string) {
+	if a == nil {
+		return
+	}
+	if a.shortTerms != nil {
+		a.shortTerms.Clear(sessionID)
+	}
+	if a.memory != nil {
+		a.memory.ForgetSession(sessionID)
+	}
+}
+
+func (a *Agent) saveConversationMemoryFromSession(sess *session.Session, turnInput UserTurnInput, assistantResponse string) {
 	turnInput = turnInput.Normalize()
 	userInput := turnInput.RoutingText
 	assistantResponse = utils.SanitizeToolProtocolOutput(assistantResponse)
-	// v0.43.0: 写入 ShortTermBuffer（滑动窗口 + 摘要压缩）
-	if a.shortTerm != nil {
-		a.shortTerm.Add("user", userInput)
-		a.shortTerm.Add("assistant", utils.TrimToRunes(assistantResponse, 300))
+	// ShortTermBuffer is session-scoped. Sessionless legacy calls may still use
+	// the compatibility buffer, but normal chat/stream paths always pass sess.
+	if short := a.shortTermBufferForSession(sess, true); short != nil {
+		short.Add("user", userInput)
+		short.Add("assistant", utils.TrimToRunes(assistantResponse, 300))
 	}
 
 	userCategory := inferCategory(userInput)
@@ -3084,7 +3089,13 @@ func (a *Agent) Catalog() *provider.ModelCatalog {
 
 // Provider 返回当前 provider
 func (a *Agent) Provider() provider.Provider {
-	return a.provider
+	if a == nil {
+		return nil
+	}
+	a.providerMu.RLock()
+	p := a.provider
+	a.providerMu.RUnlock()
+	return p
 }
 
 // Registry 返回 provider 注册表
@@ -3094,6 +3105,9 @@ func (a *Agent) Registry() *provider.Registry {
 
 // SwitchModel 切换模型（通过 catalog 推断 provider）
 func (a *Agent) SwitchModel(modelID string) error {
+	if a == nil || a.catalog == nil || a.cfg == nil || a.registry == nil {
+		return fmt.Errorf("agent provider runtime is not initialized")
+	}
 	modelInfo, err := a.catalog.Get(modelID)
 	if err != nil {
 		return fmt.Errorf("model %s is not registered in catalog: %w", modelID, err)
@@ -3109,14 +3123,17 @@ func (a *Agent) SwitchModel(modelID string) error {
 		},
 	}
 
-	p, err := a.registry.Resolve(pCfg)
+	a.providerMu.Lock()
+	p, err := a.registry.Create(pCfg.LlmProvider.Name, pCfg)
+	if err == nil && p != nil {
+		a.provider = wrapProviderWithMiddleware(p, cfg)
+		a.activeModel = modelID
+		a.activeAPIBase = cfg.APIBase
+	}
+	a.providerMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("create provider %s: %w", modelInfo.Provider, err)
 	}
-
-	a.provider = wrapProviderWithMiddleware(p, cfg)
-	a.activeModel = modelID
-	a.activeAPIBase = cfg.APIBase
 	return nil
 }
 

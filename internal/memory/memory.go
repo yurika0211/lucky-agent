@@ -119,6 +119,10 @@ type Store struct {
 	activationReranker ActivationReranker
 	dir                string
 	nextID             int64
+	// maintenance owns turn cadence for this process-wide memory store. It is
+	// initialized lazily so the Store zero value remains useful in tests.
+	maintenanceOnce sync.Once
+	maintenance     *MaintenanceCoordinator
 }
 
 type closeableActivationReranker interface {

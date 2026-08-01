@@ -97,20 +97,26 @@ func prepareLoopCallOptions(messages []provider.Message, base provider.CallOptio
 	return opts
 }
 
-func (a *Agent) chatLoopIteration(ctx context.Context, messages []provider.Message, base provider.CallOptions, forceSearchSynthesis bool) (*provider.Response, error) {
+func (a *Agent) chatLoopIteration(ctx context.Context, messages []provider.Message, base provider.CallOptions, forceSearchSynthesis bool, turnProvider providerSnapshot) (*provider.Response, error) {
+	if !turnProvider.valid() {
+		return nil, fmt.Errorf("provider not initialized")
+	}
 	opts := prepareLoopCallOptions(messages, base, forceSearchSynthesis)
-	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(opts.Tools) > 0 {
+	if fcProvider, ok := turnProvider.provider.(provider.FunctionCallingProvider); ok && len(opts.Tools) > 0 {
 		return fcProvider.ChatWithOptions(ctx, messages, opts)
 	}
-	return a.provider.Chat(ctx, messages)
+	return turnProvider.provider.Chat(ctx, messages)
 }
 
-func (a *Agent) streamLoopIteration(ctx context.Context, messages []provider.Message, base provider.CallOptions, forceSearchSynthesis bool) (<-chan provider.StreamChunk, error) {
+func (a *Agent) streamLoopIteration(ctx context.Context, messages []provider.Message, base provider.CallOptions, forceSearchSynthesis bool, turnProvider providerSnapshot) (<-chan provider.StreamChunk, error) {
+	if !turnProvider.valid() {
+		return nil, fmt.Errorf("provider not initialized")
+	}
 	opts := prepareLoopCallOptions(messages, base, forceSearchSynthesis)
-	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(opts.Tools) > 0 {
+	if fcProvider, ok := turnProvider.provider.(provider.FunctionCallingProvider); ok && len(opts.Tools) > 0 {
 		return fcProvider.ChatStreamWithOptions(ctx, messages, opts)
 	}
-	return a.provider.ChatStream(ctx, messages)
+	return turnProvider.provider.ChatStream(ctx, messages)
 }
 
 func constrainForcedToolChoice(messages []provider.Message, opts provider.CallOptions) provider.CallOptions {

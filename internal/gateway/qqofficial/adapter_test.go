@@ -26,6 +26,7 @@ type qqHandlerTestSender struct {
 	acks          []string
 	forwards      []qqHandlerForwardedText
 	mediaForwards []qqHandlerForwardedMedia
+	events        []string
 }
 
 type qqHandlerForwardedText struct {
@@ -49,6 +50,7 @@ func (s *qqHandlerTestSender) Send(_ context.Context, _ string, message string) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.messages = append(s.messages, message)
+	s.events = append(s.events, "text:"+message)
 	return nil
 }
 
@@ -57,11 +59,21 @@ func (s *qqHandlerTestSender) SendWithReply(_ context.Context, _ string, _ strin
 }
 
 func (s *qqHandlerTestSender) SendPhoto(_ context.Context, _ string, _ string, source string, caption string) error {
-	return s.Send(context.Background(), "", strings.TrimSpace(source+" "+caption))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	message := strings.TrimSpace(source + " " + caption)
+	s.messages = append(s.messages, message)
+	s.events = append(s.events, "photo:"+message)
+	return nil
 }
 
 func (s *qqHandlerTestSender) SendDocument(_ context.Context, _ string, _ string, source string, caption string) error {
-	return s.Send(context.Background(), "", strings.TrimSpace(source+" "+caption))
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	message := strings.TrimSpace(source + " " + caption)
+	s.messages = append(s.messages, message)
+	s.events = append(s.events, "document:"+message)
+	return nil
 }
 
 func (s *qqHandlerTestSender) AcknowledgeMessage(_ context.Context, chatID string, messageID string) error {
@@ -85,6 +97,7 @@ func (s *qqHandlerTestSender) SendForwardedText(_ context.Context, chatID string
 func (s *qqHandlerTestSender) SendForwardedMedia(_ context.Context, chatID string, title string, items []gateway.ForwardedMediaItem) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.events = append(s.events, "forwarded-media")
 	s.mediaForwards = append(s.mediaForwards, qqHandlerForwardedMedia{
 		ChatID: chatID,
 		Title:  title,
@@ -97,6 +110,12 @@ func (s *qqHandlerTestSender) Messages() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.messages...)
+}
+
+func (s *qqHandlerTestSender) Events() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.events...)
 }
 
 func (s *qqHandlerTestSender) Acks() []string {
@@ -675,6 +694,27 @@ func TestHandlerForwardsLongAssistantText(t *testing.T) {
 		if qqRuneLen(chunk) > qqForwardNodeChunkLimit {
 			t.Fatalf("forward chunk exceeds limit: %d", qqRuneLen(chunk))
 		}
+	}
+}
+
+func TestNapCatHandlerSendsMediaBeforeCompletionText(t *testing.T) {
+	doc := filepath.Join(t.TempDir(), "report.docx")
+	if err := os.WriteFile(doc, []byte("docx"), 0o600); err != nil {
+		t.Fatalf("write document: %v", err)
+	}
+	sender := &qqHandlerTestSender{}
+	handler := NewHandlerWithOptions(sender, nil, HandlerOptions{PlatformName: "napcat"})
+	msg := &gateway.Message{
+		ID:   "msg-1",
+		Chat: gateway.Chat{ID: "group:123", Type: gateway.ChatGroup},
+	}
+
+	if err := handler.sendAssistantResponse(context.Background(), msg, "done\nMEDIA:"+doc); err != nil {
+		t.Fatalf("sendAssistantResponse() error = %v", err)
+	}
+	events := sender.Events()
+	if len(events) != 2 || !strings.HasPrefix(events[0], "document:") || events[1] != "text:done" {
+		t.Fatalf("expected document before completion text, got %#v", events)
 	}
 }
 

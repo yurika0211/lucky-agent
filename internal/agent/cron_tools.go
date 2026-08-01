@@ -341,7 +341,8 @@ func firstCronMetadataValue(metadata map[string]string, keys ...string) string {
 
 func (a *Agent) formatCronNotification(payload cronNotificationPayload) string {
 	fallback := buildCronNotificationMessage(fallbackCronNotificationIntro(payload), payload)
-	if a == nil || a.provider == nil {
+	turnProvider := a.baseProviderSnapshot()
+	if !turnProvider.valid() {
 		return fallback
 	}
 
@@ -365,7 +366,7 @@ func (a *Agent) formatCronNotification(payload cronNotificationPayload) string {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	resp, err := a.provider.Chat(ctx, []provider.Message{
+	resp, err := turnProvider.provider.Chat(ctx, []provider.Message{
 		{Role: "system", Content: getCronNotificationSystemPrompt()},
 		{Role: "user", Content: userPrompt.String()},
 	})

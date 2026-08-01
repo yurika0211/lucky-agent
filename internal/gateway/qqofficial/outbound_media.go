@@ -25,8 +25,9 @@ type outboundMedia struct {
 }
 
 var (
-	mediaTagPattern      = regexp.MustCompile(`(?im)^[\s` + "`" + `"'“”‘’]*MEDIA:\s*(?P<path>(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?|https?://\S+)[\s` + "`" + `"'“”‘’,.;:)\]}]*$`)
-	markdownImagePattern = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
+	mediaTagPattern        = regexp.MustCompile(`(?im)^[\t ` + "`" + `"'` + `]*MEDIA:\s*(?P<path>(?:(?:sandbox:(?:/|[A-Za-z]:[\\/])|file://|~/|/|[A-Za-z]:[\\/])\S+(?:[^\S\n]+\S+)*?|https?://\S+))[\t ` + "`" + `"',.;:)\]}]*$`)
+	markdownImagePattern   = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
+	generatedReferenceLine = regexp.MustCompile(`(?i)^\[\d+\]\s+(tool result\.|local file\.|local directory listing\.)`)
 )
 
 func resolveOutboundMediaResponse(response string) (string, []outboundMedia, error) {
@@ -41,10 +42,59 @@ func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 	}
 
 	var media []outboundMedia
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if source, ok := parseStandaloneMediaLine(trimmed); ok {
+			if kind, kindOK := inferMediaKind(source); kindOK && outboundMediaSourceAvailable(source) {
+				media = append(media, outboundMedia{Kind: kind, Source: source})
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	text = strings.TrimSpace(strings.Join(kept, "\n"))
 	text, media = extractExplicitMediaTags(text, media)
 	text, media = extractMarkdownMedia(text, media)
 	text = normalizeOutboundText(text)
+	if len(media) > 0 {
+		text = stripGeneratedReferencesForMedia(text)
+	}
 	return text, dedupeOutboundMedia(media)
+}
+
+func parseStandaloneMediaLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	line = strings.Trim(line, "`\"'")
+	if len(line) < len("MEDIA:") || !strings.EqualFold(line[:len("MEDIA:")], "MEDIA:") {
+		return "", false
+	}
+	source := trimWrappedPath(strings.TrimSpace(line[len("MEDIA:"):]))
+	if source == "" || !isExplicitMediaSource(source) {
+		return "", false
+	}
+	return source, true
+}
+
+func isExplicitMediaSource(source string) bool {
+	source = strings.TrimSpace(source)
+	lower := strings.ToLower(source)
+	return strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "sandbox:") ||
+		strings.HasPrefix(lower, "file://") ||
+		strings.HasPrefix(source, "~/") ||
+		strings.HasPrefix(source, "/") ||
+		isWindowsDrivePath(source)
+}
+
+func outboundMediaSourceAvailable(source string) bool {
+	if isRemoteMedia(source) {
+		return true
+	}
+	info, err := os.Stat(normalizeLocalMediaPath(source))
+	return err == nil && !info.IsDir()
 }
 
 func extractExplicitMediaTags(text string, existing []outboundMedia) (string, []outboundMedia) {
@@ -79,6 +129,33 @@ func extractExplicitMediaTags(text string, existing []outboundMedia) (string, []
 	}
 
 	return removeRanges(text, ranges), existing
+}
+
+func stripGeneratedReferencesForMedia(text string) string {
+	text = normalizeOutboundText(text)
+	if text == "" {
+		return ""
+	}
+	idx := strings.LastIndex(text, "\nReferences:")
+	headerLen := len("\nReferences:")
+	if idx < 0 && strings.HasPrefix(text, "References:") {
+		idx = 0
+		headerLen = len("References:")
+	}
+	if idx < 0 {
+		return text
+	}
+	refs := strings.TrimSpace(text[idx+headerLen:])
+	if refs == "" {
+		return strings.TrimSpace(text[:idx])
+	}
+	for _, line := range strings.Split(refs, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" && !generatedReferenceLine.MatchString(line) {
+			return text
+		}
+	}
+	return strings.TrimSpace(text[:idx])
 }
 
 func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outboundMedia) {
@@ -141,10 +218,18 @@ func mediaSourceExt(source string) string {
 	if source == "" {
 		return ""
 	}
+	if isWindowsDrivePath(source) {
+		return strings.ToLower(filepath.Ext(source))
+	}
 	if u, err := url.Parse(source); err == nil && u.Scheme != "" {
 		return strings.ToLower(path.Ext(u.Path))
 	}
 	return strings.ToLower(filepath.Ext(source))
+}
+
+func isWindowsDrivePath(source string) bool {
+	source = strings.TrimSpace(source)
+	return len(source) >= 3 && isASCIIAlpha(source[0]) && source[1] == ':' && (source[2] == '\\' || source[2] == '/')
 }
 
 func normalizeLocalMediaPath(source string) string {
@@ -153,12 +238,12 @@ func normalizeLocalMediaPath(source string) string {
 		return ""
 	}
 	lower := strings.ToLower(source)
-	if strings.HasPrefix(lower, "sandbox:/") {
+	if strings.HasPrefix(lower, "sandbox:") {
 		return strings.TrimPrefix(source, "sandbox:")
 	}
 	if strings.HasPrefix(lower, "file://") {
 		if u, err := url.Parse(source); err == nil && strings.TrimSpace(u.Path) != "" {
-			return u.Path
+			return cleanFileURLPath(u.Path)
 		}
 	}
 	if strings.HasPrefix(source, "~/") {
@@ -167,6 +252,18 @@ func normalizeLocalMediaPath(source string) string {
 		}
 	}
 	return source
+}
+
+func cleanFileURLPath(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 3 && value[0] == '/' && isASCIIAlpha(value[1]) && value[2] == ':' {
+		value = value[1:]
+	}
+	return filepath.FromSlash(value)
+}
+
+func isASCIIAlpha(value byte) bool {
+	return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
 }
 
 func trimWrappedPath(value string) string {
@@ -268,7 +365,7 @@ func qqMediaDeliveryGuidance(text string) string {
 	if strings.Contains(text, "[QQ delivery rule]") {
 		return text
 	}
-	const guidance = "[QQ delivery rule]\nIf the user should receive a file, image, or other artifact, save it to a real local file first and include a standalone line exactly like MEDIA:/absolute/path/to/file.ext. If a tool reports a sandbox:/absolute/path value, that form is also accepted. Do not paste full file contents unless the user explicitly asks for inline content."
+	const guidance = "[QQ delivery rule]\nIf the user should receive a file, image, or other artifact, save it to a real local file first and include a standalone line exactly like MEDIA:/absolute/path/to/file.ext or MEDIA:C:\\absolute\\path\\to\\file.ext on Windows. If a tool reports a sandbox path, that form is also accepted. Do not paste full file contents unless the user explicitly asks for inline content."
 	if text == "" {
 		return guidance
 	}

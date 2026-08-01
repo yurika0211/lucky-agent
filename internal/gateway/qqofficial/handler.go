@@ -2173,13 +2173,21 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 	if err != nil {
 		return err
 	}
+	mediaFirst := h.platform() == "napcat" && len(media) > 0
+	if mediaFirst {
+		if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(text) != "" {
 		if err := h.sendAssistantText(ctx, msg, text); err != nil {
 			return err
 		}
 	}
-	if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
-		return err
+	if !mediaFirst {
+		if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(text) == "" && len(media) == 0 {
 		return h.reply(ctx, msg, "我这边暂时还没有整理出可发送的结果。")

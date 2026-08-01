@@ -12,7 +12,20 @@ import (
 const maxAutoCompactFailures = 3
 
 func (a *Agent) maybeAutoCompactSession(ctx context.Context, sess *session.Session, routingText string, ephemeral bool) {
+	a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, ephemeral, a.providerSnapshotForTurn(routingText))
+}
+
+// maybeAutoCompactSessionWithProvider keeps automatic compaction on the same
+// provider snapshot as the surrounding turn. Without this, a concurrent model
+// switch could make the pre-loop compaction call use a different provider than
+// the actual loop.
+func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *session.Session, routingText string, ephemeral bool, turnProvider providerSnapshot) {
 	if !a.shouldAutoCompactSession(sess, routingText, ephemeral) {
+		return
+	}
+	if !turnProvider.valid() {
+		a.recordAutoCompactFailure(sess.ID)
+		logger.Warn("auto compact skipped: provider not initialized", "session_id", sess.ID)
 		return
 	}
 	cfg := a.autoCompactConfig()
@@ -29,10 +42,10 @@ func (a *Agent) maybeAutoCompactSession(ctx context.Context, sess *session.Sessi
 	if targetTailTokens <= 0 {
 		targetTailTokens = 1
 	}
-	result, err := a.CompactSessionWithOptions(ctx, sess, "auto", CompactSessionOptions{
+	result, err := a.compactSessionWithProvider(ctx, sess, "auto", CompactSessionOptions{
 		RetainRecentTurns: cfg.AutoCompactRetainTurns,
 		TargetTailTokens:  targetTailTokens,
-	})
+	}, turnProvider)
 	if err != nil {
 		a.recordAutoCompactFailure(sess.ID)
 		logger.Warn("auto compact failed", "session_id", sess.ID, "error", err)

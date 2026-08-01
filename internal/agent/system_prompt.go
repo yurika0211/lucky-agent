@@ -38,6 +38,9 @@ var (
 
 type systemPromptOptions struct {
 	DisabledTools []string
+	// turnProvider, when valid, supplies the immutable provider metadata for
+	// the current request. A zero value keeps the legacy config-based behavior.
+	turnProvider providerSnapshot
 }
 
 /*
@@ -90,7 +93,7 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 	if contextBlock != "" {
 		parts = append(parts, contextBlock)
 	}
-	if meta := a.buildMetadataPromptBlock(); meta != "" {
+	if meta := a.buildMetadataPromptBlockForProvider(opts.turnProvider); meta != "" {
 		parts = append(parts, meta)
 	}
 
@@ -320,12 +323,24 @@ The following operating manual and project context files are supplementary evide
  * 构建系统提示词当中的元数据
  */
 func (a *Agent) buildMetadataPromptBlock() string {
+	return a.buildMetadataPromptBlockForProvider(providerSnapshot{})
+}
+
+func (a *Agent) buildMetadataPromptBlockForProvider(turnProvider providerSnapshot) string {
 	modelName := ""
 	providerName := ""
+	if turnProvider.valid() {
+		modelName = strings.TrimSpace(turnProvider.model)
+		providerName = strings.TrimSpace(turnProvider.name())
+	}
 	if a != nil && a.cfg != nil {
 		cfg := a.cfg.Get()
-		modelName = strings.TrimSpace(cfg.Model)
-		providerName = strings.TrimSpace(cfg.Provider)
+		if modelName == "" {
+			modelName = strings.TrimSpace(cfg.Model)
+		}
+		if providerName == "" {
+			providerName = strings.TrimSpace(cfg.Provider)
+		}
 	}
 
 	meta := make([]string, 0, 2)

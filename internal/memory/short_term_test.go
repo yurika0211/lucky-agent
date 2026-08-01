@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/yurika0211/luckyagent/internal/provider"
@@ -217,6 +218,37 @@ func TestShortTermBufferString(t *testing.T) {
 	str := buf.String()
 	if str == "" {
 		t.Error("expected non-empty string representation")
+	}
+}
+
+func TestSessionShortTermStoreIsolatesSessions(t *testing.T) {
+	store := NewSessionShortTermStore(2)
+	store.Add("session-a", "user", "private A")
+	store.Add("session-a", "assistant", "answer A")
+	store.Add("session-b", "user", "private B")
+	store.Add("session-b", "assistant", "answer B")
+
+	a := store.GetContext("session-a")
+	b := store.GetContext("session-b")
+	if len(a) != 2 || len(b) != 2 {
+		t.Fatalf("unexpected context sizes: a=%d b=%d", len(a), len(b))
+	}
+	if strings.Contains(a[0].Content, "private B") || strings.Contains(a[1].Content, "answer B") {
+		t.Fatalf("session A contains session B state: %#v", a)
+	}
+	if strings.Contains(b[0].Content, "private A") || strings.Contains(b[1].Content, "answer A") {
+		t.Fatalf("session B contains session A state: %#v", b)
+	}
+}
+
+func TestSessionShortTermStoreDoesNotCreateForEmptyID(t *testing.T) {
+	store := NewSessionShortTermStore(2)
+	store.Add("", "user", "orphan")
+	if got := store.SessionCount(); got != 0 {
+		t.Fatalf("empty session ID created a shared buffer: %d", got)
+	}
+	if got := store.Summary(""); got != "" {
+		t.Fatalf("empty session ID returned summary: %q", got)
 	}
 }
 

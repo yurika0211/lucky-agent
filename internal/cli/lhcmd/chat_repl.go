@@ -1473,6 +1473,9 @@ func handleSessionCommand(arg string, a *agent.Agent, mgr *session.Manager, curr
 			if err := mgr.Delete(targetID); err != nil {
 				fmt.Printf("❌ %v\n", err)
 			} else {
+				if a != nil {
+					a.ForgetShortTermSession(targetID)
+				}
 				fmt.Printf("✅ 会话已删除: %s\n", targetID[:8])
 			}
 		}

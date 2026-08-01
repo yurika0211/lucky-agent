@@ -57,16 +57,29 @@ type contextBudget struct {
 contextPlanner 负责根据预算组装系统提示、记忆、RAG 与历史消息。
 */
 type contextPlanner struct {
-	agent   *Agent
-	est     *contextx.TokenEstimator
-	budget  contextBudget
-	options contextBuildOptions
+	agent        *Agent
+	est          *contextx.TokenEstimator
+	budget       contextBudget
+	options      contextBuildOptions
+	turnProvider providerSnapshot
 }
 
 /*
 newContextPlanner 创建一个新的上下文规划器。
 */
 func newContextPlanner(a *Agent, options contextBuildOptions) *contextPlanner {
+	var turnProvider providerSnapshot
+	if a != nil {
+		turnProvider = a.baseProviderSnapshot()
+	}
+	return newContextPlannerWithProvider(a, options, turnProvider)
+}
+
+// newContextPlannerWithProvider binds context construction to the provider
+// selected for the current turn. This prevents a concurrent model switch from
+// changing function-calling/tool formatting or compression behavior halfway
+// through a request.
+func newContextPlannerWithProvider(a *Agent, options contextBuildOptions, turnProvider providerSnapshot) *contextPlanner {
 	cfg := contextx.DefaultWindowConfig()
 	if a != nil && a.contextWin != nil {
 		cfg = a.contextWin.Config()
@@ -104,10 +117,11 @@ func newContextPlanner(a *Agent, options contextBuildOptions) *contextPlanner {
 	}
 
 	return &contextPlanner{
-		agent:   a,
-		est:     resolveTokenEstimator(a, cfg.MaxTokens),
-		budget:  budget,
-		options: options,
+		agent:        a,
+		est:          resolveTokenEstimator(a, cfg.MaxTokens),
+		budget:       budget,
+		options:      options,
+		turnProvider: turnProvider,
 	}
 }
 
@@ -149,14 +163,15 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	if p.agent != nil {
 		systemPrompt = p.agent.buildSystemPromptWithOptions(sess, systemPromptOptions{
 			DisabledTools: p.options.DisabledTools,
+			turnProvider:  p.turnProvider,
 		})
 	}
 	systemParts := []string{p.fitTextToBudget(aOrEmpty(systemPrompt), p.budget.System)}
-	if p.agent == nil || p.agent.provider == nil {
+	if !p.turnProvider.valid() {
 		if tools := p.buildToolCatalog(p.options.DisabledTools); tools != "" {
 			systemParts = append(systemParts, tools)
 		}
-	} else if _, ok := p.agent.provider.(provider.FunctionCallingProvider); !ok {
+	} else if _, ok := p.turnProvider.provider.(provider.FunctionCallingProvider); !ok {
 		if tools := p.buildToolCatalog(p.options.DisabledTools); tools != "" {
 			systemParts = append(systemParts, tools)
 		}
@@ -179,7 +194,7 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	if p.options.IncludeHistory && sess != nil {
 		messages = append(messages, p.buildHistoryMessages(sess, routingText)...)
 	}
-	messages = append(messages, p.buildMemoryMessages(routingText, input.Scope)...)
+	messages = append(messages, p.buildMemoryMessagesForSession(sess, routingText, input.Scope)...)
 	if p.options.IncludeRAG {
 		if ragMsg := p.buildRAGMessage(ctx, sess, routingText); ragMsg.Content != "" {
 			messages = append(messages, ragMsg)
@@ -321,7 +336,7 @@ func (p *contextPlanner) supportsImageContentParts() bool {
 		return false
 	}
 
-	model := strings.TrimSpace(p.agent.activeModel)
+	model := strings.TrimSpace(p.turnProvider.model)
 	if model == "" && p.agent.cfg != nil {
 		model = strings.TrimSpace(p.agent.cfg.Get().Model)
 	}
@@ -464,14 +479,23 @@ func (p *contextPlanner) cacheKey(sess *session.Session, userInput string) (uint
 	if p.agent.soul != nil {
 		payload["system_prompt"] = p.agent.soul.SystemPrompt()
 	}
-	if p.agent.provider != nil {
-		_, fc := p.agent.provider.(provider.FunctionCallingProvider)
+	if p.turnProvider.valid() {
+		_, fc := p.turnProvider.provider.(provider.FunctionCallingProvider)
 		payload["function_calling"] = fc
 	}
+	payload["provider_name"] = p.turnProvider.name()
+	payload["provider_model"] = p.turnProvider.model
+	payload["provider_api_base"] = p.turnProvider.apiBase
 	if p.agent.memory != nil {
 		payload["recent_memory"] = p.agent.memory.Recent(8)
 	}
-	if p.agent.shortTerm != nil {
+	if p.agent.shortTerms != nil && sess != nil {
+		// Short-term state is session-scoped; include only this session's
+		// summary in the cache key so another conversation cannot reuse it.
+		payload["short_summary"] = p.agent.shortTerms.Summary(sess.ID)
+	} else if p.agent.shortTerm != nil && p.agent.shortTerms == nil {
+		// Compatibility for legacy manually-assembled Agents. New production
+		// Agents always have shortTerms, so this cannot reintroduce sharing there.
 		payload["short_summary"] = p.agent.shortTerm.Summary()
 	}
 	if p.agent.midTerm != nil && strings.TrimSpace(userInput) != "" {
@@ -554,8 +578,15 @@ func (p *contextPlanner) buildToolCatalog(disabled []string) string {
 
 /*
 buildMemoryMessages 构造与当前查询相关的记忆上下文消息。
+
+The legacy wrapper keeps the old helper signature for in-package callers;
+normal context construction uses buildMemoryMessagesForSession below.
 */
 func (p *contextPlanner) buildMemoryMessages(query string, scope TurnScope) []provider.Message {
+	return p.buildMemoryMessagesForSession(nil, query, scope)
+}
+
+func (p *contextPlanner) buildMemoryMessagesForSession(sess *session.Session, query string, scope TurnScope) []provider.Message {
 	var messages []provider.Message
 
 	if core := p.buildCoreMemoryMessage(query, scope); core.Content != "" {
@@ -567,7 +598,7 @@ func (p *contextPlanner) buildMemoryMessages(query string, scope TurnScope) []pr
 	if midterm := p.buildMidtermSummaryMessage(query); midterm.Content != "" {
 		messages = append(messages, midterm)
 	}
-	if short := p.buildShortTermSummaryMessage(); short.Content != "" {
+	if short := p.buildShortTermSummaryMessageForSession(sess); short.Content != "" {
 		messages = append(messages, short)
 	}
 
@@ -956,10 +987,21 @@ func (p *contextPlanner) buildMidtermSummaryMessage(query string) provider.Messa
 buildShortTermSummaryMessage 构造短期会话摘要消息。
 */
 func (p *contextPlanner) buildShortTermSummaryMessage() provider.Message {
-	if p.agent == nil || p.agent.shortTerm == nil {
+	return p.buildShortTermSummaryMessageForSession(nil)
+}
+
+func (p *contextPlanner) buildShortTermSummaryMessageForSession(sess *session.Session) provider.Message {
+	if p.agent == nil {
 		return provider.Message{}
 	}
-	summary := strings.TrimSpace(p.agent.shortTerm.Summary())
+	summary := ""
+	if p.agent.shortTerms != nil && sess != nil {
+		summary = p.agent.shortTerms.Summary(sess.ID)
+	} else if p.agent.shortTerm != nil && p.agent.shortTerms == nil {
+		// Compatibility for old manually-assembled Agents only.
+		summary = p.agent.shortTerm.Summary()
+	}
+	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		return provider.Message{}
 	}
@@ -1391,7 +1433,7 @@ func (p *contextPlanner) summarizeConversationRangeWithLLM(ctx context.Context, 
 }
 
 func (p *contextPlanner) tryLLMConversationSummary(ctx context.Context, sess *session.Session, messages []provider.Message, header string, tokenBudget int) string {
-	if p == nil || p.agent == nil || p.agent.provider == nil || len(messages) < 8 || tokenBudget <= 0 {
+	if p == nil || p.agent == nil || !p.turnProvider.valid() || len(messages) < 8 || tokenBudget <= 0 {
 		return ""
 	}
 	historyTokens := 0
@@ -1436,7 +1478,7 @@ func (p *contextPlanner) tryLLMConversationSummary(ctx context.Context, sess *se
 
 	sumCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	resp, err := p.agent.provider.Chat(sumCtx, []provider.Message{
+	resp, err := p.turnProvider.provider.Chat(sumCtx, []provider.Message{
 		{Role: "system", Content: "You compress prior conversation into a compact working-memory summary for an autonomous coding assistant."},
 		{Role: "user", Content: prompt},
 	})

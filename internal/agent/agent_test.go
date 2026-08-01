@@ -750,6 +750,42 @@ func TestSaveConversationMemory_ShortTermBuffer(t *testing.T) {
 	}
 }
 
+func TestShortTermContextIsIsolatedPerSession(t *testing.T) {
+	a := newTestAgentWithMemory(t)
+	a.shortTerms = memory.NewSessionShortTermStore(2)
+	sessA := session.NewSession("short-a", t.TempDir())
+	sessB := session.NewSession("short-b", t.TempDir())
+
+	// Two turns per session force the small windows to create summaries while
+	// retaining distinct recent messages.
+	a.saveConversationMemoryFromSession(sessA, TextUserTurnInput("private alpha one"), "alpha answer one")
+	a.saveConversationMemoryFromSession(sessA, TextUserTurnInput("private alpha two"), "alpha answer two")
+	a.saveConversationMemoryFromSession(sessB, TextUserTurnInput("private beta one"), "beta answer one")
+	a.saveConversationMemoryFromSession(sessB, TextUserTurnInput("private beta two"), "beta answer two")
+
+	bufA := a.shortTermBufferForSession(sessA, false)
+	bufB := a.shortTermBufferForSession(sessB, false)
+	if bufA == nil || bufB == nil {
+		t.Fatal("expected one short-term buffer per session")
+	}
+	if strings.Contains(bufA.Summary(), "beta") || strings.Contains(bufA.GetContext()[0].Content, "beta") {
+		t.Fatalf("session A short-term state contains session B data: summary=%q context=%#v", bufA.Summary(), bufA.GetContext())
+	}
+	if strings.Contains(bufB.Summary(), "alpha") || strings.Contains(bufB.GetContext()[0].Content, "alpha") {
+		t.Fatalf("session B short-term state contains session A data: summary=%q context=%#v", bufB.Summary(), bufB.GetContext())
+	}
+
+	planner := newContextPlanner(a, defaultContextBuildOptions())
+	msgA := planner.buildShortTermSummaryMessageForSession(sessA)
+	msgB := planner.buildShortTermSummaryMessageForSession(sessB)
+	if !strings.Contains(msgA.Content, "alpha") || strings.Contains(msgA.Content, "beta") {
+		t.Fatalf("session A planner summary drifted: %q", msgA.Content)
+	}
+	if !strings.Contains(msgB.Content, "beta") || strings.Contains(msgB.Content, "alpha") {
+		t.Fatalf("session B planner summary drifted: %q", msgB.Content)
+	}
+}
+
 func TestContextPlannerFiltersRawConversationShortMemory(t *testing.T) {
 	a := newTestAgentWithMemory(t)
 	a.memory.SaveWithTier("User: hello about deploy", "conversation", memory.TierShort, 0.9)
