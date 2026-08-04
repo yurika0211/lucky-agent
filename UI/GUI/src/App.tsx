@@ -12,11 +12,12 @@ import type {
 } from './types';
 import { Markdown } from './components/Markdown';
 import { Gateways } from './components/Gateways';
+import { Settings } from './components/Settings';
 
 type ThemeMode = 'light' | 'dark';
-type WorkspaceView = 'chat' | 'gateways';
+type WorkspaceView = 'chat' | 'gateways' | 'settings';
 
-type Bubble = ChatMessage;
+type Bubble = ChatMessage & { attachments?: Array<{ type: 'image' | 'file'; name: string; url: string }> };
 
 const DEFAULT_API_BASE = 'http://127.0.0.1:9090';
 const DEFAULT_SESSION = 'dashboard-main';
@@ -129,15 +130,22 @@ export function App() {
   const [composer, setComposer] = useState('');
   const [rawLog, setRawLog] = useState('Waiting for runtime data...');
   const [loadingDashboard, setLoadingDashboard] = useState(false);
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(true);
+  const [attachments, setAttachments] = useState<Array<{ type: 'image' | 'file'; name: string; url: string; file?: File }>>([]);
+  const [renamingSession, setRenamingSession] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState('');
   const wsRef = useRef<WebSocket | null>(null);
   const assistantDraftRef = useRef('');
   const assistantBubbleRef = useRef<string | null>(null);
   const streamRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const effectiveBase = useMemo(() => normalizeApiBase(apiBase) || DEFAULT_API_BASE, [apiBase]);
 
-  function pushBubble(role: Bubble['role'], title: string, body: string, meta?: string): string {
-    const next: Bubble = { id: makeId(role), role, title, body, meta: meta || nowLabel() };
+  function pushBubble(role: Bubble['role'], title: string, body: string, meta?: string, attachments?: Bubble['attachments']): string {
+    const next: Bubble = { id: makeId(role), role, title, body, meta: meta || nowLabel(), attachments };
     setMessages((prev) => [...prev, next].slice(-MAX_MESSAGES));
     return next.id;
   }
@@ -255,6 +263,46 @@ export function App() {
     } catch (error) {
       pushActivity('error', 'New session failed', String(error));
     }
+  }
+
+  async function renameSession(id: string, newTitle: string) {
+    try {
+      const response = await fetchRuntime(`/v1/sessions/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle }),
+      });
+      if (!response.ok) throw new Error(`rename session ${response.status}`);
+      pushActivity('socket', 'Session renamed', `${id} → ${newTitle}`);
+      await loadSessions('');
+    } catch (error) {
+      pushActivity('error', 'Rename failed', String(error));
+    } finally {
+      setRenamingSession(null);
+      setRenameValue('');
+    }
+  }
+
+  function handleFileSelect(event: React.ChangeEvent<HTMLInputElement>) {
+    const files = event.target.files;
+    if (!files) return;
+
+    const newAttachments = Array.from(files).map((file) => {
+      const url = URL.createObjectURL(file);
+      const type = file.type.startsWith('image/') ? 'image' : 'file' as const;
+      return { type, name: file.name, url, file };
+    });
+
+    setAttachments((prev) => [...prev, ...newAttachments]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+
+  function removeAttachment(index: number) {
+    setAttachments((prev) => {
+      const item = prev[index];
+      if (item.url.startsWith('blob:')) URL.revokeObjectURL(item.url);
+      return prev.filter((_, i) => i !== index);
+    });
   }
 
   function connect() {
@@ -396,18 +444,30 @@ export function App() {
 
   function sendMessage() {
     const text = composer.trim();
-    if (!text) return;
+    if (!text && attachments.length === 0) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       pushActivity('error', 'Not connected', 'Connect to the runtime before sending.');
       return;
     }
-    pushBubble('user', 'You', text);
+
+    const messageAttachments = attachments.length > 0 ? attachments.map(({ type, name, url }) => ({ type, name, url })) : undefined;
+    pushBubble('user', 'You', text || '[Attachments]', undefined, messageAttachments);
+
     setComposer('');
+    setAttachments([]);
     assistantDraftRef.current = '';
     assistantBubbleRef.current = pushBubble('assistant', 'LuckyAgent', '', 'streaming');
     setSocketState('running');
     pushFeed('sent');
-    wsRef.current.send(JSON.stringify({ type: 'chat', data: { message: text, stream: true, max_iterations: 8 } }));
+    wsRef.current.send(JSON.stringify({
+      type: 'chat',
+      data: {
+        message: text,
+        stream: true,
+        max_iterations: 8,
+        attachments: messageAttachments
+      }
+    }));
   }
 
   function handleComposerKey(event: React.KeyboardEvent<HTMLTextAreaElement>) {
@@ -436,8 +496,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: 'smooth' });
-  }, [messages]);
+    if (autoScroll && streamRef.current) {
+      streamRef.current.scrollTo({ top: streamRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, [messages, autoScroll]);
 
   const stats = [
     ['Runtime', status.running ? 'running' : 'unknown'],
@@ -465,7 +527,7 @@ export function App() {
           title="Chat workspace"
           onClick={() => setView('chat')}
         >
-          C
+          💬
         </button>
         <button
           className={`rail-button ${view === 'gateways' ? 'active' : ''}`}
@@ -473,7 +535,15 @@ export function App() {
           title="Gateways"
           onClick={() => setView('gateways')}
         >
-          G
+          🔌
+        </button>
+        <button
+          className={`rail-button ${view === 'settings' ? 'active' : ''}`}
+          type="button"
+          title="Settings"
+          onClick={() => setView('settings')}
+        >
+          ⚙️
         </button>
         <div className="rail-spacer" />
         <button
@@ -494,7 +564,7 @@ export function App() {
         <section className="topbar panel">
           <div className="topbar-title">
             <span className="eyebrow">LuckyAgent GUI</span>
-            <h1>{view === 'gateways' ? 'Messaging gateways' : 'Agent runtime workspace'}</h1>
+            <h1>{view === 'settings' ? 'Settings' : view === 'gateways' ? 'Messaging gateways' : 'Agent runtime workspace'}</h1>
           </div>
           <div className="topbar-actions">
             <span className={`connection-pill ${connected ? 'ok' : socketState === 'error' ? 'err' : ''}`}>
@@ -528,12 +598,22 @@ export function App() {
           </div>
         </section>
 
-        <section className={`content ${view === 'gateways' ? 'single' : ''}`}>
-          {view === 'gateways' ? (
+        <section className={`content ${view === 'gateways' || view === 'settings' ? 'single' : ''}`}>
+          {view === 'settings' ? (
+            <Settings fetchRuntime={fetchRuntime} pushActivity={pushActivity} />
+          ) : view === 'gateways' ? (
             <Gateways fetchRuntime={fetchRuntime} pushActivity={pushActivity} pushFeed={pushFeed} />
           ) : (
           <>
-          <aside className="left-col">
+          <aside className={`left-col ${leftCollapsed ? 'collapsed' : ''}`}>
+            <button
+              className="collapse-button"
+              type="button"
+              title={leftCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              onClick={() => setLeftCollapsed(!leftCollapsed)}
+            >
+              {leftCollapsed ? '▶' : '◀'}
+            </button>
             <section className="panel">
               <div className="panel-head">
                 <h2>Runtime</h2>
@@ -572,17 +652,71 @@ export function App() {
                 {sessionsError ? <div className="empty-line error-text">{sessionsError}</div> : null}
                 {!sessionsLoading && !sessions.length ? <div className="empty-line">No sessions</div> : null}
                 {sessions.slice(0, 12).map((item) => (
-                  <button
+                  <div
                     className={`session-item ${item.id === session ? 'active' : ''}`}
                     key={item.id}
-                    type="button"
-                    onClick={() => void loadSessionHistory(item.id)}
                   >
-                    <span>{item.title || item.id}</span>
-                    <small>
-                      {item.message_count ?? 0} msgs · {sessionAge(item.updated_at || item.created_at)}
-                    </small>
-                  </button>
+                    {renamingSession === item.id ? (
+                      <div className="session-rename">
+                        <input
+                          type="text"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              void renameSession(item.id, renameValue);
+                            } else if (e.key === 'Escape') {
+                              setRenamingSession(null);
+                              setRenameValue('');
+                            }
+                          }}
+                          autoFocus
+                          placeholder="New name"
+                        />
+                        <button
+                          className="mini-button"
+                          type="button"
+                          onClick={() => void renameSession(item.id, renameValue)}
+                        >
+                          ✓
+                        </button>
+                        <button
+                          className="mini-button"
+                          type="button"
+                          onClick={() => {
+                            setRenamingSession(null);
+                            setRenameValue('');
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <button
+                          className="session-main"
+                          type="button"
+                          onClick={() => void loadSessionHistory(item.id)}
+                        >
+                          <span>{item.title || item.id}</span>
+                          <small>
+                            {item.message_count ?? 0} msgs · {sessionAge(item.updated_at || item.created_at)}
+                          </small>
+                        </button>
+                        <button
+                          className="session-rename-button"
+                          type="button"
+                          title="Rename session"
+                          onClick={() => {
+                            setRenamingSession(item.id);
+                            setRenameValue(item.title || item.id);
+                          }}
+                        >
+                          ✏️
+                        </button>
+                      </>
+                    )}
+                  </div>
                 ))}
               </div>
             </section>
@@ -626,6 +760,21 @@ export function App() {
                     </div>
                     <div className="bubble-body">
                       <Markdown source={msg.body} />
+                      {msg.attachments && msg.attachments.length > 0 && (
+                        <div className="message-attachments">
+                          {msg.attachments.map((att, index) => (
+                            <div className="message-attachment" key={index}>
+                              {att.type === 'image' ? (
+                                <img src={att.url} alt={att.name} />
+                              ) : (
+                                <a href={att.url} download={att.name} className="file-attachment">
+                                  📄 {att.name}
+                                </a>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   </article>
                 ))
@@ -633,6 +782,28 @@ export function App() {
             </div>
 
             <div className="composer">
+              {attachments.length > 0 && (
+                <div className="attachments-preview">
+                  {attachments.map((item, index) => (
+                    <div className="attachment-item" key={index}>
+                      {item.type === 'image' ? (
+                        <img src={item.url} alt={item.name} />
+                      ) : (
+                        <div className="file-icon">📄</div>
+                      )}
+                      <span className="attachment-name">{item.name}</span>
+                      <button
+                        type="button"
+                        className="remove-attachment"
+                        onClick={() => removeAttachment(index)}
+                        title="Remove"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
               <textarea
                 value={composer}
                 onChange={(event) => setComposer(event.target.value)}
@@ -642,19 +813,53 @@ export function App() {
                 title="Ctrl+Enter or Cmd+Enter sends"
               />
               <div className="composer-row">
+                <div className="composer-actions">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept="image/*,application/pdf,.txt,.json,.xml,.csv"
+                    style={{ display: 'none' }}
+                    onChange={handleFileSelect}
+                  />
+                  <button
+                    className="ghost icon-button"
+                    type="button"
+                    title="Attach files"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    📎
+                  </button>
+                  <label className="auto-scroll-toggle">
+                    <input
+                      type="checkbox"
+                      checked={autoScroll}
+                      onChange={(e) => setAutoScroll(e.target.checked)}
+                    />
+                    <span>Auto-scroll</span>
+                  </label>
+                </div>
                 <div className="feed">
                   {feed.map((item) => (
                     <span key={item}>{item}</span>
                   ))}
                 </div>
-                <button className="primary" type="button" onClick={sendMessage} disabled={!connected || !composer.trim()}>
+                <button className="primary" type="button" onClick={sendMessage} disabled={!connected || (!composer.trim() && attachments.length === 0)}>
                   Send
                 </button>
               </div>
             </div>
           </section>
 
-          <aside className="right-col">
+          <aside className={`right-col ${rightCollapsed ? 'collapsed' : ''}`}>
+            <button
+              className="collapse-button"
+              type="button"
+              title={rightCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              onClick={() => setRightCollapsed(!rightCollapsed)}
+            >
+              {rightCollapsed ? '◀' : '▶'}
+            </button>
             <section className="panel activity-panel">
               <div className="panel-head">
                 <h2>Activity</h2>
