@@ -100,11 +100,37 @@ type Config struct {
 }
 
 type ToolsConfig struct {
-	Filesystem FilesystemToolConfig `json:"filesystem,omitempty"`
+	Filesystem  FilesystemToolConfig  `json:"filesystem,omitempty"`
+	ComputerUse ComputerUseToolConfig `json:"computer_use,omitempty"`
 }
 
 type FilesystemToolConfig struct {
 	AllowedReadRoots []string `json:"allowed_read_roots,omitempty"`
+}
+
+// ComputerUseToolConfig controls the optional local desktop automation tools.
+// Computer use is disabled by default because it can observe and control the
+// interactive desktop, including applications outside LuckyAgent.
+type ComputerUseToolConfig struct {
+	Enabled              bool     `json:"enabled,omitempty"`
+	Mode                 string   `json:"mode,omitempty"`    // observe, assist, control
+	Backend              string   `json:"backend,omitempty"` // auto, x11, wayland, windows, darwin
+	CaptureDir           string   `json:"capture_dir,omitempty"`
+	AllowedSources       []string `json:"allowed_sources,omitempty"`
+	AllowedWindows       []string `json:"allowed_windows,omitempty"`
+	RequireApproval      bool     `json:"require_approval,omitempty"`
+	MaxSteps             int      `json:"max_steps,omitempty"`
+	TimeoutSeconds       int      `json:"timeout_seconds,omitempty"`
+	StepTimeoutSeconds   int      `json:"step_timeout_seconds,omitempty"`
+	SettleMS             int      `json:"settle_ms,omitempty"`
+	SettleMilliseconds   int      `json:"settle_milliseconds,omitempty"`
+	MaxObservationBytes  int      `json:"max_observation_bytes,omitempty"`
+	MaxScreenshotWidth   int      `json:"max_screenshot_width,omitempty"`
+	KeepFrames           int      `json:"keep_frames,omitempty"`
+	FrameTTLSeconds      int      `json:"frame_ttl_seconds,omitempty"`
+	RetainFrames         int      `json:"retain_frames,omitempty"`
+	AllowTextInput       bool     `json:"allow_text_input,omitempty"`
+	AllowHighRiskActions bool     `json:"allow_high_risk_actions,omitempty"`
 }
 
 // HooksConfig 配置工具执行边界上的 hook。Enabled 为 false 时所有 hook 不生效，
@@ -753,6 +779,27 @@ func DefaultConfig() *Config {
 				"prefer_lightweight_tasks",
 			},
 		},
+		Tools: ToolsConfig{
+			ComputerUse: ComputerUseToolConfig{
+				Enabled:              false,
+				Mode:                 "observe",
+				Backend:              "auto",
+				AllowedSources:       []string{"cli", "tui"},
+				RequireApproval:      true,
+				MaxSteps:             50,
+				TimeoutSeconds:       300,
+				StepTimeoutSeconds:   30,
+				SettleMS:             350,
+				SettleMilliseconds:   350,
+				MaxObservationBytes:  10 << 20,
+				MaxScreenshotWidth:   0,
+				KeepFrames:           2,
+				FrameTTLSeconds:      600,
+				RetainFrames:         2,
+				AllowTextInput:       false,
+				AllowHighRiskActions: false,
+			},
+		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
 			Telegram: MsgGatewayTelegram{
@@ -818,6 +865,7 @@ func parseConfigData(data []byte) (*Config, error) {
 }
 
 func normalizeConfig(cfg *Config) {
+	applyLegacyComputerUseExtra(cfg)
 	def := DefaultConfig()
 
 	if strings.TrimSpace(cfg.LlmProvider.Name) == "" {
@@ -1118,6 +1166,67 @@ func normalizeConfig(cfg *Config) {
 		cfg.Proactive.KernelMinSamples = def.Proactive.KernelMinSamples
 	}
 
+	if strings.TrimSpace(cfg.Tools.ComputerUse.Mode) == "" {
+		cfg.Tools.ComputerUse.Mode = def.Tools.ComputerUse.Mode
+	}
+	if strings.TrimSpace(cfg.Tools.ComputerUse.Backend) == "" {
+		cfg.Tools.ComputerUse.Backend = def.Tools.ComputerUse.Backend
+	}
+	if cfg.Tools.ComputerUse.MaxSteps <= 0 {
+		cfg.Tools.ComputerUse.MaxSteps = def.Tools.ComputerUse.MaxSteps
+	}
+	if cfg.Tools.ComputerUse.TimeoutSeconds <= 0 {
+		cfg.Tools.ComputerUse.TimeoutSeconds = def.Tools.ComputerUse.TimeoutSeconds
+	}
+	if cfg.Tools.ComputerUse.StepTimeoutSeconds <= 0 {
+		cfg.Tools.ComputerUse.StepTimeoutSeconds = def.Tools.ComputerUse.StepTimeoutSeconds
+	}
+	if cfg.Tools.ComputerUse.SettleMS < 0 {
+		cfg.Tools.ComputerUse.SettleMS = def.Tools.ComputerUse.SettleMS
+	}
+	if cfg.Tools.ComputerUse.SettleMilliseconds <= 0 {
+		cfg.Tools.ComputerUse.SettleMilliseconds = cfg.Tools.ComputerUse.SettleMS
+	}
+	if cfg.Tools.ComputerUse.SettleMS <= 0 {
+		cfg.Tools.ComputerUse.SettleMS = cfg.Tools.ComputerUse.SettleMilliseconds
+	}
+	if cfg.Tools.ComputerUse.SettleMilliseconds < 0 {
+		cfg.Tools.ComputerUse.SettleMilliseconds = def.Tools.ComputerUse.SettleMilliseconds
+	}
+	if cfg.Tools.ComputerUse.MaxObservationBytes <= 0 {
+		cfg.Tools.ComputerUse.MaxObservationBytes = def.Tools.ComputerUse.MaxObservationBytes
+	}
+	if cfg.Tools.ComputerUse.MaxScreenshotWidth <= 0 {
+		cfg.Tools.ComputerUse.MaxScreenshotWidth = def.Tools.ComputerUse.MaxScreenshotWidth
+	}
+	if cfg.Tools.ComputerUse.KeepFrames <= 0 {
+		cfg.Tools.ComputerUse.KeepFrames = cfg.Tools.ComputerUse.RetainFrames
+		if cfg.Tools.ComputerUse.KeepFrames <= 0 {
+			cfg.Tools.ComputerUse.KeepFrames = def.Tools.ComputerUse.KeepFrames
+		}
+	}
+	if cfg.Tools.ComputerUse.FrameTTLSeconds <= 0 {
+		cfg.Tools.ComputerUse.FrameTTLSeconds = def.Tools.ComputerUse.FrameTTLSeconds
+	}
+	if cfg.Tools.ComputerUse.RetainFrames <= 0 {
+		cfg.Tools.ComputerUse.RetainFrames = cfg.Tools.ComputerUse.KeepFrames
+		if cfg.Tools.ComputerUse.RetainFrames <= 0 {
+			cfg.Tools.ComputerUse.RetainFrames = def.Tools.ComputerUse.RetainFrames
+		}
+	}
+	if cfg.Tools.ComputerUse.KeepFrames != def.Tools.ComputerUse.KeepFrames && cfg.Tools.ComputerUse.RetainFrames == def.Tools.ComputerUse.RetainFrames {
+		cfg.Tools.ComputerUse.RetainFrames = cfg.Tools.ComputerUse.KeepFrames
+	}
+	if cfg.Tools.ComputerUse.RetainFrames != def.Tools.ComputerUse.RetainFrames && cfg.Tools.ComputerUse.KeepFrames == def.Tools.ComputerUse.KeepFrames {
+		cfg.Tools.ComputerUse.KeepFrames = cfg.Tools.ComputerUse.RetainFrames
+	}
+	if cfg.Tools.ComputerUse.AllowedSources == nil {
+		cfg.Tools.ComputerUse.AllowedSources = append([]string(nil), def.Tools.ComputerUse.AllowedSources...)
+	}
+	if cfg.Tools.ComputerUse.AllowedWindows == nil {
+		cfg.Tools.ComputerUse.AllowedWindows = append([]string(nil), def.Tools.ComputerUse.AllowedWindows...)
+	}
+
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = def.Server.Addr
 	}
@@ -1191,6 +1300,56 @@ func normalizeConfig(cfg *Config) {
 	}
 }
 
+// applyLegacyComputerUseExtra migrates settings written by older binaries
+// which stored unknown config keys under Config.Extra. This is important for
+// computer use because an older `lh config set` would otherwise appear to
+// succeed while the new runtime continued using its disabled defaults.
+func applyLegacyComputerUseExtra(cfg *Config) {
+	if cfg == nil || len(cfg.Extra) == 0 {
+		return
+	}
+	for key, value := range cfg.Extra {
+		switch key {
+		case "tools.computer_use.enabled":
+			cfg.Tools.ComputerUse.Enabled = parseBool(value)
+		case "tools.computer_use.mode":
+			cfg.Tools.ComputerUse.Mode = value
+		case "tools.computer_use.backend":
+			cfg.Tools.ComputerUse.Backend = value
+		case "tools.computer_use.capture_dir":
+			cfg.Tools.ComputerUse.CaptureDir = value
+		case "tools.computer_use.allowed_sources":
+			cfg.Tools.ComputerUse.AllowedSources = splitCSV(value)
+		case "tools.computer_use.allowed_windows":
+			cfg.Tools.ComputerUse.AllowedWindows = splitCSV(value)
+		case "tools.computer_use.require_approval":
+			cfg.Tools.ComputerUse.RequireApproval = parseBool(value)
+		case "tools.computer_use.max_steps":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.MaxSteps)
+		case "tools.computer_use.timeout_seconds":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.TimeoutSeconds)
+		case "tools.computer_use.step_timeout_seconds":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.StepTimeoutSeconds)
+		case "tools.computer_use.settle_ms", "tools.computer_use.settle_milliseconds":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.SettleMS)
+			cfg.Tools.ComputerUse.SettleMilliseconds = cfg.Tools.ComputerUse.SettleMS
+		case "tools.computer_use.max_observation_bytes":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.MaxObservationBytes)
+		case "tools.computer_use.max_screenshot_width":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.MaxScreenshotWidth)
+		case "tools.computer_use.keep_frames", "tools.computer_use.retain_frames":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.KeepFrames)
+			cfg.Tools.ComputerUse.RetainFrames = cfg.Tools.ComputerUse.KeepFrames
+		case "tools.computer_use.frame_ttl_seconds":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.FrameTTLSeconds)
+		case "tools.computer_use.allow_text_input":
+			cfg.Tools.ComputerUse.AllowTextInput = parseBool(value)
+		case "tools.computer_use.allow_high_risk_actions":
+			cfg.Tools.ComputerUse.AllowHighRiskActions = parseBool(value)
+		}
+	}
+}
+
 func cloneConfig(in *Config) *Config {
 	if in == nil {
 		return nil
@@ -1212,6 +1371,8 @@ func cloneConfig(in *Config) *Config {
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
 	cp.Tools.Filesystem.AllowedReadRoots = append([]string(nil), in.Tools.Filesystem.AllowedReadRoots...)
+	cp.Tools.ComputerUse.AllowedSources = append([]string(nil), in.Tools.ComputerUse.AllowedSources...)
+	cp.Tools.ComputerUse.AllowedWindows = append([]string(nil), in.Tools.ComputerUse.AllowedWindows...)
 	cp.MsgGateway.QQOfficial.AllowedChats = append([]string(nil), in.MsgGateway.QQOfficial.AllowedChats...)
 	cp.MsgGateway.QQOfficial.AllowedUsers = append([]string(nil), in.MsgGateway.QQOfficial.AllowedUsers...)
 	cp.MsgGateway.QQOfficial.Intents = append([]string(nil), in.MsgGateway.QQOfficial.Intents...)
@@ -1626,6 +1787,68 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Proactive.KernelMinSamples = n
 	case "tools.filesystem.allowed_read_roots":
 		m.config.Tools.Filesystem.AllowedReadRoots = splitCSV(value)
+	case "tools.computer_use.enabled":
+		m.config.Tools.ComputerUse.Enabled = parseBool(value)
+	case "tools.computer_use.mode":
+		m.config.Tools.ComputerUse.Mode = value
+	case "tools.computer_use.backend":
+		m.config.Tools.ComputerUse.Backend = value
+	case "tools.computer_use.capture_dir":
+		m.config.Tools.ComputerUse.CaptureDir = value
+	case "tools.computer_use.allowed_sources":
+		m.config.Tools.ComputerUse.AllowedSources = splitCSV(value)
+	case "tools.computer_use.allowed_windows":
+		m.config.Tools.ComputerUse.AllowedWindows = splitCSV(value)
+	case "tools.computer_use.require_approval":
+		m.config.Tools.ComputerUse.RequireApproval = parseBool(value)
+	case "tools.computer_use.max_steps":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.MaxSteps = n
+	case "tools.computer_use.timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.TimeoutSeconds = n
+	case "tools.computer_use.step_timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.StepTimeoutSeconds = n
+	case "tools.computer_use.settle_ms":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.SettleMS = n
+		m.config.Tools.ComputerUse.SettleMilliseconds = n
+	case "tools.computer_use.settle_milliseconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.SettleMilliseconds = n
+		m.config.Tools.ComputerUse.SettleMS = n
+	case "tools.computer_use.max_observation_bytes":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.MaxObservationBytes = n
+	case "tools.computer_use.max_screenshot_width":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.MaxScreenshotWidth = n
+	case "tools.computer_use.keep_frames":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.KeepFrames = n
+		m.config.Tools.ComputerUse.RetainFrames = n
+	case "tools.computer_use.frame_ttl_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.FrameTTLSeconds = n
+	case "tools.computer_use.retain_frames":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Tools.ComputerUse.RetainFrames = n
+		m.config.Tools.ComputerUse.KeepFrames = n
+	case "tools.computer_use.allow_text_input":
+		m.config.Tools.ComputerUse.AllowTextInput = parseBool(value)
+	case "tools.computer_use.allow_high_risk_actions":
+		m.config.Tools.ComputerUse.AllowHighRiskActions = parseBool(value)
 	case "msg_gateway.platform":
 		m.config.MsgGateway.Platform = value
 	case "msg_gateway.start_all":

@@ -13,6 +13,7 @@ type BuiltinToolService struct {
 	ttsDefaults          TTSDefaults
 	defaultImageProvider string
 	filesystemPolicy     FilesystemPolicy
+	computerUse          *ComputerUseToolService
 }
 
 // NewBuiltinToolService creates a builtin tool service.
@@ -61,4 +62,14 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	r.Register(CSVQueryTool())
 	r.Register(SQLQueryTool())
 	r.Register(DBSchemaTool())
+	if s.computerUse != nil {
+		s.computerUse.RegisterTools(r)
+	}
+}
+
+// SetComputerUseService attaches the optional desktop automation tools.
+func (s *BuiltinToolService) SetComputerUseService(service *ComputerUseToolService) {
+	if s != nil {
+		s.computerUse = service
+	}
 }

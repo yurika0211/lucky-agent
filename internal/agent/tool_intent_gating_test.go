@@ -102,6 +102,63 @@ func TestApplyIntentToolGatingReadOnlyKeepsInspectionTools(t *testing.T) {
 	)
 }
 
+func TestApplyIntentToolGatingComputerUseIntentKeepsComputerTools(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+	prompt := "请使用 computer use 截取当前桌面屏幕。"
+	a.applyIntentToolGating(&loopCfg, prompt)
+	visible := toolNamesFromSchemas(a.buildLoopCallOptions(prompt, loopCfg).Tools)
+	assertEnabledTools(t, visible, "computer_observe", "computer_act")
+}
+
+func TestApplyIntentToolGatingHybridTerminalAndComputerUseKeepsBothToolsets(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+	prompt := "先用终端检查 Chrome 进程和 8080 端口，再用 computer use 切换到 Chrome 窗口。"
+	a.applyIntentToolGating(&loopCfg, prompt)
+	visible := toolNamesFromSchemas(a.buildLoopCallOptions(prompt, loopCfg).Tools)
+
+	assertEnabledTools(t, visible,
+		"terminal", "file_read", "file_list", "computer_observe", "computer_act",
+	)
+	assertDisabledTools(t, loopCfg.DisabledTools,
+		"web_search", "web_fetch", "file_write", "file_delete", "sql_query",
+	)
+}
+
+func TestApplyIntentToolGatingTerminalIntentRecognizesShellProcessAndPort(t *testing.T) {
+	for _, prompt := range []string{
+		"请用 shell 查看当前服务进程和 8080 端口。",
+		"检查终端里的服务状态。",
+		"启动 tg 网关1。",
+	} {
+		t.Run(prompt, func(t *testing.T) {
+			a := agentWithIntentGateTools(t)
+			loopCfg := DefaultLoopConfig()
+			sanitizeLoopConfig(&loopCfg)
+			a.applyIntentToolGating(&loopCfg, prompt)
+			visible := toolNamesFromSchemas(a.buildLoopCallOptions(prompt, loopCfg).Tools)
+			assertEnabledTools(t, visible, "terminal")
+		})
+	}
+}
+
+func TestApplyIntentToolGatingNegatedCommandDoesNotEnableTerminal(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+	prompt := "不要执行命令，只解释 shell 命令应该怎么写。"
+	a.applyIntentToolGating(&loopCfg, prompt)
+	visible := toolNamesFromSchemas(a.buildLoopCallOptions(prompt, loopCfg).Tools)
+
+	assertDisabledTools(t, loopCfg.DisabledTools, "terminal")
+	if containsString(visible, "terminal") {
+		t.Fatalf("negated command request must not expose terminal, got %v", visible)
+	}
+}
+
 func TestApplyIntentToolGatingDocumentReadForOfficeAndPDF(t *testing.T) {
 	a := agentWithIntentGateTools(t)
 	loopCfg := DefaultLoopConfig()
@@ -385,6 +442,7 @@ func agentWithIntentGateTools(t *testing.T) *Agent {
 		"cron_remove", "cron_pause", "cron_resume", "autonomy", "autonomy_status",
 		"autonomy_queue_add", "autonomy_worker_spawn", "heartbeat_status",
 		"heartbeat_trigger", "delegate_task", "task_status", "list_tasks", "delegate_cancel",
+		"computer_observe", "computer_act",
 	} {
 		reg.Register(&tool.Tool{
 			Name:        name,

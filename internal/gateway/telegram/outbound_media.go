@@ -39,6 +39,77 @@ func resolveOutboundMediaResponse(response string) (string, []outboundMedia, err
 	return text, media, nil
 }
 
+// prepareOutboundMediaResponse removes local files that disappeared between
+// artifact creation and Telegram delivery. Agent responses can outlive the
+// temporary screenshot/file they reference; allowing those paths through to
+// the adapter produces a confusing "Failed to send media response" fallback.
+// Remote URLs are left untouched because Telegram fetches them itself.
+func prepareOutboundMediaResponse(text string, media []outboundMedia) (string, []outboundMedia) {
+	if len(media) == 0 {
+		return text, nil
+	}
+
+	available := make([]outboundMedia, 0, len(media))
+	missing := make([]string, 0)
+	seenMissing := make(map[string]struct{})
+	for _, item := range media {
+		if outboundMediaSourceAvailable(item.Source) {
+			available = append(available, item)
+			continue
+		}
+		source := strings.TrimSpace(item.Source)
+		if source == "" {
+			continue
+		}
+		if _, seen := seenMissing[source]; seen {
+			continue
+		}
+		seenMissing[source] = struct{}{}
+		missing = append(missing, source)
+	}
+
+	if len(missing) == 0 {
+		return text, available
+	}
+	return appendMissingMediaNotice(text, missing), available
+}
+
+func outboundMediaSourceAvailable(source string) bool {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return false
+	}
+	lower := strings.ToLower(source)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return true
+	}
+	pathForFS := normalizeLocalMediaPath(source)
+	if pathForFS == "" {
+		return false
+	}
+	info, err := os.Stat(pathForFS)
+	return err == nil && !info.IsDir()
+}
+
+func appendMissingMediaNotice(text string, missing []string) string {
+	if len(missing) == 0 {
+		return text
+	}
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(text))
+	if b.Len() > 0 {
+		b.WriteString("\n\n")
+	}
+	b.WriteString("❌ 附件文件不存在或已过期，未发送：")
+	for i, source := range missing {
+		if i > 0 {
+			b.WriteString("、")
+		}
+		b.WriteString(source)
+	}
+	return normalizeOutboundText(b.String())
+}
+
 func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 	text := strings.TrimSpace(response)
 	if text == "" {

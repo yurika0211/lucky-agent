@@ -70,6 +70,18 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 		if toolInventory := a.buildToolInventoryPromptBlock(toolNames); toolInventory != "" {
 			parts = append(parts, toolInventory)
 		}
+		if slices.Contains(toolNames, "computer_observe") || slices.Contains(toolNames, "computer_act") {
+			if computerPolicy := a.buildComputerUsePolicyPromptBlock(); computerPolicy != "" {
+				parts = append(parts, computerPolicy)
+			}
+		}
+		if slices.Contains(toolNames, "terminal") &&
+			slices.Contains(toolNames, "computer_observe") &&
+			slices.Contains(toolNames, "computer_act") {
+			if hybridPolicy := a.buildHybridComputerTerminalPolicyPromptBlock(); hybridPolicy != "" {
+				parts = append(parts, hybridPolicy)
+			}
+		}
 	}
 	if len(a.skills) > 0 && slices.Contains(toolNames, "skill_read") {
 		if skillPolicy := a.buildSkillPolicyPromptBlock(); skillPolicy != "" {
@@ -161,6 +173,7 @@ Choose tools by intent:
 - Use terminal or runtime tools for environment inspection and execution.
 - Use web/search tools for external or recent information.
 - Use opencli for OpenCLI access: action=web_read for a URL, action=site for site adapters, action=twitter_timeline for authenticated following feed, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh to opencli; use terminal for shell commands.
+- Use computer_observe and computer_act only for local GUI work that cannot be handled by an API, CLI, DOM, or accessibility interface. Observe before the first action, use the newest frame_id, perform one atomic action at a time, and inspect the resulting screenshot before continuing.
 - Use RAG tools when the needed knowledge is likely already indexed.
 - Use memory tools for durable user facts, preferences, and recurring constraints.
 - Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.
@@ -177,6 +190,39 @@ Tool discipline:
 
 	loader := getPromptLoader()
 	return loader.LoadOrDefault("tool_policy.md", defaultPolicy)
+}
+
+// buildComputerUsePolicyPromptBlock is intentionally separate from the broad
+// tool policy. It is injected only when computer tools are model-visible, so
+// normal text tasks do not pay for desktop-control instructions or alter their
+// reusable prompt prefix.
+func (a *Agent) buildComputerUsePolicyPromptBlock() string {
+	return `Computer-use execution protocol:
+
+Treat desktop control as a finite state machine: Goal → observe once → choose one atomic action → verify the returned frame → decide whether the goal is complete.
+- computer_act already returns a fresh screenshot; do not call computer_observe immediately after it.
+- An observation by itself is not progress. Never call computer_observe twice in a row just to keep looking. If the screen is unchanged, perform the next concrete computer_act action with the newest frame_id, or state the blocker and stop.
+- Use wait_ms only when waiting for a known UI transition.
+- For shortcuts use one keypress action with ordered keys such as ["ALT", "TAB"]. For text use one type action.
+- After each action, compare the returned frame with the user’s goal and stop as soon as the goal is visibly achieved.`
+}
+
+// buildHybridComputerTerminalPolicyPromptBlock describes how to combine
+// deterministic terminal operations with visual desktop control. It is kept
+// separate from the broad tool policy and injected only when all three tools
+// are model-visible, so ordinary terminal or GUI tasks do not pay for extra
+// instructions or alter their reusable prompt prefix.
+func (a *Agent) buildHybridComputerTerminalPolicyPromptBlock() string {
+	return `Hybrid terminal + computer protocol:
+
+- Use terminal for deterministic state inspection and machine-readable operations: process status, ports, logs, files, configuration, and launching applications.
+- Use computer tools only for actions that require the visible GUI: clicking, typing, keyboard shortcuts, and visual confirmation.
+- Execute dependent steps sequentially. Do not issue terminal and computer actions in parallel when one depends on the other.
+- After terminal launches or changes an application, observe the desktop once before acting.
+- After a GUI action, verify with the returned screenshot; use terminal afterward only when it can provide stronger state evidence.
+- Do not use screenshots to answer questions that terminal or an API can answer.
+- Do not use terminal commands to simulate GUI actions when computer_act is the intended control surface.
+- Stop when the requested state is achieved.`
 }
 
 /**

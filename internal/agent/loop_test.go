@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
 	taskstore "github.com/yurika0211/luckyagent/internal/task"
 	"github.com/yurika0211/luckyagent/internal/tool"
@@ -46,6 +47,44 @@ func TestDefaultLoopConfig(t *testing.T) {
 	}
 	if cfg.DuplicateFetchLimit != 1 {
 		t.Errorf("expected duplicate fetch limit 1, got %d", cfg.DuplicateFetchLimit)
+	}
+}
+
+func TestComputerObserveOnlyBatch(t *testing.T) {
+	if !computerObserveOnlyBatch([]provider.ToolCall{{Name: "computer_observe"}}) {
+		t.Fatal("expected a single computer_observe call to be observation-only")
+	}
+	if computerObserveOnlyBatch([]provider.ToolCall{{Name: "computer_observe"}, {Name: "computer_act"}}) {
+		t.Fatal("expected mixed observe/act batch not to be observation-only")
+	}
+	state := newLoopRuntimeState()
+	if state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}) {
+		t.Fatal("first observation should not stop the loop")
+	}
+	if !state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}) {
+		t.Fatal("second consecutive observation should stop the loop")
+	}
+	if state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_act"}}) {
+		t.Fatal("an action should reset observation-only tracking")
+	}
+	streamState := &streamConvergenceState{}
+	if streamState.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}) {
+		t.Fatal("stream first observation should not stop the loop")
+	}
+	if !streamState.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}) {
+		t.Fatal("stream second observation should stop the loop")
+	}
+}
+
+func TestContainsComputerToolCall(t *testing.T) {
+	if containsComputerUseToolCall([]provider.ToolCall{{Name: "terminal"}, {Name: "file_read"}}) {
+		t.Fatal("did not expect a non-computer batch to be marked as desktop control")
+	}
+	if !containsComputerUseToolCall([]provider.ToolCall{{Name: "terminal"}, {Name: "computer_observe"}}) {
+		t.Fatal("expected mixed terminal/observe batch to be marked as desktop control")
+	}
+	if !containsComputerUseToolCall([]provider.ToolCall{{Name: "computer_act"}}) {
+		t.Fatal("expected computer_act batch to be marked as desktop control")
 	}
 }
 

@@ -210,6 +210,27 @@
   "tools": {
     "filesystem": {
       "allowed_read_roots": []
+    },
+    "computer_use": {
+      "enabled": false,
+      "mode": "observe",
+      "backend": "auto",
+      "capture_dir": "",
+      "allowed_sources": ["cli", "tui"],
+      "allowed_windows": [],
+      "require_approval": true,
+      "max_steps": 50,
+      "timeout_seconds": 300,
+      "step_timeout_seconds": 30,
+      "settle_ms": 350,
+      "settle_milliseconds": 350,
+      "max_observation_bytes": 10485760,
+      "max_screenshot_width": 0,
+      "keep_frames": 2,
+      "frame_ttl_seconds": 600,
+      "retain_frames": 2,
+      "allow_text_input": false,
+      "allow_high_risk_actions": false
     }
   },
   "msg_gateway": {

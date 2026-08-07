@@ -114,6 +114,7 @@ type LoopConfig struct {
 	DuplicateFetchLimit    int           // 同一 URL 抓取上限
 	DisabledTools          []string      // 本轮对模型隐藏的工具名
 	Ephemeral              bool          // 临时后台执行，不写会话外持久化上下文
+	Source                 string        // 调用入口，例如 cli、tui、http、telegram
 }
 
 // DefaultLoopConfig 返回默认 Loop 配置
@@ -132,14 +133,15 @@ func DefaultLoopConfig() LoopConfig {
 const maxAllowedIterations = 300
 
 const (
-	maxEmptyResponseRetries      = 2
-	maxLengthContinuationRetries = 3
-	searchSynthesisThreshold     = 2
-	emptyResponseRecoveryPrompt  = "Your last response was empty. Please provide a direct, complete answer to my previous request. Avoid tool calls unless required."
-	lengthRecoveryPrompt         = "Continue exactly from where you stopped. Do not repeat previous content."
-	searchSynthesisPrompt        = "You now have enough search evidence from previous tool results. Synthesize a direct, source-aware answer now. Do not call any more tools unless a critical factual gap remains unresolved."
-	emptyFinalResponseMessage    = "I couldn't produce a complete answer this round. Please retry."
-	lengthTruncatedNotice        = "\n\n[Output may be truncated after multiple continuation attempts.]"
+	maxEmptyResponseRetries        = 2
+	maxLengthContinuationRetries   = 3
+	searchSynthesisThreshold       = 2
+	emptyResponseRecoveryPrompt    = "Your last response was empty. Please provide a direct, complete answer to my previous request. Avoid tool calls unless required."
+	lengthRecoveryPrompt           = "Continue exactly from where you stopped. Do not repeat previous content."
+	searchSynthesisPrompt          = "You now have enough search evidence from previous tool results. Synthesize a direct, source-aware answer now. Do not call any more tools unless a critical factual gap remains unresolved."
+	computerObservationLoopMessage = "Computer-use stalled: the agent requested screenshots repeatedly without performing an action. The loop was stopped to avoid an observation-only cycle. Re-observe once, then perform one concrete computer_act action or explain the blocker."
+	emptyFinalResponseMessage      = "I couldn't produce a complete answer this round. Please retry."
+	lengthTruncatedNotice          = "\n\n[Output may be truncated after multiple continuation attempts.]"
 )
 
 // sanitizeLoopConfig 校验并修正 LoopConfig 的安全边界
@@ -298,6 +300,9 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
+	if strings.TrimSpace(loopCfg.Source) == "" {
+		loopCfg.Source = "cli"
+	}
 	a.applyIntentToolGating(&loopCfg, routingText)
 
 	if startErr := a.StartAutonomy(ctx); startErr != nil && a.autonomy != nil {
@@ -547,21 +552,22 @@ loopRuntimeState 收纳 RunLoopWithSession 在单次执行过程中的临时状�
 type loopRuntimeState struct {
 	// provider is captured once when the turn starts and must not be replaced
 	// while iterations or tool-recovery paths are running.
-	provider                 providerSnapshot
-	toolCallRepeatCount      map[string]int
-	toolCallLastResult       map[string]string
-	toolURLRepeatCount       map[string]int
-	toolURLLastResult        map[string]string
-	toolExecutionGuard       *toolExecutionGuard
-	consecutiveToolOnlyIters int
-	emptyResponseRetries     int
-	lengthRecoveryCount      int
-	successfulSearchEvidence int
-	detailedSearchEvidence   int
-	forceSearchSynthesis     bool
-	artifactGuard            *artifactFinalizationGuard
-	continuedResponse        strings.Builder
-	continuedReasoning       strings.Builder
+	provider                       providerSnapshot
+	toolCallRepeatCount            map[string]int
+	toolCallLastResult             map[string]string
+	toolURLRepeatCount             map[string]int
+	toolURLLastResult              map[string]string
+	toolExecutionGuard             *toolExecutionGuard
+	consecutiveToolOnlyIters       int
+	consecutiveComputerObserveOnly int
+	emptyResponseRetries           int
+	lengthRecoveryCount            int
+	successfulSearchEvidence       int
+	detailedSearchEvidence         int
+	forceSearchSynthesis           bool
+	artifactGuard                  *artifactFinalizationGuard
+	continuedResponse              strings.Builder
+	continuedReasoning             strings.Builder
 }
 
 /*
@@ -574,6 +580,32 @@ func newLoopRuntimeState() *loopRuntimeState {
 		toolURLRepeatCount:  make(map[string]int),
 		toolURLLastResult:   make(map[string]string),
 	}
+}
+
+// trackComputerObservationLoop stops the common GUI failure mode where the
+// model keeps taking screenshots but never attempts a concrete action.
+func (s *loopRuntimeState) trackComputerObservationLoop(toolCalls []provider.ToolCall) bool {
+	if s == nil {
+		return false
+	}
+	if computerObserveOnlyBatch(toolCalls) {
+		s.consecutiveComputerObserveOnly++
+	} else {
+		s.consecutiveComputerObserveOnly = 0
+	}
+	return s.consecutiveComputerObserveOnly >= 2
+}
+
+func computerObserveOnlyBatch(toolCalls []provider.ToolCall) bool {
+	if len(toolCalls) == 0 {
+		return false
+	}
+	for _, call := range toolCalls {
+		if strings.TrimSpace(call.Name) != "computer_observe" {
+			return false
+		}
+	}
+	return true
 }
 
 /*
@@ -710,6 +742,9 @@ func (a *Agent) processToolCallBatch(
 	} else {
 		loopState.consecutiveToolOnlyIters = 0
 	}
+	if loopState.trackComputerObservationLoop(resp.ToolCalls) {
+		return messages, true, computerObservationLoopMessage
+	}
 
 	repeatedSigs := make([]string, 0, len(resp.ToolCalls))
 	allRepeated := true
@@ -775,6 +810,7 @@ func (a *Agent) processToolCallBatch(
 		loopCfg.DuplicateFetchLimit,
 		false,
 		loopState.toolExecutionGuard,
+		loopCfg.Source,
 	)
 
 	for _, execResult := range executed {
@@ -820,6 +856,7 @@ func (a *Agent) processToolCallBatch(
 		)
 	}
 
+	messages = appendLatestComputerObservation(messages, executed)
 	messages = a.fitContextWindow(messages)
 	result.State = StateObserve
 
@@ -1050,11 +1087,28 @@ func isExplicitRequiredToolMention(input string, pos int, name string) bool {
 fitContextWindow 将消息序列裁剪到上下文窗口预算内。
 */
 func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message {
+	// Computer frames are transient observations. Remove them before fitting so
+	// an old screenshot cannot disable trimming or accumulate across steps; the
+	// latest frame is restored after fitting.
+	var latestComputerFrame *provider.Message
+	for i := range messages {
+		if isTransientComputerObservation(messages[i]) {
+			copy := messages[i]
+			latestComputerFrame = &copy
+		}
+	}
+	messages = removeTransientComputerObservations(messages)
 	if a == nil || a.contextWin == nil {
+		if latestComputerFrame != nil {
+			messages = append(messages, *latestComputerFrame)
+		}
 		return messages
 	}
 	for _, msg := range messages {
 		if len(msg.ContentParts) > 0 {
+			if latestComputerFrame != nil {
+				messages = append(messages, *latestComputerFrame)
+			}
 			return messages
 		}
 	}
@@ -1062,6 +1116,9 @@ func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message
 	fitted, trimResult := a.contextWin.Fit(contextMessages)
 	if trimResult.Trimmed {
 		messages = a.fromContextMessages(fitted)
+	}
+	if latestComputerFrame != nil {
+		messages = append(messages, *latestComputerFrame)
 	}
 	return messages
 }

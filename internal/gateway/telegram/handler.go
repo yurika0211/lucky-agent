@@ -1702,6 +1702,35 @@ func (h *Handler) sendProgressMessage(msg *gateway.Message, text string) {
 	_ = h.adapter.Send(sendCtx, msg.Chat.ID, text)
 }
 
+// sendComputerObservation forwards a freshly captured desktop frame to the
+// Telegram chat. Computer observations are internal file-backed events for
+// the model; without this explicit bridge Telegram users only receive the
+// textual tool result and never see the screenshot.
+func (h *Handler) sendComputerObservation(ctx context.Context, msg *gateway.Message, obs *agent.ObservationEvent) {
+	if h == nil || h.adapter == nil || msg == nil || obs == nil {
+		return
+	}
+	path := strings.TrimSpace(obs.FilePath)
+	if path == "" {
+		return
+	}
+	if info, err := os.Stat(path); err != nil || info.IsDir() {
+		h.sendProgressMessage(msg, "⚠️ 截图文件不存在或已过期，无法发送")
+		return
+	}
+	replyTo := ""
+	if msg.Chat.Type != gateway.ChatPrivate {
+		replyTo = strings.TrimSpace(msg.ID)
+	}
+	caption := "🖥️ Computer observation"
+	if frame := strings.TrimSpace(obs.FrameID); frame != "" {
+		caption += " · " + frame
+	}
+	if err := h.adapter.SendPhoto(ctx, msg.Chat.ID, replyTo, path, caption); err != nil {
+		h.sendProgressMessage(msg, "⚠️ 截图发送失败："+utils.TruncateKeepLength(err.Error(), 160))
+	}
+}
+
 func (h *Handler) sendProgressMessageHTML(msg *gateway.Message, text string) {
 	text = strings.TrimSpace(text)
 	if text == "" || h.adapter == nil || msg == nil {
@@ -1941,15 +1970,16 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 	if err != nil {
 		return err
 	}
+	text, media = prepareOutboundMediaResponse(text, media)
 	if len(media) == 0 {
 		if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
-			if err := h.adapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, response); err != nil {
+			if err := h.adapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, text); err != nil {
 				return err
 			}
-		} else if err := h.adapter.Send(ctx, msg.Chat.ID, response); err != nil {
+		} else if err := h.adapter.Send(ctx, msg.Chat.ID, text); err != nil {
 			return err
 		}
-		return h.sendRandomMemeIfNeeded(ctx, msg, response)
+		return h.sendRandomMemeIfNeeded(ctx, msg, text)
 	}
 
 	replyToMsgID := ""
@@ -2217,6 +2247,9 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		},
 		func(evt agent.ChatEvent) (bool, bool) {
 			switch evt.Type {
+			case agent.ChatEventObservation:
+				h.sendComputerObservation(chatCtx, msg, evt.Observation)
+
 			case agent.ChatEventThinking:
 				if summaryMode {
 					if nextRound := extractRoundNumber(evt.Content); nextRound > currentRound {
@@ -2426,6 +2459,9 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 		},
 		func(evt agent.ChatEvent) (bool, bool) {
 			switch evt.Type {
+			case agent.ChatEventObservation:
+				h.sendComputerObservation(chatCtx, msg, evt.Observation)
+
 			case agent.ChatEventThinking:
 				if summaryMode {
 					if nextRound := extractRoundNumber(evt.Content); nextRound > currentRound {
@@ -2549,6 +2585,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 					sender.Finish()
 					return true, true
 				}
+				textOnly, media = prepareOutboundMediaResponse(textOnly, media)
 				if len(media) > 0 {
 					placeholder := textOnly
 					if strings.TrimSpace(placeholder) == "" {
@@ -2562,7 +2599,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 					return true, true
 				}
 				// 最终结果替换整个消息
-				sender.SetResult(finalOutput)
+				sender.SetResult(textOnly)
 				sender.Finish()
 				return true, true
 
@@ -2622,17 +2659,20 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			textOnly, media, resolveErr := resolveOutboundMediaResponse(finalOutput)
 			if resolveErr != nil {
 				sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(resolveErr.Error(), 200)))
-			} else if len(media) > 0 {
-				placeholder := textOnly
-				if strings.TrimSpace(placeholder) == "" {
-					placeholder = summarizeOutboundMedia(media)
-				}
-				sender.SetResult(placeholder)
-				if err := h.sendAssistantMedia(context.Background(), msg, media); err != nil {
-					h.sendProgressMessage(msg, fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200)))
-				}
 			} else {
-				sender.SetResult(finalOutput)
+				textOnly, media = prepareOutboundMediaResponse(textOnly, media)
+				if len(media) > 0 {
+					placeholder := textOnly
+					if strings.TrimSpace(placeholder) == "" {
+						placeholder = summarizeOutboundMedia(media)
+					}
+					sender.SetResult(placeholder)
+					if err := h.sendAssistantMedia(context.Background(), msg, media); err != nil {
+						h.sendProgressMessage(msg, fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200)))
+					}
+				} else {
+					sender.SetResult(textOnly)
+				}
 			}
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
 			sender.SetResult("⏱ 请求超时")

@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"github.com/yurika0211/luckyagent/internal/gateway"
 	"math/rand"
 	"net/http"
 	"os"
@@ -11,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 type telegramMethodRecorder struct {
@@ -170,6 +172,28 @@ func TestResolveOutboundMediaResponseMediaTag(t *testing.T) {
 	}
 	if len(media) != 1 || media[0].Kind != outboundMediaDocument {
 		t.Fatalf("expected MEDIA tag to resolve to document, got %#v", media)
+	}
+}
+
+func TestPrepareOutboundMediaResponseDropsMissingLocalFiles(t *testing.T) {
+	text, media := parseOutboundMediaResponse("已生成截图\nMEDIA:/tmp/screenshot-that-no-longer-exists.png")
+	text, media = prepareOutboundMediaResponse(text, media)
+	if len(media) != 0 {
+		t.Fatalf("expected missing local media to be dropped, got %#v", media)
+	}
+	if !strings.Contains(text, "附件文件不存在或已过期") {
+		t.Fatalf("expected missing media notice, got %q", text)
+	}
+}
+
+func TestPrepareOutboundMediaResponseKeepsRemoteFiles(t *testing.T) {
+	text, media := parseOutboundMediaResponse("查看图片\nMEDIA:https://example.com/screenshot.png")
+	text, media = prepareOutboundMediaResponse(text, media)
+	if text != "查看图片" {
+		t.Fatalf("unexpected text: %q", text)
+	}
+	if len(media) != 1 || media[0].Source != "https://example.com/screenshot.png" {
+		t.Fatalf("expected remote media to remain, got %#v", media)
 	}
 }
 
@@ -351,6 +375,46 @@ func TestSendAssistantResponseBareDocumentPathStaysText(t *testing.T) {
 	methods := recorder.snapshot()
 	if len(methods) != 1 || methods[0] != "sendMessage" {
 		t.Fatalf("unexpected methods: %#v", methods)
+	}
+}
+
+func TestSendAssistantResponseMissingMediaFallsBackToText(t *testing.T) {
+	adapter, cleanup, recorder := newCaptureBotAdapter(t)
+	defer cleanup()
+
+	handler := NewHandler(adapter, nil)
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+	}
+
+	if err := handler.sendAssistantResponse(context.Background(), msg, "截图如下\nMEDIA:/tmp/screenshot-removed.png"); err != nil {
+		t.Fatalf("sendAssistantResponse: %v", err)
+	}
+	methods := recorder.snapshot()
+	if len(methods) != 1 || methods[0] != "sendMessage" {
+		t.Fatalf("expected missing media to fall back to one text message, got %#v", methods)
+	}
+}
+
+func TestSendComputerObservationSendsPhoto(t *testing.T) {
+	adapter, cleanup, recorder := newCaptureBotAdapter(t)
+	defer cleanup()
+
+	path := filepath.Join(t.TempDir(), "frame.png")
+	if err := os.WriteFile(path, []byte("fake image data"), 0600); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+	handler := NewHandler(adapter, nil)
+	msg := &gateway.Message{Chat: gateway.Chat{ID: "12345", Type: gateway.ChatPrivate}}
+	handler.sendComputerObservation(context.Background(), msg, &agent.ObservationEvent{FrameID: "frame-1", FilePath: path})
+
+	methods := recorder.snapshot()
+	if len(methods) != 1 || methods[0] != "sendPhoto" {
+		t.Fatalf("expected observation photo upload, got %#v", methods)
 	}
 }
 

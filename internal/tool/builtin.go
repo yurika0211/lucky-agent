@@ -45,3 +45,13 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, ope
 	r.Register(RAGSearchTool(nil))
 	r.Register(RAGIndexTool(nil))
 }
+
+// RegisterBuiltinComputerTools adds the optional desktop observation/control
+// tools to an existing registry. Keeping this separate avoids constructing a
+// platform backend when computer use is disabled.
+func RegisterBuiltinComputerTools(r *Registry, manager ComputerManager, cfg ComputerUseConfig) {
+	if r == nil || manager == nil {
+		return
+	}
+	NewComputerUseToolService(manager, cfg).RegisterTools(r)
+}

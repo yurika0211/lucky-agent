@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"testing"
 )
 
@@ -65,6 +66,38 @@ func TestCall(t *testing.T) {
 	}
 	if result != "result" {
 		t.Errorf("expected result, got %s", result)
+	}
+}
+
+func TestCallDetailedWithContext(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&Tool{
+		Name:       "contextual",
+		Permission: PermAuto,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			if exec.Context == nil {
+				t.Fatal("context must not be nil")
+			}
+			if exec.SessionID != "session-1" || exec.Source != "cli" || !exec.AutoApprove {
+				t.Fatalf("unexpected execution context: %#v", exec)
+			}
+			return ToolCallResult{
+				Output: "observed",
+				Observations: []Observation{{
+					Kind: "image", FilePath: "/tmp/frame.png", MimeType: "image/png",
+					Metadata: map[string]any{"frame_id": "frame-1"},
+				}},
+			}, nil
+		},
+	})
+	result, err := r.CallDetailedWithContext("contextual", nil, ExecutionContext{
+		Context: context.Background(), SessionID: "session-1", Source: "cli", AutoApprove: true,
+	})
+	if err != nil {
+		t.Fatalf("CallDetailedWithContext: %v", err)
+	}
+	if result.Output != "observed" || len(result.Observations) != 1 || result.Observations[0].MimeType != "image/png" {
+		t.Fatalf("unexpected detailed result: %#v", result)
 	}
 }
 

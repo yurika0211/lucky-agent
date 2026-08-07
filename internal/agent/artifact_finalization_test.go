@@ -81,3 +81,14 @@ MEDIA:C:\Users\Administrator\.luckyagent\workspace\interview\missing.docx`)
 		t.Fatalf("expected missing Windows media path, got %#v", missing)
 	}
 }
+
+func TestSanitizeHistoricalMediaReferencesPreservesExistingFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "report.md")
+	if err := os.WriteFile(path, []byte("ok"), 0o600); err != nil {
+		t.Fatalf("write media file: %v", err)
+	}
+	text := "已生成文件\nMEDIA:" + path
+	if got := sanitizeHistoricalMediaReferences(text); got != text {
+		t.Fatalf("existing media path should be preserved, got %q", got)
+	}
+}

@@ -44,6 +44,8 @@ func TestBuildSystemPromptIncludesSoulSkillsAndPlatformHints(t *testing.T) {
 			r := tool.NewRegistry()
 			r.Register(&tool.Tool{Name: "remember", Enabled: true})
 			r.Register(&tool.Tool{Name: "skill_read", Enabled: true})
+			r.Register(&tool.Tool{Name: "computer_observe", Enabled: true})
+			r.Register(&tool.Tool{Name: "computer_act", Enabled: true})
 			return r
 		}(),
 		skills: []*tool.SkillInfo{
@@ -71,8 +73,54 @@ func TestBuildSystemPromptIncludesSoulSkillsAndPlatformHints(t *testing.T) {
 	if !strings.Contains(prompt, "Project operating rules.") {
 		t.Fatalf("expected AGENTS.md content in prompt, got %q", prompt)
 	}
+	for _, want := range []string{
+		"Computer-use execution protocol",
+		"computer_observe twice in a row",
+		"computer_act already returns a fresh screenshot",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected computer-use guidance %q in prompt, got %q", want, prompt)
+		}
+	}
 	if !strings.Contains(prompt, "Model: gpt-5.4-mini") || !strings.Contains(prompt, "Provider: openai") {
 		t.Fatalf("expected model/provider metadata in prompt, got %q", prompt)
+	}
+}
+
+func TestBuildSystemPromptIncludesHybridComputerTerminalPolicyOnlyWhenAllToolsVisible(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "terminal", Enabled: true})
+	reg.Register(&tool.Tool{Name: "computer_observe", Enabled: true})
+	reg.Register(&tool.Tool{Name: "computer_act", Enabled: true})
+
+	a := &Agent{
+		soul:  soul.Default(),
+		tools: reg,
+	}
+
+	prompt := a.buildSystemPrompt(nil)
+	for _, want := range []string{
+		"Hybrid terminal + computer protocol:",
+		"Use terminal for deterministic state inspection",
+		"Execute dependent steps sequentially",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected hybrid guidance %q in prompt, got %q", want, prompt)
+		}
+	}
+
+	withoutTerminal := a.buildSystemPromptWithOptions(nil, systemPromptOptions{
+		DisabledTools: []string{"terminal"},
+	})
+	if strings.Contains(withoutTerminal, "Hybrid terminal + computer protocol:") {
+		t.Fatalf("did not expect hybrid guidance when terminal is hidden, got %q", withoutTerminal)
+	}
+
+	withoutComputerAct := a.buildSystemPromptWithOptions(nil, systemPromptOptions{
+		DisabledTools: []string{"computer_act"},
+	})
+	if strings.Contains(withoutComputerAct, "Hybrid terminal + computer protocol:") {
+		t.Fatalf("did not expect hybrid guidance when computer_act is hidden, got %q", withoutComputerAct)
 	}
 }
 

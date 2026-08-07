@@ -44,6 +44,14 @@ type openaiChatRequest struct {
 	Stream              bool                   `json:"stream"`
 	Tools               []openaiTool           `json:"tools,omitempty"`
 	ToolChoice          any                    `json:"tool_choice,omitempty"`
+	StreamOptions       *openAIStreamOptions   `json:"stream_options,omitempty"`
+}
+
+// openAIStreamOptions requests the final usage event from OpenAI-compatible
+// streaming endpoints. Without this, some gateways omit prompt/cache usage,
+// making cache hit-rate diagnostics unknowable.
+type openAIStreamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
 }
 
 type openaiRequestMessage struct {
@@ -157,6 +165,32 @@ func convertOpenAIUsage(usage *openaiUsage) *UsageDetails {
 		out.CachedPromptTokens = usage.InputTokensDetails.CachedTokens
 	}
 	return out
+}
+
+// logOpenAIUsage records provider usage for every response that includes it.
+// Logging only cache-positive responses makes an observed hit rate look better
+// than it is and makes missing/zero-cache responses impossible to diagnose.
+// The log intentionally excludes request content and credentials.
+func logOpenAIUsage(kind, model string, usage *UsageDetails) {
+	if usage == nil {
+		return
+	}
+	ratio := 0.0
+	if usage.PromptTokens > 0 {
+		ratio = float64(usage.CachedPromptTokens) / float64(usage.PromptTokens)
+	}
+	log.Printf(
+		"[provider] cache usage observed: model=%s prompt=%d cached=%d cache_ratio=%.4f kind=%s cache_create_5m=%d cache_create_1h=%d completion=%d total=%d",
+		model,
+		usage.PromptTokens,
+		usage.CachedPromptTokens,
+		ratio,
+		kind,
+		usage.CacheCreation5MTokens,
+		usage.CacheCreation1HTokens,
+		usage.CompletionTokens,
+		usage.TotalTokens,
+	)
 }
 
 func supportsToolChoice(model string) bool {
@@ -541,18 +575,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	if chatResp.Usage != nil {
 		result.TokensUsed = chatResp.Usage.TotalTokens
 		result.Usage = convertOpenAIUsage(chatResp.Usage)
-		if result.Usage != nil && (result.Usage.CachedPromptTokens > 0 || result.Usage.CacheCreation5MTokens > 0 || result.Usage.CacheCreation1HTokens > 0) {
-			log.Printf(
-				"[provider] cache usage observed: model=%s prompt=%d cached=%d cache_create_5m=%d cache_create_1h=%d completion=%d total=%d",
-				cfg.LlmProvider.Model,
-				result.Usage.PromptTokens,
-				result.Usage.CachedPromptTokens,
-				result.Usage.CacheCreation5MTokens,
-				result.Usage.CacheCreation1HTokens,
-				result.Usage.CompletionTokens,
-				result.Usage.TotalTokens,
-			)
-		}
+		logOpenAIUsage("non-stream", cfg.LlmProvider.Model, result.Usage)
 	}
 
 	// 解析工具调用
@@ -732,6 +755,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		MaxCompletionTokens: cfg.Limits.MaxTokens,
 		Temperature:         cfg.LlmProvider.Temperature,
 		Stream:              true,
+		StreamOptions:       &openAIStreamOptions{IncludeUsage: true},
 	}
 
 	// v0.16.0: 添加 function calling 工具定义
@@ -830,18 +854,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 
 			if chatResp.Usage != nil {
 				usage := convertOpenAIUsage(chatResp.Usage)
-				if usage != nil && (usage.CachedPromptTokens > 0 || usage.CacheCreation5MTokens > 0 || usage.CacheCreation1HTokens > 0) {
-					log.Printf(
-						"[provider] stream cache usage observed: model=%s prompt=%d cached=%d cache_create_5m=%d cache_create_1h=%d completion=%d total=%d",
-						cfg.LlmProvider.Model,
-						usage.PromptTokens,
-						usage.CachedPromptTokens,
-						usage.CacheCreation5MTokens,
-						usage.CacheCreation1HTokens,
-						usage.CompletionTokens,
-						usage.TotalTokens,
-					)
-				}
+				logOpenAIUsage("stream", cfg.LlmProvider.Model, usage)
 				ch <- StreamChunk{
 					Model: cfg.LlmProvider.Model,
 					Usage: usage,

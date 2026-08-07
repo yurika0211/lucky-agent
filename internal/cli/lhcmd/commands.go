@@ -94,6 +94,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	loopCfg := agent.DefaultLoopConfig()
 	cfg := mgr.Get()
 	agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+	loopCfg.Source = "cli"
 	if cmd.Flags().Changed("yolo") {
 		loopCfg.AutoApprove = yolo
 	}
@@ -225,6 +226,40 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Proactive.KernelMinSamples)
 	case "tools.filesystem.allowed_read_roots":
 		fmt.Println(strings.Join(cfg.Tools.Filesystem.AllowedReadRoots, ","))
+	case "tools.computer_use.enabled":
+		fmt.Println(cfg.Tools.ComputerUse.Enabled)
+	case "tools.computer_use.mode":
+		fmt.Println(cfg.Tools.ComputerUse.Mode)
+	case "tools.computer_use.backend":
+		fmt.Println(cfg.Tools.ComputerUse.Backend)
+	case "tools.computer_use.capture_dir":
+		fmt.Println(cfg.Tools.ComputerUse.CaptureDir)
+	case "tools.computer_use.allowed_sources":
+		fmt.Println(strings.Join(cfg.Tools.ComputerUse.AllowedSources, ","))
+	case "tools.computer_use.allowed_windows":
+		fmt.Println(strings.Join(cfg.Tools.ComputerUse.AllowedWindows, ","))
+	case "tools.computer_use.require_approval":
+		fmt.Println(cfg.Tools.ComputerUse.RequireApproval)
+	case "tools.computer_use.max_steps":
+		fmt.Println(cfg.Tools.ComputerUse.MaxSteps)
+	case "tools.computer_use.timeout_seconds":
+		fmt.Println(cfg.Tools.ComputerUse.TimeoutSeconds)
+	case "tools.computer_use.step_timeout_seconds":
+		fmt.Println(cfg.Tools.ComputerUse.StepTimeoutSeconds)
+	case "tools.computer_use.settle_ms", "tools.computer_use.settle_milliseconds":
+		fmt.Println(cfg.Tools.ComputerUse.SettleMilliseconds)
+	case "tools.computer_use.max_observation_bytes":
+		fmt.Println(cfg.Tools.ComputerUse.MaxObservationBytes)
+	case "tools.computer_use.max_screenshot_width":
+		fmt.Println(cfg.Tools.ComputerUse.MaxScreenshotWidth)
+	case "tools.computer_use.keep_frames", "tools.computer_use.retain_frames":
+		fmt.Println(cfg.Tools.ComputerUse.KeepFrames)
+	case "tools.computer_use.frame_ttl_seconds":
+		fmt.Println(cfg.Tools.ComputerUse.FrameTTLSeconds)
+	case "tools.computer_use.allow_text_input":
+		fmt.Println(cfg.Tools.ComputerUse.AllowTextInput)
+	case "tools.computer_use.allow_high_risk_actions":
+		fmt.Println(cfg.Tools.ComputerUse.AllowHighRiskActions)
 	case "msg_gateway.platform":
 		fmt.Println(cfg.MsgGateway.Platform)
 	case "msg_gateway.api_addr":

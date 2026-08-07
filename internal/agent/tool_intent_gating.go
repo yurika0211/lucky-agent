@@ -95,10 +95,11 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	mediaIntent := hasMediaIntent(intentText) && !toolSystemIntent
 	dbIntent := hasDatabaseIntent(intentText)
 	delegateIntent := hasDelegateIntent(intentText)
+	computerIntent := hasComputerUseIntent(intentText)
 
 	strongToolIntent := localIntent || editIntent || webIntent || timeIntent || calcIntent ||
 		memoryIntent || memoryHygieneIntent || rememberIntent || ragIndexIntent || skillIntent || mediaIntent ||
-		dbIntent || delegateIntent
+		dbIntent || delegateIntent || computerIntent
 	if noToolDirective && !strongToolIntent {
 		return allowed, true
 	}
@@ -142,6 +143,9 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 		if intentTextContainsAny(intentText, "删除", "删", "delete", "remove", "rm ") && !negatedDelete && !negatedExecution {
 			addIntentTools(allowed, "file_delete")
 		}
+	}
+	if computerIntent {
+		addIntentTools(allowed, "computer_observe", "computer_act")
 	}
 
 	if webIntent {
@@ -291,6 +295,8 @@ func hasLocalToolIntent(text string) bool {
 		"readme", "system_prompt", "tool router", "代码", "源码", "仓库", "repo",
 		"文件", "目录", "路径", "benchmark", "单测", "测试", "跑测试", "日志", ".log", "logs", "log file",
 		"git status", "git diff", "脏文件", "暂存", "分支", "commit", "push",
+		"终端", "terminal", "shell", "命令行", "执行命令", "运行命令", "shell 命令", "进程", "服务", "端口",
+		"启动", "重启", "关闭进程", "终止进程",
 		"luckyagent", "lucky agent", "记忆系统", "工具系统", "上下文打包器",
 	) {
 		return true
@@ -380,6 +386,15 @@ func hasDelegateIntent(text string) bool {
 	)
 }
 
+func hasComputerUseIntent(text string) bool {
+	return intentTextContainsAny(text,
+		"computer use", "computer-use", "computer_use", "computer_observe", "computer_act",
+		"desktop", "桌面", "电脑屏幕", "当前屏幕", "屏幕截图", "截取屏幕",
+		"鼠标", "键盘", "点击", "双击", "拖拽", "滚动", "输入文字",
+		"按键", "打开窗口", "关闭窗口", "切换窗口", "操作界面", "图形界面", "gui",
+	)
+}
+
 func hasNegatedExecutionIntent(text string) bool {
 	return intentTextContainsAny(text,
 		"不要执行", "不要运行", "别执行", "别运行", "只读", "只总结", "读取说明即可",
@@ -391,9 +406,21 @@ func needsTerminalIntent(text string) bool {
 	if hasReadOnlyExternalSourceIntent(text) {
 		return false
 	}
+	// Keep an explicit "do not execute a command" constraint authoritative.
+	// The positive command keywords below otherwise make needsTerminalIntent
+	// true, which would intentionally override generic execution negations.
+	if intentTextContainsAny(text,
+		"不要执行命令", "不要运行命令", "别执行命令", "别运行命令",
+		"不要执行 shell", "不要运行 shell", "别执行 shell", "别运行 shell",
+		"不要用终端执行", "不要使用终端执行", "不要调用终端",
+	) {
+		return false
+	}
 	return intentTextContainsAny(text,
 		"git status", "git diff", "commit", "push", "跑测试", "测试", "启动", "重启",
-		"运行测试", "go test", "npm", "make ",
+		"运行测试", "go test", "npm", "make ", "执行命令", "运行命令",
+		"执行 shell", "运行 shell", "shell 命令", "查看进程", "检查进程",
+		"查看端口", "检查端口", "关闭进程", "终止进程",
 	)
 }
 
