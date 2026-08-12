@@ -1600,6 +1600,7 @@ type CompactSessionResult struct {
 	RestoredAttachments int
 	SummarySource       string
 	DryRun              bool
+	Backup              *session.BackupInfo
 }
 
 const compactSegmentPolicyVersion = "checkpoint-segments-v1"
@@ -1639,6 +1640,14 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	_, raw, covered := session.CompactSegments(all)
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("compact session: nothing to compact after latest boundary")
+	}
+	var backup *session.BackupInfo
+	if !opts.DryRun {
+		var err error
+		backup, err = sess.CreateBackup(trigger)
+		if err != nil {
+			return nil, fmt.Errorf("compact session: create pre-compaction backup: %w", err)
+		}
 	}
 
 	est := a.contextEst
@@ -1717,6 +1726,7 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		RestoredAttachments: len(attachments),
 		SummarySource:       summarySource,
 		DryRun:              opts.DryRun,
+		Backup:              backup,
 	}, nil
 }
 

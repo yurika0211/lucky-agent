@@ -1720,6 +1720,13 @@ func TestCompactSessionDryRunDoesNotWriteBoundary(t *testing.T) {
 	if _, ok := sess.LatestCompactTrace(); ok {
 		t.Fatal("dry-run must not expose a latest compact trace")
 	}
+	backups, err := sess.ListBackups()
+	if err != nil {
+		t.Fatalf("ListBackups after dry-run: %v", err)
+	}
+	if len(backups) != 0 {
+		t.Fatalf("dry-run must not create a backup: %+v", backups)
+	}
 }
 
 func TestMaybeAutoCompactSessionWritesBoundary(t *testing.T) {
@@ -1768,6 +1775,13 @@ func TestMaybeAutoCompactSessionWritesBoundary(t *testing.T) {
 	}
 	if trace.Trigger != "auto" || trace.SummarySource != "llm" || trace.DroppedMessages != 2 {
 		t.Fatalf("unexpected auto compact trace: %+v", trace)
+	}
+	backups, err := sess.ListBackups()
+	if err != nil {
+		t.Fatalf("ListBackups: %v", err)
+	}
+	if len(backups) != 1 || backups[0].Trigger != "auto" || backups[0].MessageCount != 2 {
+		t.Fatalf("expected one pre-compaction backup, got %+v", backups)
 	}
 }
 

@@ -959,6 +959,41 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request, sess *session.Session, parts []string) {
+	if len(parts) == 1 && parts[0] == "backups" {
+		if r.Method != http.MethodGet {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		backups, err := sess.ListBackups()
+		if err != nil {
+			s.sendError(w, "list session backups failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"session_id": sess.ID,
+			"backups":    backups,
+			"count":      len(backups),
+		})
+		return
+	}
+	if len(parts) == 3 && parts[0] == "backups" && parts[2] == "restore" {
+		if r.Method != http.MethodPost {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		backup, err := sess.RestoreBackup(parts[1])
+		if err != nil {
+			s.sendError(w, "restore session backup failed", http.StatusBadRequest, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"session_id":    sess.ID,
+			"backup":        backup,
+			"message_count": backup.MessageCount,
+		})
+		return
+	}
+
 	if len(parts) == 1 && parts[0] == "compact" {
 		if r.Method != http.MethodPost {
 			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
@@ -1021,6 +1056,7 @@ func compactSessionAPIResponse(result *agent.CompactSessionResult) map[string]in
 		"restored_attachments": result.RestoredAttachments,
 		"summary_source":       result.SummarySource,
 		"dry_run":              result.DryRun,
+		"backup":               result.Backup,
 	}
 }
 

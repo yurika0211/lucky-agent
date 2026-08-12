@@ -42,7 +42,29 @@ func newSessionCmd() *cobra.Command {
 	compactUndoCmd.Flags().BoolVar(&keepAfter, "keep-after", false, "boundary 后已有新消息时仍保留后续消息并删除 boundary")
 	compactCmd.AddCommand(compactUndoCmd)
 
-	sessionCmd.AddCommand(compactCmd)
+	backupCmd := &cobra.Command{
+		Use:   "backup",
+		Short: "管理会话的独立备份",
+	}
+	backupListCmd := &cobra.Command{
+		Use:   "list <session-id>",
+		Short: "列出会话备份",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSessionBackupList(args[0])
+		},
+	}
+	backupRestoreCmd := &cobra.Command{
+		Use:   "restore <session-id> <backup-id>",
+		Short: "从独立备份恢复会话",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSessionBackupRestore(args[0], args[1])
+		},
+	}
+	backupCmd.AddCommand(backupListCmd, backupRestoreCmd)
+
+	sessionCmd.AddCommand(compactCmd, backupCmd)
 	return sessionCmd
 }
 
@@ -91,6 +113,10 @@ func runSessionCompact(ctx context.Context, sessionID string, dryRun bool, force
 	fmt.Printf("summary source: %s\n", result.SummarySource)
 	fmt.Printf("summary tokens: %d\n", result.SummaryTokens)
 	fmt.Printf("tokens: %d -> %d\n", result.PreTokenEstimate, result.PostTokenEstimate)
+	if result.Backup != nil {
+		fmt.Printf("backup: %s\n", result.Backup.Path)
+		fmt.Printf("backup hash: %s\n", result.Backup.ContentHash)
+	}
 	return nil
 }
 
@@ -129,6 +155,65 @@ func runSessionCompactUndo(sessionID string, keepAfter bool) error {
 	if meta.Trigger != "" {
 		fmt.Printf("trigger: %s\n", meta.Trigger)
 	}
+	return nil
+}
+
+func runSessionBackupList(sessionID string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+	defer a.Close()
+	sess, err := resolveSessionByIDPrefix(a.Sessions(), sessionID)
+	if err != nil {
+		return err
+	}
+	backups, err := sess.ListBackups()
+	if err != nil {
+		return err
+	}
+	if len(backups) == 0 {
+		fmt.Printf("no backups: %s\n", sess.ID)
+		return nil
+	}
+	for _, backup := range backups {
+		fmt.Printf("%s  %s  messages=%d  trigger=%s  hash=%s\n", backup.ID, backup.CreatedAt.Format("2006-01-02T15:04:05Z07:00"), backup.MessageCount, backup.Trigger, backup.ContentHash)
+		fmt.Printf("  path: %s\n", backup.Path)
+	}
+	return nil
+}
+
+func runSessionBackupRestore(sessionID, backupID string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+	defer a.Close()
+	sess, err := resolveSessionByIDPrefix(a.Sessions(), sessionID)
+	if err != nil {
+		return err
+	}
+	backup, err := sess.RestoreBackup(backupID)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("session restored: %s\n", sess.ID)
+	fmt.Printf("backup: %s\n", backup.ID)
+	fmt.Printf("messages: %d\n", backup.MessageCount)
 	return nil
 }
 
