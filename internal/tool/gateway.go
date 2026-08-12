@@ -157,9 +157,9 @@ type GatewayResult struct {
 }
 
 func (r *GatewayResult) Format() string {
-	status := "OK"
+	status := "✅"
 	if !r.Success {
-		status = "ERR"
+		status = "❌"
 	}
 	return fmt.Sprintf("%s [%s] %s (%v)", status, r.ToolName, utils.Truncate(r.Output, 100), r.Duration)
 }
