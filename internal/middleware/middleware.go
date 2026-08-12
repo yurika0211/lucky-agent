@@ -233,9 +233,9 @@ func (m *CostTrackingMiddleware) InterceptChatStream(ctx context.Context, info C
 					completionTokens = chunk.Usage.CompletionTokens
 					sawCompletionUsage = true
 				}
-				cachedPromptTokens = chunk.Usage.CachedPromptTokens
-				cacheCreation5MTokens = chunk.Usage.CacheCreation5MTokens
-				cacheCreation1HTokens = chunk.Usage.CacheCreation1HTokens
+				cachedPromptTokens = maxInt(cachedPromptTokens, chunk.Usage.CachedPromptTokens)
+				cacheCreation5MTokens = maxInt(cacheCreation5MTokens, chunk.Usage.CacheCreation5MTokens)
+				cacheCreation1HTokens = maxInt(cacheCreation1HTokens, chunk.Usage.CacheCreation1HTokens)
 			}
 			if !sawCompletionUsage {
 				completionTokens += len(chunk.Content) / 4 // rough estimate
@@ -249,6 +249,13 @@ func (m *CostTrackingMiddleware) InterceptChatStream(ctx context.Context, info C
 	}()
 
 	return wrappedCh, nil
+}
+
+func maxInt(current, next int) int {
+	if next > current {
+		return next
+	}
+	return current
 }
 
 func estimateTokens(messages []provider.Message) int {
@@ -429,6 +436,15 @@ func (mp *MiddlewareProvider) Name() string {
 	return mp.inner.Name()
 }
 
+// providerModel returns the active model when the wrapped provider exposes it.
+// The optional interface keeps third-party/test providers source-compatible.
+func providerModel(p provider.Provider) string {
+	if modeler, ok := p.(interface{ Model() string }); ok {
+		return modeler.Model()
+	}
+	return ""
+}
+
 // Chain returns the middleware chain.
 func (mp *MiddlewareProvider) Chain() *Chain {
 	return mp.chain
@@ -438,6 +454,7 @@ func (mp *MiddlewareProvider) Chain() *Chain {
 func (mp *MiddlewareProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
 	info := CallInfo{
 		Provider:  mp.inner.Name(),
+		Model:     providerModel(mp.inner),
 		Messages:  messages,
 		StartTime: time.Now(),
 	}
@@ -451,6 +468,7 @@ func (mp *MiddlewareProvider) Chat(ctx context.Context, messages []provider.Mess
 func (mp *MiddlewareProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
 	info := CallInfo{
 		Provider:  mp.inner.Name(),
+		Model:     providerModel(mp.inner),
 		Messages:  messages,
 		StartTime: time.Now(),
 	}
@@ -464,6 +482,7 @@ func (mp *MiddlewareProvider) ChatStream(ctx context.Context, messages []provide
 func (mp *MiddlewareProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
 	info := CallInfo{
 		Provider:  mp.inner.Name(),
+		Model:     providerModel(mp.inner),
 		Messages:  messages,
 		StartTime: time.Now(),
 	}
@@ -480,6 +499,7 @@ func (mp *MiddlewareProvider) ChatWithOptions(ctx context.Context, messages []pr
 func (mp *MiddlewareProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
 	info := CallInfo{
 		Provider:  mp.inner.Name(),
+		Model:     providerModel(mp.inner),
 		Messages:  messages,
 		StartTime: time.Now(),
 	}

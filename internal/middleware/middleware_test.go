@@ -518,6 +518,13 @@ func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Messa
 }
 func (m *mockProvider) Validate() error { return nil }
 
+type modelAwareMockProvider struct {
+	mockProvider
+	model string
+}
+
+func (m *modelAwareMockProvider) Model() string { return m.model }
+
 type mockFCProvider struct {
 	lastOpts provider.CallOptions
 }
@@ -558,3 +565,42 @@ func (m *mockFCProvider) ChatStreamWithOptions(ctx context.Context, messages []p
 	return ch, nil
 }
 func (m *mockFCProvider) Validate() error { return nil }
+
+func TestCostTrackingMiddlewareKeepsMaximumStreamCacheUsage(t *testing.T) {
+	store := cost.NewCostStore(cost.NewPriceTable())
+	mw := NewCostTrackingMiddleware(store, "sess-cache")
+	info := CallInfo{Provider: "openai-compatible", Model: "gpt-5.6-terra", Messages: []provider.Message{{Role: "user", Content: "hello"}}, StartTime: time.Now()}
+	ch, err := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		out := make(chan provider.StreamChunk, 3)
+		out <- provider.StreamChunk{Usage: &provider.UsageDetails{PromptTokens: 100, CachedPromptTokens: 60, CacheCreation5MTokens: 10}}
+		out <- provider.StreamChunk{Usage: &provider.UsageDetails{PromptTokens: 100}}
+		out <- provider.StreamChunk{Done: true}
+		close(out)
+		return out, nil
+	})
+	if err != nil {
+		t.Fatalf("InterceptChatStream: %v", err)
+	}
+	for range ch {
+	}
+	records := store.Recent(1)
+	if len(records) != 1 || records[0].CachedPromptTokens != 60 || records[0].CacheCreation5MTokens != 10 {
+		t.Fatalf("unexpected cost records: %#v", records)
+	}
+}
+
+func TestMiddlewareProviderRecordsWrappedModel(t *testing.T) {
+	inner := &modelAwareMockProvider{model: "gpt-5.6-terra"}
+	var got CallInfo
+	chain := NewChain(&testMiddleware{onChat: func(ctx context.Context, info CallInfo, next ChatHandler) (*provider.Response, error) {
+		got = info
+		return next(ctx, info)
+	}})
+	mp := NewMiddlewareProvider(inner, chain)
+	if _, err := mp.Chat(context.Background(), []provider.Message{{Role: "user", Content: "hello"}}); err != nil {
+		t.Fatalf("Chat: %v", err)
+	}
+	if got.Model != "gpt-5.6-terra" {
+		t.Fatalf("model = %q, want gpt-5.6-terra", got.Model)
+	}
+}
