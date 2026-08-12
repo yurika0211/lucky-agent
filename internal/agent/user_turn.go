@@ -87,7 +87,15 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 	}
 	msg.Content = routingText
 
-	parts := contentPartsWithRoutingText(msg.ContentParts, routingText)
+	// Keep plain text messages as plain text. Adding a synthetic text part makes
+	// the context planner treat every turn as structured input, which disables
+	// the local context cache and changes the OpenAI wire shape from a string to
+	// an array. Only create content parts when the caller supplied structured
+	// content or attachments.
+	parts := append([]provider.ContentPart(nil), msg.ContentParts...)
+	if len(parts) > 0 || len(in.Attachments) > 0 {
+		parts = contentPartsWithRoutingText(parts, routingText)
+	}
 	parts = filterAttachmentContentParts(parts, in.Attachments)
 	for _, att := range in.Attachments {
 		if part, ok := contentPartFromAttachment(att); ok {
