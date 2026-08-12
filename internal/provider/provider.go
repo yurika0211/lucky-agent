@@ -216,6 +216,11 @@ func newOpenAIBaseProvider(cfg Config) openAIBaseProvider {
 	return openAIBaseProvider{cfg: cfg}
 }
 
+// Model returns the configured model for middleware, cost tracking, and diagnostics.
+func (p *openAIBaseProvider) Model() string {
+	return p.cfg.LlmProvider.Model
+}
+
 func (p *openAIBaseProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
 	return callOpenAI(ctx, p.cfg, messages, CallOptions{})
 }

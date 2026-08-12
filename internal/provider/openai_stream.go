@@ -127,22 +127,44 @@ type deltaToolCall struct {
 }
 
 type openaiUsage struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	TotalTokens         int `json:"total_tokens"`
-	InputTokens         int `json:"input_tokens,omitempty"`
-	OutputTokens        int `json:"output_tokens,omitempty"`
-	PromptTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens,omitempty"`
-		TextTokens   int `json:"text_tokens,omitempty"`
-		AudioTokens  int `json:"audio_tokens,omitempty"`
-		ImageTokens  int `json:"image_tokens,omitempty"`
+	PromptTokens         int `json:"prompt_tokens"`
+	CompletionTokens     int `json:"completion_tokens"`
+	TotalTokens          int `json:"total_tokens"`
+	InputTokens          int `json:"input_tokens,omitempty"`
+	OutputTokens         int `json:"output_tokens,omitempty"`
+	CachedTokens         int `json:"cached_tokens,omitempty"`
+	CachedInputTokens    int `json:"cached_input_tokens,omitempty"`
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+	CacheReadTokens      int `json:"cache_read_tokens,omitempty"`
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptTokensDetails  *struct {
+		CachedTokens         int `json:"cached_tokens,omitempty"`
+		CachedInputTokens    int `json:"cached_input_tokens,omitempty"`
+		CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+		CacheReadTokens      int `json:"cache_read_tokens,omitempty"`
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
+		TextTokens           int `json:"text_tokens,omitempty"`
+		AudioTokens          int `json:"audio_tokens,omitempty"`
+		ImageTokens          int `json:"image_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 	InputTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens,omitempty"`
+		CachedTokens         int `json:"cached_tokens,omitempty"`
+		CachedInputTokens    int `json:"cached_input_tokens,omitempty"`
+		CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+		CacheReadTokens      int `json:"cache_read_tokens,omitempty"`
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
 	ClaudeCacheCreation5MTokens int `json:"claude_cache_creation_5_m_tokens,omitempty"`
 	ClaudeCacheCreation1HTokens int `json:"claude_cache_creation_1_h_tokens,omitempty"`
+}
+
+func maxInt(current int, values ...int) int {
+	for _, value := range values {
+		if value > current {
+			current = value
+		}
+	}
+	return current
 }
 
 func convertOpenAIUsage(usage *openaiUsage) *UsageDetails {
@@ -158,11 +180,30 @@ func convertOpenAIUsage(usage *openaiUsage) *UsageDetails {
 		CacheCreation5MTokens: usage.ClaudeCacheCreation5MTokens,
 		CacheCreation1HTokens: usage.ClaudeCacheCreation1HTokens,
 	}
-	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > 0 {
-		out.CachedPromptTokens = usage.PromptTokensDetails.CachedTokens
+	out.CachedPromptTokens = maxInt(
+		usage.CachedTokens,
+		usage.CachedInputTokens,
+		usage.CacheReadInputTokens,
+		usage.CacheReadTokens,
+		usage.PromptCacheHitTokens,
+	)
+	if usage.PromptTokensDetails != nil {
+		out.CachedPromptTokens = maxInt(out.CachedPromptTokens,
+			usage.PromptTokensDetails.CachedTokens,
+			usage.PromptTokensDetails.CachedInputTokens,
+			usage.PromptTokensDetails.CacheReadInputTokens,
+			usage.PromptTokensDetails.CacheReadTokens,
+			usage.PromptTokensDetails.PromptCacheHitTokens,
+		)
 	}
-	if usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens > out.CachedPromptTokens {
-		out.CachedPromptTokens = usage.InputTokensDetails.CachedTokens
+	if usage.InputTokensDetails != nil {
+		out.CachedPromptTokens = maxInt(out.CachedPromptTokens,
+			usage.InputTokensDetails.CachedTokens,
+			usage.InputTokensDetails.CachedInputTokens,
+			usage.InputTokensDetails.CacheReadInputTokens,
+			usage.InputTokensDetails.CacheReadTokens,
+			usage.InputTokensDetails.PromptCacheHitTokens,
+		)
 	}
 	return out
 }
@@ -669,6 +710,7 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 	var content strings.Builder
 	var reasoning strings.Builder
 	var toolCalls []ToolCall
+	var usage *UsageDetails
 	toolCallAcc := make(map[int]*deltaToolCall)
 
 	for chunk := range ch {
@@ -677,6 +719,9 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 		}
 		if chunk.ReasoningContent != "" {
 			reasoning.WriteString(chunk.ReasoningContent)
+		}
+		if chunk.Usage != nil {
+			usage = mergeUsageDetails(usage, chunk.Usage)
 		}
 		if len(chunk.ToolCallDeltas) > 0 {
 			for _, dtc := range chunk.ToolCallDeltas {
@@ -727,12 +772,39 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 		}
 	}
 
-	return &Response{
+	response := &Response{
 		Content:          content.String(),
 		ReasoningContent: reasoning.String(),
 		ToolCalls:        toolCalls,
 		Model:            cfg.LlmProvider.Model,
-	}, nil
+		Usage:            usage,
+	}
+	if usage != nil {
+		response.TokensUsed = usage.TotalTokens
+	}
+	return response, nil
+}
+
+func mergeUsageDetails(current, next *UsageDetails) *UsageDetails {
+	if current == nil && next == nil {
+		return nil
+	}
+	if current == nil {
+		copy := *next
+		return &copy
+	}
+	if next == nil {
+		return current
+	}
+	current.PromptTokens = maxInt(current.PromptTokens, next.PromptTokens)
+	current.CompletionTokens = maxInt(current.CompletionTokens, next.CompletionTokens)
+	current.TotalTokens = maxInt(current.TotalTokens, next.TotalTokens)
+	current.InputTokens = maxInt(current.InputTokens, next.InputTokens)
+	current.OutputTokens = maxInt(current.OutputTokens, next.OutputTokens)
+	current.CachedPromptTokens = maxInt(current.CachedPromptTokens, next.CachedPromptTokens)
+	current.CacheCreation5MTokens = maxInt(current.CacheCreation5MTokens, next.CacheCreation5MTokens)
+	current.CacheCreation1HTokens = maxInt(current.CacheCreation1HTokens, next.CacheCreation1HTokens)
+	return current
 }
 
 // callOpenAIStream 执行 OpenAI API 流式调用

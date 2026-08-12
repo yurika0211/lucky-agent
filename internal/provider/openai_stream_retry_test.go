@@ -626,3 +626,50 @@ func TestCallOpenAIStreamRetriesReasoningContentErrorWithBackfilledAssistantHist
 		t.Fatalf("expected retry request to keep current user message, got %s", bodies[1])
 	}
 }
+
+func TestConvertOpenAIUsageSupportsTerraCacheAliases(t *testing.T) {
+	usage := &openaiUsage{
+		PromptTokens:         1000,
+		CompletionTokens:     50,
+		TotalTokens:          1050,
+		CachedInputTokens:    250,
+		CacheReadInputTokens: 300,
+		PromptTokensDetails: &struct {
+			CachedTokens         int `json:"cached_tokens,omitempty"`
+			CachedInputTokens    int `json:"cached_input_tokens,omitempty"`
+			CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+			CacheReadTokens      int `json:"cache_read_tokens,omitempty"`
+			PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
+			TextTokens           int `json:"text_tokens,omitempty"`
+			AudioTokens          int `json:"audio_tokens,omitempty"`
+			ImageTokens          int `json:"image_tokens,omitempty"`
+		}{CacheReadTokens: 800},
+	}
+	converted := convertOpenAIUsage(usage)
+	if converted == nil || converted.CachedPromptTokens != 800 {
+		t.Fatalf("cached prompt tokens = %#v, want 800", converted)
+	}
+}
+
+func TestRetryWithStreamPreservesFinalUsage(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() { openAIHTTPClient = orig })
+	openAIHTTPClient = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		sse := strings.Join([]string{
+			`data: {"choices":[{"index":0,"delta":{"content":"ok"},"finish_reason":""}]}`,
+			`data: {"choices":[],"usage":{"prompt_tokens":900,"completion_tokens":100,"total_tokens":1000,"cached_input_tokens":600}}`,
+			`data: {"choices":[],"usage":{"prompt_tokens":900,"completion_tokens":100,"total_tokens":1000}}`,
+			`data: [DONE]`,
+			"",
+		}, "\n")
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(sse)), Request: req}, nil
+	})}
+	cfg := Config{LlmProvider: LlmProvider{BaseURL: "https://api.openai.com/v1", APIKey: "sk-test", Model: "gpt-5.6-terra"}}
+	resp, err := retryWithStream(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, CallOptions{})
+	if err != nil {
+		t.Fatalf("retryWithStream: %v", err)
+	}
+	if resp.Usage == nil || resp.Usage.CachedPromptTokens != 600 || resp.TokensUsed != 1000 {
+		t.Fatalf("unexpected retry usage: %#v tokens=%d", resp.Usage, resp.TokensUsed)
+	}
+}

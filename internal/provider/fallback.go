@@ -84,6 +84,16 @@ func (fc *FallbackChain) ActiveProvider() Provider {
 	return fc.chain[fc.active]
 }
 
+// Model returns the model of the currently active provider.
+func (fc *FallbackChain) Model() string {
+	fc.mu.RLock()
+	defer fc.mu.RUnlock()
+	if modeler, ok := fc.chain[fc.active].(interface{ Model() string }); ok {
+		return modeler.Model()
+	}
+	return ""
+}
+
 // ActiveIndex 返回当前活跃 provider 的索引
 func (fc *FallbackChain) ActiveIndex() int {
 	fc.mu.RLock()
