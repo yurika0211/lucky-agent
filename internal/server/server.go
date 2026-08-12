@@ -588,6 +588,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		loopCfg.MaxIterations = req.MaxIter
 	}
 	loopCfg.AutoApprove = req.AutoApprove
+	loopCfg.Source = "http"
 
 	ctx := r.Context()
 
@@ -619,9 +620,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	for event := range events {
 		data, _ := jsonAPI.Marshal(map[string]interface{}{
-			"type":       chatEventTypeString(event.Type),
-			"content":    event.Content,
-			"session_id": sessionID,
+			"type":        chatEventTypeString(event.Type),
+			"content":     event.Content,
+			"session_id":  sessionID,
+			"name":        event.Name,
+			"args":        event.Args,
+			"result":      event.Result,
+			"observation": event.Observation,
+			"approval":    event.Approval,
+			"error":       event.Err,
 		})
 
 		fmt.Fprintf(w, "data: %s\n\n", data)
@@ -675,6 +682,7 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 		loopCfg.MaxIterations = req.MaxIter
 	}
 	loopCfg.AutoApprove = req.AutoApprove
+	loopCfg.Source = "http"
 
 	ctx := r.Context()
 	s.doChatSync(w, r, req, loopCfg, ctx, start)
@@ -773,11 +781,7 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 		err    error
 	)
 	if sess != nil {
-		loopCfgWithSession := agent.LoopConfig{
-			MaxIterations: loopCfg.MaxIterations,
-			Timeout:       loopCfg.Timeout,
-			AutoApprove:   loopCfg.AutoApprove,
-		}
+		loopCfgWithSession := loopCfg
 		result, err = s.agent.RunLoopWithSessionInput(ctx, sess, turn, loopCfgWithSession)
 	} else {
 		result, err = s.agent.RunLoopWithSessionInput(ctx, nil, turn, loopCfg)
@@ -1579,6 +1583,10 @@ func chatEventTypeString(t agent.ChatEventType) string {
 		return "done"
 	case agent.ChatEventError:
 		return "error"
+	case agent.ChatEventObservation:
+		return "observation"
+	case agent.ChatEventApprovalRequired:
+		return "approval_required"
 	default:
 		return "unknown"
 	}

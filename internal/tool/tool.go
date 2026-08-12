@@ -1,10 +1,12 @@
 package tool
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 // PermissionLevel 工具权限级别
@@ -46,10 +48,14 @@ type Tool struct {
 	Parameters      map[string]Param
 	Handler         func(args map[string]any) (string, error)
 	DetailedHandler func(args map[string]any) (ToolCallResult, error)
-	Permission      PermissionLevel // 权限级别
-	Category        Category        // 工具分类
-	Source          string          // 来源（skill名/mcp server名/builtin）
-	Enabled         bool            // 是否启用
+	// ContextDetailedHandler is used by tools that need request/session metadata
+	// or cancellation. Existing tools can continue using Handler or
+	// DetailedHandler without changing their call sites.
+	ContextDetailedHandler func(exec ExecutionContext, args map[string]any) (ToolCallResult, error)
+	Permission             PermissionLevel // 权限级别
+	Category               Category        // 工具分类
+	Source                 string          // 来源（skill名/mcp server名/builtin）
+	Enabled                bool            // 是否启用
 	// ShellAware 标记该工具需要 shell 上下文注入（cwd + env）
 	ShellAware bool
 	// ParallelSafe 标记该工具可安全并发执行（无状态、无副作用冲突）
@@ -73,8 +79,48 @@ type Param struct {
 }
 
 type ToolCallResult struct {
-	Output   string
-	Metadata map[string]any
+	Output       string
+	Metadata     map[string]any
+	Observations []Observation
+}
+
+// Observation is a structured non-text tool result. Computer-use tools use it
+// to return a screenshot path and frame metadata for the agent to feed back to
+// a vision-capable provider. The type intentionally remains provider-neutral.
+type Observation struct {
+	Kind         string
+	FrameID      string
+	CapturedAt   time.Time
+	FilePath     string
+	MimeType     string
+	Width        int
+	Height       int
+	ScaleFactor  float64
+	DisplayID    string
+	ActiveWindow string
+	WindowBounds Rect
+	SHA256       string
+	ImageData    []byte
+	Metadata     map[string]any
+}
+
+// Rect is kept provider-neutral so the tool package does not need to import
+// the platform-specific computer package.
+type Rect struct {
+	X      int `json:"x,omitempty"`
+	Y      int `json:"y,omitempty"`
+	Width  int `json:"width,omitempty"`
+	Height int `json:"height,omitempty"`
+}
+
+// ExecutionContext carries request-local execution metadata to context-aware
+// tools. Context is always non-nil when dispatched through the registry.
+type ExecutionContext struct {
+	Context     context.Context
+	SessionID   string
+	Source      string
+	UserID      string
+	AutoApprove bool
 }
 
 // ToOpenAIFormat 转换为 OpenAI function calling 格式
@@ -272,7 +318,20 @@ func (r *Registry) Call(name string, args map[string]any) (string, error) {
 	return t.Handler(args)
 }
 
+// CallWithContext dispatches a context-aware handler and returns its text
+// output. It is a compatibility helper for callers that do not need metadata.
+func (r *Registry) CallWithContext(name string, args map[string]any, exec ExecutionContext) (string, error) {
+	result, err := r.CallDetailedWithContext(name, args, exec)
+	return result.Output, err
+}
+
 func (r *Registry) CallDetailed(name string, args map[string]any) (ToolCallResult, error) {
+	return r.CallDetailedWithContext(name, args, ExecutionContext{Context: context.Background()})
+}
+
+// CallDetailedWithContext dispatches a tool while preserving request-local
+// context. Context-aware handlers take precedence over legacy handlers.
+func (r *Registry) CallDetailedWithContext(name string, args map[string]any, exec ExecutionContext) (ToolCallResult, error) {
 	r.mu.RLock()
 	t, name, ok := r.lookupToolLocked(name)
 	r.mu.RUnlock()
@@ -290,6 +349,12 @@ func (r *Registry) CallDetailed(name string, args map[string]any) (ToolCallResul
 	}
 	if perm == PermDeny {
 		return ToolCallResult{}, ErrToolDenied{name: name}
+	}
+	if exec.Context == nil {
+		exec.Context = context.Background()
+	}
+	if t.ContextDetailedHandler != nil {
+		return t.ContextDetailedHandler(exec, args)
 	}
 	if t.DetailedHandler != nil {
 		return t.DetailedHandler(args)
@@ -343,6 +408,12 @@ func (r *Registry) CallWithShellContext(name string, args map[string]any, sc *Sh
 }
 
 func (r *Registry) CallDetailedWithShellContext(name string, args map[string]any, sc *ShellContext) (ToolCallResult, error) {
+	return r.CallDetailedWithShellExecutionContext(name, args, sc, ExecutionContext{Context: context.Background()})
+}
+
+// CallDetailedWithShellExecutionContext combines shell injection and
+// request-local context for context-aware tools.
+func (r *Registry) CallDetailedWithShellExecutionContext(name string, args map[string]any, sc *ShellContext, exec ExecutionContext) (ToolCallResult, error) {
 	r.mu.RLock()
 	t, name, ok := r.lookupToolLocked(name)
 	r.mu.RUnlock()
@@ -368,6 +439,12 @@ func (r *Registry) CallDetailedWithShellContext(name string, args map[string]any
 		}
 		args["_cwd"] = sc.Cwd
 		args["_env"] = sc.Env
+	}
+	if exec.Context == nil {
+		exec.Context = context.Background()
+	}
+	if t.ContextDetailedHandler != nil {
+		return t.ContextDetailedHandler(exec, args)
 	}
 	if t.DetailedHandler != nil {
 		return t.DetailedHandler(args)

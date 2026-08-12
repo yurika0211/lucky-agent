@@ -14,6 +14,7 @@ import (
 	appheartbeat "github.com/yurika0211/luckyagent/internal/agent/heartbeat"
 	"github.com/yurika0211/luckyagent/internal/autonomy"
 	"github.com/yurika0211/luckyagent/internal/collab"
+	"github.com/yurika0211/luckyagent/internal/computer"
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/contextx"
 	"github.com/yurika0211/luckyagent/internal/cron"
@@ -100,6 +101,7 @@ type supportRuntime struct {
 	mediaProcessor *multimodal.Processor
 	cronEngine     *cron.Engine
 	autonomyKit    *autonomy.AutonomyKit
+	computerMgr    *computer.Manager
 }
 
 // Agent 是 LuckyAgent 的核心 Agent
@@ -142,6 +144,7 @@ type Agent struct {
 	cronEngine            *cron.Engine // 定时任务引擎
 	cronStore             *cron.Store
 	autonomy              *autonomy.AutonomyKit // 自主工作套件
+	computerMgr           *computer.Manager
 	autonomyResultsMu     sync.Mutex
 	autonomyResultsCancel context.CancelFunc
 	heartbeatSvc          *appheartbeat.Service
@@ -1071,6 +1074,51 @@ func New(cfg *config.Manager) (*Agent, error) {
 	}
 	supportRT.delegateMgr.SetTaskStore(taskStore)
 
+	// Computer use is opt-in. Keep the backend and its tools out of the model
+	// tool menu unless the operator explicitly enables the capability.
+	if c.Tools.ComputerUse.Enabled {
+		backend, backendErr := computer.NewBackend(c.Tools.ComputerUse.Backend)
+		if backendErr != nil {
+			return nil, fmt.Errorf("init computer backend: %w", backendErr)
+		}
+		managerCfg := computer.DefaultManagerConfig()
+		managerCfg.StorageDir = strings.TrimSpace(c.Tools.ComputerUse.CaptureDir)
+		if managerCfg.StorageDir == "" {
+			managerCfg.StorageDir = filepath.Join(cfg.HomeDir(), "computer")
+		}
+		managerCfg.MaxSteps = c.Tools.ComputerUse.MaxSteps
+		managerCfg.KeepFrames = c.Tools.ComputerUse.KeepFrames
+		if managerCfg.KeepFrames <= 0 {
+			managerCfg.KeepFrames = c.Tools.ComputerUse.RetainFrames
+		}
+		settleMS := c.Tools.ComputerUse.SettleMilliseconds
+		if settleMS <= 0 {
+			settleMS = c.Tools.ComputerUse.SettleMS
+		}
+		managerCfg.Settle = time.Duration(settleMS) * time.Millisecond
+		if c.Tools.ComputerUse.FrameTTLSeconds > 0 {
+			managerCfg.FrameTTL = time.Duration(c.Tools.ComputerUse.FrameTTLSeconds) * time.Second
+		}
+		managerCfg.MaxObservationBytes = c.Tools.ComputerUse.MaxObservationBytes
+		managerCfg.MaxScreenshotWidth = c.Tools.ComputerUse.MaxScreenshotWidth
+		if managerCfg.Settle < 0 {
+			managerCfg.Settle = 0
+		}
+		if c.Tools.ComputerUse.StepTimeoutSeconds > 0 {
+			// Step timeout is enforced by the Agent request context. Keep this
+			// value in config for the tool layer, which may add a child timeout.
+			_ = c.Tools.ComputerUse.StepTimeoutSeconds
+		}
+		computerManager, managerErr := computer.NewManagerWithConfig(backend, managerCfg)
+		if managerErr != nil {
+			return nil, fmt.Errorf("init computer manager: %w", managerErr)
+		}
+		supportRT.computerMgr = computerManager
+		supportRT.toolServices.SetComputerUseService(
+			tool.NewComputerUseToolService(computerManager, c.Tools.ComputerUse),
+		)
+	}
+
 	a := &Agent{
 		cfg:                 cfg,
 		soul:                soulRT.soul,
@@ -1103,6 +1151,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		cronEngine:          supportRT.cronEngine,
 		cronStore:           cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
 		autonomy:            supportRT.autonomyKit,
+		computerMgr:         supportRT.computerMgr,
 		contextCache:        newContextMessageCache(64),
 		mediaProcessor:      supportRT.mediaProcessor,
 		taskStore:           taskStore,
@@ -1343,6 +1392,10 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 	}
 	applySimpleTaskLoopTuning(&loopCfg, routingText, agentLoopCfg)
+	loopCfg.Source = input.Scope.Platform
+	if strings.TrimSpace(loopCfg.Source) == "" {
+		loopCfg.Source = "cli"
+	}
 	loopCfg.AutoApprove = true // Telegram 场景自动批准工具调用
 
 	result, err := a.runLoopWithProviderSnapshot(ctx, sess, input, loopCfg, turnProvider)
@@ -1811,24 +1864,52 @@ func estimateProviderMessages(est *contextx.TokenEstimator, messages []provider.
 ChatEvent 描述面向上层流式 UI 的聊天事件。
 */
 type ChatEvent struct {
-	Type    ChatEventType
-	Content string
-	Name    string // 工具名（Type=EventToolCall 时）
-	Args    string // 工具参数
-	Result  string // 工具结果
-	Err     error
+	Type        ChatEventType
+	Content     string
+	Name        string // 工具名（Type=EventToolCall 时）
+	Args        string // 工具参数
+	Result      string // 工具结果
+	Observation *ObservationEvent
+	Approval    *ApprovalEvent
+	Err         error
+}
+
+// ObservationEvent is safe-to-serialize metadata for a computer frame. The
+// local file path is intentionally omitted from the public event payload.
+type ObservationEvent struct {
+	FrameID string `json:"frame_id,omitempty"`
+	// FilePath is available to in-process gateway consumers (for example
+	// Telegram) to upload the frame. It is intentionally omitted from public
+	// JSON/SSE payloads because local filesystem paths are not API resources.
+	FilePath     string  `json:"-"`
+	MimeType     string  `json:"mime_type,omitempty"`
+	Width        int     `json:"width,omitempty"`
+	Height       int     `json:"height,omitempty"`
+	ScaleFactor  float64 `json:"scale_factor,omitempty"`
+	DisplayID    string  `json:"display_id,omitempty"`
+	ActiveWindow string  `json:"active_window,omitempty"`
+}
+
+type ApprovalEvent struct {
+	RequestID string `json:"request_id,omitempty"`
+	Tool      string `json:"tool,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	FrameID   string `json:"frame_id,omitempty"`
 }
 
 // ChatEventType 事件类型
 type ChatEventType int
 
 const (
-	ChatEventThinking   ChatEventType = iota // 🧠 思考中
-	ChatEventToolCall                        // 🔧 工具调用
-	ChatEventToolResult                      // 📋 工具结果
-	ChatEventContent                         // 📝 内容片段
-	ChatEventDone                            // ✅ 完成
-	ChatEventError                           // ❌ 错误
+	ChatEventThinking         ChatEventType = iota // 🧠 思考中
+	ChatEventToolCall                              // 🔧 工具调用
+	ChatEventToolResult                            // 📋 工具结果
+	ChatEventContent                               // 📝 内容片段
+	ChatEventDone                                  // ✅ 完成
+	ChatEventError                                 // ❌ 错误
+	ChatEventObservation                           // 🖼️ computer observation
+	ChatEventApprovalRequired                      // 🔐 approval required
 )
 
 // StreamMode 流式输出模式
@@ -1866,28 +1947,31 @@ streamConvergenceState 保存流式对话在多轮推理中的收敛与去重状
 type streamConvergenceState struct {
 	// provider is captured at stream-turn start and reused by every recursive
 	// iteration. It must remain immutable for the lifetime of the stream.
-	provider                 providerSnapshot
-	emptyResponseRetries     int
-	lengthRecoveryCount      int
-	continuedResponse        strings.Builder
-	continuedReasoning       strings.Builder
-	toolCallRepeatCount      map[string]int
-	toolCallLastResult       map[string]string
-	toolURLRepeatCount       map[string]int
-	toolURLLastResult        map[string]string
-	toolExecutionGuard       *toolExecutionGuard
-	consecutiveToolOnlyIters int
-	successfulSearchEvidence int
-	detailedSearchEvidence   int
-	forceSearchSynthesis     bool
-	repeatToolCallLimit      int
-	toolOnlyIterationLimit   int
-	duplicateFetchLimit      int
-	disabledTools            []string
-	memoryGate               *memoryToolGate
-	citationToolCalls        []toolCallLog
-	iterationTimeout         time.Duration
-	artifactGuard            *artifactFinalizationGuard
+	provider                       providerSnapshot
+	autoApprove                    bool
+	source                         string
+	emptyResponseRetries           int
+	lengthRecoveryCount            int
+	continuedResponse              strings.Builder
+	continuedReasoning             strings.Builder
+	toolCallRepeatCount            map[string]int
+	toolCallLastResult             map[string]string
+	toolURLRepeatCount             map[string]int
+	toolURLLastResult              map[string]string
+	toolExecutionGuard             *toolExecutionGuard
+	consecutiveToolOnlyIters       int
+	consecutiveComputerObserveOnly int
+	successfulSearchEvidence       int
+	detailedSearchEvidence         int
+	forceSearchSynthesis           bool
+	repeatToolCallLimit            int
+	toolOnlyIterationLimit         int
+	duplicateFetchLimit            int
+	disabledTools                  []string
+	memoryGate                     *memoryToolGate
+	citationToolCalls              []toolCallLog
+	iterationTimeout               time.Duration
+	artifactGuard                  *artifactFinalizationGuard
 }
 
 /*
@@ -1915,6 +1999,21 @@ toolCallSig 生成工具调用签名，用于重复检测。
 */
 func (s *streamConvergenceState) toolCallSig(name, arguments string) string {
 	return toolCallSignature(name, arguments)
+}
+
+// trackComputerObservationLoop stops repeated screenshot-only rounds in the
+// streaming loop. The first observation is useful; the next one without an
+// action is treated as no progress.
+func (s *streamConvergenceState) trackComputerObservationLoop(toolCalls []provider.ToolCall) bool {
+	if s == nil {
+		return false
+	}
+	if computerObserveOnlyBatch(toolCalls) {
+		s.consecutiveComputerObserveOnly++
+	} else {
+		s.consecutiveComputerObserveOnly = 0
+	}
+	return s.consecutiveComputerObserveOnly >= 2
 }
 
 /*
@@ -2027,6 +2126,10 @@ func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string
 	loopCfg := DefaultLoopConfig()
 	cfg := a.cfg.Get()
 	ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+	loopCfg.Source = input.Scope.Platform
+	if strings.TrimSpace(loopCfg.Source) == "" {
+		loopCfg.Source = "cli"
+	}
 	loopCfg.AutoApprove = true
 	return a.ChatWithSessionStreamInputWithLoopConfig(ctx, sessionID, input, loopCfg)
 }
@@ -2080,6 +2183,8 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 
 		state := &streamConvergenceState{
 			provider:               turnProvider,
+			autoApprove:            loopCfg.AutoApprove,
+			source:                 loopCfg.Source,
 			repeatToolCallLimit:    loopCfg.RepeatToolCallLimit,
 			toolOnlyIterationLimit: loopCfg.ToolOnlyIterationLimit,
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
@@ -2251,6 +2356,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		toolCalls = append(toolCalls, textToolCalls...)
 
 		if len(toolCalls) > 0 {
+			if state.trackComputerObservationLoop(toolCalls) {
+				a.finalizeStreamWithState(events, sess, turnInput, computerObservationLoopMessage, state)
+				return
+			}
 			logger.Debug("agent stream native tool calls assembled",
 				"session_id", sessionID,
 				"round", round,
@@ -2284,13 +2393,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			emitChatToolCallEvents(events, toolCalls)
 			executed := a.executeToolCallsOrderedGuarded(
 				toolCalls,
-				true,
+				state.autoApprove,
 				sess,
 				state.toolURLRepeatCount,
 				state.toolURLLastResult,
 				state.duplicateFetchLimit,
 				true,
 				state.toolExecutionGuard,
+				state.source,
 			)
 
 			for _, execResult := range executed {
@@ -2298,6 +2408,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 					state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 				}
 				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
+				emitChatObservationEvents(events, execResult)
 				messages = append(messages, provider.Message{
 					Role:       "tool",
 					Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence),
@@ -2318,7 +2429,8 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				_ = sess.Save()
 			}
 
-			// 裁剪上下文，继续下一轮
+			// 裁剪上下文，继续下一轮；保留最新 computer frame transiently。
+			messages = appendLatestComputerObservation(messages, executed)
 			messages = a.fitContextWindow(messages)
 			messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
 			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
@@ -2486,6 +2598,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	if len(resp.ToolCalls) > 0 {
 		state.emptyResponseRetries = 0
 		state.lengthRecoveryCount = 0
+		if state.trackComputerObservationLoop(resp.ToolCalls) {
+			a.finalizeStreamWithState(events, sess, turnInput, computerObservationLoopMessage, state)
+			return
+		}
 		if shouldStop, repeatedSigs := state.trackToolCallPattern(resp.ToolCalls, resp.Content); shouldStop {
 			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
 				return
@@ -2511,13 +2627,14 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		emitChatToolCallEvents(events, resp.ToolCalls)
 		executed := a.executeToolCallsOrderedGuarded(
 			resp.ToolCalls,
-			true,
+			state.autoApprove,
 			sess,
 			state.toolURLRepeatCount,
 			state.toolURLLastResult,
 			state.duplicateFetchLimit,
 			true,
 			state.toolExecutionGuard,
+			state.source,
 		)
 
 		for _, execResult := range executed {
@@ -2525,6 +2642,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 				state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 			}
 			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
+			emitChatObservationEvents(events, execResult)
 			messages = append(messages, provider.Message{
 				Role:       "tool",
 				Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence),
@@ -2545,7 +2663,8 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			_ = sess.Save()
 		}
 
-		// 裁剪上下文，递归继续
+		// 裁剪上下文，递归继续；保留最新 computer frame transiently。
+		messages = appendLatestComputerObservation(messages, executed)
 		messages = a.fitContextWindow(messages)
 		messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
 		if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
@@ -3448,6 +3567,11 @@ func (a *Agent) Close() error {
 	if a.proactiveStore != nil {
 		if err := a.proactiveStore.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("close proactive store: %w", err)
+		}
+	}
+	if a.computerMgr != nil {
+		if err := a.computerMgr.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("close computer manager: %w", err)
 		}
 	}
 

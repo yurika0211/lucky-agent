@@ -278,8 +278,11 @@ func TestCallOpenAIStreamEmitsUsageChunk(t *testing.T) {
 		openAIHTTPClient = orig
 	})
 
+	var capturedBody string
 	openAIHTTPClient = &http.Client{
 		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(req.Body)
+			capturedBody = string(body)
 			sse := strings.Join([]string{
 				`data: {"choices":[{"index":0,"delta":{"reasoning_content":"first-reasoning"},"finish_reason":""}]}`,
 				`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":""}]}`,
@@ -330,6 +333,9 @@ func TestCallOpenAIStreamEmitsUsageChunk(t *testing.T) {
 	}
 	if !sawReasoning {
 		t.Fatal("expected a reasoning chunk")
+	}
+	if !strings.Contains(capturedBody, `"stream_options":{"include_usage":true}`) {
+		t.Fatalf("expected stream usage option in request body, got %s", capturedBody)
 	}
 }
 

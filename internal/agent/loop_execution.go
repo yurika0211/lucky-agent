@@ -2,7 +2,9 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/function"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 // buildLoopCallOptions constructs the model-visible tool schema for one user input.
@@ -150,12 +153,13 @@ func filterFunctionToolsByName(tools []map[string]any, name string) []map[string
 }
 
 type executedToolCall struct {
-	Index       int
-	ToolCall    provider.ToolCall
-	Result      string
-	ShortResult string
-	Duration    time.Duration
-	Metadata    map[string]any
+	Index        int
+	ToolCall     provider.ToolCall
+	Result       string
+	ShortResult  string
+	Duration     time.Duration
+	Metadata     map[string]any
+	Observations []tool.Observation
 }
 
 func (a *Agent) executeToolCallsOrdered(
@@ -166,15 +170,31 @@ func (a *Agent) executeToolCallsOrdered(
 	toolURLLastResult map[string]string,
 	duplicateFetchLimit int,
 	allowMixedParallel bool,
+	sourceOpt ...string,
 ) []executedToolCall {
+	source := "cli"
+	if len(sourceOpt) > 0 && strings.TrimSpace(sourceOpt[0]) != "" {
+		source = strings.TrimSpace(sourceOpt[0])
+	}
 	resultCh := make(chan executedToolCall, len(toolCalls))
 
 	runOne := func(idx int, tc provider.ToolCall) {
 		start := time.Now()
-		toolResult, err := a.executeToolMaybeDedupDetailed(tc.Name, tc.Arguments, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit)
+		toolResult, err := a.executeToolMaybeDedupDetailed(tc.Name, tc.Arguments, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, source)
 		resultText := toolResult.Output
 		if err != nil {
 			resultText = fmt.Sprintf("Error: %v", err)
+			var approvalErr *tool.ApprovalRequiredError
+			if errors.As(err, &approvalErr) {
+				toolResult.Metadata = map[string]any{
+					"approval_required": map[string]any{
+						"tool":     approvalErr.Tool,
+						"action":   string(approvalErr.Action.Kind),
+						"reason":   approvalErr.Reason,
+						"frame_id": approvalErr.Action.FrameID,
+					},
+				}
+			}
 		}
 		shortResult := resultText
 		if len(shortResult) > 200 {
@@ -182,13 +202,23 @@ func (a *Agent) executeToolCallsOrdered(
 		}
 		shortResult = appendMemoryTracePayload(shortResult, toolResult.Metadata)
 		resultCh <- executedToolCall{
-			Index:       idx,
-			ToolCall:    tc,
-			Result:      resultText,
-			ShortResult: shortResult,
-			Duration:    time.Since(start),
-			Metadata:    toolResult.Metadata,
+			Index:        idx,
+			ToolCall:     tc,
+			Result:       resultText,
+			ShortResult:  shortResult,
+			Duration:     time.Since(start),
+			Metadata:     toolResult.Metadata,
+			Observations: toolResult.Observations,
 		}
+	}
+
+	// Computer-use calls mutate and observe one shared desktop state. Even when
+	// another tool is marked ParallelSafe (or a caller explicitly enables mixed
+	// parallelism), a batch containing computer_observe/computer_act must run as
+	// one serial sequence. Otherwise a concurrent terminal/API call can race a
+	// screenshot or GUI action and make the next frame stale or misleading.
+	if containsComputerUseToolCall(toolCalls) {
+		allowMixedParallel = false
 	}
 
 	var parallelIdx []int
@@ -239,6 +269,86 @@ func (a *Agent) executeToolCallsOrdered(
 	return results
 }
 
+func containsComputerUseToolCall(toolCalls []provider.ToolCall) bool {
+	for _, call := range toolCalls {
+		if isComputerUseToolName(call.Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func isComputerUseToolName(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "computer_observe", "computer_act":
+		return true
+	default:
+		return false
+	}
+}
+
+// appendLatestComputerObservation adds the newest computer frame as a
+// transient user image. The tool messages must already be appended before this
+// helper is called so the function-calling protocol remains well-formed.
+// Older transient frames are removed to prevent screenshot accumulation.
+func appendLatestComputerObservation(messages []provider.Message, executed []executedToolCall) []provider.Message {
+	messages = removeTransientComputerObservations(messages)
+	var latest *tool.Observation
+	for i := range executed {
+		for j := range executed[i].Observations {
+			obs := executed[i].Observations[j]
+			if strings.TrimSpace(obs.FilePath) == "" && len(obs.ImageData) == 0 {
+				continue
+			}
+			copy := obs
+			latest = &copy
+		}
+	}
+	if latest == nil {
+		return messages
+	}
+	part := provider.ContentPart{Type: "image", Image: &provider.ImagePart{
+		FilePath: strings.TrimSpace(latest.FilePath),
+		MimeType: strings.TrimSpace(latest.MimeType),
+	}}
+	if part.Image.FilePath == "" && len(latest.ImageData) > 0 {
+		// In-process/fake backends may return bytes without persisting a file.
+		// Providers understand data URLs, so keep this fallback transient too.
+		part.Image.URL = "data:" + imageMimeType(latest.MimeType) + ";base64," + base64.StdEncoding.EncodeToString(latest.ImageData)
+	}
+	frame := strings.TrimSpace(latest.FrameID)
+	label := "[Computer Observation]"
+	if frame != "" {
+		label = "[Computer Observation " + frame + "]"
+	}
+	return append(messages, provider.Message{Role: "user", Content: label, ContentParts: []provider.ContentPart{part}})
+}
+
+func removeTransientComputerObservations(messages []provider.Message) []provider.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := messages[:0]
+	for _, msg := range messages {
+		if isTransientComputerObservation(msg) {
+			continue
+		}
+		out = append(out, msg)
+	}
+	return out
+}
+
+func isTransientComputerObservation(msg provider.Message) bool {
+	return msg.Role == "user" && strings.HasPrefix(strings.TrimSpace(msg.Content), "[Computer Observation")
+}
+
+func imageMimeType(mime string) string {
+	if strings.TrimSpace(mime) == "" {
+		return "image/png"
+	}
+	return strings.TrimSpace(mime)
+}
+
 func (a *Agent) executeToolCallsOrderedGuarded(
 	toolCalls []provider.ToolCall,
 	autoApprove bool,
@@ -248,13 +358,17 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 	duplicateFetchLimit int,
 	allowMixedParallel bool,
 	guard *toolExecutionGuard,
+	sourceOpt ...string,
 ) []executedToolCall {
+	source := "cli"
+	if len(sourceOpt) > 0 && strings.TrimSpace(sourceOpt[0]) != "" {
+		source = strings.TrimSpace(sourceOpt[0])
+	}
 	hooksActive := a.hooks.Enabled()
 	if (guard == nil && !hooksActive) || len(toolCalls) == 0 {
-		return a.executeToolCallsOrdered(toolCalls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
+		return a.executeToolCallsOrdered(toolCalls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel, source)
 	}
 
-	source := "" // TODO: 接入网关来源（cli/telegram/qq/...），供 hook 按来源差异化匹配
 	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID
@@ -284,7 +398,26 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 		allowed = append(allowed, tc)
 	}
 
-	executed := a.executeToolCallsOrdered(allowed, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
+	// Preserve the serial barrier even if a computer-use call was blocked by a
+	// guard/hook and therefore is absent from allowed. The original batch still
+	// contained a desktop operation, so any surviving calls must not race it (or
+	// a hook that may inspect/alter desktop state).
+	if containsComputerUseToolCall(toolCalls) {
+		allowMixedParallel = false
+	}
+	var executed []executedToolCall
+	if containsComputerUseToolCall(toolCalls) && !containsComputerUseToolCall(allowed) {
+		// A computer call may have been blocked by the guard or a hook. Keep the
+		// remaining calls serial nevertheless: the original model batch still
+		// represented one desktop-dependent plan, and running its survivors in
+		// parallel would make the blocked/approved ordering nondeterministic.
+		for _, tc := range allowed {
+			one := a.executeToolCallsOrdered([]provider.ToolCall{tc}, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, false, source)
+			executed = append(executed, one...)
+		}
+	} else {
+		executed = a.executeToolCallsOrdered(allowed, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel, source)
+	}
 	results := make([]executedToolCall, 0, len(toolCalls))
 	next := 0
 	for idx := range toolCalls {
@@ -368,6 +501,51 @@ func emitChatToolResultEvent(events chan<- ChatEvent, toolName, shortResult stri
 			Content: "Memory Trace",
 		}
 	}
+}
+
+func emitChatObservationEvents(events chan<- ChatEvent, result executedToolCall) {
+	for _, obs := range result.Observations {
+		if strings.TrimSpace(obs.FrameID) == "" && strings.TrimSpace(obs.FilePath) == "" && len(obs.ImageData) == 0 {
+			continue
+		}
+		events <- ChatEvent{
+			Type: ChatEventObservation,
+			Name: result.ToolCall.Name,
+			Content: "Computer observation" + func() string {
+				if strings.TrimSpace(obs.FrameID) == "" {
+					return ""
+				}
+				return " " + strings.TrimSpace(obs.FrameID)
+			}(),
+			Observation: &ObservationEvent{
+				FrameID: obs.FrameID, FilePath: obs.FilePath, MimeType: obs.MimeType,
+				Width: obs.Width, Height: obs.Height,
+				ScaleFactor: obs.ScaleFactor, DisplayID: obs.DisplayID,
+				ActiveWindow: obs.ActiveWindow,
+			},
+		}
+	}
+	if approval := approvalEventFromMetadata(result.Metadata, result.ToolCall.Name); approval != nil {
+		events <- ChatEvent{Type: ChatEventApprovalRequired, Name: result.ToolCall.Name, Content: "Approval required", Approval: approval}
+	}
+}
+
+func approvalEventFromMetadata(metadata map[string]any, toolName string) *ApprovalEvent {
+	if len(metadata) == 0 {
+		return nil
+	}
+	raw, ok := metadata["approval_required"]
+	if !ok || raw == nil {
+		return nil
+	}
+	e := &ApprovalEvent{Tool: toolName}
+	if m, ok := raw.(map[string]any); ok {
+		e.RequestID, _ = m["request_id"].(string)
+		e.Action, _ = m["action"].(string)
+		e.Reason, _ = m["reason"].(string)
+		e.FrameID, _ = m["frame_id"].(string)
+	}
+	return e
 }
 
 const chatEventMemoryTraceName = "__memory_trace"

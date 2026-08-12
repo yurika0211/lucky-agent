@@ -119,6 +119,23 @@ func missingMediaPaths(text string) []string {
 	return uniqueNonEmptyStrings(missing)
 }
 
+// sanitizeHistoricalMediaReferences removes standalone MEDIA directives that
+// point at files which no longer exist. Session history can outlive temporary
+// screenshots; retaining those old paths makes a later, unrelated turn
+// repeat the stale directive and causes a Telegram upload failure.
+func sanitizeHistoricalMediaReferences(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return text
+	}
+	return mediaPathPattern.ReplaceAllStringFunc(text, func(match string) string {
+		submatches := mediaPathPattern.FindStringSubmatch(match)
+		if len(submatches) < 2 || pathExists(submatches[1]) {
+			return match
+		}
+		return ""
+	})
+}
+
 func cleanArtifactPath(path string) string {
 	path = strings.TrimSpace(path)
 	path = strings.Trim(path, "`\"',.;:)]}")

@@ -247,6 +247,7 @@ func (a *Agent) executePreparedMemoryGateToolCalls(
 	toolURLLastResult map[string]string,
 	duplicateFetchLimit int,
 	allowMixedParallel bool,
+	sourceOpt ...string,
 ) []executedToolCall {
 	if gate == nil || len(calls) == 0 {
 		return nil
@@ -265,7 +266,7 @@ func (a *Agent) executePreparedMemoryGateToolCalls(
 		}
 		return executed
 	}
-	executed := a.executeToolCallsOrdered(calls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel)
+	executed := a.executeToolCallsOrdered(calls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel, sourceOpt...)
 	for _, execResult := range executed {
 		gate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 	}
@@ -301,6 +302,7 @@ func (a *Agent) executeMemoryGateForLoop(
 			loopState.toolURLLastResult,
 			loopCfg.DuplicateFetchLimit,
 			true,
+			loopCfg.Source,
 		)
 	}
 
@@ -362,6 +364,7 @@ func (a *Agent) continueAfterStreamMemoryGate(
 			state.toolURLLastResult,
 			state.duplicateFetchLimit,
 			true,
+			state.source,
 		)
 	}
 	for _, execResult := range executed {

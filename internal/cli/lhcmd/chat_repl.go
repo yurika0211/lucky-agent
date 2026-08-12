@@ -78,6 +78,7 @@ func startREPL(mgr *config.Manager) error {
 	cfg := mgr.Get()
 	loopCfg := agent.DefaultLoopConfig()
 	agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+	loopCfg.Source = "tui"
 
 	fmt.Println("🍀 LuckyAgent Chat v0.15.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)

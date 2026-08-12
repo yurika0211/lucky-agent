@@ -398,6 +398,76 @@ func TestManagerSetFilesystemAllowedReadRoots(t *testing.T) {
 	}
 }
 
+func TestManagerSetComputerUseConfig(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	settings := map[string]string{
+		"tools.computer_use.enabled":                 "true",
+		"tools.computer_use.mode":                    "assist",
+		"tools.computer_use.backend":                 "x11",
+		"tools.computer_use.capture_dir":             "/tmp/la-frames",
+		"tools.computer_use.allowed_sources":         "cli,tui",
+		"tools.computer_use.allowed_windows":         "Settings,Calculator",
+		"tools.computer_use.max_steps":               "12",
+		"tools.computer_use.step_timeout_seconds":    "17",
+		"tools.computer_use.settle_milliseconds":     "500",
+		"tools.computer_use.max_observation_bytes":   "2048",
+		"tools.computer_use.retain_frames":           "3",
+		"tools.computer_use.allow_text_input":        "true",
+		"tools.computer_use.allow_high_risk_actions": "true",
+	}
+	for key, value := range settings {
+		if err := mgr.Set(key, value); err != nil {
+			t.Fatalf("Set(%s): %v", key, err)
+		}
+	}
+	cfg := mgr.Get().Tools.ComputerUse
+	if !cfg.Enabled || cfg.Mode != "assist" || cfg.Backend != "x11" || cfg.CaptureDir != "/tmp/la-frames" {
+		t.Fatalf("unexpected basic computer use config: %#v", cfg)
+	}
+	if len(cfg.AllowedSources) != 2 || cfg.AllowedSources[1] != "tui" || len(cfg.AllowedWindows) != 2 {
+		t.Fatalf("unexpected allowlists: %#v", cfg)
+	}
+	if cfg.MaxSteps != 12 || cfg.StepTimeoutSeconds != 17 || cfg.SettleMilliseconds != 500 || cfg.MaxObservationBytes != 2048 || cfg.RetainFrames != 3 {
+		t.Fatalf("unexpected limits: %#v", cfg)
+	}
+	if !cfg.AllowTextInput || !cfg.AllowHighRiskActions {
+		t.Fatalf("expected input/high-risk actions enabled: %#v", cfg)
+	}
+	cfg.AllowedSources[0] = "mutated"
+	if got := mgr.Get().Tools.ComputerUse.AllowedSources[0]; got != "cli" {
+		t.Fatalf("Get should clone computer use allowlists, got %q", got)
+	}
+}
+
+func TestDefaultComputerUsePolicy(t *testing.T) {
+	cfg := DefaultConfig().Tools.ComputerUse
+	if cfg.Enabled {
+		t.Fatal("computer use must be disabled by default")
+	}
+	if cfg.Mode != "observe" || cfg.Backend != "auto" || !cfg.RequireApproval {
+		t.Fatalf("unexpected default computer policy: %#v", cfg)
+	}
+	if cfg.MaxSteps <= 0 || cfg.TimeoutSeconds <= 0 || cfg.StepTimeoutSeconds <= 0 || cfg.KeepFrames <= 0 || cfg.FrameTTLSeconds <= 0 {
+		t.Fatalf("unexpected default computer limits: %#v", cfg)
+	}
+}
+
+func TestParseConfigDataMigratesLegacyComputerUseExtra(t *testing.T) {
+	cfg, err := parseConfigData([]byte(`{"extra":{"tools.computer_use.enabled":"true","tools.computer_use.mode":"control","tools.computer_use.allowed_sources":"cli,tui"}}`))
+	if err != nil {
+		t.Fatalf("parseConfigData: %v", err)
+	}
+	if !cfg.Tools.ComputerUse.Enabled || cfg.Tools.ComputerUse.Mode != "control" {
+		t.Fatalf("legacy computer-use extra was not migrated: %#v", cfg.Tools.ComputerUse)
+	}
+	if len(cfg.Tools.ComputerUse.AllowedSources) != 2 || cfg.Tools.ComputerUse.AllowedSources[1] != "tui" {
+		t.Fatalf("legacy source allowlist was not migrated: %#v", cfg.Tools.ComputerUse.AllowedSources)
+	}
+}
+
 func TestManagerSetAutonomyWorkerConfig(t *testing.T) {
 	mgr, err := NewManager()
 	if err != nil {

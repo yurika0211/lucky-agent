@@ -180,15 +180,6 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	if systemContent != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemContent})
 	}
-	// 拼接skill的内容
-	if p.agent != nil {
-		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHintWithOptions(routingText, skillRouteOptions{
-			DisabledTools: p.options.DisabledTools,
-		})); skillHint != "" {
-			messages = append(messages, provider.Message{Role: "system", Content: skillHint})
-		}
-	}
-
 	// Keep the append-only session history ahead of query-dependent evidence so
 	// provider prefix caches survive changes in memory and RAG retrieval.
 	if p.options.IncludeHistory && sess != nil {
@@ -198,6 +189,17 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	if p.options.IncludeRAG {
 		if ragMsg := p.buildRAGMessage(ctx, sess, routingText); ragMsg.Content != "" {
 			messages = append(messages, ragMsg)
+		}
+	}
+
+	// Skill routing is query-dependent. Keep it after the stable system prompt
+	// and append-only history so changing the current request does not alter the
+	// provider's reusable leading prefix.
+	if p.agent != nil {
+		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHintWithOptions(routingText, skillRouteOptions{
+			DisabledTools: p.options.DisabledTools,
+		})); skillHint != "" {
+			messages = append(messages, provider.Message{Role: "system", Content: skillHint})
 		}
 	}
 
@@ -1117,7 +1119,7 @@ func (p *contextPlanner) compactBoundaryContext(messages []provider.Message) ([]
 	}
 	out := make([]provider.Message, 0, len(segments))
 	for _, meta := range segments {
-		summary := strings.TrimSpace(meta.Summary)
+		summary := strings.TrimSpace(sanitizeHistoricalMediaReferences(meta.Summary))
 		if summary == "" {
 			continue
 		}
@@ -1544,6 +1546,9 @@ func (p *contextPlanner) persistCompressedSummary(sess *session.Session, message
 compactHistoryMessage 对历史消息做必要的压缩与清洗。
 */
 func (p *contextPlanner) compactHistoryMessage(msg provider.Message) provider.Message {
+	// Temporary computer screenshots must never be replayed as current delivery
+	// instructions. Drop stale MEDIA paths while preserving valid artifact refs.
+	msg.Content = sanitizeHistoricalMediaReferences(msg.Content)
 	if len(msg.ContentParts) > 0 {
 		msg.ContentParts = nil
 	}

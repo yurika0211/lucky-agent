@@ -256,6 +256,19 @@ func TestBuildHistoryMessagesPreservesPrefixWhenRawTurnAppends(t *testing.T) {
 	}
 }
 
+func TestBuildHistoryMessagesRedactsHistoricalMediaPaths(t *testing.T) {
+	sess := session.NewSession("stale-media-history", t.TempDir())
+	sess.AddMessage("user", "打开浏览器")
+	sess.AddMessage("assistant", "浏览器已打开。\n\nMEDIA:/tmp/screenshot_1738216169.png")
+
+	planner := &contextPlanner{est: contextx.NewTokenEstimator(4096), budget: contextBudget{History: 2400}}
+	messages := planner.buildHistoryMessages(sess, "成都今天的天气")
+	text := messagesToTestText(messages)
+	if strings.Contains(text, "MEDIA:/tmp/screenshot_1738216169.png") {
+		t.Fatalf("stale historical MEDIA path leaked into context: %s", text)
+	}
+}
+
 func TestContextPlannerPlacesDynamicMemoryAfterStableSessionHistory(t *testing.T) {
 	a := newTestAgentWithMemory(t)
 	if err := a.memory.SaveWithTier("cache-layout-memory-marker", "project", memory.TierLong, 0.9); err != nil {

@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -25,42 +26,69 @@ func NewGateway(registry *Registry) *Gateway {
 }
 
 func (g *Gateway) Execute(name string, args map[string]any, userID string) (*GatewayResult, error) {
+	return g.ExecuteWithContext(name, args, userID, ExecutionContext{Context: context.Background(), UserID: userID})
+}
+
+// ExecuteWithContext is the request-aware gateway entry point. It preserves
+// the legacy Execute behavior while allowing desktop tools to receive session,
+// source, cancellation, and approval metadata.
+func (g *Gateway) ExecuteWithContext(name string, args map[string]any, userID string, exec ExecutionContext) (*GatewayResult, error) {
 	start := time.Now()
 	if err := g.checkExecutable(name, userID); err != nil {
 		return nil, err
 	}
 
-	result, execErr := g.registry.CallDetailed(name, args)
+	if exec.Context == nil {
+		exec.Context = context.Background()
+	}
+	if exec.UserID == "" {
+		exec.UserID = userID
+	}
+	result, execErr := g.registry.CallDetailedWithContext(name, args, exec)
 	duration := time.Since(start)
 	g.recordUsage(name, userID, duration, execErr == nil)
 
 	return &GatewayResult{
-		ToolName:  name,
-		Output:    result.Output,
-		Metadata:  result.Metadata,
-		Duration:  duration,
-		Success:   execErr == nil,
-		Timestamp: start,
+		ToolName:     name,
+		Output:       result.Output,
+		Metadata:     result.Metadata,
+		Observations: result.Observations,
+		Duration:     duration,
+		Success:      execErr == nil,
+		Timestamp:    start,
 	}, execErr
 }
 
 func (g *Gateway) ExecuteWithShellContext(name string, args map[string]any, userID string, sc *ShellContext) (*GatewayResult, error) {
+	return g.ExecuteWithShellExecutionContext(name, args, userID, sc, ExecutionContext{Context: context.Background(), UserID: userID})
+}
+
+// ExecuteWithShellExecutionContext combines shell injection with request-aware
+// context dispatch.
+func (g *Gateway) ExecuteWithShellExecutionContext(name string, args map[string]any, userID string, sc *ShellContext, exec ExecutionContext) (*GatewayResult, error) {
 	start := time.Now()
 	if err := g.checkExecutable(name, userID); err != nil {
 		return nil, err
 	}
 
-	result, execErr := g.registry.CallDetailedWithShellContext(name, args, sc)
+	if exec.Context == nil {
+		exec.Context = context.Background()
+	}
+	if exec.UserID == "" {
+		exec.UserID = userID
+	}
+	result, execErr := g.registry.CallDetailedWithShellExecutionContext(name, args, sc, exec)
 	duration := time.Since(start)
 	g.recordUsage(name, userID, duration, execErr == nil)
 
 	return &GatewayResult{
-		ToolName:  name,
-		Output:    result.Output,
-		Metadata:  result.Metadata,
-		Duration:  duration,
-		Success:   execErr == nil,
-		Timestamp: start,
+		ToolName:     name,
+		Output:       result.Output,
+		Metadata:     result.Metadata,
+		Observations: result.Observations,
+		Duration:     duration,
+		Success:      execErr == nil,
+		Timestamp:    start,
 	}, execErr
 }
 
@@ -119,12 +147,13 @@ func (g *Gateway) Router() *ToolRouter {
 }
 
 type GatewayResult struct {
-	ToolName  string
-	Output    string
-	Metadata  map[string]any
-	Duration  time.Duration
-	Success   bool
-	Timestamp time.Time
+	ToolName     string
+	Output       string
+	Metadata     map[string]any
+	Observations []Observation
+	Duration     time.Duration
+	Success      bool
+	Timestamp    time.Time
 }
 
 func (r *GatewayResult) Format() string {

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/yurika0211/luckyagent/internal/session"
@@ -8,8 +9,9 @@ import (
 )
 
 type detailedToolExecutionResult struct {
-	Output   string
-	Metadata map[string]any
+	Output       string
+	Metadata     map[string]any
+	Observations []tool.Observation
 }
 
 func (a *Agent) executeToolMaybeDedupDetailed(
@@ -19,6 +21,7 @@ func (a *Agent) executeToolMaybeDedupDetailed(
 	toolURLRepeatCount map[string]int,
 	toolURLLastResult map[string]string,
 	duplicateFetchLimit int,
+	sourceOpt ...string,
 ) (detailedToolExecutionResult, error) {
 	if key := normalizedToolTarget(name, arguments); key != "" && toolURLRepeatCount[key] > duplicateFetchLimit {
 		if cached := stringsTrimSpace(toolURLLastResult[key]); cached != "" {
@@ -26,11 +29,14 @@ func (a *Agent) executeToolMaybeDedupDetailed(
 		}
 		return detailedToolExecutionResult{Output: "Skipped duplicate " + name + " for " + key + ". Reuse earlier fetched content."}, nil
 	}
-	return a.executeToolWithSessionDetailed(name, arguments, autoApprove, sess)
+	return a.executeToolWithSessionDetailed(name, arguments, autoApprove, sess, sourceOpt...)
 }
 
-func (a *Agent) executeToolWithSessionDetailed(name, arguments string, autoApprove bool, sess *session.Session) (out detailedToolExecutionResult, err error) {
-	_ = autoApprove
+func (a *Agent) executeToolWithSessionDetailed(name, arguments string, autoApprove bool, sess *session.Session, sourceOpt ...string) (out detailedToolExecutionResult, err error) {
+	source := "cli"
+	if len(sourceOpt) > 0 && stringsTrimSpace(sourceOpt[0]) != "" {
+		source = stringsTrimSpace(sourceOpt[0])
+	}
 	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID
@@ -56,10 +62,16 @@ func (a *Agent) executeToolWithSessionDetailed(name, arguments string, autoAppro
 	}
 
 	var result *tool.GatewayResult
+	exec := tool.ExecutionContext{
+		Context: context.Background(), SessionID: sessionID,
+		// The CLI/TUI loop is the local trusted entry point. Remote servers
+		// should set an explicit allowed_sources policy before enabling control.
+		Source: source, UserID: "", AutoApprove: autoApprove,
+	}
 	if sc != nil {
-		result, err = a.gateway.ExecuteWithShellContext(name, args, "", sc)
+		result, err = a.gateway.ExecuteWithShellExecutionContext(name, args, "", sc, exec)
 	} else {
-		result, err = a.gateway.Execute(name, args, "")
+		result, err = a.gateway.ExecuteWithContext(name, args, "", exec)
 	}
 	if err != nil {
 		return detailedToolExecutionResult{}, err
@@ -72,7 +84,7 @@ func (a *Agent) executeToolWithSessionDetailed(name, arguments string, autoAppro
 	if a.hooks.Enabled() {
 		output = a.hooks.RunPost(name, arguments, "", sessionID, output, nil)
 	}
-	return detailedToolExecutionResult{Output: output, Metadata: result.Metadata}, nil
+	return detailedToolExecutionResult{Output: output, Metadata: result.Metadata, Observations: result.Observations}, nil
 }
 
 func stringsTrimSpace(value string) string {

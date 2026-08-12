@@ -693,6 +693,348 @@ textarea:focus {
   text-overflow: ellipsis;
 }
 
+/* Collapsible sidebars */
+.left-col, .right-col {
+  position: relative;
+  transition: width 0.3s ease, transform 0.3s ease;
+}
+
+.left-col.collapsed {
+  width: 40px !important;
+  min-width: 40px !important;
+  overflow: hidden;
+}
+
+.right-col.collapsed {
+  width: 40px !important;
+  min-width: 40px !important;
+  overflow: hidden;
+}
+
+.collapse-button {
+  position: absolute;
+  top: 12px;
+  right: 8px;
+  z-index: 10;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s ease;
+}
+
+.collapse-button:hover {
+  background: var(--bg-mute);
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.left-col.collapsed .collapse-button {
+  right: 6px;
+}
+
+.right-col.collapsed .collapse-button {
+  left: 6px;
+}
+
+/* Attachments preview in composer */
+.attachments-preview {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.attachment-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  max-width: 120px;
+}
+
+.attachment-item img {
+  width: 80px;
+  height: 80px;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+}
+
+.attachment-item .file-icon {
+  font-size: 48px;
+  width: 80px;
+  height: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.attachment-name {
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remove-attachment {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--err);
+  color: white;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: bold;
+  line-height: 1;
+  opacity: 0.9;
+  transition: opacity 0.2s ease;
+}
+
+.remove-attachment:hover {
+  opacity: 1;
+}
+
+/* Message attachments */
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.message-attachment img {
+  max-width: 300px;
+  max-height: 300px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+}
+
+.message-attachment .file-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  color: var(--text);
+  text-decoration: none;
+  font-size: 13px;
+  transition: all 0.2s ease;
+}
+
+.message-attachment .file-attachment:hover {
+  background: var(--bg-mute);
+  border-color: var(--accent);
+}
+
+/* Composer actions */
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.icon-button {
+  padding: 8px 12px;
+  font-size: 18px;
+}
+
+.auto-scroll-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.auto-scroll-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.auto-scroll-toggle span {
+  cursor: pointer;
+}
+
+/* Session rename */
+.session-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.session-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 10px 12px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.session-main:hover {
+  background: var(--bg-mute);
+}
+
+.session-item.active .session-main {
+  background: var(--accent-soft);
+}
+
+.session-rename {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px;
+}
+
+.session-rename input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  font-size: 13px;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+}
+
+.session-rename-button {
+  padding: 4px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 14px;
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+
+.session-item:hover .session-rename-button {
+  opacity: 1;
+}
+
+.session-rename-button:hover {
+  background: var(--bg-mute);
+  color: var(--text);
+}
+
+/* Settings panel */
+.settings-panel {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.settings-body {
+  padding: 24px 0;
+}
+
+.settings-section {
+  margin-bottom: 32px;
+}
+
+.settings-section h3 {
+  margin: 0 0 8px 0;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.settings-desc {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.setting-item label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setting-item label span {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.setting-item input {
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
+.panel-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Message wrapping improvements */
+.bubble-body {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.bubble-body pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.bubble-body code {
+  overflow-wrap: break-word;
+}
+
+.message-stream {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
 .activity-panel {
   min-height: 380px;
 }

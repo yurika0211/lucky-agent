@@ -20,6 +20,16 @@ type Services struct {
 	Skills    *SkillToolService
 }
 
+// SetComputerUseService attaches the optional desktop automation tools to the
+// builtin registration set. It is separate from NewServices so existing
+// callers remain source-compatible while computer backends stay optional.
+func (s *Services) SetComputerUseService(service *ComputerUseToolService) *Services {
+	if s != nil && s.Builtin != nil {
+		s.Builtin.SetComputerUseService(service)
+	}
+	return s
+}
+
 // NewServices creates a tool service container.
 func NewServices(searchCfg *WebSearchConfig, opencliCfg *OpenCLIConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager, policies ...FilesystemPolicy) *Services {
 	policy := filesystemPolicyFromOptional(policies)
