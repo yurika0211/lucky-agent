@@ -29,16 +29,29 @@ type openAIResponse struct {
 }
 
 type openAIUsage struct {
-	PromptTokens        int `json:"prompt_tokens"`
-	CompletionTokens    int `json:"completion_tokens"`
-	TotalTokens         int `json:"total_tokens"`
-	InputTokens         int `json:"input_tokens,omitempty"`
-	OutputTokens        int `json:"output_tokens,omitempty"`
-	PromptTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens,omitempty"`
+	PromptTokens         int `json:"prompt_tokens"`
+	CompletionTokens     int `json:"completion_tokens"`
+	TotalTokens          int `json:"total_tokens"`
+	InputTokens          int `json:"input_tokens,omitempty"`
+	OutputTokens         int `json:"output_tokens,omitempty"`
+	CachedTokens         int `json:"cached_tokens,omitempty"`
+	CachedInputTokens    int `json:"cached_input_tokens,omitempty"`
+	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+	CacheReadTokens      int `json:"cache_read_tokens,omitempty"`
+	PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
+	PromptTokensDetails  *struct {
+		CachedTokens         int `json:"cached_tokens,omitempty"`
+		CachedInputTokens    int `json:"cached_input_tokens,omitempty"`
+		CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+		CacheReadTokens      int `json:"cache_read_tokens,omitempty"`
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
 	} `json:"prompt_tokens_details,omitempty"`
 	InputTokensDetails *struct {
-		CachedTokens int `json:"cached_tokens,omitempty"`
+		CachedTokens         int `json:"cached_tokens,omitempty"`
+		CachedInputTokens    int `json:"cached_input_tokens,omitempty"`
+		CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+		CacheReadTokens      int `json:"cache_read_tokens,omitempty"`
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens,omitempty"`
 	} `json:"input_tokens_details,omitempty"`
 	ClaudeCacheCreation5MTokens int `json:"claude_cache_creation_5_m_tokens,omitempty"`
 	ClaudeCacheCreation1HTokens int `json:"claude_cache_creation_1_h_tokens,omitempty"`
@@ -163,16 +176,43 @@ func readSSECaptureUsage(path string) (capturedUsage, bool) {
 	return last, true
 }
 
+func maxUsageInt(current int, values ...int) int {
+	for _, value := range values {
+		if value > current {
+			current = value
+		}
+	}
+	return current
+}
+
 func capturedUsageFromOpenAI(usage *openAIUsage) capturedUsage {
 	if usage == nil {
 		return capturedUsage{}
 	}
-	cached := 0
-	if usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens > cached {
-		cached = usage.PromptTokensDetails.CachedTokens
+	cached := maxUsageInt(0,
+		usage.CachedTokens,
+		usage.CachedInputTokens,
+		usage.CacheReadInputTokens,
+		usage.CacheReadTokens,
+		usage.PromptCacheHitTokens,
+	)
+	if usage.PromptTokensDetails != nil {
+		cached = maxUsageInt(cached,
+			usage.PromptTokensDetails.CachedTokens,
+			usage.PromptTokensDetails.CachedInputTokens,
+			usage.PromptTokensDetails.CacheReadInputTokens,
+			usage.PromptTokensDetails.CacheReadTokens,
+			usage.PromptTokensDetails.PromptCacheHitTokens,
+		)
 	}
-	if usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens > cached {
-		cached = usage.InputTokensDetails.CachedTokens
+	if usage.InputTokensDetails != nil {
+		cached = maxUsageInt(cached,
+			usage.InputTokensDetails.CachedTokens,
+			usage.InputTokensDetails.CachedInputTokens,
+			usage.InputTokensDetails.CacheReadInputTokens,
+			usage.InputTokensDetails.CacheReadTokens,
+			usage.InputTokensDetails.PromptCacheHitTokens,
+		)
 	}
 	prompt := usage.PromptTokens
 	if prompt == 0 {
