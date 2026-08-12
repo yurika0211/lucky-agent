@@ -27,9 +27,43 @@ func sanitizeOutgoingText(input string) string {
 	removed := 0
 
 	protocolSeen := false
+	// Protocol cleanup must not inspect lines inside a normal Markdown code
+	// block. A standalone `}` (or even `tool_call`) is valid source code and
+	// must not be treated as protocol residue.
+	inCodeFence := false
+	inProtocolFence := false
 	for idx, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
+			kept = append(kept, line)
+			continue
+		}
+		if isMarkdownFenceLine(trimmed) {
+			if inProtocolFence {
+				protocolSeen = true
+				removed++
+				inProtocolFence = false
+				continue
+			}
+			if inCodeFence {
+				kept = append(kept, line)
+				inCodeFence = false
+				continue
+			}
+			// Only classify an opening fence from the payload immediately
+			// following it. Looking at the previous line makes a normal code
+			// block look like a protocol block when a tool call came before it.
+			if isProtocolFenceOpening(lines, idx) {
+				protocolSeen = true
+				removed++
+				inProtocolFence = true
+				continue
+			}
+			kept = append(kept, line)
+			inCodeFence = true
+			continue
+		}
+		if inCodeFence {
 			kept = append(kept, line)
 			continue
 		}
@@ -60,6 +94,13 @@ func sanitizeOutgoingText(input string) string {
 		return internalOutputFilteredFallback
 	}
 	return out
+}
+
+func isProtocolFenceOpening(lines []string, idx int) bool {
+	if idx < 0 || idx >= len(lines) || !isMarkdownFenceLine(strings.TrimSpace(lines[idx])) {
+		return false
+	}
+	return neighborLooksLikeProtocol(lines, idx, 1)
 }
 
 func isProtocolFenceLine(lines []string, idx int) bool {

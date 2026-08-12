@@ -18,3 +18,23 @@ func TestSanitizeOutgoingText_RemovesProtocolFenceWrapper(t *testing.T) {
 		t.Fatalf("unexpected result.\nwant: %q\ngot:  %q", want, got)
 	}
 }
+
+func TestSanitizeOutgoingText_PreservesBracesAfterProtocolInsideCodeFence(t *testing.T) {
+	in := "我先检查一下。\n" +
+		"to=shell\n" +
+		"{\"command\":\"go test ./...\"}\n" +
+		"```go\n" +
+		"func main() {\n" +
+		"\tif ready {\n" +
+		"\t\tstart()\n" +
+		"\t}\n" +
+		"}\n" +
+		"```\n" +
+		"检查完成。"
+
+	got := sanitizeOutgoingText(in)
+	want := "我先检查一下。\n```go\nfunc main() {\n\tif ready {\n\t\tstart()\n\t}\n}\n```\n检查完成。"
+	if got != want {
+		t.Fatalf("unexpected result.\nwant: %q\ngot:  %q", want, got)
+	}
+}
