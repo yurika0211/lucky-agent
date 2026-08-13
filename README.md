@@ -1,3 +1,5 @@
+
+
 <div align="center">
   <img src="public/brand.png" alt="Lucky Agent Brand" width="600">
 </div>
@@ -56,7 +58,7 @@ go run ./cmd/la init
 ### 1. 初始化运行目录
 
 ```bash
-la run ./cmd/la init
+go run ./cmd/la init
 ```
 
 初始化完成后，LuckyAgent 会在 home 目录下留出一块自己的运行空间。默认结构大致如下：
