@@ -3,13 +3,17 @@ package telegram
 import (
 	"bytes"
 	"html"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
+	xhtml "golang.org/x/net/html"
 )
 
 var (
@@ -22,6 +26,12 @@ var (
 type telegramHTMLBlock struct {
 	token string
 	html  string
+}
+
+type telegramHTMLTag struct {
+	name  string
+	open  string
+	close string
 }
 
 // formatTelegramRichText renders markdown-ish LLM output into the subset of
@@ -437,6 +447,306 @@ func (r *telegramHTMLRenderer) preserveAllowedHTML(raw string) string {
 
 func telegramHTMLToken(kind string, idx int) string {
 	return "TG_" + kind + "_TOKEN_" + strconv.Itoa(idx) + "_END"
+}
+
+func sanitizeTelegramHTML(input string) string {
+	if strings.TrimSpace(input) == "" {
+		return ""
+	}
+
+	tokenizer := xhtml.NewTokenizer(strings.NewReader(input))
+	var output strings.Builder
+	stack := make([]telegramHTMLTag, 0, 8)
+
+	for {
+		tokenType := tokenizer.Next()
+		if tokenType == xhtml.ErrorToken {
+			break
+		}
+
+		raw := string(tokenizer.Raw())
+		token := tokenizer.Token()
+		switch tokenType {
+		case xhtml.TextToken:
+			output.WriteString(html.EscapeString(token.Data))
+		case xhtml.StartTagToken:
+			tag, ok := normalizeTelegramHTMLTag(token)
+			if !ok {
+				output.WriteString(html.EscapeString(raw))
+				continue
+			}
+			output.WriteString(tag.open)
+			stack = append(stack, tag)
+		case xhtml.EndTagToken:
+			tag, ok := normalizeTelegramHTMLEndTag(token.Data)
+			if !ok {
+				output.WriteString(html.EscapeString(raw))
+				continue
+			}
+			match := -1
+			for index := len(stack) - 1; index >= 0; index-- {
+				if stack[index].name == tag.name {
+					match = index
+					break
+				}
+			}
+			if match < 0 {
+				output.WriteString(html.EscapeString(raw))
+				continue
+			}
+			for index := len(stack) - 1; index >= match; index-- {
+				output.WriteString(stack[index].close)
+			}
+			stack = stack[:match]
+		default:
+			output.WriteString(html.EscapeString(raw))
+		}
+	}
+
+	for index := len(stack) - 1; index >= 0; index-- {
+		output.WriteString(stack[index].close)
+	}
+	return strings.TrimSpace(output.String())
+}
+
+func normalizeTelegramHTMLTag(token xhtml.Token) (telegramHTMLTag, bool) {
+	name := strings.ToLower(token.Data)
+	switch name {
+	case "b", "strong":
+		return telegramHTMLTag{name: "b", open: "<b>", close: "</b>"}, true
+	case "i", "em":
+		return telegramHTMLTag{name: "i", open: "<i>", close: "</i>"}, true
+	case "u", "ins":
+		return telegramHTMLTag{name: "u", open: "<u>", close: "</u>"}, true
+	case "s", "strike", "del":
+		return telegramHTMLTag{name: "s", open: "<s>", close: "</s>"}, true
+	case "code":
+		return telegramHTMLTag{name: "code", open: "<code>", close: "</code>"}, true
+	case "pre":
+		return telegramHTMLTag{name: "pre", open: "<pre>", close: "</pre>"}, true
+	case "tg-spoiler":
+		return telegramHTMLTag{name: "tg-spoiler", open: "<tg-spoiler>", close: "</tg-spoiler>"}, true
+	case "span":
+		if telegramHTMLAttribute(token, "class") == "tg-spoiler" {
+			return telegramHTMLTag{name: "tg-spoiler", open: "<tg-spoiler>", close: "</tg-spoiler>"}, true
+		}
+	case "blockquote":
+		if telegramHTMLHasAttribute(token, "expandable") {
+			return telegramHTMLTag{name: "blockquote", open: "<blockquote expandable>", close: "</blockquote>"}, true
+		}
+		return telegramHTMLTag{name: "blockquote", open: "<blockquote>", close: "</blockquote>"}, true
+	case "a":
+		href := telegramHTMLAttribute(token, "href")
+		if isTelegramSafeURL(href) {
+			return telegramHTMLTag{name: "a", open: `<a href="` + html.EscapeString(href) + `">`, close: "</a>"}, true
+		}
+	}
+	return telegramHTMLTag{}, false
+}
+
+func normalizeTelegramHTMLEndTag(name string) (telegramHTMLTag, bool) {
+	switch strings.ToLower(name) {
+	case "b", "strong":
+		return telegramHTMLTag{name: "b", close: "</b>"}, true
+	case "i", "em":
+		return telegramHTMLTag{name: "i", close: "</i>"}, true
+	case "u", "ins":
+		return telegramHTMLTag{name: "u", close: "</u>"}, true
+	case "s", "strike", "del":
+		return telegramHTMLTag{name: "s", close: "</s>"}, true
+	case "code":
+		return telegramHTMLTag{name: "code", close: "</code>"}, true
+	case "pre":
+		return telegramHTMLTag{name: "pre", close: "</pre>"}, true
+	case "tg-spoiler", "span":
+		return telegramHTMLTag{name: "tg-spoiler", close: "</tg-spoiler>"}, true
+	case "blockquote":
+		return telegramHTMLTag{name: "blockquote", close: "</blockquote>"}, true
+	case "a":
+		return telegramHTMLTag{name: "a", close: "</a>"}, true
+	default:
+		return telegramHTMLTag{}, false
+	}
+}
+
+func telegramHTMLAttribute(token xhtml.Token, key string) string {
+	for _, attr := range token.Attr {
+		if strings.EqualFold(attr.Key, key) {
+			return strings.TrimSpace(attr.Val)
+		}
+	}
+	return ""
+}
+
+func telegramHTMLHasAttribute(token xhtml.Token, key string) bool {
+	for _, attr := range token.Attr {
+		if strings.EqualFold(attr.Key, key) {
+			return true
+		}
+	}
+	return false
+}
+
+func isTelegramSafeURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" {
+		return false
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http", "https", "tg", "mailto":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitTelegramHTMLChunks(message string, maxLen int) []string {
+	if message == "" {
+		return []string{""}
+	}
+	if maxLen <= 0 || maxLen > 4096 {
+		maxLen = 4096
+	}
+	if len(message) <= maxLen {
+		return []string{message}
+	}
+
+	var chunks []string
+	var current strings.Builder
+	stack := make([]telegramHTMLTag, 0, 8)
+
+	closingLength := func() int {
+		length := 0
+		for _, tag := range stack {
+			length += len(tag.close)
+		}
+		return length
+	}
+	reopen := func() {
+		for _, tag := range stack {
+			current.WriteString(tag.open)
+		}
+	}
+	flush := func(reopenTags bool) {
+		if current.Len() == 0 {
+			return
+		}
+		for index := len(stack) - 1; index >= 0; index-- {
+			current.WriteString(stack[index].close)
+		}
+		chunks = append(chunks, current.String())
+		current.Reset()
+		if reopenTags {
+			reopen()
+		}
+	}
+
+	for remaining := message; remaining != ""; {
+		if remaining[0] == '<' {
+			end := strings.IndexByte(remaining, '>')
+			if end >= 0 {
+				rawTag := remaining[:end+1]
+				if strings.HasPrefix(rawTag, "</") {
+					if len(rawTag) <= maxLen-current.Len() {
+						current.WriteString(rawTag)
+						if len(stack) > 0 {
+							stack = stack[:len(stack)-1]
+						}
+						remaining = remaining[end+1:]
+						continue
+					}
+					flush(true)
+					continue
+				}
+
+				name := telegramHTMLTagName(rawTag)
+				close := telegramHTMLCloseTag(name)
+				if close != "" && current.Len()+len(rawTag)+closingLength()+len(close) > maxLen && current.Len() > 0 {
+					flush(true)
+					continue
+				}
+				current.WriteString(rawTag)
+				stack = append(stack, telegramHTMLTag{name: name, open: rawTag, close: close})
+				remaining = remaining[end+1:]
+				continue
+			}
+		}
+
+		nextTag := strings.IndexByte(remaining, '<')
+		text := remaining
+		if nextTag >= 0 {
+			text = remaining[:nextTag]
+		}
+		textLength := len(text)
+		for text != "" {
+			available := maxLen - current.Len() - closingLength()
+			if available <= 0 {
+				flush(true)
+				continue
+			}
+			part := telegramHTMLTextPrefix(text, available)
+			if part == "" {
+				for _, r := range text {
+					part = string(r)
+					break
+				}
+			}
+			if len(part) < len(text) {
+				part = telegramPreferredHTMLBreak(part)
+			}
+			current.WriteString(part)
+			text = text[len(part):]
+			if text != "" {
+				flush(true)
+			}
+		}
+		remaining = remaining[textLength:]
+	}
+
+	flush(false)
+	return chunks
+}
+
+func telegramHTMLTagName(tag string) string {
+	name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(tag, "<"), ">"))
+	name = strings.TrimPrefix(name, "/")
+	if index := strings.IndexAny(name, " \t\r\n"); index >= 0 {
+		name = name[:index]
+	}
+	return strings.ToLower(name)
+}
+
+func telegramHTMLCloseTag(name string) string {
+	switch name {
+	case "b", "i", "u", "s", "code", "pre", "tg-spoiler", "blockquote", "a":
+		return "</" + name + ">"
+	default:
+		return ""
+	}
+}
+
+func telegramHTMLTextPrefix(text string, maxLen int) string {
+	part := truncateTelegramRunes(text, maxLen)
+	if ampersand := strings.LastIndex(part, "&"); ampersand >= 0 && !strings.Contains(part[ampersand:], ";") {
+		part = part[:ampersand]
+	}
+	return part
+}
+
+func telegramPreferredHTMLBreak(text string) string {
+	for _, marker := range []string{"\n\n", "\n", "。", "！", "？", ". ", "; ", "；"} {
+		if index := strings.LastIndex(text, marker); index >= 0 {
+			return text[:index+len(marker)]
+		}
+	}
+	for index := len(text); index > 0; {
+		lastRune, size := utf8.DecodeLastRuneInString(text[:index])
+		index -= size
+		if unicode.IsSpace(lastRune) {
+			return text[:index+size]
+		}
+	}
+	return text
 }
 
 func documentSeparator(prev, next ast.Node) string {

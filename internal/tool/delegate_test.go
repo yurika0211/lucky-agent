@@ -198,6 +198,19 @@ func TestDelegateTaskAutoModeWritesPlannerTrace(t *testing.T) {
 	if _, ok := status["planner_trace"].(map[string]any); !ok {
 		t.Fatalf("expected planner trace in status: %+v", status)
 	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		record, ok, err := store.Get(taskID)
+		if err != nil {
+			t.Fatalf("get task record: %v", err)
+		}
+		if ok && record.Status == taskstore.StatusCompleted {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for task completion: %s", taskID)
 }
 
 func TestTaskStatusReadsUnifiedTaskEvents(t *testing.T) {

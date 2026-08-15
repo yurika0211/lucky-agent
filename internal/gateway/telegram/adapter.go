@@ -35,6 +35,7 @@ type Adapter struct {
 	mu        sync.RWMutex
 	handler   gateway.MessageHandler
 	rateLimit map[string]*rateBucket
+	threadIDs map[string]string
 
 	// Bot username for mention detection
 	botUsername string
@@ -66,6 +67,7 @@ func NewAdapter(cfg Config) *Adapter {
 	return &Adapter{
 		cfg:       cfg,
 		rateLimit: make(map[string]*rateBucket),
+		threadIDs: make(map[string]string),
 	}
 }
 
@@ -312,14 +314,11 @@ func (a *Adapter) SendWithReplyReceipt(ctx context.Context, chatID string, reply
 	if err != nil {
 		return gateway.SentMessage{}, fmt.Errorf("telegram: invalid reply-to message ID %q: %w", replyToMsgID, err)
 	}
+	threadID := a.threadIDForReply(chatID, replyToMsgID)
 
 	receipt := gateway.SentMessage{ChatID: chatID}
-	for i, chunk := range chunks {
-		replyID := 0
-		if i == 0 {
-			replyID = replyToID
-		}
-		sentID, err := a.sendChunk(ctx, chatIDInt, replyID, chunk)
+	for _, chunk := range chunks {
+		sentID, err := a.sendChunkWithThread(ctx, chatIDInt, replyToID, threadID, chunk)
 		if err != nil {
 			return gateway.SentMessage{}, err
 		}
@@ -352,13 +351,10 @@ func (a *Adapter) SendWithReplyHTML(ctx context.Context, chatID string, replyToM
 	if err != nil {
 		return fmt.Errorf("telegram: invalid reply-to message ID %q: %w", replyToMsgID, err)
 	}
+	threadID := a.threadIDForReply(chatID, replyToMsgID)
 
-	for i, chunk := range chunks {
-		replyID := 0
-		if i == 0 {
-			replyID = replyToID
-		}
-		if err := a.sendChunkHTML(ctx, chatIDInt, replyID, chunk); err != nil {
+	for _, chunk := range chunks {
+		if err := a.sendChunkHTMLWithThread(ctx, chatIDInt, replyToID, threadID, chunk); err != nil {
 			return err
 		}
 		a.waitRateLimit(chatID)
@@ -779,28 +775,67 @@ func (a *Adapter) poll(ctx context.Context) {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = a.cfg.PollTimeout
 
-	updates := a.bot.GetUpdatesChan(u)
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case update := <-updates:
+		default:
+		}
+
+		response, err := a.bot.Request(u)
+		if err != nil {
+			fmt.Printf("[telegram] get updates failed: %v\n", err)
+			if !waitForTelegramPollRetry(ctx) {
+				return
+			}
+			continue
+		}
+
+		updates, err := decodeTelegramTopicUpdates(response.Result)
+		if err != nil {
+			fmt.Printf("[telegram] decode updates failed: %v\n", err)
+			if !waitForTelegramPollRetry(ctx) {
+				return
+			}
+			continue
+		}
+
+		for _, update := range updates {
+			if update.UpdateID < u.Offset {
+				continue
+			}
+			u.Offset = update.UpdateID + 1
 			// v0.36.0: 处理所有消息类型（文本、图片、语音、视频、文件）
 			if update.Message == nil {
 				continue
 			}
-			a.processUpdate(ctx, update)
+			a.processUpdateWithThreadID(ctx, update.Update, update.MessageThreadID)
 		}
+	}
+}
+
+func waitForTelegramPollRetry(ctx context.Context) bool {
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
 // processUpdate converts a Telegram update to a gateway.Message and dispatches it.
 func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
+	a.processUpdateWithThreadID(ctx, update, "")
+}
+
+func (a *Adapter) processUpdateWithThreadID(ctx context.Context, update tgbotapi.Update, threadID string) {
 	tgMsg := update.Message
 	if tgMsg == nil {
 		return
 	}
+	a.rememberTelegramThread(strconv.FormatInt(tgMsg.Chat.ID, 10), strconv.Itoa(tgMsg.MessageID), threadID)
 
 	chatID := strconv.FormatInt(tgMsg.Chat.ID, 10)
 	fmt.Printf("[telegram] received msg: chatID=%s, chatType=%s, from=%v, text=%q\n",
@@ -816,7 +851,7 @@ func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
 		return
 	}
 
-	msg := a.convertMessage(tgMsg)
+	msg := a.convertMessageWithThreadID(tgMsg, threadID)
 
 	// In group chats, only respond to @bot mentions or replies to bot's own messages
 	if msg.Chat.Type != gateway.ChatPrivate {
@@ -854,10 +889,18 @@ func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
 
 // convertMessage converts a Telegram message to a gateway.Message.
 func (a *Adapter) convertMessage(tgMsg *tgbotapi.Message) *gateway.Message {
-	return a.convertMessageWithAttachments(tgMsg, true)
+	return a.convertMessageWithThreadID(tgMsg, "")
+}
+
+func (a *Adapter) convertMessageWithThreadID(tgMsg *tgbotapi.Message, threadID string) *gateway.Message {
+	return a.convertMessageWithAttachmentsAndThreadID(tgMsg, true, threadID)
 }
 
 func (a *Adapter) convertMessageWithAttachments(tgMsg *tgbotapi.Message, includeAttachments bool) *gateway.Message {
+	return a.convertMessageWithAttachmentsAndThreadID(tgMsg, includeAttachments, "")
+}
+
+func (a *Adapter) convertMessageWithAttachmentsAndThreadID(tgMsg *tgbotapi.Message, includeAttachments bool, threadID string) *gateway.Message {
 	chatType := gateway.ChatPrivate
 	switch tgMsg.Chat.Type {
 	case "group":
@@ -869,7 +912,8 @@ func (a *Adapter) convertMessageWithAttachments(tgMsg *tgbotapi.Message, include
 	}
 
 	msg := &gateway.Message{
-		ID: strconv.Itoa(tgMsg.MessageID),
+		ID:       strconv.Itoa(tgMsg.MessageID),
+		ThreadID: strings.TrimSpace(threadID),
 		Chat: gateway.Chat{
 			ID:       strconv.FormatInt(tgMsg.Chat.ID, 10),
 			Type:     chatType,
@@ -921,7 +965,7 @@ func (a *Adapter) convertMessageWithAttachments(tgMsg *tgbotapi.Message, include
 
 	// Parse reply
 	if tgMsg.ReplyToMessage != nil {
-		replyMsg := a.convertMessageWithAttachments(tgMsg.ReplyToMessage, true)
+		replyMsg := a.convertMessageWithAttachmentsAndThreadID(tgMsg.ReplyToMessage, true, threadID)
 		msg.ReplyTo = replyMsg
 	}
 
@@ -1270,21 +1314,40 @@ func (a *Adapter) isReplyToBot(tgMsg *tgbotapi.Message) bool {
 	return tgMsg.ReplyToMessage.From != nil && tgMsg.ReplyToMessage.From.IsBot
 }
 
-// sendChunk sends a single message chunk to Telegram.
-func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text string) (int, error) {
-	plainText := text
-	msg := tgbotapi.NewMessage(chatID, formatTelegramRichText(text))
-	if replyTo > 0 {
-		msg.ReplyToMessageID = replyTo
+func (a *Adapter) rememberTelegramThread(chatID string, messageID string, threadID string) {
+	chatID = strings.TrimSpace(chatID)
+	messageID = strings.TrimSpace(messageID)
+	threadID = strings.TrimSpace(threadID)
+	if chatID == "" || messageID == "" || threadID == "" {
+		return
 	}
-	msg.ParseMode = tgbotapi.ModeHTML
+	a.mu.Lock()
+	a.threadIDs[chatID+":"+messageID] = threadID
+	a.mu.Unlock()
+}
 
-	sent, err := a.bot.Send(msg)
+func (a *Adapter) threadIDForReply(chatID string, messageID string) int {
+	key := strings.TrimSpace(chatID) + ":" + strings.TrimSpace(messageID)
+	a.mu.RLock()
+	threadID := a.threadIDs[key]
+	a.mu.RUnlock()
+	value, err := strconv.Atoi(threadID)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
+}
+
+// sendChunk sends a single message chunk to Telegram.
+func (a *Adapter) sendChunk(ctx context.Context, chatID int64, replyTo int, text string) (int, error) {
+	return a.sendChunkWithThread(ctx, chatID, replyTo, 0, text)
+}
+
+func (a *Adapter) sendChunkWithThread(_ context.Context, chatID int64, replyTo int, threadID int, text string) (int, error) {
+	plainText := text
+	sent, err := a.sendTelegramText(chatID, replyTo, threadID, formatTelegramRichText(text), tgbotapi.ModeHTML)
 	if err != nil {
-		// If rich text rendering fails, fall back to plain text.
-		msg.ParseMode = ""
-		msg.Text = plainText
-		sent, err = a.bot.Send(msg)
+		sent, err = a.sendTelegramText(chatID, replyTo, threadID, plainText, "")
 		if err != nil {
 			return 0, fmt.Errorf("telegram: send message: %w", err)
 		}
@@ -1293,17 +1356,34 @@ func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text s
 	return sent.MessageID, nil
 }
 
-func (a *Adapter) sendChunkHTML(_ context.Context, chatID int64, replyTo int, text string) error {
-	msg := tgbotapi.NewMessage(chatID, text)
-	if replyTo > 0 {
-		msg.ReplyToMessageID = replyTo
-	}
-	msg.ParseMode = tgbotapi.ModeHTML
+func (a *Adapter) sendChunkHTML(ctx context.Context, chatID int64, replyTo int, text string) error {
+	return a.sendChunkHTMLWithThread(ctx, chatID, replyTo, 0, text)
+}
 
-	if _, err := a.bot.Send(msg); err != nil {
+func (a *Adapter) sendChunkHTMLWithThread(_ context.Context, chatID int64, replyTo int, threadID int, text string) error {
+	if _, err := a.sendTelegramText(chatID, replyTo, threadID, text, tgbotapi.ModeHTML); err != nil {
 		return fmt.Errorf("telegram: send html message: %w", err)
 	}
 	return nil
+}
+
+func (a *Adapter) sendTelegramText(chatID int64, replyTo int, threadID int, text string, parseMode string) (tgbotapi.Message, error) {
+	params := tgbotapi.Params{}
+	params.AddNonZero64("chat_id", chatID)
+	params.AddNonZero("reply_to_message_id", replyTo)
+	params.AddNonZero("message_thread_id", threadID)
+	params["text"] = text
+	params.AddNonEmpty("parse_mode", parseMode)
+
+	response, err := a.bot.MakeRequest("sendMessage", params)
+	if err != nil {
+		return tgbotapi.Message{}, err
+	}
+	var sent tgbotapi.Message
+	if err := json.Unmarshal(response.Result, &sent); err != nil {
+		return tgbotapi.Message{}, err
+	}
+	return sent, nil
 }
 
 // splitMessage splits a message into chunks that fit within Telegram's 4096 char limit.
@@ -1326,105 +1406,7 @@ func (a *Adapter) splitHTMLMessage(message string) []string {
 	if maxLen <= 0 || maxLen > 4096 {
 		maxLen = 4096
 	}
-	if len(message) <= maxLen {
-		return []string{message}
-	}
-
-	const (
-		preCodeOpenTag  = "<pre><code>"
-		preCodeCloseTag = "</code></pre>"
-	)
-	if minCodeChunkLen := len(preCodeOpenTag) + len(preCodeCloseTag) + 1; maxLen < minCodeChunkLen {
-		maxLen = minCodeChunkLen
-	}
-
-	var chunks []string
-	var current strings.Builder
-	preCodeOpen := false
-
-	flush := func(reopen bool) {
-		if current.Len() == 0 {
-			return
-		}
-		chunk := current.String()
-		if preCodeOpen {
-			chunk += preCodeCloseTag
-		}
-		chunks = append(chunks, chunk)
-		current.Reset()
-		if reopen && preCodeOpen {
-			current.WriteString(preCodeOpenTag)
-		}
-	}
-
-	appendText := func(text string) {
-		for len(text) > 0 {
-			reserved := 0
-			if preCodeOpen {
-				reserved = len(preCodeCloseTag)
-			}
-			available := maxLen - current.Len() - reserved
-			if available <= 0 {
-				flush(true)
-				continue
-			}
-			if len(text) <= available {
-				current.WriteString(text)
-				return
-			}
-			part := truncateTelegramRunes(text, available)
-			if part == "" {
-				part = text[:available]
-			}
-			current.WriteString(part)
-			text = text[len(part):]
-			flush(true)
-		}
-	}
-
-	appendTag := func(tag string, opens bool) {
-		needed := len(tag)
-		if opens {
-			needed += len(preCodeCloseTag)
-		}
-		if current.Len()+needed > maxLen && current.Len() > 0 {
-			flush(true)
-		}
-		current.WriteString(tag)
-		preCodeOpen = opens
-	}
-
-	for i := 0; i < len(message); {
-		rest := strings.ToLower(message[i:])
-		nextOpen := strings.Index(rest, preCodeOpenTag)
-		nextClose := strings.Index(rest, preCodeCloseTag)
-
-		if nextOpen < 0 && nextClose < 0 {
-			appendText(message[i:])
-			break
-		}
-
-		nextTag := nextOpen
-		tag := preCodeOpenTag
-		opens := true
-		if nextClose >= 0 && (nextOpen < 0 || nextClose < nextOpen) {
-			nextTag = nextClose
-			tag = preCodeCloseTag
-			opens = false
-		}
-
-		if nextTag > 0 {
-			appendText(message[i : i+nextTag])
-			i += nextTag
-			continue
-		}
-
-		appendTag(message[i:i+len(tag)], opens)
-		i += len(tag)
-	}
-
-	flush(false)
-	return chunks
+	return splitTelegramHTMLChunks(sanitizeTelegramHTML(message), maxLen)
 }
 
 func truncateTelegramMarkdownForRender(text string, maxLen int) string {
@@ -1518,8 +1500,15 @@ func splitTelegramMessageChunks(message string, maxLen int) []string {
 					if take <= 0 {
 						take = maxLen
 					}
-					current.WriteString(line[:take])
-					line = line[take:]
+					part := truncateTelegramRunes(line, take)
+					if part == "" {
+						for _, r := range line {
+							part = string(r)
+							break
+						}
+					}
+					current.WriteString(part)
+					line = line[len(part):]
 					chunk, reopen := finalizeTelegramChunk(current.String(), inFence)
 					if chunk != "" {
 						chunks = append(chunks, chunk)

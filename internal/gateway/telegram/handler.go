@@ -456,6 +456,7 @@ func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 		"models":  h.handleModels,
 		"soul":    h.handleSoul,
 		"tools":   h.handleTools,
+		"tool":    h.handleTool,
 		"reset":   h.handleReset,
 		"history": h.handleHistory,
 		"session": h.handleSession,
@@ -467,6 +468,7 @@ func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 		"resume":         h.handleResume,
 		"rename":         h.handleRename,
 		"skills":         h.handleSkills,
+		"skill":          h.handleSkill,
 		"mcp":            h.handleMCP,
 		"approve":        h.handleApprove,
 		"deny":           h.handleDeny,
@@ -1126,13 +1128,14 @@ func formatAmbiguousSessionSwitchMessage(query string, matches []session.Session
 func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, input agent.UserTurnInput) error {
 	input = h.inputWithMessageScope(input, msg)
 	msgCopy := *msg
-	position, startWorker := h.enqueueChatRequest(msg.Chat.ID, &queuedChatRequest{
+	scope := telegramConversationScope(msg)
+	position, startWorker := h.enqueueChatRequest(scope, &queuedChatRequest{
 		ctx:   ctx,
 		msg:   &msgCopy,
 		input: input,
 	})
 	if startWorker {
-		go h.runChatQueue(msg.Chat.ID)
+		go h.runChatQueue(scope)
 	}
 	if position > 1 {
 		h.notifyQueued(msg.Chat.ID, msg.ID, position-1)
@@ -1371,7 +1374,7 @@ func (h *Handler) bindSessionFromReplyAnchor(msg *gateway.Message) bool {
 			return false
 		}
 	}
-	h.bindSessionID(msg.Chat.ID, sessionID)
+	h.bindSessionID(telegramConversationScope(msg), sessionID)
 	return true
 }
 
@@ -1649,13 +1652,14 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, input ag
 		return h.adapter.Send(ctx, msg.Chat.ID, "Please provide a message. Usage: /chat <message>")
 	}
 
-	taskCtx, task := h.beginChatTask(msg.Chat.ID, ctx)
-	defer h.finishChatTask(msg.Chat.ID, task)
+	scope := telegramConversationScope(msg)
+	taskCtx, task := h.beginChatTask(scope, ctx)
+	defer h.finishChatTask(scope, task)
 
 	// 收到消息后给用户点赞 👍
 	go h.adapter.ReactToMessage(msg.Chat.ID, msg.ID, "👍")
 
-	sessionID := h.getSessionID(msg.Chat.ID)
+	sessionID := h.getSessionID(scope)
 
 	// 群聊中在输入文本前加上发送者名字，让 agent 知道是谁在说话
 	if msg.IsGroupTrigger && msg.Sender.DisplayName() != "" {
@@ -1745,6 +1749,13 @@ func (h *Handler) sendProgressMessageHTML(msg *gateway.Message, text string) {
 		return
 	}
 	_ = h.adapter.SendHTML(sendCtx, msg.Chat.ID, text)
+}
+
+func (h *Handler) sendCommandHTML(ctx context.Context, msg *gateway.Message, text string) error {
+	if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
+		return h.adapter.SendWithReplyHTML(ctx, msg.Chat.ID, msg.ID, text)
+	}
+	return h.adapter.SendHTML(ctx, msg.Chat.ID, text)
 }
 
 func (h *Handler) newProgressCardUpdater(msg *gateway.Message) func(string) {
@@ -2207,7 +2218,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	chatCtx, chatCancel := context.WithTimeout(ctx, h.effectiveChatStreamTimeout())
 	defer chatCancel()
 
-	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, input, sessionID)
+	events, err := h.openChatEventStream(chatCtx, telegramConversationScope(msg), input, sessionID)
 	if err != nil {
 		switch {
 		case isTaskTimeoutError(err):
@@ -2413,7 +2424,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	chatCtx, chatCancel := context.WithTimeout(ctx, h.effectiveChatStreamTimeout())
 	defer chatCancel()
 
-	events, err := h.openChatEventStream(chatCtx, msg.Chat.ID, input, sessionID)
+	events, err := h.openChatEventStream(chatCtx, telegramConversationScope(msg), input, sessionID)
 	if err != nil {
 		if isTaskTimeoutError(err) {
 			sender.SetResult("⏱ 请求超时")
@@ -2746,8 +2757,9 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, inpu
 	if err != nil {
 		// If session is broken, try with a fresh session
 		if strings.Contains(err.Error(), "session not found") {
-			h.resetSession(msg.Chat.ID)
-			sessionID = h.getSessionID(msg.Chat.ID)
+			scope := telegramConversationScope(msg)
+			h.resetSession(scope)
+			sessionID = h.getSessionID(scope)
 			response, err = chat.ChatWithSessionInput(ctx, sessionID, input)
 		}
 		if err != nil {
@@ -3076,45 +3088,60 @@ func (h *Handler) handleSoul(ctx context.Context, msg *gateway.Message) error {
 	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🧠 *Current SOUL:*\n\n%s", prompt))
 }
 
-// handleTools lists available tools.
+// handleTools lists available tools with pagination.
 func (h *Handler) handleTools(ctx context.Context, msg *gateway.Message) error {
 	tools := h.tools()
 	if tools == nil {
-		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Tool registry unavailable")
+		return h.sendCommandHTML(ctx, msg, "❌ <b>Tool registry unavailable.</b>")
 	}
 	allTools := tools.List()
 
 	if len(allTools) == 0 {
-		return h.adapter.Send(ctx, msg.Chat.ID, "No tools available.")
+		return h.sendCommandHTML(ctx, msg, "No tools available.")
 	}
 
-	var sb strings.Builder
-	sb.WriteString("🔧 *Available Tools:*\n\n")
-
-	for i, t := range allTools {
-		if i >= 20 {
-			sb.WriteString(fmt.Sprintf("\n... and %d more", len(allTools)-20))
-			break
-		}
-		status := "✅"
-		if !t.Enabled {
-			status = "❌"
-		}
-		sb.WriteString(fmt.Sprintf("%s %s — %s\n", status, t.Name, t.Description))
+	page, showAll, err := parseTelegramListPage(msg.Args)
+	if err != nil {
+		return h.sendCommandHTML(ctx, msg, "❌ <b>Usage:</b> <code>/tools [page|all]</code>")
 	}
+	formatter := TelegramFormatter{}
+	if !showAll {
+		return h.sendCommandHTML(ctx, msg, formatter.FormatToolsList(allTools, page))
+	}
+	for page = 1; page <= (len(orderedTelegramTools(allTools))+telegramCommandListPageSize-1)/telegramCommandListPageSize; page++ {
+		if err := h.sendCommandHTML(ctx, msg, formatter.FormatToolsList(allTools, page)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+func (h *Handler) handleTool(ctx context.Context, msg *gateway.Message) error {
+	name := strings.TrimSpace(msg.Args)
+	if name == "" {
+		return h.sendCommandHTML(ctx, msg, "❌ <b>Usage:</b> <code>/tool &lt;name&gt;</code>")
+	}
+	tools := h.tools()
+	if tools == nil {
+		return h.sendCommandHTML(ctx, msg, "❌ <b>Tool registry unavailable.</b>")
+	}
+	for _, item := range tools.List() {
+		if item != nil && strings.EqualFold(item.Name, name) {
+			return h.sendCommandHTML(ctx, msg, (TelegramFormatter{}).FormatToolDetail(item))
+		}
+	}
+	return h.sendCommandHTML(ctx, msg, fmt.Sprintf("❌ Tool <code>%s</code> not found. Use <code>/tools</code> to list available tools.", escapeTelegramCommandHTML(name)))
 }
 
 // handleReset resets the conversation for this chat.
 func (h *Handler) handleReset(ctx context.Context, msg *gateway.Message) error {
-	newID := h.resetSession(msg.Chat.ID)
+	newID := h.resetSession(telegramConversationScope(msg))
 	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("🔄 Conversation reset. New session: `%s`", shortSessionID(newID)))
 }
 
 // handleHistory shows the conversation history for this chat.
 func (h *Handler) handleHistory(ctx context.Context, msg *gateway.Message) error {
-	sessionID := h.getSessionID(msg.Chat.ID)
+	sessionID := h.getSessionID(telegramConversationScope(msg))
 
 	sessions := h.sessionManager()
 	if sessions == nil {
@@ -3170,8 +3197,9 @@ func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error
 		return h.handleSessionSwitch(ctx, msg, strings.TrimSpace(msg.Args))
 	}
 
+	scope := telegramConversationScope(msg)
 	h.mu.RLock()
-	sessionID, ok := h.sessions[msg.Chat.ID]
+	sessionID, ok := h.sessions[scope]
 	h.mu.RUnlock()
 
 	if !ok {
@@ -3210,7 +3238,7 @@ func (h *Handler) handleSessions(ctx context.Context, msg *gateway.Message) erro
 		return h.adapter.Send(ctx, msg.Chat.ID, "No sessions yet. Send a message to start one!")
 	}
 
-	currentID := h.currentSessionID(msg.Chat.ID)
+	currentID := h.currentSessionID(telegramConversationScope(msg))
 	var sb strings.Builder
 	sb.WriteString("📚 *Recent Sessions:*\n\n")
 
@@ -3261,7 +3289,7 @@ func (h *Handler) handleRename(ctx context.Context, msg *gateway.Message) error 
 	if sessions == nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
 	}
-	sessionID := h.getSessionID(msg.Chat.ID)
+	sessionID := h.getSessionID(telegramConversationScope(msg))
 	sess, ok := sessions.Get(sessionID)
 	if !ok || sess == nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Current session not found")
@@ -3290,9 +3318,10 @@ func (h *Handler) handleSessionSwitch(ctx context.Context, msg *gateway.Message,
 
 	sess := result.session
 	matchedID := result.id
+	scope := telegramConversationScope(msg)
 	h.mu.Lock()
-	oldSessionID, hadOld := h.sessions[msg.Chat.ID]
-	h.sessions[msg.Chat.ID] = matchedID
+	oldSessionID, hadOld := h.sessions[scope]
+	h.sessions[scope] = matchedID
 	h.mu.Unlock()
 
 	h.saveChatSessions()
@@ -3312,30 +3341,48 @@ func (h *Handler) handleSessionSwitch(ctx context.Context, msg *gateway.Message,
 	))
 }
 
-// handleSkills lists loaded skills.
+// handleSkills lists loaded skills with pagination.
 func (h *Handler) handleSkills(ctx context.Context, msg *gateway.Message) error {
 	skills := h.skillsList()
 	if len(skills) == 0 {
-		return h.adapter.Send(ctx, msg.Chat.ID, "No skills loaded.")
+		return h.sendCommandHTML(ctx, msg, "No skills loaded.")
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🎯 *Loaded Skills* (%d):\n\n", len(skills)))
-
-	maxShow := 30
-	for i, s := range skills {
-		if i >= maxShow {
-			sb.WriteString(fmt.Sprintf("\n... and %d more", len(skills)-maxShow))
-			break
-		}
-		desc := s.Description
-		if len(desc) > 60 {
-			desc = desc[:57] + "..."
-		}
-		sb.WriteString(fmt.Sprintf("• %s — %s\n", s.Name, desc))
+	page, showAll, err := parseTelegramListPage(msg.Args)
+	if err != nil {
+		return h.sendCommandHTML(ctx, msg, "❌ <b>Usage:</b> <code>/skills [page|all]</code>")
 	}
+	formatter := TelegramFormatter{}
+	if !showAll {
+		return h.sendCommandHTML(ctx, msg, formatter.FormatSkillsList(skills, page))
+	}
+	for page = 1; page <= (len(orderedTelegramSkills(skills))+telegramCommandListPageSize-1)/telegramCommandListPageSize; page++ {
+		if err := h.sendCommandHTML(ctx, msg, formatter.FormatSkillsList(skills, page)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+func (h *Handler) handleSkill(ctx context.Context, msg *gateway.Message) error {
+	name := strings.TrimSpace(msg.Args)
+	if name == "" {
+		return h.sendCommandHTML(ctx, msg, "❌ <b>Usage:</b> <code>/skill &lt;name&gt;</code>")
+	}
+	for _, skill := range h.skillsList() {
+		if skill == nil {
+			continue
+		}
+		if strings.EqualFold(skill.Name, name) {
+			return h.sendCommandHTML(ctx, msg, (TelegramFormatter{}).FormatSkillDetail(skill))
+		}
+		for _, alias := range skill.Aliases {
+			if strings.EqualFold(alias, name) {
+				return h.sendCommandHTML(ctx, msg, (TelegramFormatter{}).FormatSkillDetail(skill))
+			}
+		}
+	}
+	return h.sendCommandHTML(ctx, msg, fmt.Sprintf("❌ Skill <code>%s</code> not found. Use <code>/skills</code> to list loaded skills.", escapeTelegramCommandHTML(name)))
 }
 
 func (h *Handler) handleMCP(ctx context.Context, msg *gateway.Message) error {
@@ -3423,7 +3470,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 		if strings.TrimSpace(command) == "" {
 			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Missing prompt/command for cron job.")
 		}
-		sessionID := h.getSessionID(msg.Chat.ID)
+		sessionID := h.getSessionID(telegramConversationScope(msg))
 
 		tools := h.tools()
 		if tools == nil {
@@ -4273,6 +4320,7 @@ func (h *Handler) handleEmbedder(ctx context.Context, msg *gateway.Message) erro
 // handleNew 开启新对话（创建新会话）
 func (h *Handler) handleNew(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
+	scope := telegramConversationScope(msg)
 
 	// 创建新会话
 	sessions := h.sessionManager()
@@ -4282,8 +4330,8 @@ func (h *Handler) handleNew(ctx context.Context, msg *gateway.Message) error {
 	newSess := sessions.New()
 
 	h.mu.Lock()
-	oldSessionID, hadOld := h.sessions[chatID]
-	h.sessions[chatID] = newSess.ID
+	oldSessionID, hadOld := h.sessions[scope]
+	h.sessions[scope] = newSess.ID
 	h.mu.Unlock()
 
 	h.saveChatSessions()
@@ -4299,7 +4347,7 @@ func (h *Handler) handleNew(ctx context.Context, msg *gateway.Message) error {
 // handleStop 停止当前任务
 func (h *Handler) handleStop(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
-	if !h.cancelChatTask(chatID) {
+	if !h.cancelChatTask(telegramConversationScope(msg)) {
 		return h.adapter.Send(ctx, chatID, "ℹ️ 当前没有运行中的任务")
 	}
 	return h.adapter.Send(ctx, chatID, "🛑 已停止当前任务")
@@ -4308,7 +4356,8 @@ func (h *Handler) handleStop(ctx context.Context, msg *gateway.Message) error {
 // handleStatus 查看状态
 func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
-	sessionID := h.getSessionID(chatID)
+	scope := telegramConversationScope(msg)
+	sessionID := h.getSessionID(scope)
 
 	var sb strings.Builder
 	sb.WriteString("📊 *LuckyAgent Status*\n\n")
@@ -4345,7 +4394,7 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	snapshot := m.Snapshot()
 	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
 
-	running, queued := h.queueStatus(chatID)
+	running, queued := h.queueStatus(scope)
 	if running {
 		sb.WriteString("• Current task: running\n")
 	} else {
@@ -4359,6 +4408,7 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 // handleRestart 重启 bot
 func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
+	scope := telegramConversationScope(msg)
 
 	h.mu.Lock()
 	if h.restarting {
@@ -4379,7 +4429,7 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 		}()
 
 		// 停止当前 chat 的任务，避免重启期间残留 goroutine
-		h.cancelChatTask(chatID)
+		h.cancelChatTask(scope)
 
 		if err := h.adapter.Stop(); err != nil {
 			fmt.Printf("[telegram] restart stop failed: %v\n", err)

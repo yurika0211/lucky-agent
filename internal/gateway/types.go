@@ -63,8 +63,11 @@ func (u User) DisplayName() string {
 
 // Message represents an incoming message from a messaging platform.
 type Message struct {
-	ID        string
-	Chat      Chat
+	ID   string
+	Chat Chat
+	// ThreadID identifies a platform-specific conversation thread or topic.
+	// It is empty when the platform does not provide a thread identifier.
+	ThreadID  string
 	Sender    User
 	Text      string
 	ReplyTo   *Message // if this is a reply

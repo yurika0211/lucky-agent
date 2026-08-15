@@ -45,8 +45,11 @@ type mockBotServer struct{}
 func (mockBotServer) Close() {}
 
 type capturedBotMessage struct {
-	Method string
-	Text   string
+	Method    string
+	Text      string
+	ParseMode string
+	ReplyTo   string
+	ThreadID  string
 }
 
 func (c *mockBotClient) Do(req *http.Request) (*http.Response, error) {
@@ -171,8 +174,11 @@ func newAdapterWithCapturedMessages(t *testing.T) (*Adapter, *[]capturedBotMessa
 				method = "editMessageText"
 			}
 			sent = append(sent, capturedBotMessage{
-				Method: method,
-				Text:   r.Form.Get("text"),
+				Method:    method,
+				Text:      r.Form.Get("text"),
+				ParseMode: r.Form.Get("parse_mode"),
+				ReplyTo:   r.Form.Get("reply_to_message_id"),
+				ThreadID:  r.Form.Get("message_thread_id"),
 			})
 		}
 		return defaultMockBotResponse(r)
