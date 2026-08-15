@@ -1558,6 +1558,19 @@ func TestSet_APIBase(t *testing.T) {
 	t.Logf("APIBase set correctly")
 }
 
+func TestSetLLMProtocol(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	if err := mgr.Set("protocol", "responses"); err != nil {
+		t.Fatalf("Set protocol: %v", err)
+	}
+	if got := mgr.Get().LlmProvider.Protocol; got != "responses" {
+		t.Fatalf("protocol = %q, want responses", got)
+	}
+}
+
 // TestSet_ExtraKeys 测试 extra.* 键
 func TestSet_ExtraKeys(t *testing.T) {
 	mgr, err := NewManagerWithDir(t.TempDir())

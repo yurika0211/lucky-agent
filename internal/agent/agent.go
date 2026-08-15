@@ -226,6 +226,7 @@ func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) p
 			APIKey:      c.APIKey,
 			BaseURL:     apiBase,
 			Model:       model,
+			Protocol:    c.LlmProvider.Protocol,
 			Temperature: c.Temperature,
 		},
 		ExtraHeaders: c.ExtraHeaders,
@@ -390,17 +391,19 @@ func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime
 	if len(c.Fallbacks) > 0 {
 		fallbackConfigs := make([]provider.FallbackConfig, 0, len(c.Fallbacks)+1)
 		fallbackConfigs = append(fallbackConfigs, provider.FallbackConfig{
-			Name:    c.Provider,
-			APIKey:  c.APIKey,
-			APIBase: c.APIBase,
-			Model:   c.Model,
+			Name:     c.Provider,
+			APIKey:   c.APIKey,
+			APIBase:  c.APIBase,
+			Model:    c.Model,
+			Protocol: c.LlmProvider.Protocol,
 		})
 		for _, fb := range c.Fallbacks {
 			fallbackConfigs = append(fallbackConfigs, provider.FallbackConfig{
-				Name:    fb.Provider,
-				APIKey:  fb.APIKey,
-				APIBase: fb.APIBase,
-				Model:   fb.Model,
+				Name:     fb.Provider,
+				APIKey:   fb.APIKey,
+				APIBase:  fb.APIBase,
+				Model:    fb.Model,
+				Protocol: fb.Protocol,
 			})
 		}
 		chain, err := provider.NewFallbackChain(fallbackConfigs, registry)
@@ -3245,10 +3248,11 @@ func (a *Agent) SwitchModel(modelID string) error {
 	cfg := a.cfg.Get()
 	pCfg := provider.Config{
 		LlmProvider: provider.LlmProvider{
-			Name:    modelInfo.Provider,
-			APIKey:  cfg.APIKey,
-			BaseURL: cfg.APIBase,
-			Model:   modelID,
+			Name:     modelInfo.Provider,
+			APIKey:   cfg.APIKey,
+			BaseURL:  cfg.APIBase,
+			Model:    modelID,
+			Protocol: cfg.LlmProvider.Protocol,
 		},
 	}
 

@@ -7,7 +7,8 @@
     "name": "openai",
     "api_key": "sk-your-api-key",
     "base_url": "https://api.openai.com/v1",
-    "model": "gpt-5.4-mini"
+    "model": "gpt-5.4-mini",
+    "protocol": "chat_completions"
   },
   "embedding": {
     "model": "jina-embeddings-v4",

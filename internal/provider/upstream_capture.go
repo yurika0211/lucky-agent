@@ -41,6 +41,7 @@ func newUpstreamCapture(kind string, cfg Config, requestBody []byte) *upstreamCa
 			APIKey:      maskedKeySuffix(cfg.LlmProvider.APIKey),
 			BaseURL:     cfg.LlmProvider.BaseURL,
 			Model:       cfg.LlmProvider.Model,
+			Protocol:    cfg.LlmProvider.Protocol,
 			Temperature: cfg.LlmProvider.Temperature,
 		},
 	}

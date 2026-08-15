@@ -108,6 +108,7 @@ type LlmProvider struct {
 	APIKey      string  `json:"api_key"`
 	BaseURL     string  `json:"base_url"`
 	Model       string  `json:"model"`
+	Protocol    string  `json:"protocol,omitempty"`
 	Dimension   int     `json:"dimension"`
 	Temperature float64 `json:"temperature"`
 }

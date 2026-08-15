@@ -461,8 +461,12 @@ func applyOpenAIRequestHeaders(req *http.Request, apiKey string, extraHeaders ma
 }
 
 func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Response, error) {
+	return doOpenAIRequestTo(ctx, cfg, body, "/chat/completions")
+}
+
+func doOpenAIRequestTo(ctx context.Context, cfg Config, body []byte, endpoint string) (*http.Response, error) {
 	settings := resolveOpenAIRetrySettings(cfg)
-	url := strings.TrimRight(cfg.LlmProvider.BaseURL, "/") + "/chat/completions"
+	url := strings.TrimRight(cfg.LlmProvider.BaseURL, "/") + endpoint
 	log.Printf("[provider] openai request: model=%s url=%s stream_retry_attempts=%d api_key=%s", cfg.LlmProvider.Model, url, settings.MaxAttempts, maskedKeySuffix(cfg.LlmProvider.APIKey))
 
 	var lastErr error
@@ -511,6 +515,13 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 // callOpenAI 执行 OpenAI API 调用（非流式）
 // 支持文本响应和工具调用解析
 func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (*Response, error) {
+	if err := validateOpenAIProtocol(cfg.LlmProvider.Protocol); err != nil {
+		return nil, err
+	}
+	if usesResponsesAPI(cfg.LlmProvider.Protocol) {
+		return callOpenAIResponses(ctx, cfg, messages, opts)
+	}
+
 	normalizedMessages := normalizeToolProtocolMessages(messages)
 	if len(normalizedMessages) != len(messages) {
 		log.Printf("[provider] normalized tool protocol messages: before=%d after=%d", len(messages), len(normalizedMessages))
@@ -810,6 +821,13 @@ func mergeUsageDetails(current, next *UsageDetails) *UsageDetails {
 // callOpenAIStream 执行 OpenAI API 流式调用
 // 支持文本内容和工具调用的流式解析
 func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
+	if err := validateOpenAIProtocol(cfg.LlmProvider.Protocol); err != nil {
+		return nil, err
+	}
+	if usesResponsesAPI(cfg.LlmProvider.Protocol) {
+		return callOpenAIResponsesStream(ctx, cfg, messages, opts)
+	}
+
 	normalizedMessages := normalizeToolProtocolMessages(messages)
 	if len(normalizedMessages) != len(messages) {
 		log.Printf("[provider] normalized tool protocol messages (stream): before=%d after=%d", len(messages), len(normalizedMessages))

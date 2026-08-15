@@ -11,10 +11,11 @@ import (
 
 // FallbackConfig 定义降级链中一个节点的配置
 type FallbackConfig struct {
-	Name    string // provider name (openai, anthropic, ollama, openrouter, openai-compatible)
-	APIKey  string
-	APIBase string
-	Model   string
+	Name     string // provider name (openai, anthropic, ollama, openrouter, openai-compatible)
+	APIKey   string
+	APIBase  string
+	Model    string
+	Protocol string
 }
 
 // FallbackChain 实现 Provider 自动降级链
@@ -48,10 +49,11 @@ func NewFallbackChain(configs []FallbackConfig, registry *Registry) (*FallbackCh
 		}
 		pCfg := Config{
 			LlmProvider: LlmProvider{
-				Name:    name,
-				BaseURL: fc.APIBase,
-				Model:   fc.Model,
-				APIKey:  fc.APIKey,
+				Name:     name,
+				BaseURL:  fc.APIBase,
+				Model:    fc.Model,
+				APIKey:   fc.APIKey,
+				Protocol: fc.Protocol,
 			},
 		}
 		p, err := registry.Create(name, pCfg)

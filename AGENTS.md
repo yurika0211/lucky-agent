@@ -134,7 +134,7 @@ Core config lives in `${HOME}/.luckyagent/config.json`.
 
 High-impact keys:
 
-- `provider`, `api_key`, `api_base`, `model`
+- `provider`, `api_key`, `api_base`, `model`, `llm_provider.protocol`
 - `embedding.*`
 - `opencli.*`
 - `memory.short_term_max_turns`

@@ -571,6 +571,8 @@ go run ./cmd/la config set provider openai
 go run ./cmd/la config set api_key sk-your-api-key
 go run ./cmd/la config set api_base https://api.openai.com/v1
 go run ./cmd/la config set model gpt-5.4-mini
+# For models that only support the OpenAI Responses API:
+# go run ./cmd/la config set protocol responses
 ```
 
 如果你已经安装了二进制命令，也可以把上面的 `go run ./cmd/la` 换成 `lh` 或 `luckyagent`。

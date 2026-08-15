@@ -153,11 +153,12 @@ type HookSpec struct {
 }
 
 type LlmProviderConfig struct {
-	Name    string `json:"name,omitempty"`
-	APIKey  string `json:"api_key,omitempty"`
-	BaseURL string `json:"base_url,omitempty"`
-	Model   string `json:"model,omitempty"`
-	Vision  bool   `json:"vision,omitempty"` // 模型是否支持视觉能力
+	Name     string `json:"name,omitempty"`
+	APIKey   string `json:"api_key,omitempty"`
+	BaseURL  string `json:"base_url,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Protocol string `json:"protocol,omitempty"` // chat_completions (default) or responses
+	Vision   bool   `json:"vision,omitempty"`   // 模型是否支持视觉能力
 }
 
 // CustomModelInfo 自定义模型信息配置
@@ -602,6 +603,7 @@ type FallbackEntry struct {
 	APIKey   string `json:"api_key,omitempty"`
 	APIBase  string `json:"api_base,omitempty"`
 	Model    string `json:"model,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 // DefaultConfig 返回默认配置
@@ -1509,6 +1511,8 @@ func (m *Manager) Set(key, value string) error {
 	case "model":
 		m.config.LlmProvider.Model = value
 		m.config.Model = value
+	case "protocol", "llm_provider.protocol":
+		m.config.LlmProvider.Protocol = value
 	case "embedding.model":
 		m.config.Embedding.Model = value
 	case "embedding.api_key":
