@@ -27,6 +27,12 @@ type taskCancelRequest struct {
 	Reason string `json:"reason"`
 }
 
+type taskTreeNode struct {
+	Task        taskstore.Record               `json:"task"`
+	Observation taskstore.MainAgentObservation `json:"observation"`
+	Children    []taskTreeNode                 `json:"children,omitempty"`
+}
+
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
@@ -85,6 +91,12 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch parts[1] {
+	case "tree":
+		if r.Method != http.MethodGet {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		s.handleTaskTree(w, store, taskID)
 	case "events":
 		if r.Method != http.MethodGet {
 			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
@@ -155,6 +167,63 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.sendError(w, "not found", http.StatusNotFound, "")
 	}
+}
+
+// handleTaskTree returns a task and all persisted descendants as a stable tree
+// suitable for a dashboard, TUI, or gateway progress card.
+func (s *Server) handleTaskTree(w http.ResponseWriter, store taskstore.Store, taskID string) {
+	root, ok, err := store.Get(taskID)
+	if err != nil {
+		s.sendError(w, "get task failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		s.sendError(w, "task not found", http.StatusNotFound, taskID)
+		return
+	}
+	records, err := store.List(taskstore.ListFilter{Limit: 200})
+	if err != nil {
+		s.sendError(w, "list task tree failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	childrenByParent := make(map[string][]taskstore.Record)
+	for _, record := range records {
+		if strings.TrimSpace(record.ParentID) != "" {
+			childrenByParent[record.ParentID] = append(childrenByParent[record.ParentID], record)
+		}
+	}
+	visiting := make(map[string]bool)
+	node, err := buildTaskTreeNode(store, root, childrenByParent, visiting)
+	if err != nil {
+		s.sendError(w, "build task tree failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.sendJSON(w, http.StatusOK, node)
+}
+
+func buildTaskTreeNode(store taskstore.Store, record taskstore.Record, childrenByParent map[string][]taskstore.Record, visiting map[string]bool) (taskTreeNode, error) {
+	if visiting[record.ID] {
+		return taskTreeNode{}, fmt.Errorf("task hierarchy contains a cycle at %s", record.ID)
+	}
+	visiting[record.ID] = true
+	defer delete(visiting, record.ID)
+
+	events, err := store.Events(record.ID)
+	if err != nil {
+		return taskTreeNode{}, err
+	}
+	node := taskTreeNode{
+		Task:        record,
+		Observation: taskstore.ReduceObservation(record, events),
+	}
+	for _, child := range childrenByParent[record.ID] {
+		childNode, err := buildTaskTreeNode(store, child, childrenByParent, visiting)
+		if err != nil {
+			return taskTreeNode{}, err
+		}
+		node.Children = append(node.Children, childNode)
+	}
+	return node, nil
 }
 
 func (s *Server) handleTaskFeedback(w http.ResponseWriter, r *http.Request, store taskstore.Store, taskID string) {

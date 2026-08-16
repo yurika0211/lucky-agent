@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 type telegramToolTraceStep struct {
@@ -76,6 +77,14 @@ func compactProgressCardText(content string) string {
 }
 
 func renderTelegramToolTraceCard(steps []telegramToolTraceStep) string {
+	return renderTelegramToolTraceCardWithDetails(steps, false)
+}
+
+func renderTelegramToolTraceCardWithDetails(steps []telegramToolTraceStep, detailed bool) string {
+	return renderTelegramToolTraceCardWithTemplateDetails(steps, detailed, nil)
+}
+
+func renderTelegramToolTraceCardWithTemplateDetails(steps []telegramToolTraceStep, detailed bool, templates map[string]string) string {
 	segments := make([]string, 0, len(steps))
 	shown := 0
 	for _, step := range steps {
@@ -83,7 +92,7 @@ func renderTelegramToolTraceCard(steps []telegramToolTraceStep) string {
 		if visibility == "hidden" || visibility == "agent" {
 			continue
 		}
-		line := formatTelegramToolTraceLine(shown+1, step, visibility)
+		line := formatTelegramToolTraceLineWithTemplates(shown+1, step, visibility, detailed, templates)
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
@@ -96,9 +105,16 @@ func renderTelegramToolTraceCard(steps []telegramToolTraceStep) string {
 	if shown == 0 {
 		return ""
 	}
-	body := strings.Join(segments, "  →  ")
-	body += "\nDone · " + fmt.Sprintf("%d tools", shown)
-	return "<b>🛠 Tool Trace</b>\n<pre><code>" + html.EscapeString(body) + "</code></pre>"
+
+	var body strings.Builder
+	body.WriteString("<b>🛠 Tool Trace</b> · ")
+	body.WriteString(fmt.Sprintf("%d tools", shown))
+	body.WriteString("\n\n")
+	body.WriteString(strings.Join(segments, "\n\n"))
+	if detailed {
+		body.WriteString("\n\n<i>展开的参数与结果仅用于本次追踪。</i>")
+	}
+	return body.String()
 }
 
 func renderTelegramAgentTraceCard(steps []telegramToolTraceStep) string {
@@ -496,20 +512,47 @@ func telegramToolTraceVisibility(name string) string {
 	}
 }
 
-func formatTelegramToolTraceLine(index int, step telegramToolTraceStep, visibility string) string {
+func formatTelegramToolTraceLine(index int, step telegramToolTraceStep, visibility string, detailed bool) string {
+	return formatTelegramToolTraceLineWithTemplates(index, step, visibility, detailed, nil)
+}
+
+func formatTelegramToolTraceLineWithTemplates(index int, step telegramToolTraceStep, visibility string, detailed bool, templates map[string]string) string {
 	name := strings.TrimSpace(step.Name)
 	if name == "" {
 		name = "unknown_tool"
 	}
+	record := tool.NewTraceRecordWithTemplates(name, step.Args, step.Result, 0, templates)
+	success := step.Success
+	if record.Error != "" {
+		success = false
+	}
 	status := "✅"
-	if !step.Success {
-		status = "⚠️"
+	if !success {
+		status = "❌"
 	}
 	displayName := name
 	if visibility == "compact" {
 		displayName = compactToolTraceName(name)
 	}
-	return fmt.Sprintf("[%d] %s %s", index, displayName, status)
+
+	var line strings.Builder
+	line.WriteString(fmt.Sprintf("<b>%d. %s <code>%s</code></b>\n", index, status, html.EscapeString(displayName)))
+	line.WriteString("📝 ")
+	line.WriteString(html.EscapeString(record.Annotation))
+	if !success && record.Error != "" {
+		line.WriteString("\n⚠️ <b>错误：</b>")
+		line.WriteString(html.EscapeString(record.Error))
+	}
+	if detailed {
+		line.WriteString("\n<blockquote expandable>⚙️ 参数：")
+		line.WriteString(html.EscapeString(clipOneLine(step.Args, 180)))
+		if result := clipOneLine(step.Result, 240); result != "" {
+			line.WriteString("\n📊 结果：")
+			line.WriteString(html.EscapeString(result))
+		}
+		line.WriteString("</blockquote>")
+	}
+	return line.String()
 }
 
 func formatTelegramAgentTraceLine(index int, step telegramToolTraceStep) string {

@@ -124,6 +124,22 @@ func TestBuildSystemPromptIncludesHybridComputerTerminalPolicyOnlyWhenAllToolsVi
 	}
 }
 
+func TestBuildSystemPromptIncludesDelegateWaitPolicyOnlyWhenToolsVisible(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "delegate_task", Enabled: true})
+	reg.Register(&tool.Tool{Name: "wait_for_tasks", Enabled: true})
+	a := &Agent{soul: soul.Default(), tools: reg}
+
+	prompt := a.buildSystemPrompt(nil)
+	if !strings.Contains(prompt, "Delegated-task completion protocol:") || !strings.Contains(prompt, "wait_for_tasks") {
+		t.Fatalf("expected delegate wait policy, got %q", prompt)
+	}
+	withoutWait := a.buildSystemPromptWithOptions(nil, systemPromptOptions{DisabledTools: []string{"wait_for_tasks"}})
+	if strings.Contains(withoutWait, "Delegated-task completion protocol:") {
+		t.Fatalf("did not expect delegate wait policy when wait_for_tasks is hidden, got %q", withoutWait)
+	}
+}
+
 func TestBuildSystemPromptIncludesNapCatPlainTextPlatformHint(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr, err := config.NewManagerWithDir(filepath.Join(tmpDir, ".luckyagent"))

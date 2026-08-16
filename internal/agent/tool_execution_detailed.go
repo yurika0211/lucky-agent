@@ -62,11 +62,15 @@ func (a *Agent) executeToolWithSessionDetailed(name, arguments string, autoAppro
 	}
 
 	var result *tool.GatewayResult
+	userRequest := ""
+	if len(sourceOpt) > 1 {
+		userRequest = stringsTrimSpace(sourceOpt[1])
+	}
 	exec := tool.ExecutionContext{
 		Context: context.Background(), SessionID: sessionID,
 		// The CLI/TUI loop is the local trusted entry point. Remote servers
 		// should set an explicit allowed_sources policy before enabling control.
-		Source: source, UserID: "", AutoApprove: autoApprove,
+		Source: source, UserID: "", UserRequest: userRequest, AutoApprove: autoApprove,
 	}
 	if sc != nil {
 		result, err = a.gateway.ExecuteWithShellExecutionContext(name, args, "", sc, exec)

@@ -399,7 +399,7 @@ func TestApplyIntentToolGatingDelegateListBlocksNewTask(t *testing.T) {
 	opts := a.buildLoopCallOptions("查看子代理任务列表，不要新建委派任务。", loopCfg)
 	visible := toolNamesFromSchemas(opts.Tools)
 
-	assertEnabledTools(t, visible, "list_tasks", "task_status")
+	assertEnabledTools(t, visible, "list_tasks", "task_status", "wait_for_tasks")
 	assertDisabledTools(t, loopCfg.DisabledTools, "delegate_task")
 }
 
@@ -412,7 +412,20 @@ func TestApplyIntentToolGatingDelegateCancel(t *testing.T) {
 	opts := a.buildLoopCallOptions("取消子代理任务 task-1。", loopCfg)
 	visible := toolNamesFromSchemas(opts.Tools)
 
-	assertEnabledTools(t, visible, "task_status", "list_tasks", "delegate_cancel")
+	assertEnabledTools(t, visible, "task_status", "wait_for_tasks", "list_tasks", "delegate_cancel")
+}
+
+func TestApplyIntentToolGatingDelegateSubtasks(t *testing.T) {
+	a := agentWithIntentGateTools(t)
+	loopCfg := DefaultLoopConfig()
+	sanitizeLoopConfig(&loopCfg)
+
+	prompt := "创建三个子任务并等待全部完成。"
+	a.applyIntentToolGating(&loopCfg, prompt)
+	opts := a.buildLoopCallOptions(prompt, loopCfg)
+	visible := toolNamesFromSchemas(opts.Tools)
+
+	assertEnabledTools(t, visible, "delegate_task", "wait_for_tasks", "task_status", "list_tasks")
 }
 
 func TestApplyIntentToolGatingDelegateToolInspectionKeepsReadOnly(t *testing.T) {
@@ -441,7 +454,7 @@ func agentWithIntentGateTools(t *testing.T) *Agent {
 		"skill_obsidian_run", "cron", "cron_add", "cron_list", "cron_status",
 		"cron_remove", "cron_pause", "cron_resume", "autonomy", "autonomy_status",
 		"autonomy_queue_add", "autonomy_worker_spawn", "heartbeat_status",
-		"heartbeat_trigger", "delegate_task", "task_status", "list_tasks", "delegate_cancel",
+		"heartbeat_trigger", "delegate_task", "task_status", "wait_for_tasks", "list_tasks", "delegate_cancel",
 		"computer_observe", "computer_act",
 	} {
 		reg.Register(&tool.Tool{

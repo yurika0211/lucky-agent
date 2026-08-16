@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react';
+import type { ActivityNote } from '../types';
 
 interface SettingsProps {
   fetchRuntime: (path: string, init?: RequestInit) => Promise<Response>;
-  pushActivity: (kind: string, title: string, body: string, meta?: string) => void;
+  pushActivity: (kind: ActivityNote['kind'], title: string, body: string, meta?: string) => void;
 }
 
 export function Settings({ fetchRuntime, pushActivity }: SettingsProps) {

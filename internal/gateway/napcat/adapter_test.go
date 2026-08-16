@@ -1167,6 +1167,154 @@ func TestAdapterSendPhotoReturnsActionFailure(t *testing.T) {
 	}
 }
 
+func TestAdapterSendWithReceiptReturnsOneBotActionFailure(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := adapter.SendWithReceipt(context.Background(), "private:1914822318", "cron result")
+		errCh <- err
+	}()
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read action: %v", err)
+	}
+	var req actionRequest
+	if err := json.Unmarshal(data, &req); err != nil {
+		t.Fatalf("decode action: %v", err)
+	}
+	if req.Action != "send_private_msg" || req.Params["user_id"] != float64(1914822318) {
+		t.Fatalf("unexpected receipt send action: %#v", req)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "failed",
+		"retcode": 100,
+		"echo":    req.Echo,
+		"message": "private message rejected",
+	}); err != nil {
+		t.Fatalf("write failed action response: %v", err)
+	}
+
+	select {
+	case err := <-errCh:
+		if err == nil || !strings.Contains(err.Error(), "private message rejected") {
+			t.Fatalf("expected OneBot action failure, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for failed receipt send")
+	}
+}
+
+func TestAdapterGetsGroupHistoryAndInfo(t *testing.T) {
+	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
+	if err := adapter.Start(context.Background()); err != nil {
+		t.Fatalf("start adapter: %v", err)
+	}
+	defer adapter.Stop()
+
+	conn, _, err := websocket.DefaultDialer.Dial("ws://"+adapter.ListenAddr()+"/ws", nil)
+	if err != nil {
+		t.Fatalf("dial reverse websocket: %v", err)
+	}
+	defer conn.Close()
+
+	historyCh := make(chan struct {
+		messages []GroupMessage
+		err      error
+	}, 1)
+	go func() {
+		messages, err := adapter.GetGroupMessageHistory(context.Background(), "345", 1, 1)
+		historyCh <- struct {
+			messages []GroupMessage
+			err      error
+		}{messages, err}
+	}()
+	_, data, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read history action: %v", err)
+	}
+	var historyReq actionRequest
+	if err := json.Unmarshal(data, &historyReq); err != nil {
+		t.Fatalf("decode history action: %v", err)
+	}
+	groupID, groupIDOK := historyReq.Params["group_id"].(float64)
+	if historyReq.Action != "get_group_msg_history" || !groupIDOK || groupID != 345 {
+		t.Fatalf("unexpected history request: %#v", historyReq)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status":  "ok",
+		"retcode": 0,
+		"echo":    historyReq.Echo,
+		"data": map[string]any{"messages": []map[string]any{
+			{"time": 100, "message_id": 1, "message": []map[string]any{{"type": "text", "data": map[string]any{"text": "first"}}}, "sender": map[string]any{"nickname": "one"}},
+			{"time": 200, "message_id": 2, "message": []map[string]any{{"type": "text", "data": map[string]any{"text": "second"}}}, "sender": map[string]any{"card": "two"}},
+		}},
+	}); err != nil {
+		t.Fatalf("write history response: %v", err)
+	}
+	select {
+	case result := <-historyCh:
+		if result.err != nil {
+			t.Fatalf("GetGroupMessageHistory: %v", result.err)
+		}
+		if len(result.messages) != 1 || result.messages[0].Content != "second" || result.messages[0].UserName != "two" {
+			t.Fatalf("unexpected history: %#v", result.messages)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for group history")
+	}
+
+	infoCh := make(chan struct {
+		info GroupInfo
+		err  error
+	}, 1)
+	go func() {
+		info, err := adapter.GetGroupInfo(context.Background(), "345")
+		infoCh <- struct {
+			info GroupInfo
+			err  error
+		}{info, err}
+	}()
+	_, data, err = conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read group info action: %v", err)
+	}
+	var infoReq actionRequest
+	if err := json.Unmarshal(data, &infoReq); err != nil {
+		t.Fatalf("decode group info action: %v", err)
+	}
+	if infoReq.Action != "get_group_info" {
+		t.Fatalf("unexpected group info request: %#v", infoReq)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"status": "ok", "retcode": 0, "echo": infoReq.Echo,
+		"data": map[string]any{"group_id": 345, "group_name": "technical", "member_count": 42},
+	}); err != nil {
+		t.Fatalf("write group info response: %v", err)
+	}
+	select {
+	case result := <-infoCh:
+		if result.err != nil {
+			t.Fatalf("GetGroupInfo: %v", result.err)
+		}
+		if result.info.GroupID != "345" || result.info.Name != "technical" || result.info.MemberCount != 42 {
+			t.Fatalf("unexpected group info: %#v", result.info)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for group info")
+	}
+}
+
 func mustRawMessage(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(v)

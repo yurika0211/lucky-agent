@@ -293,7 +293,7 @@ func inferCategory(toolName string) Category {
 	if len(toolName) >= 6 && toolName[:6] == "skill_" {
 		return CatSkill
 	}
-	if toolName == "delegate_task" || toolName == "task_status" || toolName == "list_tasks" || toolName == "delegate_cancel" {
+	if toolName == "delegate_task" || toolName == "task_status" || toolName == "wait_for_tasks" || toolName == "list_tasks" || toolName == "delegate_cancel" {
 		return CatDelegate
 	}
 	return CatBuiltin

@@ -78,6 +78,23 @@ type actionResponse struct {
 	Echo    string          `json:"echo"`
 }
 
+// GroupMessage is the privacy-minimized representation of a OneBot group
+// history item. It deliberately does not expose the sender's QQ number.
+type GroupMessage struct {
+	MessageID string    `json:"message_id"`
+	UserName  string    `json:"user_name"`
+	Content   string    `json:"content"`
+	Time      time.Time `json:"time"`
+}
+
+// GroupInfo is the small subset of OneBot group metadata needed to resolve a
+// group target and label a history result.
+type GroupInfo struct {
+	GroupID     string `json:"group_id"`
+	Name        string `json:"group_name"`
+	MemberCount int    `json:"member_count,omitempty"`
+}
+
 // Adapter implements gateway.Gateway for NapCat's OneBot v11 reverse WebSocket.
 type Adapter struct {
 	cfg Config
@@ -215,6 +232,27 @@ func (a *Adapter) Send(ctx context.Context, chatID string, message string) error
 
 func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
 	return a.sendTextMessage(ctx, chatID, replyToMsgID, message)
+}
+
+// SendWithReceipt sends a message and waits for NapCat's OneBot response.
+// Cron and other durable notifications use this path so action-level failures
+// are propagated instead of being hidden by the normal fire-and-forget send.
+func (a *Adapter) SendWithReceipt(ctx context.Context, chatID string, message string) (gateway.SentMessage, error) {
+	resp, err := a.sendRawMessageReceipt(ctx, chatID, "", message)
+	if err != nil {
+		return gateway.SentMessage{}, err
+	}
+	return gateway.SentMessage{ID: napCatActionMessageID(resp.Data), ChatID: chatID}, nil
+}
+
+// SendWithReplyReceipt is the confirmed reply variant used by durable
+// notifications that need OneBot retcode errors and an outbound message ID.
+func (a *Adapter) SendWithReplyReceipt(ctx context.Context, chatID string, replyToMsgID string, message string) (gateway.SentMessage, error) {
+	resp, err := a.sendRawMessageReceipt(ctx, chatID, replyToMsgID, message)
+	if err != nil {
+		return gateway.SentMessage{}, err
+	}
+	return gateway.SentMessage{ID: napCatActionMessageID(resp.Data), ChatID: chatID}, nil
 }
 
 func (a *Adapter) SendForwardedText(ctx context.Context, chatID string, title string, chunks []string) error {
@@ -716,9 +754,182 @@ func (a *Adapter) sendRawMessageWithResponse(ctx context.Context, chatID string,
 	}
 }
 
+func (a *Adapter) sendRawMessageReceipt(ctx context.Context, chatID string, replyToMsgID string, message string) (actionResponse, error) {
+	parts := strings.SplitN(chatID, ":", 2)
+	if len(parts) != 2 {
+		return actionResponse{}, fmt.Errorf("napcat: invalid chat id %q", chatID)
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = " "
+	}
+	if strings.TrimSpace(replyToMsgID) != "" {
+		message = "[CQ:reply,id=" + escapeCQParam(replyToMsgID) + "]" + message
+	}
+
+	params := map[string]any{"message": message}
+	action := ""
+	switch parts[0] {
+	case "private", "c2c":
+		params["user_id"] = oneBotIDValue(parts[1])
+		action = "send_private_msg"
+	case "group":
+		params["group_id"] = oneBotIDValue(parts[1])
+		action = "send_group_msg"
+	default:
+		return actionResponse{}, fmt.Errorf("napcat: unsupported chat type %q", parts[0])
+	}
+	return a.sendActionWithResponse(ctx, action, params, true)
+}
+
+func napCatActionMessageID(data json.RawMessage) string {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return ""
+	}
+	return firstNonEmpty(dataString(payload, "message_id"), dataString(payload, "id"))
+}
+
 func (a *Adapter) sendAction(ctx context.Context, action string, params map[string]any) error {
 	_, err := a.sendActionWithResponse(ctx, action, params, false)
 	return err
+}
+
+// GetGroupMessageHistory reads the newest history records made available by
+// NapCat's get_group_msg_history action. NapCat controls the server-side
+// history window; limit and offset are applied locally to that returned window.
+func (a *Adapter) GetGroupMessageHistory(ctx context.Context, groupID string, limit, offset int) ([]GroupMessage, error) {
+	groupID = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(groupID), "group:"))
+	if groupID == "" {
+		return nil, fmt.Errorf("napcat: group id is required")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+	if offset < 0 {
+		return nil, fmt.Errorf("napcat: offset must not be negative")
+	}
+
+	resp, err := a.sendActionWithResponse(ctx, "get_group_msg_history", map[string]any{
+		"group_id":    oneBotIDValue(groupID),
+		"message_seq": 0,
+	}, true)
+	if err != nil {
+		return nil, err
+	}
+
+	messages, err := decodeGroupHistory(resp.Data)
+	if err != nil {
+		return nil, fmt.Errorf("napcat: decode group message history: %w", err)
+	}
+	if offset >= len(messages) {
+		return []GroupMessage{}, nil
+	}
+	end := offset + limit
+	if end > len(messages) {
+		end = len(messages)
+	}
+	return append([]GroupMessage(nil), messages[offset:end]...), nil
+}
+
+// GetGroupInfo returns the OneBot metadata for one group.
+func (a *Adapter) GetGroupInfo(ctx context.Context, groupID string) (GroupInfo, error) {
+	groupID = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(groupID), "group:"))
+	if groupID == "" {
+		return GroupInfo{}, fmt.Errorf("napcat: group id is required")
+	}
+	resp, err := a.sendActionWithResponse(ctx, "get_group_info", map[string]any{
+		"group_id": oneBotIDValue(groupID),
+	}, true)
+	if err != nil {
+		return GroupInfo{}, err
+	}
+	info, err := decodeGroupInfo(resp.Data)
+	if err != nil {
+		return GroupInfo{}, fmt.Errorf("napcat: decode group info: %w", err)
+	}
+	if info.GroupID == "" {
+		info.GroupID = groupID
+	}
+	return info, nil
+}
+
+// ListGroups lists the groups known to the connected NapCat account. Callers
+// use it only to resolve an exact group name supplied by the user.
+func (a *Adapter) ListGroups(ctx context.Context) ([]GroupInfo, error) {
+	resp, err := a.sendActionWithResponse(ctx, "get_group_list", nil, true)
+	if err != nil {
+		return nil, err
+	}
+	var raw []oneBotGroupInfo
+	if err := json.Unmarshal(resp.Data, &raw); err != nil {
+		return nil, fmt.Errorf("napcat: decode group list: %w", err)
+	}
+	groups := make([]GroupInfo, 0, len(raw))
+	for _, item := range raw {
+		info := item.toGroupInfo()
+		if info.GroupID != "" {
+			groups = append(groups, info)
+		}
+	}
+	return groups, nil
+}
+
+type oneBotGroupInfo struct {
+	GroupID     json.RawMessage `json:"group_id"`
+	Name        string          `json:"group_name"`
+	MemberCount int             `json:"member_count"`
+}
+
+func (g oneBotGroupInfo) toGroupInfo() GroupInfo {
+	return GroupInfo{
+		GroupID:     rawIDString(g.GroupID),
+		Name:        strings.TrimSpace(g.Name),
+		MemberCount: g.MemberCount,
+	}
+}
+
+func decodeGroupInfo(data json.RawMessage) (GroupInfo, error) {
+	var raw oneBotGroupInfo
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return GroupInfo{}, err
+	}
+	return raw.toGroupInfo(), nil
+}
+
+func decodeGroupHistory(data json.RawMessage) ([]GroupMessage, error) {
+	data = json.RawMessage(strings.TrimSpace(string(data)))
+	if len(data) == 0 || string(data) == "null" {
+		return []GroupMessage{}, nil
+	}
+	var payload struct {
+		Messages []oneBotEvent `json:"messages"`
+	}
+	if data[0] == '[' {
+		if err := json.Unmarshal(data, &payload.Messages); err != nil {
+			return nil, err
+		}
+	} else if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	items := make([]GroupMessage, 0, len(payload.Messages))
+	for _, item := range payload.Messages {
+		parsed := parseOneBotMessage(item.Message, item.RawMessage)
+		content := strings.TrimSpace(parsed.Text)
+		if content == "" {
+			content = "[non-text message]"
+		}
+		items = append(items, GroupMessage{
+			MessageID: rawIDString(item.MessageID),
+			UserName:  firstNonEmpty(strings.TrimSpace(item.Sender.Card), strings.TrimSpace(item.Sender.Nickname), "group member"),
+			Content:   content,
+			Time:      oneBotTimestamp(item.Time),
+		})
+	}
+	return items, nil
 }
 
 func (a *Adapter) sendActionWithResponse(ctx context.Context, action string, params map[string]any, wait bool) (actionResponse, error) {

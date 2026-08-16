@@ -177,10 +177,14 @@ func (a *Agent) executeToolCallsOrdered(
 		source = strings.TrimSpace(sourceOpt[0])
 	}
 	resultCh := make(chan executedToolCall, len(toolCalls))
+	executionOpts := []string{source}
+	if len(sourceOpt) > 1 {
+		executionOpts = append(executionOpts, sourceOpt[1])
+	}
 
 	runOne := func(idx int, tc provider.ToolCall) {
 		start := time.Now()
-		toolResult, err := a.executeToolMaybeDedupDetailed(tc.Name, tc.Arguments, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, source)
+		toolResult, err := a.executeToolMaybeDedupDetailed(tc.Name, tc.Arguments, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, executionOpts...)
 		resultText := toolResult.Output
 		if err != nil {
 			resultText = fmt.Sprintf("Error: %v", err)
@@ -366,7 +370,7 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 	}
 	hooksActive := a.hooks.Enabled()
 	if (guard == nil && !hooksActive) || len(toolCalls) == 0 {
-		return a.executeToolCallsOrdered(toolCalls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel, source)
+		return a.executeToolCallsOrdered(toolCalls, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel, sourceOpt...)
 	}
 
 	sessionID := ""
@@ -412,11 +416,11 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 		// represented one desktop-dependent plan, and running its survivors in
 		// parallel would make the blocked/approved ordering nondeterministic.
 		for _, tc := range allowed {
-			one := a.executeToolCallsOrdered([]provider.ToolCall{tc}, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, false, source)
+			one := a.executeToolCallsOrdered([]provider.ToolCall{tc}, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, false, sourceOpt...)
 			executed = append(executed, one...)
 		}
 	} else {
-		executed = a.executeToolCallsOrdered(allowed, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel, source)
+		executed = a.executeToolCallsOrdered(allowed, autoApprove, sess, toolURLRepeatCount, toolURLLastResult, duplicateFetchLimit, allowMixedParallel, sourceOpt...)
 	}
 	results := make([]executedToolCall, 0, len(toolCalls))
 	next := 0

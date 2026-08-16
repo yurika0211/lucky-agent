@@ -30,6 +30,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/proactive"
 	"github.com/yurika0211/luckyagent/internal/server"
 	"github.com/yurika0211/luckyagent/internal/soul"
+	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
 var (
@@ -145,6 +146,15 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := mgr.Get()
+	if strings.HasPrefix(args[0], "tool_trace.templates.") {
+		toolName := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(args[0], "tool_trace.templates.")))
+		if value, ok := cfg.ToolTrace.Templates[toolName]; ok {
+			fmt.Println(value)
+		} else {
+			fmt.Println("(未设置)")
+		}
+		return nil
+	}
 	switch args[0] {
 	case "provider":
 		fmt.Println(cfg.Provider)
@@ -270,6 +280,10 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MsgGateway.Telegram.ProgressSummaryWithLLM)
 	case "msg_gateway.telegram.show_tool_details_in_result", "msg_gateway.telegram.show_tool_chain":
 		fmt.Println(cfg.MsgGateway.Telegram.ShowToolDetailsInResult)
+	case "msg_gateway.telegram.disable_auto_reaction":
+		fmt.Println(cfg.MsgGateway.Telegram.DisableAutoReaction)
+	case "msg_gateway.telegram.max_concurrent_sessions":
+		fmt.Println(cfg.MsgGateway.Telegram.MaxConcurrentSessions)
 	case "msg_gateway.qqofficial.app_id":
 		fmt.Println(cfg.MsgGateway.QQOfficial.AppID)
 	case "msg_gateway.qqofficial.app_secret":
@@ -288,6 +302,16 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(maskKey(cfg.MsgGateway.NapCat.AccessToken))
 	case "msg_gateway.napcat.group_trigger_mode":
 		fmt.Println(cfg.MsgGateway.NapCat.GroupTriggerMode)
+	case "msg_gateway.napcat.cross_group_read.enabled":
+		fmt.Println(cfg.MsgGateway.NapCat.CrossGroupRead.Enabled)
+	case "msg_gateway.napcat.cross_group_read.require_confirmation":
+		fmt.Println(cfg.MsgGateway.NapCat.CrossGroupRead.RequireConfirmation)
+	case "msg_gateway.napcat.cross_group_read.allowed_groups":
+		fmt.Println(strings.Join(cfg.MsgGateway.NapCat.CrossGroupRead.AllowedGroups, ","))
+	case "msg_gateway.napcat.cross_group_read.blocked_groups":
+		fmt.Println(strings.Join(cfg.MsgGateway.NapCat.CrossGroupRead.BlockedGroups, ","))
+	case "msg_gateway.napcat.cross_group_read.log_access":
+		fmt.Println(cfg.MsgGateway.NapCat.CrossGroupRead.LogAccess)
 	case "msg_gateway.feishu.app_id":
 		fmt.Println(cfg.MsgGateway.Feishu.AppID)
 	case "msg_gateway.feishu.app_secret":
@@ -1005,6 +1029,15 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			RemoveAt:         cfg.MsgGateway.NapCat.RemoveAt,
 			GroupTriggerMode: cfg.MsgGateway.NapCat.GroupTriggerMode,
 		})
+		if cfg.MsgGateway.NapCat.CrossGroupRead.Enabled {
+			a.Tools().Register(tool.NapCatReadGroupTool(napcatAdapter, tool.NapCatCrossGroupReadConfig{
+				Enabled:             true,
+				RequireConfirmation: cfg.MsgGateway.NapCat.CrossGroupRead.RequireConfirmation,
+				AllowedGroups:       append([]string(nil), cfg.MsgGateway.NapCat.CrossGroupRead.AllowedGroups...),
+				BlockedGroups:       append([]string(nil), cfg.MsgGateway.NapCat.CrossGroupRead.BlockedGroups...),
+				LogAccess:           cfg.MsgGateway.NapCat.CrossGroupRead.LogAccess,
+			}))
+		}
 		handler := qqofficial.NewHandlerWithOptions(napcatAdapter, a, qqofficial.HandlerOptions{
 			PlatformName:    "napcat",
 			DisplayName:     "NapCat QQ 网关",

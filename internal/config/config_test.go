@@ -174,6 +174,45 @@ func TestDefaultFeishuConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultNapCatCrossGroupReadIsDisabledAndConfirmed(t *testing.T) {
+	cfg := DefaultConfig().MsgGateway.NapCat.CrossGroupRead
+	if cfg.Enabled {
+		t.Fatal("cross-group reading must be disabled by default")
+	}
+	if !cfg.RequireConfirmation || !cfg.LogAccess {
+		t.Fatalf("expected confirmation and audit logging by default, got %+v", cfg)
+	}
+}
+
+func TestManagerSetNapCatCrossGroupRead(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	values := map[string]string{
+		"msg_gateway.napcat.cross_group_read.enabled":              "true",
+		"msg_gateway.napcat.cross_group_read.require_confirmation": "false",
+		"msg_gateway.napcat.cross_group_read.allowed_groups":       "100, 200",
+		"msg_gateway.napcat.cross_group_read.blocked_groups":       "300",
+		"msg_gateway.napcat.cross_group_read.log_access":           "false",
+	}
+	for key, value := range values {
+		if err := mgr.Set(key, value); err != nil {
+			t.Fatalf("Set %s: %v", key, err)
+		}
+	}
+	cfg := mgr.Get().MsgGateway.NapCat.CrossGroupRead
+	if !cfg.Enabled || cfg.RequireConfirmation || cfg.LogAccess {
+		t.Fatalf("unexpected boolean policy: %+v", cfg)
+	}
+	if len(cfg.AllowedGroups) != 2 || cfg.AllowedGroups[0] != "100" || cfg.AllowedGroups[1] != "200" {
+		t.Fatalf("unexpected allowed groups: %#v", cfg.AllowedGroups)
+	}
+	if len(cfg.BlockedGroups) != 1 || cfg.BlockedGroups[0] != "300" {
+		t.Fatalf("unexpected blocked groups: %#v", cfg.BlockedGroups)
+	}
+}
+
 func TestParseConfigDataAppliesFeishuDefaults(t *testing.T) {
 	cfg, err := parseConfigData([]byte(`{"msg_gateway":{"feishu":{"app_id":"cli_test","listen_addr":"","path":"","api_base_url":"","group_trigger_mode":""}}}`))
 	if err != nil {
@@ -1568,6 +1607,29 @@ func TestSetLLMProtocol(t *testing.T) {
 	}
 	if got := mgr.Get().LlmProvider.Protocol; got != "responses" {
 		t.Fatalf("protocol = %q, want responses", got)
+	}
+}
+
+func TestSetTelegramInteractionOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	if err := mgr.Set("msg_gateway.telegram.disable_auto_reaction", "true"); err != nil {
+		t.Fatalf("Set disable_auto_reaction: %v", err)
+	}
+	if err := mgr.Set("msg_gateway.telegram.max_concurrent_sessions", "3"); err != nil {
+		t.Fatalf("Set max_concurrent_sessions: %v", err)
+	}
+	telegram := mgr.Get().MsgGateway.Telegram
+	if !telegram.DisableAutoReaction || telegram.MaxConcurrentSessions != 3 {
+		t.Fatalf("unexpected Telegram options: %#v", telegram)
+	}
+	if err := mgr.Set("tool_trace.templates.file_read", "检查 {path}"); err != nil {
+		t.Fatalf("Set tool trace template: %v", err)
+	}
+	if got := mgr.Get().ToolTrace.Templates["file_read"]; got != "检查 {path}" {
+		t.Fatalf("template = %q, want configured value", got)
 	}
 }
 

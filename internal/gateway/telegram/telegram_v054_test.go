@@ -506,6 +506,57 @@ func TestV054SendStreamWithReplyTo(t *testing.T) {
 	stream.Finish()
 }
 
+func TestV054StreamSenderFinishDeliversLongCodeTail(t *testing.T) {
+	adapter, sent := newAdapterWithCapturedMessages(t)
+	adapter.cfg.MaxMessageLen = 180
+	adapter.rememberTelegramThread("12345", "10", "42")
+
+	stream, err := adapter.SendStream(context.Background(), "12345", "10")
+	if err != nil {
+		t.Fatalf("SendStream() error = %v", err)
+	}
+
+	code := "```go\nfunc total() int {\n" +
+		strings.Repeat("\tvalue += 1\n", 20) +
+		"\treturn value\n}\n```"
+	if err := stream.SetResult(code); err != nil {
+		t.Fatalf("SetResult() error = %v", err)
+	}
+	if err := stream.Finish(); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+
+	var continuationTexts []string
+	for _, message := range *sent {
+		if message.Method == "sendMessage" && message.Text != "🧠 Thinking..." {
+			if message.ReplyTo != "10" || message.ThreadID != "42" {
+				t.Fatalf("continuation routing = reply %q, thread %q; want reply 10, thread 42", message.ReplyTo, message.ThreadID)
+			}
+			continuationTexts = append(continuationTexts, message.Text)
+		}
+	}
+	if len(continuationTexts) == 0 {
+		t.Fatal("expected at least one continuation message for long stream result")
+	}
+
+	finalMessages := make([]string, 0, len(*sent)-1)
+	for _, message := range (*sent)[1:] {
+		finalMessages = append(finalMessages, message.Text)
+		if message.ParseMode == tgbotapi.ModeHTML {
+			if strings.Count(message.Text, "<pre>") != strings.Count(message.Text, "</pre>") {
+				t.Fatalf("unbalanced pre block in %q", message.Text)
+			}
+			if strings.Count(message.Text, "<code>") != strings.Count(message.Text, "</code>") {
+				t.Fatalf("unbalanced code block in %q", message.Text)
+			}
+		}
+	}
+	combined := strings.Join(finalMessages, "\n")
+	if !strings.Contains(combined, "return value\n}</code></pre>") {
+		t.Fatalf("final code tail was not delivered: %q", combined)
+	}
+}
+
 func TestV054SendStreamFallsBackWhenReplyTargetIsInvalid(t *testing.T) {
 	var replyIDs []string
 	bot, err := newMockBot(func(r *http.Request) map[string]any {
@@ -3605,7 +3656,7 @@ func TestV054HandleResumeSwitchesSessionByUniqueTitleFragment(t *testing.T) {
 	}
 }
 
-func TestV054HandleSessionSwitchesByPrefix(t *testing.T) {
+func TestV054HandleResumeSwitchesByPrefix(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()
 
@@ -3615,14 +3666,14 @@ func TestV054HandleSessionSwitchesByPrefix(t *testing.T) {
 	msg := &gateway.Message{
 		ID:        "1",
 		Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
-		Text:      "/session session-target",
+		Text:      "/resume session-target",
 		IsCommand: true,
-		Command:   "session",
+		Command:   "resume",
 		Args:      "session-target",
 	}
 
-	if err := handler.handleSession(context.Background(), msg); err != nil {
-		t.Fatalf("expected no error, got: %v", err)
+	if err := handler.handleResume(context.Background(), msg); err != nil {
+		t.Fatalf("resume session by prefix: %v", err)
 	}
 	if got := handler.currentSessionID("12345"); got != target.ID {
 		t.Fatalf("expected switched session %q, got %q", target.ID, got)

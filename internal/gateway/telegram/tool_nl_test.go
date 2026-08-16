@@ -108,13 +108,12 @@ func TestTelegramProgressCards(t *testing.T) {
 			{Name: "file_read", Args: `{"path":"internal/gateway/telegram/handler.go"}`, Result: "package telegram", Success: true},
 		})
 		assert.Contains(t, got, "<b>🛠 Tool Trace</b>")
-		assert.Contains(t, got, "<pre><code>")
-		assert.Contains(t, got, "[1]")
+		assert.Contains(t, got, "1. ✅")
 		assert.Contains(t, got, "web_search")
-		assert.Contains(t, got, "→")
-		assert.Contains(t, got, "[2]")
+		assert.Contains(t, got, "搜索了「luckyagent telegram」")
+		assert.Contains(t, got, "2. ✅")
 		assert.Contains(t, got, "file_read")
-		assert.Contains(t, got, "Done · 2 tools")
+		assert.Contains(t, got, "读取了 internal/gateway/telegram/handler.go")
 	})
 
 	t.Run("tool trace keeps executable skill tools compact", func(t *testing.T) {
@@ -124,9 +123,30 @@ func TestTelegramProgressCards(t *testing.T) {
 		})
 		assert.Contains(t, got, "skill_obsidian_run")
 		assert.Contains(t, got, "skill_read")
-		assert.Contains(t, got, "[1]")
-		assert.Contains(t, got, "[2]")
-		assert.Contains(t, got, "Done · 2 tools")
+		assert.Contains(t, got, "1. ✅")
+		assert.Contains(t, got, "2. ✅")
+	})
+
+	t.Run("detailed tool trace exposes expandable metadata", func(t *testing.T) {
+		got := renderTelegramToolTraceCardWithDetails([]telegramToolTraceStep{{
+			Name:    "terminal",
+			Args:    `{"command":"go test ./...","workdir":"/repo"}`,
+			Result:  "error: test failed",
+			Success: false,
+		}}, true)
+		assert.Contains(t, got, "在 /repo 执行 go test ./...")
+		assert.Contains(t, got, "<blockquote expandable>")
+		assert.Contains(t, got, "错误：")
+	})
+
+	t.Run("configured tool template", func(t *testing.T) {
+		got := renderTelegramToolTraceCardWithTemplateDetails([]telegramToolTraceStep{{
+			Name:    "file_read",
+			Args:    `{"path":"config.json"}`,
+			Result:  "ok",
+			Success: true,
+		}}, false, map[string]string{"file_read": "已检查 {path}"})
+		assert.Contains(t, got, "已检查 config.json")
 	})
 
 	t.Run("tool trace omits agent orchestration tools", func(t *testing.T) {

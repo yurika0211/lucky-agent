@@ -32,7 +32,7 @@ else
   api_url="https://api.github.com/repos/${repo}/releases/tags/${version}"
 fi
 
-archive_name="la-${os}-${arch}.tar.gz"
+archive_name="lh-${os}-${arch}.tar.gz"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 

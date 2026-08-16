@@ -131,6 +131,9 @@ type agentConfigSnapshot struct {
 	ProgressAsNaturalLanguage bool
 	ProgressSummaryWithLLM    bool
 	ShowToolDetailsInResult   bool
+	DisableAutoReaction       bool
+	MaxConcurrentSessions     int
+	ToolTraceTemplates        map[string]string
 	MemoryTrace               bool
 	MemoryTraceLevel          string
 	MemoryTraceMaxResults     int
@@ -315,6 +318,9 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 		ProgressAsNaturalLanguage: cfg.MsgGateway.Telegram.ProgressAsNaturalLanguage,
 		ProgressSummaryWithLLM:    cfg.MsgGateway.Telegram.ProgressSummaryWithLLM,
 		ShowToolDetailsInResult:   cfg.MsgGateway.Telegram.ShowToolDetailsInResult,
+		DisableAutoReaction:       cfg.MsgGateway.Telegram.DisableAutoReaction,
+		MaxConcurrentSessions:     cfg.MsgGateway.Telegram.MaxConcurrentSessions,
+		ToolTraceTemplates:        cfg.ToolTrace.Templates,
 		MemoryTrace:               cfg.MsgGateway.Telegram.MemoryTrace,
 		MemoryTraceLevel:          cfg.MsgGateway.Telegram.MemoryTraceLevel,
 		MemoryTraceMaxResults:     cfg.MsgGateway.Telegram.MemoryTraceMaxResults,
@@ -343,12 +349,13 @@ type Handler struct {
 	commands map[string]telegramCommandHandler
 	watcher  *cron.Watcher
 
-	mu         sync.RWMutex
-	sessions   map[string]string // chatID → sessionID
-	tasks      map[string]*chatTask
-	queues     map[string]*chatQueue
-	lucky      *luckycollector.Lucky
-	restarting bool
+	mu              sync.RWMutex
+	sessions        map[string]string // chatID → sessionID
+	tasks           map[string]*chatTask
+	queues          map[string]*chatQueue
+	chatWorkerSlots chan struct{}
+	lucky           *luckycollector.Lucky
+	restarting      bool
 
 	// v0.44.0: chatID→sessionID 映射持久化
 	dataDir string
@@ -363,10 +370,13 @@ type Handler struct {
 	progressSummaryWithLLM bool
 	// 最终回答前是否附上自然语言工具摘要
 	showToolDetailsInResult bool
-	memoryTrace             bool
-	memoryTraceLevel        string
-	memoryTraceMaxResults   int
-	memoryTraceMaxHops      int
+	// 是否关闭群聊请求确认表情
+	disableAutoReaction   bool
+	toolTraceTemplates    map[string]string
+	memoryTrace           bool
+	memoryTraceLevel      string
+	memoryTraceMaxResults int
+	memoryTraceMaxHops    int
 
 	memeDir         string
 	memeProbability float64
@@ -411,6 +421,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		recorder = a
 	}
 	memeDir, memeProbability, memeCooldown := resolveRandomMemeConfig()
+	maxConcurrentChatWorkers := resolveMaxConcurrentChatWorkers(state)
 	h := &Handler{
 		adapter:                   adapter,
 		agent:                     runtime,
@@ -422,6 +433,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		sessions:                  make(map[string]string),
 		tasks:                     make(map[string]*chatTask),
 		queues:                    make(map[string]*chatQueue),
+		chatWorkerSlots:           make(chan struct{}, maxConcurrentChatWorkers),
 		lucky:                     luckycollector.NewLucky(),
 		dataDir:                   "", // 默认不持久化，需 SetDataDir 启用
 		chatStreamTimeout:         resolveChatStreamTimeout(state),
@@ -429,6 +441,8 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(state),
 		progressSummaryWithLLM:    resolveProgressSummaryWithLLM(state),
 		showToolDetailsInResult:   resolveShowToolDetailsInResult(state),
+		disableAutoReaction:       resolveDisableAutoReaction(state),
+		toolTraceTemplates:        resolveToolTraceTemplates(state),
 		memoryTrace:               resolveMemoryTrace(state),
 		memoryTraceLevel:          resolveMemoryTraceLevel(state),
 		memoryTraceMaxResults:     resolveMemoryTraceMaxResults(state),
@@ -597,6 +611,39 @@ func resolveShowToolDetailsInResult(state stateRuntime) bool {
 	}
 	cfg := state.Config().Get()
 	return cfg.ShowToolDetailsInResult
+}
+
+func resolveDisableAutoReaction(state stateRuntime) bool {
+	if state == nil {
+		return false
+	}
+	return state.Config().Get().DisableAutoReaction
+}
+
+func resolveMaxConcurrentChatWorkers(state stateRuntime) int {
+	const defaultMaxConcurrentChatWorkers = 8
+	if state == nil {
+		return defaultMaxConcurrentChatWorkers
+	}
+	if configured := state.Config().Get().MaxConcurrentSessions; configured > 0 {
+		return configured
+	}
+	return defaultMaxConcurrentChatWorkers
+}
+
+func resolveToolTraceTemplates(state stateRuntime) map[string]string {
+	if state == nil {
+		return nil
+	}
+	configured := state.Config().Get().ToolTraceTemplates
+	if len(configured) == 0 {
+		return nil
+	}
+	templates := make(map[string]string, len(configured))
+	for name, annotation := range configured {
+		templates[name] = annotation
+	}
+	return templates
 }
 
 func resolveMemoryTrace(state stateRuntime) bool {
@@ -1083,6 +1130,41 @@ func findSessionByIDTitleOrPrefix(sessions *session.Manager, query string) sessi
 	})
 }
 
+func findTelegramSessionByReference(sessions *session.Manager, reference string) sessionLookupResult {
+	if sessions == nil {
+		return sessionLookupResult{status: sessionLookupNotFound}
+	}
+	reference = strings.TrimSpace(reference)
+	if reference == "" {
+		return sessionLookupResult{status: sessionLookupNotFound}
+	}
+	if sess, ok := sessions.Get(reference); ok {
+		return sessionLookupResult{status: sessionLookupMatched, session: sess, id: reference}
+	}
+	if index, err := strconv.Atoi(reference); err == nil && index > 0 {
+		infos := sessions.ListInfo()
+		if index <= len(infos) {
+			info := infos[index-1]
+			if sess, ok := sessions.Get(info.ID); ok {
+				return sessionLookupResult{status: sessionLookupMatched, session: sess, id: info.ID}
+			}
+		}
+	}
+	return findSessionByIDTitleOrPrefix(sessions, reference)
+}
+
+func telegramSessionInfoByID(sessions *session.Manager, id string) (session.SessionInfo, bool) {
+	if sessions == nil {
+		return session.SessionInfo{}, false
+	}
+	for _, info := range sessions.ListInfo() {
+		if info.ID == id {
+			return info, true
+		}
+	}
+	return session.SessionInfo{}, false
+}
+
 func uniqueSessionMatch(sessions *session.Manager, infos []session.SessionInfo, match func(session.SessionInfo) bool) sessionLookupResult {
 	matches := make([]session.SessionInfo, 0, 2)
 	for _, info := range infos {
@@ -1105,23 +1187,19 @@ func uniqueSessionMatch(sessions *session.Manager, infos []session.SessionInfo, 
 
 func formatAmbiguousSessionSwitchMessage(query string, matches []session.SessionInfo) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Multiple sessions match `%s`:\n\n", query))
+	sb.WriteString(fmt.Sprintf("❌ 多个会话匹配 <code>%s</code>：\n\n", escapeTelegramCommandHTML(query)))
 	limit := min(len(matches), 5)
 	for i := 0; i < limit; i++ {
-		title := strings.TrimSpace(matches[i].Title)
-		if title == "" {
-			title = "(untitled)"
-		}
-		sb.WriteString(fmt.Sprintf("• `%s` — %s (%d msgs)\n",
-			matches[i].ID,
-			truncateForTelegramList(title, 56),
+		sb.WriteString(fmt.Sprintf("• <code>%s</code> — %s（%d 条消息）\n",
+			escapeTelegramCommandHTML(matches[i].ID),
+			escapeTelegramCommandHTML(telegramSessionDisplayTitle(matches[i].Title)),
 			matches[i].MessageCount,
 		))
 	}
 	if len(matches) > limit {
-		sb.WriteString(fmt.Sprintf("\n... and %d more", len(matches)-limit))
+		sb.WriteString(fmt.Sprintf("\n… 还有 %d 个匹配会话", len(matches)-limit))
 	}
-	sb.WriteString("\n\nUse `/resume <id>` or rename one session.")
+	sb.WriteString("\n\n使用 <code>/resume &lt;ID&gt;</code> 切换。")
 	return sb.String()
 }
 
@@ -1187,6 +1265,9 @@ func (h *Handler) dequeueChatRequest(chatID string) (*queuedChatRequest, bool) {
 }
 
 func (h *Handler) runChatQueue(chatID string) {
+	release := h.acquireChatWorkerSlot()
+	defer release()
+
 	for {
 		req, ok := h.dequeueChatRequest(chatID)
 		if !ok {
@@ -1195,6 +1276,16 @@ func (h *Handler) runChatQueue(chatID string) {
 		if err := h.handleChat(req.ctx, req.msg, req.input); err != nil {
 			fmt.Printf("[telegram] chat error: %v\n", err)
 		}
+	}
+}
+
+func (h *Handler) acquireChatWorkerSlot() func() {
+	if h == nil || h.chatWorkerSlots == nil {
+		return func() {}
+	}
+	h.chatWorkerSlots <- struct{}{}
+	return func() {
+		<-h.chatWorkerSlots
 	}
 }
 
@@ -1329,6 +1420,35 @@ func isTaskTimeoutError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "context deadline exceeded")
+}
+
+func telegramChatErrorFeedback(err error) string {
+	if err == nil {
+		return "❌ 请求失败，请稍后重试。"
+	}
+	lower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(lower, "billing_error"),
+		strings.Contains(lower, "insufficient balance"),
+		strings.Contains(lower, "insufficient funds"),
+		strings.Contains(lower, "subscription"):
+		return "❌ 模型服务余额不足或订阅不可用，请检查余额/订阅后重试。"
+	case strings.Contains(lower, "invalid api key"),
+		strings.Contains(lower, "incorrect api key"),
+		strings.Contains(lower, "unauthorized"),
+		strings.Contains(lower, "authentication"):
+		return "❌ 模型服务认证失败，请检查 API Key 和服务地址后重试。"
+	case strings.Contains(lower, "rate limit"), strings.Contains(lower, "too many requests"), strings.Contains(lower, "429"):
+		return "❌ 模型服务请求过于频繁，请稍等片刻后重试。"
+	case strings.Contains(lower, "protocol_not_supported"),
+		strings.Contains(lower, "does not support chat completions"),
+		strings.Contains(lower, "不支持 chat completions"):
+		return "❌ 模型协议不匹配：该模型需要 Responses API。请将 `protocol` 设为 `responses` 后重试。"
+	case isTaskTimeoutError(err):
+		return "⏱ 请求超时，请稍后重试或缩短请求内容。"
+	default:
+		return "❌ 请求失败：" + utils.TruncateKeepLength(err.Error(), 200)
+	}
 }
 
 // HandleMessage processes an incoming gateway message.
@@ -1656,8 +1776,7 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, input ag
 	taskCtx, task := h.beginChatTask(scope, ctx)
 	defer h.finishChatTask(scope, task)
 
-	// 收到消息后给用户点赞 👍
-	go h.adapter.ReactToMessage(msg.Chat.ID, msg.ID, "👍")
+	h.reactToIncomingMessage(msg)
 
 	sessionID := h.getSessionID(scope)
 
@@ -1687,6 +1806,24 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, input ag
 
 	// 回退到非流式
 	return h.handleChatSync(taskCtx, msg, input, sessionID)
+}
+
+func (h *Handler) reactToIncomingMessage(msg *gateway.Message) {
+	emoji, ok := telegramAutoReaction(msg, h != nil && h.disableAutoReaction)
+	if !ok || h == nil || h.adapter == nil {
+		return
+	}
+	go h.adapter.ReactToMessage(msg.Chat.ID, msg.ID, emoji)
+}
+
+func telegramAutoReaction(msg *gateway.Message, disabled bool) (string, bool) {
+	if disabled || msg == nil || strings.TrimSpace(msg.ID) == "" || msg.Chat.Type == gateway.ChatPrivate {
+		return "", false
+	}
+	if msg.ReplyTo != nil {
+		return "👀", true
+	}
+	return "👍", true
 }
 
 func (h *Handler) sendProgressMessage(msg *gateway.Message, text string) {
@@ -2024,7 +2161,11 @@ func (h *Handler) sendAssistantMedia(ctx context.Context, msg *gateway.Message, 
 		replyToMsgID = msg.ID
 	}
 
-	for _, item := range media {
+	reportProgress := shouldReportMediaDelivery(media)
+	for index, item := range media {
+		if reportProgress {
+			h.sendProgressMessage(msg, fmt.Sprintf("📤 正在发送附件 %d/%d", index+1, len(media)))
+		}
 		switch item.Kind {
 		case outboundMediaPhoto:
 			if err := h.adapter.SendPhoto(ctx, msg.Chat.ID, replyToMsgID, item.Source, item.Caption); err != nil {
@@ -2036,8 +2177,23 @@ func (h *Handler) sendAssistantMedia(ctx context.Context, msg *gateway.Message, 
 			}
 		}
 	}
+	if reportProgress {
+		h.sendProgressMessage(msg, "✅ 附件发送完成")
+	}
 
 	return nil
+}
+
+func shouldReportMediaDelivery(media []outboundMedia) bool {
+	if len(media) > 1 {
+		return true
+	}
+	if len(media) != 1 || media[0].Kind != outboundMediaDocument {
+		return false
+	}
+	path := normalizeLocalMediaPath(media[0].Source)
+	info, err := os.Stat(path)
+	return err == nil && info.Size() >= 5*1024*1024
 }
 
 func (h *Handler) sendRandomMemeIfNeeded(ctx context.Context, msg *gateway.Message, text string) error {
@@ -2226,7 +2382,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		case isTaskCanceledError(err):
 			emitProgress("🛑 当前任务已停止")
 		default:
-			emitProgress(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
+			emitProgress(telegramChatErrorFeedback(err))
 		}
 		return nil
 	}
@@ -2332,7 +2488,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 					memoryTraceSent = true
 				}
 				if !toolTraceSent {
-					if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+					if card := renderTelegramToolTraceCardWithTemplateDetails(toolTraceSteps, h.effectiveShowToolDetailsInResult(), h.toolTraceTemplates); strings.TrimSpace(card) != "" {
 						h.sendProgressMessageHTML(msg, card)
 						toolTraceSent = true
 					}
@@ -2361,11 +2517,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				} else if isTaskCanceledError(evt.Err) {
 					emitProgress("🛑 当前任务已停止")
 				} else {
-					errMsg := evt.Err.Error()
-					if len(errMsg) > 200 {
-						errMsg = errMsg[:197] + "..."
-					}
-					emitProgress(fmt.Sprintf("❌ Error: %s", errMsg))
+					emitProgress(telegramChatErrorFeedback(evt.Err))
 				}
 				return true, true
 			}
@@ -2385,7 +2537,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				memoryTraceSent = true
 			}
 			if !toolTraceSent {
-				if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+				if card := renderTelegramToolTraceCardWithTemplateDetails(toolTraceSteps, h.effectiveShowToolDetailsInResult(), h.toolTraceTemplates); strings.TrimSpace(card) != "" {
 					h.sendProgressMessageHTML(msg, card)
 					toolTraceSent = true
 				}
@@ -2405,7 +2557,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		case errors.Is(chatCtx.Err(), context.Canceled):
 			emitProgress("🛑 当前任务已停止")
 		default:
-			emitProgress("❌ Error: stream ended unexpectedly, please retry")
+			emitProgress("❌ 请求在返回完整结果前中断，请稍后重试。")
 		}
 	}
 
@@ -2436,7 +2588,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			sender.Finish()
 			return nil
 		}
-		sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
+		sender.SetResult(telegramChatErrorFeedback(err))
 		sender.Finish()
 		return nil
 	}
@@ -2568,7 +2720,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 					memoryTraceSent = true
 				}
 				if narrativeMode && !toolTraceSent {
-					if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+					if card := renderTelegramToolTraceCardWithTemplateDetails(toolTraceSteps, h.effectiveShowToolDetailsInResult(), h.toolTraceTemplates); strings.TrimSpace(card) != "" {
 						h.sendProgressMessageHTML(msg, card)
 						toolTraceSent = true
 					}
@@ -2626,11 +2778,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 					sender.Finish()
 					return true, true
 				}
-				errMsg := evt.Err.Error()
-				if len(errMsg) > 200 {
-					errMsg = errMsg[:197] + "..."
-				}
-				sender.SetResult(fmt.Sprintf("❌ Error: %s", errMsg))
+				sender.SetResult(telegramChatErrorFeedback(evt.Err))
 				sender.Finish()
 				return true, true
 			}
@@ -2648,7 +2796,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			memoryTraceSent = true
 		}
 		if narrativeMode && !toolTraceSent && finalOutput != "" {
-			if card := renderTelegramToolTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
+			if card := renderTelegramToolTraceCardWithTemplateDetails(toolTraceSteps, h.effectiveShowToolDetailsInResult(), h.toolTraceTemplates); strings.TrimSpace(card) != "" {
 				h.sendProgressMessageHTML(msg, card)
 				toolTraceSent = true
 			}
@@ -2769,11 +2917,7 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, inpu
 			if isTaskCanceledError(err) {
 				return h.adapter.Send(context.Background(), msg.Chat.ID, "🛑 当前任务已停止")
 			}
-			errMsg := fmt.Sprintf("❌ Error: %s", err.Error())
-			if len(errMsg) > 200 {
-				errMsg = errMsg[:200] + "..."
-			}
-			return h.adapter.Send(ctx, msg.Chat.ID, errMsg)
+			return h.adapter.Send(ctx, msg.Chat.ID, telegramChatErrorFeedback(err))
 		}
 	}
 
@@ -3191,93 +3335,73 @@ func (h *Handler) handleHistory(ctx context.Context, msg *gateway.Message) error
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
 }
 
-// handleSession shows current session info, or switches when an ID is supplied.
+// handleSession shows the current session or details for a selected session.
 func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error {
-	if strings.TrimSpace(msg.Args) != "" {
-		return h.handleSessionSwitch(ctx, msg, strings.TrimSpace(msg.Args))
-	}
-
-	scope := telegramConversationScope(msg)
-	h.mu.RLock()
-	sessionID, ok := h.sessions[scope]
-	h.mu.RUnlock()
-
-	if !ok {
-		return h.adapter.Send(ctx, msg.Chat.ID, "No active session. Send a message to start one!")
-	}
-
 	sessions := h.sessionManager()
 	if sessions == nil {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", shortSessionID(sessionID)))
+		return h.sendCommandHTML(ctx, msg, "❌ <b>Session manager unavailable.</b>")
 	}
-	sess, ok := sessions.Get(sessionID)
+
+	currentID := h.currentSessionID(telegramConversationScope(msg))
+	query := strings.TrimSpace(msg.Args)
+	if query == "" {
+		if currentID == "" {
+			return h.sendCommandHTML(ctx, msg, "ℹ️ 暂无当前会话。发送一条消息即可开始。")
+		}
+		query = currentID
+	}
+
+	result := findTelegramSessionByReference(sessions, query)
+	switch result.status {
+	case sessionLookupMatched:
+	case sessionLookupAmbiguous:
+		return h.sendCommandHTML(ctx, msg, formatAmbiguousSessionSwitchMessage(query, result.matches))
+	default:
+		return h.sendCommandHTML(ctx, msg, fmt.Sprintf("❌ 会话 <code>%s</code> 不存在。使用 <code>/sessions</code> 查看列表。", escapeTelegramCommandHTML(query)))
+	}
+	info, ok := telegramSessionInfoByID(sessions, result.id)
 	if !ok {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. It may have been cleaned up.", shortSessionID(sessionID)))
+		return h.sendCommandHTML(ctx, msg, fmt.Sprintf("❌ 会话 <code>%s</code> 不存在。", escapeTelegramCommandHTML(query)))
 	}
-
-	info := fmt.Sprintf("📋 *Session Info:*\n\n• ID: `%s`\n• Title: %s\n• Messages: %d\n• Created: %s\n• Updated: %s",
-		sessionID,
-		sess.Title,
-		sess.MessageCount(),
-		sess.CreatedAt.Format("2006-01-02 15:04"),
-		sess.UpdatedAt.Format("2006-01-02 15:04"),
-	)
-
-	return h.adapter.Send(ctx, msg.Chat.ID, info)
+	return h.sendCommandHTML(ctx, msg, (TelegramFormatter{}).FormatSessionDetail(info, result.session, currentID))
 }
 
 // handleSessions lists recent sessions so Telegram users can pick one to resume.
 func (h *Handler) handleSessions(ctx context.Context, msg *gateway.Message) error {
 	sessions := h.sessionManager()
 	if sessions == nil {
-		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
+		return h.sendCommandHTML(ctx, msg, "❌ <b>Session manager unavailable.</b>")
 	}
 
 	infos := sessions.ListInfo()
 	if len(infos) == 0 {
-		return h.adapter.Send(ctx, msg.Chat.ID, "No sessions yet. Send a message to start one!")
+		return h.sendCommandHTML(ctx, msg, "📭 暂无会话。发送一条消息即可开始。")
 	}
 
+	page, showAll, err := parseTelegramListPage(msg.Args)
+	if err != nil {
+		return h.sendCommandHTML(ctx, msg, "❌ <b>用法：</b><code>/sessions [页码|all]</code>")
+	}
 	currentID := h.currentSessionID(telegramConversationScope(msg))
-	var sb strings.Builder
-	sb.WriteString("📚 *Recent Sessions:*\n\n")
-
-	limit := 10
-	if len(infos) < limit {
-		limit = len(infos)
+	formatter := TelegramFormatter{}
+	if !showAll {
+		return h.sendCommandHTML(ctx, msg, formatter.FormatSessionsList(infos, currentID, page))
 	}
-	for i := 0; i < limit; i++ {
-		info := infos[i]
-		marker := "•"
-		if info.ID == currentID {
-			marker = "✅"
+	pageCount := (len(infos) + telegramCommandListPageSize - 1) / telegramCommandListPageSize
+	for page = 1; page <= pageCount; page++ {
+		if err := h.sendCommandHTML(ctx, msg, formatter.FormatSessionsList(infos, currentID, page)); err != nil {
+			return err
 		}
-		title := strings.TrimSpace(info.Title)
-		if title == "" {
-			title = "(untitled)"
-		}
-		sb.WriteString(fmt.Sprintf("%s `%s` — %s (%d msgs, updated %s)\n",
-			marker,
-			info.ID,
-			truncateForTelegramList(title, 48),
-			info.MessageCount,
-			info.UpdatedAt.Format("01-02 15:04"),
-		))
 	}
-	if len(infos) > limit {
-		sb.WriteString(fmt.Sprintf("\n... and %d more", len(infos)-limit))
-	}
-	sb.WriteString("\n\nUse `/resume <title>` or `/resume <id>` to switch.")
-
-	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+	return nil
 }
 
 func (h *Handler) handleResume(ctx context.Context, msg *gateway.Message) error {
-	sessionID := strings.TrimSpace(msg.Args)
-	if sessionID == "" {
-		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /resume <session_title_or_id>")
+	reference := strings.TrimSpace(msg.Args)
+	if reference == "" {
+		return h.sendCommandHTML(ctx, msg, "❌ <b>用法：</b><code>/resume &lt;序号、标题或 ID&gt;</code>")
 	}
-	return h.handleSessionSwitch(ctx, msg, sessionID)
+	return h.handleSessionSwitch(ctx, msg, reference)
 }
 
 func (h *Handler) handleRename(ctx context.Context, msg *gateway.Message) error {
@@ -3307,13 +3431,13 @@ func (h *Handler) handleSessionSwitch(ctx context.Context, msg *gateway.Message,
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Session manager unavailable")
 	}
 
-	result := findSessionByIDTitleOrPrefix(sessions, sessionQuery)
+	result := findTelegramSessionByReference(sessions, sessionQuery)
 	switch result.status {
 	case sessionLookupMatched:
 	case sessionLookupAmbiguous:
-		return h.adapter.Send(ctx, msg.Chat.ID, formatAmbiguousSessionSwitchMessage(sessionQuery, result.matches))
+		return h.sendCommandHTML(ctx, msg, formatAmbiguousSessionSwitchMessage(sessionQuery, result.matches))
 	default:
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Session `%s` not found. Use /sessions to list recent sessions.", sessionQuery))
+		return h.sendCommandHTML(ctx, msg, fmt.Sprintf("❌ 会话 <code>%s</code> 不存在。使用 <code>/sessions</code> 查看列表。", escapeTelegramCommandHTML(sessionQuery)))
 	}
 
 	sess := result.session
@@ -3326,17 +3450,14 @@ func (h *Handler) handleSessionSwitch(ctx context.Context, msg *gateway.Message,
 
 	h.saveChatSessions()
 
-	title := strings.TrimSpace(sess.Title)
-	if title == "" {
-		title = "(untitled)"
-	}
+	title := telegramSessionDisplayTitle(sess.Title)
 	if hadOld && oldSessionID == matchedID {
-		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Already on session `%s` — %s", shortSessionID(matchedID), truncateForTelegramList(title, 60)))
+		return h.sendCommandHTML(ctx, msg, fmt.Sprintf("✅ 已在会话 <code>%s</code> — %s", escapeTelegramCommandHTML(shortSessionID(matchedID)), escapeTelegramCommandHTML(title)))
 	}
 
-	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched session: `%s`\nTitle: %s\nMessages: %d",
-		shortSessionID(matchedID),
-		truncateForTelegramList(title, 80),
+	return h.sendCommandHTML(ctx, msg, fmt.Sprintf("✅ <b>已切换会话</b>\n<b>ID：</b><code>%s</code>\n<b>标题：</b>%s\n<b>消息数：</b>%d",
+		escapeTelegramCommandHTML(shortSessionID(matchedID)),
+		escapeTelegramCommandHTML(title),
 		sess.MessageCount(),
 	))
 }

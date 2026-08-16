@@ -92,6 +92,9 @@ type Config struct {
 	// Tool runtime configuration.
 	Tools ToolsConfig `json:"tools,omitempty"`
 
+	// Tool Trace annotations may be overridden per tool using compact templates.
+	ToolTrace ToolTraceConfig `json:"tool_trace,omitempty"`
+
 	// Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
 
@@ -102,6 +105,10 @@ type Config struct {
 type ToolsConfig struct {
 	Filesystem  FilesystemToolConfig  `json:"filesystem,omitempty"`
 	ComputerUse ComputerUseToolConfig `json:"computer_use,omitempty"`
+}
+
+type ToolTraceConfig struct {
+	Templates map[string]string `json:"templates,omitempty"`
 }
 
 type FilesystemToolConfig struct {
@@ -373,6 +380,8 @@ type MsgGatewayTelegram struct {
 	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
 	ProgressSummaryWithLLM    bool   `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
 	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
+	DisableAutoReaction       bool   `json:"disable_auto_reaction,omitempty"`        // 是否关闭群聊请求确认表情
+	MaxConcurrentSessions     int    `json:"max_concurrent_sessions,omitempty"`      // Telegram 会话 worker 并发上限
 	MemoryTrace               bool   `json:"memory_trace,omitempty"`                 // 是否发送 Memory Trace 卡片
 	MemoryTraceLevel          string `json:"memory_trace_level,omitempty"`           // summary 或 full
 	MemoryTraceMaxResults     int    `json:"memory_trace_max_results,omitempty"`     // Memory Trace 最多展示的结果数
@@ -396,13 +405,25 @@ type MsgGatewayQQOfficial struct {
 
 // MsgGatewayNapCat NapCat / OneBot v11 反向 WebSocket 配置
 type MsgGatewayNapCat struct {
-	ListenAddr       string   `json:"listen_addr,omitempty"`
-	Path             string   `json:"path,omitempty"`
-	AccessToken      string   `json:"access_token,omitempty"`
-	AllowedChats     []string `json:"allowed_chats,omitempty"`
-	AllowedUsers     []string `json:"allowed_users,omitempty"`
-	RemoveAt         bool     `json:"remove_at,omitempty"`
-	GroupTriggerMode string   `json:"group_trigger_mode,omitempty"`
+	ListenAddr       string               `json:"listen_addr,omitempty"`
+	Path             string               `json:"path,omitempty"`
+	AccessToken      string               `json:"access_token,omitempty"`
+	AllowedChats     []string             `json:"allowed_chats,omitempty"`
+	AllowedUsers     []string             `json:"allowed_users,omitempty"`
+	RemoveAt         bool                 `json:"remove_at,omitempty"`
+	GroupTriggerMode string               `json:"group_trigger_mode,omitempty"`
+	CrossGroupRead   CrossGroupReadConfig `json:"cross_group_read,omitempty"`
+}
+
+// CrossGroupReadConfig controls the opt-in ability to read another NapCat
+// group's message history. It is disabled by default because group history is
+// private data that must not be fetched opportunistically.
+type CrossGroupReadConfig struct {
+	Enabled             bool     `json:"enabled,omitempty"`
+	RequireConfirmation bool     `json:"require_confirmation,omitempty"`
+	AllowedGroups       []string `json:"allowed_groups,omitempty"`
+	BlockedGroups       []string `json:"blocked_groups,omitempty"`
+	LogAccess           bool     `json:"log_access,omitempty"`
 }
 
 // MsgGatewayFeishu configures the Feishu event callback and Open API client.
@@ -809,6 +830,8 @@ func DefaultConfig() *Config {
 				ProgressAsMessages:        true, // 默认启用独立步骤消息
 				ProgressAsNaturalLanguage: false,
 				ShowToolDetailsInResult:   false,
+				DisableAutoReaction:       false,
+				MaxConcurrentSessions:     8,
 				MemoryTrace:               true,
 				MemoryTraceLevel:          "summary",
 				MemoryTraceMaxResults:     6,
@@ -828,6 +851,10 @@ func DefaultConfig() *Config {
 				Path:             "/onebot/v11/ws",
 				RemoveAt:         true,
 				GroupTriggerMode: "mention",
+				CrossGroupRead: CrossGroupReadConfig{
+					RequireConfirmation: true,
+					LogAccess:           true,
+				},
 			},
 			Feishu: MsgGatewayFeishu{
 				ListenAddr:       "127.0.0.1:6710",
@@ -1369,6 +1396,12 @@ func cloneConfig(in *Config) *Config {
 			cp.ExtraHeaders[k] = v
 		}
 	}
+	if in.ToolTrace.Templates != nil {
+		cp.ToolTrace.Templates = make(map[string]string, len(in.ToolTrace.Templates))
+		for key, value := range in.ToolTrace.Templates {
+			cp.ToolTrace.Templates[key] = value
+		}
+	}
 	cp.Fallbacks = append([]FallbackEntry(nil), in.Fallbacks...)
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
@@ -1380,6 +1413,8 @@ func cloneConfig(in *Config) *Config {
 	cp.MsgGateway.QQOfficial.Intents = append([]string(nil), in.MsgGateway.QQOfficial.Intents...)
 	cp.MsgGateway.NapCat.AllowedChats = append([]string(nil), in.MsgGateway.NapCat.AllowedChats...)
 	cp.MsgGateway.NapCat.AllowedUsers = append([]string(nil), in.MsgGateway.NapCat.AllowedUsers...)
+	cp.MsgGateway.NapCat.CrossGroupRead.AllowedGroups = append([]string(nil), in.MsgGateway.NapCat.CrossGroupRead.AllowedGroups...)
+	cp.MsgGateway.NapCat.CrossGroupRead.BlockedGroups = append([]string(nil), in.MsgGateway.NapCat.CrossGroupRead.BlockedGroups...)
 	cp.MsgGateway.Feishu.AllowedChats = append([]string(nil), in.MsgGateway.Feishu.AllowedChats...)
 	cp.MsgGateway.Feishu.AllowedUsers = append([]string(nil), in.MsgGateway.Feishu.AllowedUsers...)
 	cp.MsgGateway.Weixin.AllowedUsers = append([]string(nil), in.MsgGateway.Weixin.AllowedUsers...)
@@ -1877,6 +1912,12 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.telegram.show_tool_chain":
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
+	case "msg_gateway.telegram.disable_auto_reaction":
+		m.config.MsgGateway.Telegram.DisableAutoReaction = parseBool(value)
+	case "msg_gateway.telegram.max_concurrent_sessions":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Telegram.MaxConcurrentSessions = n
 	case "msg_gateway.telegram.memory_trace":
 		m.config.MsgGateway.Telegram.MemoryTrace = parseBool(value)
 	case "msg_gateway.telegram.memory_trace_level":
@@ -1927,6 +1968,16 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.NapCat.RemoveAt = parseBool(value)
 	case "msg_gateway.napcat.group_trigger_mode":
 		m.config.MsgGateway.NapCat.GroupTriggerMode = value
+	case "msg_gateway.napcat.cross_group_read.enabled":
+		m.config.MsgGateway.NapCat.CrossGroupRead.Enabled = parseBool(value)
+	case "msg_gateway.napcat.cross_group_read.require_confirmation":
+		m.config.MsgGateway.NapCat.CrossGroupRead.RequireConfirmation = parseBool(value)
+	case "msg_gateway.napcat.cross_group_read.allowed_groups":
+		m.config.MsgGateway.NapCat.CrossGroupRead.AllowedGroups = splitCSV(value)
+	case "msg_gateway.napcat.cross_group_read.blocked_groups":
+		m.config.MsgGateway.NapCat.CrossGroupRead.BlockedGroups = splitCSV(value)
+	case "msg_gateway.napcat.cross_group_read.log_access":
+		m.config.MsgGateway.NapCat.CrossGroupRead.LogAccess = parseBool(value)
 	case "msg_gateway.feishu.app_id":
 		m.config.MsgGateway.Feishu.AppID = value
 	case "msg_gateway.feishu.app_secret":
@@ -2122,6 +2173,20 @@ func (m *Manager) Set(key, value string) error {
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Context.MemoryHygieneMaxFindings = n
 	default:
+		if strings.HasPrefix(key, "tool_trace.templates.") {
+			toolName := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(key, "tool_trace.templates.")))
+			if toolName != "" {
+				if m.config.ToolTrace.Templates == nil {
+					m.config.ToolTrace.Templates = make(map[string]string)
+				}
+				if strings.TrimSpace(value) == "" {
+					delete(m.config.ToolTrace.Templates, toolName)
+				} else {
+					m.config.ToolTrace.Templates[toolName] = value
+				}
+				break
+			}
+		}
 		if strings.HasPrefix(key, "extra_headers.") {
 			headerKey := strings.TrimPrefix(key, "extra_headers.")
 			if m.config.ExtraHeaders == nil {

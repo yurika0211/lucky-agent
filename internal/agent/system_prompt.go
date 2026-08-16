@@ -75,6 +75,9 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 				parts = append(parts, computerPolicy)
 			}
 		}
+		if slices.Contains(toolNames, "delegate_task") && slices.Contains(toolNames, "wait_for_tasks") {
+			parts = append(parts, a.buildDelegateTaskPolicyPromptBlock())
+		}
 		if slices.Contains(toolNames, "terminal") &&
 			slices.Contains(toolNames, "computer_observe") &&
 			slices.Contains(toolNames, "computer_act") {
@@ -190,6 +193,14 @@ Tool discipline:
 
 	loader := getPromptLoader()
 	return loader.LoadOrDefault("tool_policy.md", defaultPolicy)
+}
+
+func (a *Agent) buildDelegateTaskPolicyPromptBlock() string {
+	return `Delegated-task completion protocol:
+
+- After every successful delegate_task call, retain the returned task_id.
+- Before giving a final answer, call wait_for_tasks with every created task_id and include_result=true.
+- Do not finalize until wait_for_tasks reports all_terminal=true. Then inspect each completed, failed, or cancelled result and synthesize an evidence-based answer.`
 }
 
 // buildComputerUsePolicyPromptBlock is intentionally separate from the broad

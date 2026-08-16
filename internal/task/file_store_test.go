@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -187,5 +188,54 @@ func TestFileStoreCleanupKeepLast(t *testing.T) {
 	}
 	if len(result.DeletedIDs) != 1 || result.DeletedIDs[0] != "oldest" {
 		t.Fatalf("unexpected deleted ids: %+v", result)
+	}
+}
+
+func TestFileStoreConcurrentGetAndUpdateNeverReturnsPartialJSON(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	record, err := store.Create(Record{ID: "concurrent", Description: "concurrent access"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	const updates = 100
+	errs := make(chan error, updates)
+	done := make(chan struct{})
+	var readers sync.WaitGroup
+	for range 4 {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+				if _, ok, err := store.Get(record.ID); err != nil || !ok {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	for i := range updates {
+		record.Status = StatusRunning
+		record.Metadata = map[string]string{"sequence": strings.Repeat("x", 1024) + string(rune('a'+i%26))}
+		if err := store.Update(record); err != nil {
+			t.Fatalf("Update %d: %v", i, err)
+		}
+	}
+	close(done)
+	readers.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("Get during Update: %v", err)
+		}
+		t.Fatal("Get during Update unexpectedly reported no record")
 	}
 }

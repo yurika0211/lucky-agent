@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1422,6 +1423,7 @@ type cronNotifyGateway struct {
 	mu         sync.Mutex
 	name       string
 	running    bool
+	sendErr    error
 	messages   []string
 	deliveries []cronNotifyDelivery
 	forwards   []cronNotifyForwardedText
@@ -1463,6 +1465,9 @@ func (g *cronNotifyGateway) Send(ctx context.Context, chatID string, message str
 func (g *cronNotifyGateway) SendWithReceipt(ctx context.Context, chatID string, message string) (msggateway.SentMessage, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.sendErr != nil {
+		return msggateway.SentMessage{}, g.sendErr
+	}
 	g.nextID++
 	id := fmt.Sprintf("%d", g.nextID)
 	g.messages = append(g.messages, message)
@@ -1478,6 +1483,9 @@ func (g *cronNotifyGateway) SendWithReply(ctx context.Context, chatID string, re
 func (g *cronNotifyGateway) SendWithReplyReceipt(ctx context.Context, chatID string, replyToMsgID string, message string) (msggateway.SentMessage, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.sendErr != nil {
+		return msggateway.SentMessage{}, g.sendErr
+	}
 	g.nextID++
 	id := fmt.Sprintf("%d", g.nextID)
 	g.messages = append(g.messages, message)
@@ -3370,6 +3378,78 @@ func TestCronAddAgentModeSendsTelegramNotification(t *testing.T) {
 	}
 	if got, ok := a.ResolveExternalReplyAnchor("telegram", "12345", "1"); !ok || got != "session-telegram-cron" {
 		t.Fatalf("expected cron notification reply anchor to resolve session-telegram-cron, got %q ok=%v", got, ok)
+	}
+}
+
+func TestCronAgentNotificationFailureReturnsJobError(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+	if err := cfg.Set("provider", "openai"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	if err := cfg.Set("api_key", "sk-test"); err != nil {
+		t.Fatalf("set api_key: %v", err)
+	}
+	if err := cfg.Set("model", "gpt-3.5-turbo"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &mockProvider{name: "test-mock"}
+
+	gm := msggateway.NewGatewayManager()
+	deliveryErr := errors.New("onebot send failed")
+	gw := &cronNotifyGateway{name: "napcat", running: true, sendErr: deliveryErr}
+	if err := gm.Register(gw); err != nil {
+		t.Fatalf("register gateway: %v", err)
+	}
+	a.msgGateway = gm
+
+	if _, err := a.Tools().Call("cron_add", map[string]any{
+		"id":       "agent-job-napcat-delivery-failure",
+		"schedule": "每小时",
+		"mode":     "agent",
+		"command":  "say hello from cron agent",
+		"platform": "napcat",
+		"chat_id":  "private:1914822318",
+	}); err != nil {
+		t.Fatalf("cron_add(agent napcat) error = %v", err)
+	}
+
+	job, ok := a.CronEngine().GetJob("agent-job-napcat-delivery-failure")
+	if !ok {
+		t.Fatal("expected NapCat cron job to exist")
+	}
+	err = job.Task()
+	if !errors.Is(err, deliveryErr) {
+		t.Fatalf("expected job error to retain delivery failure %v, got %v", deliveryErr, err)
+	}
+	if !strings.Contains(err.Error(), "deliver cron result") || !strings.Contains(err.Error(), "napcat") {
+		t.Fatalf("expected actionable NapCat delivery error, got %v", err)
+	}
+}
+
+func TestCronNotificationWithExplicitTargetFailsWithoutGateway(t *testing.T) {
+	a := &Agent{}
+	err := a.sendCronNotification(map[string]string{
+		"platform": "napcat",
+		"chat_id":  "private:1914822318",
+	}, cronNotificationPayload{
+		JobID:     "missing-gateway",
+		Mode:      "agent",
+		Command:   "summarize notes",
+		Outcome:   "succeeded",
+		RawResult: "done",
+	})
+	if err == nil || !strings.Contains(err.Error(), "message gateway is not initialized") {
+		t.Fatalf("expected explicit target without gateway to fail, got %v", err)
 	}
 }
 

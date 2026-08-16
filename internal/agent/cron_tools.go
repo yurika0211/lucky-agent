@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -153,24 +154,26 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, meta
 			}
 			result, err := a.RunLoopWithSession(context.Background(), sess, command, runCfg)
 			if err != nil {
-				a.sendCronNotification(metadata, cronNotificationPayload{
+				notificationErr := a.sendCronNotification(metadata, cronNotificationPayload{
 					JobID:     id,
 					Mode:      mode.String(),
 					Command:   command,
 					Outcome:   "failed",
 					RawResult: err.Error(),
 				})
-				return err
+				return combineCronTaskAndNotificationError(err, notificationErr)
 			}
 			if out := strings.TrimSpace(result.Response); out != "" {
 				fmt.Println(out)
-				a.sendCronNotification(metadata, cronNotificationPayload{
+				if err := a.sendCronNotification(metadata, cronNotificationPayload{
 					JobID:     id,
 					Mode:      mode.String(),
 					Command:   command,
 					Outcome:   "succeeded",
 					RawResult: out,
-				})
+				}); err != nil {
+					return fmt.Errorf("deliver cron result: %w", err)
+				}
 			}
 			return nil
 
@@ -182,48 +185,69 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, meta
 				"command": command,
 				"timeout": 300,
 			}, "")
-			if res != nil && strings.TrimSpace(res.Output) != "" {
-				fmt.Println(res.Output)
-				a.sendCronNotification(metadata, cronNotificationPayload{
-					JobID:     id,
-					Mode:      mode.String(),
-					Command:   command,
-					Outcome:   "succeeded",
-					RawResult: strings.TrimSpace(res.Output),
-				})
-			}
 			if err != nil {
-				a.sendCronNotification(metadata, cronNotificationPayload{
+				notificationErr := a.sendCronNotification(metadata, cronNotificationPayload{
 					JobID:     id,
 					Mode:      mode.String(),
 					Command:   command,
 					Outcome:   "failed",
 					RawResult: err.Error(),
 				})
-				return err
+				return combineCronTaskAndNotificationError(err, notificationErr)
 			}
 			if res != nil && strings.Contains(res.Output, "[exit code:") {
-				a.sendCronNotification(metadata, cronNotificationPayload{
+				taskErr := errors.New("shell command exited with non-zero status")
+				notificationErr := a.sendCronNotification(metadata, cronNotificationPayload{
 					JobID:     id,
 					Mode:      mode.String(),
 					Command:   command,
 					Outcome:   "failed",
-					RawResult: "shell command exited with non-zero status",
+					RawResult: taskErr.Error(),
 				})
-				return fmt.Errorf("shell command exited with non-zero status")
+				return combineCronTaskAndNotificationError(taskErr, notificationErr)
+			}
+			if res != nil && strings.TrimSpace(res.Output) != "" {
+				out := strings.TrimSpace(res.Output)
+				fmt.Println(out)
+				if err := a.sendCronNotification(metadata, cronNotificationPayload{
+					JobID:     id,
+					Mode:      mode.String(),
+					Command:   command,
+					Outcome:   "succeeded",
+					RawResult: out,
+				}); err != nil {
+					return fmt.Errorf("deliver cron result: %w", err)
+				}
 			}
 			return nil
 		}
 	}
 }
 
-func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNotificationPayload) {
+func combineCronTaskAndNotificationError(taskErr, notificationErr error) error {
+	if notificationErr == nil {
+		return taskErr
+	}
+	if taskErr == nil {
+		return notificationErr
+	}
+	return errors.Join(taskErr, fmt.Errorf("deliver cron result: %w", notificationErr))
+}
+
+func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNotificationPayload) error {
 	message := a.formatCronNotification(payload)
-	if a == nil || a.msgGateway == nil || strings.TrimSpace(message) == "" {
-		return
+	if a == nil || strings.TrimSpace(message) == "" {
+		return nil
 	}
 	if metadata == nil {
 		metadata = map[string]string{}
+	}
+	hasExplicitTarget := firstCronMetadataValue(metadata, "platform", "chatID", "chat_id") != ""
+	if a.msgGateway == nil {
+		if hasExplicitTarget {
+			return fmt.Errorf("message gateway is not initialized")
+		}
+		return nil
 	}
 	platform := strings.TrimSpace(metadata["platform"])
 	chatID := firstCronMetadataValue(metadata, "chatID", "chat_id")
@@ -242,17 +266,20 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 		}
 	}
 	if platform == "" || chatID == "" {
-		return
+		return nil
 	}
 	gw, ok := a.msgGateway.Get(platform)
-	if !ok || gw == nil || !gw.IsRunning() {
-		return
+	if !ok || gw == nil {
+		return fmt.Errorf("gateway %q is not registered", platform)
+	}
+	if !gw.IsRunning() {
+		return fmt.Errorf("gateway %q is not running", platform)
 	}
 	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if forwarder, ok := gw.(gateway.ForwardedTextSender); ok && cronNotificationShouldForward(message) {
 		if err := forwarder.SendForwardedText(sendCtx, chatID, "LuckyAgent", splitCronNotificationChunks(message, cronNotificationForwardChunkLimit)); err == nil {
-			return
+			return nil
 		}
 	}
 	if receiptGW, ok := gw.(gateway.ReceiptGateway); ok {
@@ -268,13 +295,21 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 		if err == nil && strings.TrimSpace(sent.ID) != "" && sessionID != "" {
 			a.RecordExternalReplyAnchor(platform, chatID, sent.ID, sessionID, payload.JobID)
 		}
-		return
+		if err != nil {
+			return fmt.Errorf("send via %s to %s: %w", platform, chatID, err)
+		}
+		return nil
 	}
 	if replyToMsgID != "" {
-		_ = gw.SendWithReply(sendCtx, chatID, replyToMsgID, message)
-		return
+		if err := gw.SendWithReply(sendCtx, chatID, replyToMsgID, message); err != nil {
+			return fmt.Errorf("send via %s to %s: %w", platform, chatID, err)
+		}
+		return nil
 	}
-	_ = gw.Send(sendCtx, chatID, message)
+	if err := gw.Send(sendCtx, chatID, message); err != nil {
+		return fmt.Errorf("send via %s to %s: %w", platform, chatID, err)
+	}
+	return nil
 }
 
 func cronNotificationShouldForward(message string) bool {

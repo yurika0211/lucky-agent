@@ -63,6 +63,25 @@ export type SessionsResponse = {
   count?: number;
 };
 
+export type ToolTraceRecord = {
+  name: string;
+  arguments?: string;
+  result?: string;
+  success: boolean;
+  error?: string;
+  duration_ms?: number;
+  annotation: string;
+};
+
+export type SessionToolTrace = {
+  session_id: string;
+  tools?: ToolTraceRecord[];
+  total_calls?: number;
+  successes?: number;
+  failures?: number;
+  success_rate?: number;
+};
+
 export type WsPayload = {
   type: string;
   id?: string;

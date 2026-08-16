@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1985,6 +1987,7 @@ type streamConvergenceState struct {
 	citationToolCalls              []toolCallLog
 	iterationTimeout               time.Duration
 	artifactGuard                  *artifactFinalizationGuard
+	pendingDelegateTaskIDs         map[string]struct{}
 }
 
 /*
@@ -1995,6 +1998,67 @@ func (s *streamConvergenceState) hasContinuation() bool {
 		return false
 	}
 	return strings.TrimSpace(s.continuedResponse.String()) != ""
+}
+
+func (s *streamConvergenceState) hasPendingDelegateTasks() bool {
+	return s != nil && len(s.pendingDelegateTaskIDs) > 0
+}
+
+func (s *streamConvergenceState) pendingDelegateWaitMessage() (string, bool) {
+	if !s.hasPendingDelegateTasks() {
+		return "", false
+	}
+	ids := make([]string, 0, len(s.pendingDelegateTaskIDs))
+	for taskID := range s.pendingDelegateTaskIDs {
+		ids = append(ids, taskID)
+	}
+	slices.Sort(ids)
+	encoded, _ := json.Marshal(ids)
+	return "Delegated tasks have not been collected yet. Call wait_for_tasks with task_ids=" + string(encoded) + " and include_result=true. Do not finalize until it returns all_terminal=true; then synthesize the returned results.", true
+}
+
+func (s *streamConvergenceState) recordDelegateTaskToolResult(name, result string) {
+	if s == nil {
+		return
+	}
+	var payload struct {
+		TaskID      string `json:"task_id"`
+		AllTerminal bool   `json:"all_terminal"`
+		Tasks       []struct {
+			TaskID string `json:"task_id"`
+			Status string `json:"status"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(result), &payload); err != nil {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "delegate_task":
+		if taskID := strings.TrimSpace(payload.TaskID); taskID != "" {
+			if s.pendingDelegateTaskIDs == nil {
+				s.pendingDelegateTaskIDs = make(map[string]struct{})
+			}
+			s.pendingDelegateTaskIDs[taskID] = struct{}{}
+		}
+	case "wait_for_tasks":
+		if !payload.AllTerminal {
+			return
+		}
+		for _, task := range payload.Tasks {
+			if taskID := strings.TrimSpace(task.TaskID); taskID != "" && isTerminalDelegateTaskStatus(task.Status) {
+				delete(s.pendingDelegateTaskIDs, taskID)
+			}
+		}
+	}
+}
+
+func isTerminalDelegateTaskStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
 }
 
 func streamIterationContext(parent context.Context, state *streamConvergenceState) (context.Context, context.CancelFunc) {
@@ -2043,7 +2107,14 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 		s.toolOnlyIterationLimit = 3
 	}
 	trimmed := strings.TrimSpace(assistantContent)
-	if trimmed == "" {
+	hasWaitForTasks := false
+	for _, tc := range toolCalls {
+		if strings.EqualFold(tc.Name, "wait_for_tasks") {
+			hasWaitForTasks = true
+			break
+		}
+	}
+	if trimmed == "" && !hasWaitForTasks {
 		s.consecutiveToolOnlyIters++
 	} else {
 		s.consecutiveToolOnlyIters = 0
@@ -2054,6 +2125,12 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 	for _, tc := range toolCalls {
 		sig := s.toolCallSig(tc.Name, tc.Arguments)
 		repeatedSigs = append(repeatedSigs, sig)
+		if strings.EqualFold(tc.Name, "wait_for_tasks") {
+			// A timed-out wait may need another wait call. Let the outer
+			// iteration budget, rather than duplicate-call protection, bound it.
+			allRepeated = false
+			continue
+		}
 		s.toolCallRepeatCount[sig]++
 		if key := normalizedToolTarget(tc.Name, tc.Arguments); key != "" {
 			if s.toolURLRepeatCount == nil {
@@ -2095,6 +2172,44 @@ func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result 
 	if s.artifactGuard != nil {
 		s.artifactGuard.recordToolResult(name, arguments, result)
 	}
+	s.recordDelegateTaskToolResult(name, result)
+}
+
+func (a *Agent) continueAfterPendingDelegateTasks(
+	ctx context.Context,
+	events chan<- ChatEvent,
+	messages []provider.Message,
+	callOpts provider.CallOptions,
+	sess *session.Session,
+	turnInput UserTurnInput,
+	round int,
+	remaining int,
+	state *streamConvergenceState,
+	assistantContent string,
+	reasoningContent string,
+) bool {
+	if state == nil {
+		return false
+	}
+	message, blocked := state.pendingDelegateWaitMessage()
+	if !blocked {
+		return false
+	}
+	if remaining <= 1 {
+		a.finalizeStreamWithState(events, sess, turnInput, message, state)
+		return true
+	}
+	messages = append(messages, provider.Message{
+		Role:             "assistant",
+		Content:          assistantContent,
+		ReasoningContent: reasoningContent,
+	})
+	messages = append(messages, provider.Message{Role: "user", Content: message})
+	messages = a.fitContextWindow(messages)
+	nextRound := round + 1
+	events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
+	a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
+	return true
 }
 
 /*
@@ -2245,6 +2360,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		sessionID = sess.ID
 	}
 	if remaining <= 0 {
+		if message, blocked := state.pendingDelegateWaitMessage(); blocked {
+			a.finalizeStreamWithState(events, sess, turnInput, message, state)
+			return
+		}
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
 			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 			return
@@ -2294,6 +2413,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
 			if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+				continue
+			}
+			if state.hasPendingDelegateTasks() {
 				continue
 			}
 			full := content.String()
@@ -2414,6 +2536,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				true,
 				state.toolExecutionGuard,
 				state.source,
+				turnInput.RoutingText,
 			)
 
 			for _, execResult := range executed {
@@ -2450,6 +2573,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				return
 			}
 			if remaining <= 1 {
+				if message, blocked := state.pendingDelegateWaitMessage(); blocked {
+					a.finalizeStreamWithState(events, sess, turnInput, message, state)
+					return
+				}
 				if state.hasContinuation() {
 					a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 					return
@@ -2472,6 +2599,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		emittedContentBytes = 0
 	}
 	if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+		return
+	}
+	if a.continueAfterPendingDelegateTasks(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state, response, reasoning.String()) {
 		return
 	}
 	if len(response) > emittedContentBytes {
@@ -2560,6 +2690,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		sessionID = sess.ID
 	}
 	if remaining <= 0 {
+		if message, blocked := state.pendingDelegateWaitMessage(); blocked {
+			a.finalizeStreamWithState(events, sess, turnInput, message, state)
+			return
+		}
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
 			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 			return
@@ -2648,6 +2782,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			true,
 			state.toolExecutionGuard,
 			state.source,
+			turnInput.RoutingText,
 		)
 
 		for _, execResult := range executed {
@@ -2684,6 +2819,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			return
 		}
 		if remaining <= 1 {
+			if message, blocked := state.pendingDelegateWaitMessage(); blocked {
+				a.finalizeStreamWithState(events, sess, turnInput, message, state)
+				return
+			}
 			if state.hasContinuation() {
 				a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 				return
@@ -2701,6 +2840,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	response := resp.Content
 	clean := strings.TrimSpace(response)
 	if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
+		return
+	}
+	if a.continueAfterPendingDelegateTasks(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state, response, resp.ReasoningContent) {
 		return
 	}
 

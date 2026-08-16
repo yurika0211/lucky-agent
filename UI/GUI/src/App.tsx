@@ -13,9 +13,10 @@ import type {
 import { Markdown } from './components/Markdown';
 import { Gateways } from './components/Gateways';
 import { Settings } from './components/Settings';
+import { Trajectory } from './components/Trajectory';
 
 type ThemeMode = 'light' | 'dark';
-type WorkspaceView = 'chat' | 'gateways' | 'settings';
+type WorkspaceView = 'chat' | 'trajectory' | 'gateways' | 'settings';
 
 type Bubble = ChatMessage & { attachments?: Array<{ type: 'image' | 'file'; name: string; url: string }> };
 
@@ -289,7 +290,7 @@ export function App() {
 
     const newAttachments = Array.from(files).map((file) => {
       const url = URL.createObjectURL(file);
-      const type = file.type.startsWith('image/') ? 'image' : 'file' as const;
+      const type: 'image' | 'file' = file.type.startsWith('image/') ? 'image' : 'file';
       return { type, name: file.name, url, file };
     });
 
@@ -530,6 +531,14 @@ export function App() {
           💬
         </button>
         <button
+          className={`rail-button ${view === 'trajectory' ? 'active' : ''}`}
+          type="button"
+          title="Tool trajectory"
+          onClick={() => setView('trajectory')}
+        >
+          ⊙
+        </button>
+        <button
           className={`rail-button ${view === 'gateways' ? 'active' : ''}`}
           type="button"
           title="Gateways"
@@ -564,7 +573,15 @@ export function App() {
         <section className="topbar panel">
           <div className="topbar-title">
             <span className="eyebrow">LuckyAgent GUI</span>
-            <h1>{view === 'settings' ? 'Settings' : view === 'gateways' ? 'Messaging gateways' : 'Agent runtime workspace'}</h1>
+            <h1>
+              {view === 'settings'
+                ? 'Settings'
+                : view === 'gateways'
+                  ? 'Messaging gateways'
+                  : view === 'trajectory'
+                    ? 'Tool trajectory'
+                    : 'Agent runtime workspace'}
+            </h1>
           </div>
           <div className="topbar-actions">
             <span className={`connection-pill ${connected ? 'ok' : socketState === 'error' ? 'err' : ''}`}>
@@ -598,11 +615,18 @@ export function App() {
           </div>
         </section>
 
-        <section className={`content ${view === 'gateways' || view === 'settings' ? 'single' : ''}`}>
+        <section className={`content ${view === 'gateways' || view === 'settings' || view === 'trajectory' ? 'single' : ''}`}>
           {view === 'settings' ? (
             <Settings fetchRuntime={fetchRuntime} pushActivity={pushActivity} />
           ) : view === 'gateways' ? (
             <Gateways fetchRuntime={fetchRuntime} pushActivity={pushActivity} pushFeed={pushFeed} />
+          ) : view === 'trajectory' ? (
+            <Trajectory
+              session={session}
+              fetchRuntime={fetchRuntime}
+              pushActivity={pushActivity}
+              onOpenChat={() => setView('chat')}
+            />
           ) : (
           <>
           <aside className={`left-col ${leftCollapsed ? 'collapsed' : ''}`}>

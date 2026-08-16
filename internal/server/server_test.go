@@ -528,6 +528,51 @@ func TestHandleTasksAPI(t *testing.T) {
 		t.Fatalf("expected verify recommendation, got %+v", obs)
 	}
 
+	child, err := a.TaskStore().Create(taskstore.Record{
+		ID:          "task-api-child",
+		ParentID:    record.ID,
+		Source:      taskstore.SourceTool,
+		Mode:        taskstore.ModeSingle,
+		Status:      taskstore.StatusRunning,
+		Description: "child task",
+	})
+	if err != nil {
+		t.Fatalf("create child task: %v", err)
+	}
+	if _, err := a.TaskStore().Create(taskstore.Record{
+		ID:          "task-api-grandchild",
+		ParentID:    child.ID,
+		Source:      taskstore.SourceTool,
+		Mode:        taskstore.ModeSingle,
+		Status:      taskstore.StatusPending,
+		Description: "grandchild task",
+	}); err != nil {
+		t.Fatalf("create grandchild task: %v", err)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/tree", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 tree, got %d: %s", w.Code, w.Body.String())
+	}
+	var tree struct {
+		Task struct {
+			ID string `json:"id"`
+		} `json:"task"`
+		Children []struct {
+			Task struct {
+				ID string `json:"id"`
+			} `json:"task"`
+			Children []json.RawMessage `json:"children"`
+		} `json:"children"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&tree); err != nil {
+		t.Fatalf("decode task tree: %v", err)
+	}
+	if tree.Task.ID != record.ID || len(tree.Children) != 1 || tree.Children[0].Task.ID != child.ID || len(tree.Children[0].Children) != 1 {
+		t.Fatalf("unexpected task tree: %+v", tree)
+	}
+
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/tasks/task-api-test/feedback", bytes.NewBufferString(`{"status":"completed","verified":true,"verifier":"test","user_feedback":"accepted","score":0.9,"recommended_next":"finalize"}`))
 	w = httptest.NewRecorder()
 	s.handleTaskByID(w, req)

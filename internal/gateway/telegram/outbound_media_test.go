@@ -527,3 +527,24 @@ func TestSendAssistantResponseRandomMemeRespectsCooldown(t *testing.T) {
 		t.Fatalf("unexpected send sequence with cooldown: %s", methods)
 	}
 }
+
+func TestShouldReportMediaDeliveryOnlyForLargeOrBatchedMedia(t *testing.T) {
+	smallPath := filepath.Join(t.TempDir(), "small.pdf")
+	if err := os.WriteFile(smallPath, []byte("small"), 0o600); err != nil {
+		t.Fatalf("write small media: %v", err)
+	}
+	if shouldReportMediaDelivery([]outboundMedia{{Kind: outboundMediaDocument, Source: smallPath}}) {
+		t.Fatal("small single document should not add progress messages")
+	}
+
+	largePath := filepath.Join(t.TempDir(), "large.pdf")
+	if err := os.WriteFile(largePath, make([]byte, 5*1024*1024), 0o600); err != nil {
+		t.Fatalf("write large media: %v", err)
+	}
+	if !shouldReportMediaDelivery([]outboundMedia{{Kind: outboundMediaDocument, Source: largePath}}) {
+		t.Fatal("large document should report delivery progress")
+	}
+	if !shouldReportMediaDelivery([]outboundMedia{{Kind: outboundMediaPhoto, Source: "one"}, {Kind: outboundMediaPhoto, Source: "two"}}) {
+		t.Fatal("multiple media items should report delivery progress")
+	}
+}

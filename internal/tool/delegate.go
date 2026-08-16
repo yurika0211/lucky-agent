@@ -25,6 +25,11 @@ const (
 	defaultDelegateListLimit      = 20
 	maxDelegateListLimit          = 100
 	defaultDelegateResultInline   = 4000
+	defaultWaitPollInterval       = 200 * time.Millisecond
+	minWaitPollInterval           = 10 * time.Millisecond
+	maxWaitPollInterval           = 5 * time.Second
+	minWaitTimeout                = 50 * time.Millisecond
+	maxWaitTaskIDs                = 100
 )
 
 var delegateWorkspacePathRe = regexp.MustCompile(`(?:/tmp/[^\s"'<>，。；；,，)）\]}]+|~[/\\]\.luckyagent[/\\]?[^\s"'<>，。；；,，)）\]}]*)`)
@@ -301,6 +306,17 @@ type delegateCancelResponse struct {
 	Message string `json:"message"`
 }
 
+// delegateWaitResponse is returned by wait_for_tasks. It intentionally uses
+// the same detailed task representation as task_status so callers can
+// synthesize completed subtask results without making a second round trip.
+type delegateWaitResponse struct {
+	Tasks          []delegateStatusResponse `json:"tasks"`
+	AllTerminal    bool                     `json:"all_terminal"`
+	TimedOut       bool                     `json:"timed_out"`
+	PendingTaskIDs []string                 `json:"pending_task_ids"`
+	ElapsedMS      int64                    `json:"elapsed_ms"`
+}
+
 // AgentExecutorFunc 子代理执行函数 — 通过 Agent Loop 真正执行任务
 // v0.38.0: 让 delegate 不再是占位，而是真正走 LLM
 type AgentExecutorFunc func(ctx context.Context, description, contextStr string) (string, error)
@@ -384,6 +400,38 @@ func delegateIntArg(raw any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func delegateDurationSecondsArg(raw any) (time.Duration, bool) {
+	var seconds float64
+	switch v := raw.(type) {
+	case int:
+		seconds = float64(v)
+	case int64:
+		seconds = float64(v)
+	case float64:
+		seconds = v
+	case float32:
+		seconds = float64(v)
+	case json.Number:
+		parsed, err := strconv.ParseFloat(v.String(), 64)
+		if err != nil {
+			return 0, false
+		}
+		seconds = parsed
+	case string:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0, false
+		}
+		seconds = parsed
+	default:
+		return 0, false
+	}
+	if seconds <= 0 {
+		return 0, false
+	}
+	return time.Duration(seconds * float64(time.Second)), true
 }
 
 func delegateBoolArg(args map[string]any, key string, def bool) bool {
@@ -562,6 +610,15 @@ func formatDelegateCompletedAt(t time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
+func isTerminalDelegateStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case StatusCompleted.String(), StatusFailed.String(), StatusCancelled.String():
+		return true
+	default:
+		return false
+	}
+}
+
 // DelegateTaskTool 创建子代理委派工具
 func DelegateTaskTool(dm *DelegateManager) *Tool {
 	return &Tool{
@@ -650,6 +707,50 @@ func TaskStatusTool(dm *DelegateManager) *Tool {
 			},
 		},
 		Handler: dm.handleStatus,
+	}
+}
+
+// WaitForTasksTool waits until every requested delegated task reaches a
+// terminal state. It is read-only and intentionally auto-approved.
+func WaitForTasksTool(dm *DelegateManager) *Tool {
+	return &Tool{
+		Name:        "wait_for_tasks",
+		Description: "Wait for delegated tasks to complete, fail, or be cancelled, then return their statuses and results.",
+		Category:    CatDelegate,
+		Source:      "builtin",
+		Permission:  PermAuto,
+		Parameters: map[string]Param{
+			"task_ids": {
+				Type:        "array",
+				Description: "IDs of delegated tasks to wait for",
+				Required:    true,
+			},
+			"timeout": {
+				Type:        "number",
+				Description: "Maximum total wait in seconds (default 120, maximum 1800; fractional seconds allowed)",
+				Required:    false,
+				Default:     defaultDelegateTimeoutSeconds,
+			},
+			"poll_interval_ms": {
+				Type:        "number",
+				Description: "Status polling interval in milliseconds (default 200, clamped to 10-5000)",
+				Required:    false,
+				Default:     int(defaultWaitPollInterval / time.Millisecond),
+			},
+			"include_result": {
+				Type:        "boolean",
+				Description: "Whether completed task result text is included",
+				Required:    false,
+				Default:     true,
+			},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			return dm.handleWaitForTasks(context.Background(), args)
+		},
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			out, err := dm.handleWaitForTasks(exec.Context, args)
+			return ToolCallResult{Output: out}, err
+		},
 	}
 }
 
@@ -800,7 +901,7 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 		TraceAvailable: plannerTrace != nil,
 		Workspace:      workspace,
 		TimeoutSeconds: int(timeout.Seconds()),
-		Message:        fmt.Sprintf("Task '%s' delegated. Use task_status to check progress.", taskID),
+		Message:        fmt.Sprintf("Task '%s' delegated. Use wait_for_tasks with this task ID before synthesizing a final answer.", taskID),
 	})
 
 	return string(result), nil
@@ -937,6 +1038,159 @@ func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
 	result, _ := json.Marshal(resp)
 
 	return string(result), nil
+}
+
+func delegateTaskIDsArg(args map[string]any) ([]string, error) {
+	if args == nil {
+		return nil, fmt.Errorf("task_ids is required")
+	}
+	raw, ok := args["task_ids"]
+	if !ok {
+		return nil, fmt.Errorf("task_ids is required")
+	}
+	var values []string
+	switch v := raw.(type) {
+	case []string:
+		values = append(values, v...)
+	case []any:
+		for _, item := range v {
+			id, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("task_ids must contain only strings")
+			}
+			values = append(values, id)
+		}
+	default:
+		return nil, fmt.Errorf("task_ids must be an array of task IDs")
+	}
+	seen := make(map[string]struct{}, len(values))
+	ids := make([]string, 0, len(values))
+	for _, value := range values {
+		id := strings.TrimSpace(value)
+		if id == "" {
+			return nil, fmt.Errorf("task_ids must not contain empty IDs")
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("task_ids must contain at least one task ID")
+	}
+	if len(ids) > maxWaitTaskIDs {
+		return nil, fmt.Errorf("task_ids supports at most %d task IDs", maxWaitTaskIDs)
+	}
+	return ids, nil
+}
+
+func (dm *DelegateManager) waitTimeoutFromArgs(args map[string]any) time.Duration {
+	timeout := dm.config.Timeout
+	if raw, ok := args["timeout"]; ok {
+		if requested, ok := delegateDurationSecondsArg(raw); ok {
+			timeout = requested
+		}
+	}
+	if timeout < minWaitTimeout {
+		timeout = minWaitTimeout
+	}
+	if timeout > dm.config.MaxTimeout {
+		timeout = dm.config.MaxTimeout
+	}
+	return timeout
+}
+
+func waitPollIntervalFromArgs(args map[string]any) time.Duration {
+	interval := defaultWaitPollInterval
+	if n, ok := delegateIntArg(args["poll_interval_ms"]); ok {
+		interval = time.Duration(n) * time.Millisecond
+	}
+	if interval < minWaitPollInterval {
+		return minWaitPollInterval
+	}
+	if interval > maxWaitPollInterval {
+		return maxWaitPollInterval
+	}
+	return interval
+}
+
+func (dm *DelegateManager) waitTaskStatuses(taskIDs []string, includeResult bool) ([]delegateStatusResponse, []string, error) {
+	statuses := make([]delegateStatusResponse, 0, len(taskIDs))
+	pending := make([]string, 0, len(taskIDs))
+	for _, taskID := range taskIDs {
+		statusJSON, err := dm.handleStatus(map[string]any{
+			"task_id":        taskID,
+			"include_result": includeResult,
+		})
+		if err != nil {
+			return nil, nil, err
+		}
+		var status delegateStatusResponse
+		if err := json.Unmarshal([]byte(statusJSON), &status); err != nil {
+			return nil, nil, fmt.Errorf("decode task status %q: %w", taskID, err)
+		}
+		statuses = append(statuses, status)
+		if !isTerminalDelegateStatus(status.Status) {
+			pending = append(pending, taskID)
+		}
+	}
+	return statuses, pending, nil
+}
+
+func marshalWaitResponse(tasks []delegateStatusResponse, pending []string, timedOut bool, started time.Time) (string, error) {
+	response, err := json.Marshal(delegateWaitResponse{
+		Tasks:          tasks,
+		AllTerminal:    len(pending) == 0,
+		TimedOut:       timedOut,
+		PendingTaskIDs: pending,
+		ElapsedMS:      time.Since(started).Milliseconds(),
+	})
+	if err != nil {
+		return "", err
+	}
+	return string(response), nil
+}
+
+func (dm *DelegateManager) handleWaitForTasks(ctx context.Context, args map[string]any) (string, error) {
+	taskIDs, err := delegateTaskIDsArg(args)
+	if err != nil {
+		return "", err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := dm.waitTimeoutFromArgs(args)
+	pollInterval := waitPollIntervalFromArgs(args)
+	includeResult := delegateBoolArg(args, "include_result", true)
+	started := time.Now()
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	for {
+		statuses, pending, err := dm.waitTaskStatuses(taskIDs, includeResult)
+		if err != nil {
+			return "", err
+		}
+		if len(pending) == 0 {
+			return marshalWaitResponse(statuses, pending, false, started)
+		}
+
+		select {
+		case <-waitCtx.Done():
+			if time.Since(started) >= timeout {
+				statuses, pending, err = dm.waitTaskStatuses(taskIDs, includeResult)
+				if err != nil {
+					return "", err
+				}
+				return marshalWaitResponse(statuses, pending, len(pending) > 0, started)
+			}
+			return "", fmt.Errorf("wait for delegated tasks cancelled: %w", waitCtx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 func (dm *DelegateManager) handleUnifiedStatus(store taskstore.Store, taskID string, includeResult bool, includeEvents bool, includeTrace bool) (string, error) {

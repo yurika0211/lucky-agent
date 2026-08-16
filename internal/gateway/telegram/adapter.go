@@ -548,6 +548,7 @@ func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID st
 	if replyToMsgID != "" {
 		replyToID, _ = strconv.Atoi(replyToMsgID)
 	}
+	threadID := a.threadIDForReply(chatID, replyToMsgID)
 
 	// 发送初始 "思考中" 消息
 	initialText := "🧠 Thinking..."
@@ -560,6 +561,7 @@ func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID st
 	if err != nil && replyToID > 0 {
 		msg.ReplyToMessageID = 0
 		sent, err = a.bot.Send(msg)
+		replyToID = 0
 	}
 	if err != nil {
 		return nil, fmt.Errorf("telegram: send stream initial: %w", err)
@@ -570,6 +572,8 @@ func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID st
 		chatID:    chatIDInt,
 		messageID: sent.MessageID,
 		chatIDStr: chatID,
+		replyToID: replyToID,
+		threadID:  threadID,
 		content:   "",
 		thinking:  "🧠 Thinking...",
 		editCount: 0,
@@ -583,6 +587,8 @@ type telegramStreamSender struct {
 	chatID    int64
 	messageID int
 	chatIDStr string
+	replyToID int
+	threadID  int
 
 	mu        sync.Mutex
 	content   string // 已生成的正文内容
@@ -686,9 +692,22 @@ func (s *telegramStreamSender) Finish() error {
 	s.finished = true
 	s.thinking = ""
 
-	// 最终编辑：显示完整内容
-	display := s.renderContent()
-	return s.editMessageHTML(display)
+	content := sanitizeOutgoingText(s.content)
+	if content == "" {
+		return s.editMessageHTML("🧠 Thinking...")
+	}
+
+	chunks := s.adapter.splitMessage(content)
+	if err := s.editMessageHTML(chunks[0]); err != nil {
+		return err
+	}
+	for _, chunk := range chunks[1:] {
+		if _, err := s.adapter.sendChunkWithThread(context.Background(), s.chatID, s.replyToID, s.threadID, chunk); err != nil {
+			return err
+		}
+		s.adapter.waitRateLimit(s.chatIDStr)
+	}
+	return nil
 }
 
 func (s *telegramStreamSender) MessageID() string {

@@ -235,8 +235,8 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 				addIntentTools(allowed, "heartbeat_trigger")
 			}
 		}
-		if intentTextContainsAny(intentText, "子代理", "委派", "delegate") {
-			addIntentTools(allowed, "task_status", "list_tasks")
+		if intentTextContainsAny(intentText, "子代理", "子任务", "委派", "delegate", "multi-agent", "multi agent", "sub-agent", "sub agent", "subtask") {
+			addIntentTools(allowed, "task_status", "wait_for_tasks", "list_tasks")
 			if intentTextContainsAny(intentText, "取消", "停止", "cancel") {
 				addIntentTools(allowed, "delegate_cancel")
 			}
@@ -382,7 +382,8 @@ func hasDatabaseIntent(text string) bool {
 func hasDelegateIntent(text string) bool {
 	return intentTextContainsAny(text,
 		"定时", "cron", "计划任务", "周期", "后台", "自主", "autonomy", "worker",
-		"队列", "心跳", "heartbeat", "子代理", "委派", "delegate",
+		"队列", "心跳", "heartbeat", "子代理", "子任务", "委派", "delegate",
+		"multi-agent", "multi agent", "sub-agent", "sub agent", "subtask",
 	)
 }
 

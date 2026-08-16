@@ -959,6 +959,10 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request, sess *session.Session, parts []string) {
+	if len(parts) == 1 && parts[0] == "tools" {
+		s.handleSessionToolTrace(w, r, sess)
+		return
+	}
 	if len(parts) == 1 && parts[0] == "backups" {
 		if r.Method != http.MethodGet {
 			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")

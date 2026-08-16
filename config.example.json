@@ -274,7 +274,14 @@
       "allowed_chats": [],
       "allowed_users": [],
       "remove_at": true,
-      "group_trigger_mode": "mention"
+      "group_trigger_mode": "mention",
+      "cross_group_read": {
+        "enabled": false,
+        "require_confirmation": true,
+        "allowed_groups": [],
+        "blocked_groups": [],
+        "log_access": true
+      }
     },
     "feishu": {
       "app_id": "",

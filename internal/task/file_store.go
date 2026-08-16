@@ -20,7 +20,7 @@ const (
 )
 
 type FileStore struct {
-	mu   sync.Mutex
+	mu   sync.RWMutex
 	root string
 }
 
@@ -106,6 +106,8 @@ func (s *FileStore) Get(id string) (Record, bool, error) {
 	if id == "" {
 		return Record{}, false, nil
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var record Record
 	err := readJSONFile(filepath.Join(s.taskDir(id), taskFileName), &record)
 	if os.IsNotExist(err) {
@@ -121,6 +123,8 @@ func (s *FileStore) List(filter ListFilter) ([]Record, error) {
 	if s == nil {
 		return nil, fmt.Errorf("task store is nil")
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -198,6 +202,8 @@ func (s *FileStore) Events(taskID string) ([]Event, error) {
 	if taskID == "" {
 		return nil, fmt.Errorf("task id is required")
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	f, err := os.Open(filepath.Join(s.taskDir(taskID), eventsFileName))
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -324,7 +330,7 @@ func (s *FileStore) writeArtifact(taskID, name string, data []byte) error {
 	if err := os.MkdirAll(s.taskDir(taskID), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.taskDir(taskID), name), data, 0o600)
+	return atomicWriteFile(filepath.Join(s.taskDir(taskID), name), data, 0o600)
 }
 
 func (s *FileStore) readArtifact(taskID, name string) ([]byte, bool, error) {
@@ -335,6 +341,8 @@ func (s *FileStore) readArtifact(taskID, name string) ([]byte, bool, error) {
 	if taskID == "" {
 		return nil, false, fmt.Errorf("task id is required")
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	data, err := os.ReadFile(filepath.Join(s.taskDir(taskID), name))
 	if os.IsNotExist(err) {
 		return nil, false, nil
@@ -361,7 +369,38 @@ func writeJSONFile(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return atomicWriteFile(path, data, 0o600)
+}
+
+// atomicWriteFile prevents readers from observing a truncated state file while
+// an asynchronous task transitions status. Rename is atomic when both paths
+// are inside the same task directory.
+func atomicWriteFile(path string, data []byte, perm os.FileMode) (err error) {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		if err != nil {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	if err = tmp.Chmod(perm); err != nil {
+		return err
+	}
+	if _, err = tmp.Write(data); err != nil {
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func readJSONFile(path string, value any) error {

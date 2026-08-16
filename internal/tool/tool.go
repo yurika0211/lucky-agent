@@ -116,10 +116,13 @@ type Rect struct {
 // ExecutionContext carries request-local execution metadata to context-aware
 // tools. Context is always non-nil when dispatched through the registry.
 type ExecutionContext struct {
-	Context     context.Context
-	SessionID   string
-	Source      string
-	UserID      string
+	Context   context.Context
+	SessionID string
+	Source    string
+	UserID    string
+	// UserRequest is the raw routing text for the current user turn. Sensitive
+	// tools may use it to verify that an operation was explicitly requested.
+	UserRequest string
 	AutoApprove bool
 }
 

@@ -727,7 +727,7 @@ textarea:focus {
   color: var(--muted);
   cursor: pointer;
   font-size: 12px;
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
 
 .collapse-button:hover {
@@ -846,7 +846,7 @@ textarea:focus {
   color: var(--text);
   text-decoration: none;
   font-size: 13px;
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, border-color 0.2s ease;
 }
 
 .message-attachment .file-attachment:hover {
@@ -946,7 +946,7 @@ textarea:focus {
   cursor: pointer;
   font-size: 14px;
   opacity: 0;
-  transition: all 0.2s ease;
+  transition: background 0.2s ease, color 0.2s ease, opacity 0.2s ease;
 }
 
 .session-item:hover .session-rename-button {
@@ -1238,6 +1238,352 @@ textarea:focus {
   margin-right: 0.4em;
 }
 
+/* ===== Trajectory view ===== */
+.trajectory {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 20px;
+  padding: 28px max(24px, calc((100% - 1000px) / 2)) 48px;
+  background: var(--bg);
+  scrollbar-gutter: stable;
+}
+
+.trajectory-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.trajectory-head h2 {
+  margin: 3px 0 0;
+  font-size: 26px;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+
+.trajectory-head p {
+  max-width: 660px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-family: "Roboto Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.trajectory-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.trajectory-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.trajectory-summary > div {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  padding: 16px 18px;
+  border-right: 1px solid var(--line);
+}
+
+.trajectory-summary > div:last-child {
+  border-right: 0;
+}
+
+.trajectory-summary span,
+.trajectory-search > span,
+.trajectory-payloads > section > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.trajectory-summary strong {
+  overflow-wrap: anywhere;
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+}
+
+.success-text {
+  color: var(--ok);
+}
+
+.failure-text {
+  color: var(--err);
+}
+
+.trajectory-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: end;
+  gap: 16px;
+}
+
+.trajectory-search {
+  width: min(100%, 460px);
+  display: grid;
+  gap: 6px;
+}
+
+.trace-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trace-filter {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease, transform 0.12s ease;
+}
+
+.trace-filter:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+}
+
+.trace-filter:active,
+.trajectory-actions button:active {
+  transform: scale(0.96);
+}
+
+.trace-filter.active {
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.trajectory-empty {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  min-height: 132px;
+  padding: 22px;
+  align-content: center;
+  border: 1px dashed var(--line-strong);
+  background: var(--paper);
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.trajectory-empty strong {
+  color: var(--text);
+}
+
+.trajectory-list {
+  display: grid;
+  gap: 0;
+}
+
+.trajectory-list-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.trajectory-list-head span:last-child {
+  text-align: right;
+}
+
+.trajectory-event {
+  position: relative;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.trajectory-event:not(:last-child)::before {
+  position: absolute;
+  top: 36px;
+  bottom: -1px;
+  left: 21px;
+  width: 1px;
+  background: var(--line);
+  content: '';
+}
+
+.trajectory-marker {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  padding-top: 16px;
+}
+
+.trajectory-marker span {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.trajectory-event.success .trajectory-marker span {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  color: var(--ok);
+}
+
+.trajectory-event.failure .trajectory-marker span {
+  border-color: color-mix(in srgb, var(--err) 45%, transparent);
+  color: var(--err);
+}
+
+.trajectory-event-body {
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 15px 16px 16px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line-strong);
+  background: var(--paper);
+}
+
+.trajectory-event.success .trajectory-event-body {
+  border-left-color: var(--ok);
+}
+
+.trajectory-event.failure .trajectory-event-body {
+  border-left-color: var(--err);
+}
+
+.trajectory-event-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.trajectory-event-head > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trajectory-tool-name {
+  overflow-wrap: anywhere;
+  font-family: "Roboto Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.trajectory-event-head small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trace-state {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.trace-state.success {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+.trace-state.failure {
+  background: var(--err-soft);
+  color: var(--err);
+}
+
+.trajectory-event p {
+  margin: 9px 0 0;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.trace-error {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--err) 30%, transparent);
+  background: var(--err-soft);
+  color: var(--err);
+  font-family: "Roboto Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.trajectory-details {
+  margin-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.trajectory-details summary {
+  padding-top: 10px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.trajectory-details summary:hover {
+  color: var(--text);
+}
+
+.trajectory-payloads {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.trajectory-payloads > section {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.trajectory-payloads pre {
+  max-height: 280px;
+  min-width: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 11px 12px;
+  background: var(--block-bg);
+  color: var(--block-text);
+  font-family: "Roboto Mono", "Cascadia Code", "Fira Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ===== Gateways view ===== */
 .gateways {
   min-height: 0;
@@ -1482,6 +1828,40 @@ textarea:focus {
   .right-col .panel {
     border-width: 0 0 1px;
   }
+
+  .trajectory {
+    padding-inline: 18px;
+  }
+
+  .trajectory-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .trajectory-actions {
+    justify-content: flex-start;
+  }
+
+  .trajectory-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .trajectory-summary > div:nth-child(2) {
+    border-right: 0;
+  }
+
+  .trajectory-summary > div:nth-child(-n + 2) {
+    border-bottom: 1px solid var(--line);
+  }
+
+  .trajectory-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .trajectory-search {
+    width: 100%;
+  }
 }
 
 @media (max-width: 520px) {
@@ -1499,13 +1879,70 @@ textarea:focus {
     align-items: stretch;
   }
 
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .topbar-actions > *,
   .composer-row > button {
     width: 100%;
     justify-content: center;
   }
 
+  .topbar-actions .connection-pill {
+    grid-column: 1 / -1;
+  }
+
+  .topbar-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .topbar-controls label {
+    grid-column: 1 / -1;
+  }
+
   .composer-row {
     display: grid;
+  }
+
+  .trajectory {
+    padding-inline: 14px;
+  }
+
+  .trajectory-actions,
+  .trajectory-actions > * {
+    width: 100%;
+  }
+
+  .trajectory-actions > * {
+    justify-content: center;
+  }
+
+  .trajectory-list-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .trajectory-list-head span:last-child {
+    text-align: left;
+  }
+
+  .trajectory-event {
+    grid-template-columns: 32px minmax(0, 1fr);
+  }
+
+  .trajectory-event:not(:last-child)::before {
+    left: 15px;
+  }
+
+  .trajectory-marker span {
+    width: 20px;
+    height: 20px;
+  }
+
+  .trajectory-payloads {
+    grid-template-columns: 1fr;
   }
 }

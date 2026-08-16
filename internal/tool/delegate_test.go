@@ -27,11 +27,12 @@ func TestDelegateTaskToolRegistration(t *testing.T) {
 
 	r.Register(DelegateTaskTool(dm))
 	r.Register(TaskStatusTool(dm))
+	r.Register(WaitForTasksTool(dm))
 	r.Register(ListTasksTool(dm))
 	r.Register(DelegateCancelTool(dm))
 
-	if r.Count() != 4 {
-		t.Errorf("expected 4 delegate tools, got %d", r.Count())
+	if r.Count() != 5 {
+		t.Errorf("expected 5 delegate tools, got %d", r.Count())
 	}
 
 	// 检查分类
@@ -44,9 +45,165 @@ func TestDelegateTaskToolRegistration(t *testing.T) {
 	if ts.Permission != PermAuto {
 		t.Errorf("task_status should be auto, got %s", ts.Permission)
 	}
+	wait, _ := r.Get("wait_for_tasks")
+	if wait.Permission != PermAuto {
+		t.Errorf("wait_for_tasks should be auto, got %s", wait.Permission)
+	}
 	cancel, _ := r.Get("delegate_cancel")
 	if cancel.Permission != PermApprove {
 		t.Errorf("delegate_cancel should require approval, got %s", cancel.Permission)
+	}
+}
+
+func TestWaitForTasksReturnsCompletedResults(t *testing.T) {
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	dm.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
+		close(started)
+		select {
+		case <-release:
+			return "subtask result", nil
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	})
+	r := NewRegistry()
+	r.Register(DelegateTaskTool(dm))
+	r.Register(WaitForTasksTool(dm))
+
+	delegated, err := r.Call("delegate_task", map[string]any{"description": "wait for completion"})
+	if err != nil {
+		t.Fatalf("delegate_task: %v", err)
+	}
+	var start delegateStartResponse
+	if err := json.Unmarshal([]byte(delegated), &start); err != nil {
+		t.Fatalf("decode delegate response: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("executor did not start")
+	}
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		close(release)
+	}()
+
+	result, err := r.Call("wait_for_tasks", map[string]any{
+		"task_ids":         []any{start.TaskID},
+		"timeout":          1,
+		"poll_interval_ms": 10,
+	})
+	if err != nil {
+		t.Fatalf("wait_for_tasks: %v", err)
+	}
+	var wait delegateWaitResponse
+	if err := json.Unmarshal([]byte(result), &wait); err != nil {
+		t.Fatalf("decode wait response: %v", err)
+	}
+	if !wait.AllTerminal || wait.TimedOut || len(wait.PendingTaskIDs) != 0 {
+		t.Fatalf("expected terminal wait response, got %+v", wait)
+	}
+	if len(wait.Tasks) != 1 || wait.Tasks[0].Status != StatusCompleted.String() || wait.Tasks[0].Result != "subtask result" {
+		t.Fatalf("unexpected waited task result: %+v", wait.Tasks)
+	}
+}
+
+func TestWaitForTasksReturnsTerminalFailuresWithoutBlocking(t *testing.T) {
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	now := time.Now()
+	dm.tasks["task-failed"] = &DelegateTask{ID: "task-failed", Description: "failed", Status: StatusFailed, Error: "boom", StartedAt: now, CompletedAt: now}
+	dm.tasks["task-cancelled"] = &DelegateTask{ID: "task-cancelled", Description: "cancelled", Status: StatusCancelled, Error: "cancelled", StartedAt: now, CompletedAt: now}
+
+	result, err := dm.handleWaitForTasks(context.Background(), map[string]any{"task_ids": []string{"task-failed", "task-cancelled"}})
+	if err != nil {
+		t.Fatalf("wait_for_tasks: %v", err)
+	}
+	var wait delegateWaitResponse
+	if err := json.Unmarshal([]byte(result), &wait); err != nil {
+		t.Fatalf("decode wait response: %v", err)
+	}
+	if !wait.AllTerminal || wait.TimedOut || len(wait.Tasks) != 2 {
+		t.Fatalf("unexpected terminal wait response: %+v", wait)
+	}
+	if wait.Tasks[0].Status != StatusFailed.String() || wait.Tasks[1].Status != StatusCancelled.String() {
+		t.Fatalf("expected failed and cancelled statuses, got %+v", wait.Tasks)
+	}
+}
+
+func TestWaitForTasksReturnsTimeoutAndPendingIDs(t *testing.T) {
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	dm.tasks["task-running"] = &DelegateTask{ID: "task-running", Description: "running", Status: StatusRunning, StartedAt: time.Now()}
+
+	started := time.Now()
+	result, err := dm.handleWaitForTasks(context.Background(), map[string]any{
+		"task_ids":         []any{"task-running"},
+		"timeout":          0.05,
+		"poll_interval_ms": 10,
+	})
+	if err != nil {
+		t.Fatalf("wait_for_tasks: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 40*time.Millisecond || elapsed > time.Second {
+		t.Fatalf("unexpected wait duration: %s", elapsed)
+	}
+	var wait delegateWaitResponse
+	if err := json.Unmarshal([]byte(result), &wait); err != nil {
+		t.Fatalf("decode wait response: %v", err)
+	}
+	if wait.AllTerminal || !wait.TimedOut || len(wait.PendingTaskIDs) != 1 || wait.PendingTaskIDs[0] != "task-running" {
+		t.Fatalf("expected timed-out pending response, got %+v", wait)
+	}
+}
+
+func TestWaitForTasksValidatesIDsAndHonorsCancellation(t *testing.T) {
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	if _, err := dm.handleWaitForTasks(context.Background(), map[string]any{"task_ids": []any{}}); err == nil {
+		t.Fatal("expected empty task_ids to fail")
+	}
+	if _, err := dm.handleWaitForTasks(context.Background(), map[string]any{"task_ids": []any{"task-1", 2}}); err == nil {
+		t.Fatal("expected non-string task_id to fail")
+	}
+
+	dm.tasks["task-running"] = &DelegateTask{ID: "task-running", Description: "running", Status: StatusRunning, StartedAt: time.Now()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := dm.handleWaitForTasks(ctx, map[string]any{"task_ids": []string{"task-running"}}); err == nil {
+		t.Fatal("expected cancelled context to stop wait")
+	}
+}
+
+func TestWaitForTasksReadsUnifiedStoreRecords(t *testing.T) {
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	record, err := store.Create(taskstore.Record{
+		ID:          "external-task",
+		Source:      taskstore.SourceHTTP,
+		Status:      taskstore.StatusCompleted,
+		Description: "completed elsewhere",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := store.SaveResult(record.ID, "external result"); err != nil {
+		t.Fatalf("SaveResult: %v", err)
+	}
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	dm.SetTaskStore(store)
+
+	result, err := dm.handleWaitForTasks(context.Background(), map[string]any{"task_ids": []string{record.ID}})
+	if err != nil {
+		t.Fatalf("wait_for_tasks: %v", err)
+	}
+	var wait delegateWaitResponse
+	if err := json.Unmarshal([]byte(result), &wait); err != nil {
+		t.Fatalf("decode wait response: %v", err)
+	}
+	if !wait.AllTerminal || len(wait.Tasks) != 1 || wait.Tasks[0].Source != string(taskstore.SourceHTTP) || wait.Tasks[0].Result != "external result" {
+		t.Fatalf("unexpected unified wait response: %+v", wait)
 	}
 }
 

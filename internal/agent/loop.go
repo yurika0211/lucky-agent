@@ -473,7 +473,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 		if len(resp.ToolCalls) > 0 {
 			var finalized bool
 			var finalResponse string
-			messages, finalized, finalResponse = a.processToolCallBatch(resp, loopCfg, result, sess, messages, loopState, memoryGate)
+			messages, finalized, finalResponse = a.processToolCallBatch(resp, loopCfg, result, sess, messages, loopState, memoryGate, turnInput.RoutingText)
 			if finalized {
 				if updatedMessages, enforced := a.executeMemoryGateForLoop(memoryGate, loopCfg, result, sess, messages, loopState); enforced {
 					messages = updatedMessages
@@ -714,6 +714,7 @@ func (a *Agent) processToolCallBatch(
 	messages []provider.Message,
 	loopState *loopRuntimeState,
 	memoryGate *memoryToolGate,
+	userRequest string,
 ) (updatedMessages []provider.Message, finalized bool, finalResponse string) {
 	logger.Info("agent loop tool call batch",
 		"session_id", func() string {
@@ -811,6 +812,7 @@ func (a *Agent) processToolCallBatch(
 		false,
 		loopState.toolExecutionGuard,
 		loopCfg.Source,
+		userRequest,
 	)
 
 	for _, execResult := range executed {

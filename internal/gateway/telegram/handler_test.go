@@ -259,6 +259,79 @@ func TestDequeueChatRequestFIFO(t *testing.T) {
 	assert.False(t, ok3)
 }
 
+func TestChatWorkerSlotsLimitConcurrentQueues(t *testing.T) {
+	h := &Handler{chatWorkerSlots: make(chan struct{}, 2)}
+	releaseFirst := h.acquireChatWorkerSlot()
+	releaseSecond := h.acquireChatWorkerSlot()
+	defer releaseSecond()
+
+	acquiredThird := make(chan func(), 1)
+	go func() {
+		acquiredThird <- h.acquireChatWorkerSlot()
+	}()
+
+	select {
+	case release := <-acquiredThird:
+		release()
+		t.Fatal("third queue worker acquired a slot before one was released")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	releaseFirst()
+
+	select {
+	case release := <-acquiredThird:
+		release()
+	case <-time.After(time.Second):
+		t.Fatal("third queue worker did not acquire a slot after release")
+	}
+}
+
+func TestChatWorkerSlotsSupportManyIndependentQueues(t *testing.T) {
+	const maxWorkers = 8
+	h := &Handler{chatWorkerSlots: make(chan struct{}, maxWorkers)}
+	ready := make(chan struct{}, maxWorkers)
+	releaseWorkers := make(chan struct{})
+	var workers sync.WaitGroup
+	for range maxWorkers {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			release := h.acquireChatWorkerSlot()
+			defer release()
+			ready <- struct{}{}
+			<-releaseWorkers
+		}()
+	}
+	for range maxWorkers {
+		select {
+		case <-ready:
+		case <-time.After(time.Second):
+			t.Fatal("configured workers did not start concurrently")
+		}
+	}
+
+	extraAcquired := make(chan struct{})
+	go func() {
+		release := h.acquireChatWorkerSlot()
+		defer release()
+		close(extraAcquired)
+	}()
+	select {
+	case <-extraAcquired:
+		t.Fatal("worker beyond the configured maximum started early")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	close(releaseWorkers)
+	workers.Wait()
+	select {
+	case <-extraAcquired:
+	case <-time.After(time.Second):
+		t.Fatal("queued worker did not start after capacity was released")
+	}
+}
+
 func TestBuildUserTurnInputRoutesImagesThroughAttachmentAnalysisPath(t *testing.T) {
 	h := &Handler{}
 	input := h.buildUserTurnInput(context.Background(), "看这张图", []gateway.Attachment{
@@ -483,6 +556,7 @@ func TestAgentProviderAdapter(t *testing.T) {
 			ProgressAsMessages:        true,
 			ProgressAsNaturalLanguage: true,
 			ShowToolDetailsInResult:   true,
+			MaxConcurrentSessions:     3,
 		},
 		toolsVal:   tool.NewRegistry(),
 		skillsVal:  []*tool.SkillInfo{},
@@ -511,6 +585,10 @@ func TestAgentProviderAdapter(t *testing.T) {
 		assert.False(t, got) // default is false
 	})
 
+	t.Run("resolveMaxConcurrentChatWorkers_NilProvider", func(t *testing.T) {
+		assert.Equal(t, 8, resolveMaxConcurrentChatWorkers(nil))
+	})
+
 	t.Run("resolveChatStreamTimeout_WithConfig", func(t *testing.T) {
 		got := resolveChatStreamTimeout(mockAgent)
 		assert.Equal(t, 30*time.Second, got)
@@ -529,6 +607,10 @@ func TestAgentProviderAdapter(t *testing.T) {
 	t.Run("resolveShowToolDetailsInResult_WithConfig", func(t *testing.T) {
 		got := resolveShowToolDetailsInResult(mockAgent)
 		assert.True(t, got)
+	})
+
+	t.Run("resolveMaxConcurrentChatWorkers_WithConfig", func(t *testing.T) {
+		assert.Equal(t, 3, resolveMaxConcurrentChatWorkers(mockAgent))
 	})
 }
 
