@@ -45,6 +45,10 @@ func runTUI(uiDir, apiBase, session, model string) error {
 		return fmt.Errorf("TUI requires an interactive terminal")
 	}
 
+	if err := ensureServeRunning(apiBase); err != nil {
+		return err
+	}
+
 	node, err := resolveTUIRuntime(resolved)
 	if err != nil {
 		return err

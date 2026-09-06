@@ -1040,6 +1040,19 @@ func TestSplitQQMessageChunks(t *testing.T) {
 	}
 }
 
+func TestQQOutgoingChunksPreserveFullText(t *testing.T) {
+	message := " \n" + strings.Repeat("你", qqProgressTraceChunkLimit+20) + "\n "
+	chunks := qqOutgoingChunks(message)
+	if got := strings.Join(chunks, ""); got != message {
+		t.Fatalf("reassembled chunks = %q, want %q", got, message)
+	}
+	for _, chunk := range chunks {
+		if got := qqRuneLen(chunk); got > qqProgressTraceChunkLimit {
+			t.Fatalf("chunk rune length = %d, limit %d", got, qqProgressTraceChunkLimit)
+		}
+	}
+}
+
 func TestSendStreamReturnsSenderWhenRunning(t *testing.T) {
 	a := NewAdapter(DefaultConfig())
 	a.running = true

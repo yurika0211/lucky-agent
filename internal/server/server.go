@@ -341,6 +341,7 @@ func (s *Server) Start() error {
 		{path: "/api/v1/tasks/", handler: s.handleTaskByID},
 		{path: "/api/v1/memory", handler: s.handleMemory},
 		{path: "/api/v1/memory/recall", handler: s.handleMemoryRecall},
+		{path: "/api/v1/memory/recall/trace", handler: s.handleMemoryRecallTrace},
 		{path: "/api/v1/memory/stats", handler: s.handleMemoryStats},
 		{path: "/api/v1/memory/graph", handler: s.handleMemoryGraph},
 		{path: "/api/v1/proactive/status", handler: s.handleProactiveStatus},

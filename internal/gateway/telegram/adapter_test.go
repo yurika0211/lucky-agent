@@ -175,6 +175,17 @@ func TestSplitMessageExactBoundary(t *testing.T) {
 	assert.Equal(t, "abcde", chunks[0])
 }
 
+func TestSplitTelegramCaptionPreservesFullOverflow(t *testing.T) {
+	caption := " \n" + strings.Repeat("caption ", 200) + "\n "
+	inline, overflow := splitTelegramCaption(caption)
+	if inline != "" {
+		t.Fatalf("inline caption = %q, want empty for overflow", inline)
+	}
+	if overflow != caption {
+		t.Fatalf("overflow caption was changed")
+	}
+}
+
 func TestSplitMessageRespectsNewlines(t *testing.T) {
 	cfg := Config{Token: "test", MaxMessageLen: 15}
 	adapter := NewAdapter(cfg)

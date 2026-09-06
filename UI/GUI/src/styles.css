@@ -3084,6 +3084,22 @@ a:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.graph-neighbour-more {
+  width: 100%;
+  padding: 6px 9px;
+  margin-top: 2px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent, var(--text-2));
+  text-align: center;
+  transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+
+.graph-neighbour-more:hover {
+  background: var(--hover);
+}
+
 /* ------------------------------------------------------------ responsive */
 
 @media (max-width: 1100px) {

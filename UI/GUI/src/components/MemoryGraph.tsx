@@ -1,9 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { ActivityNote, MemoryTopology, MemoryTopologyNode } from '../types';
+import type {
+  ActivityNote,
+  MemoryTopology,
+  MemoryTopologyNode,
+  SearchTrace,
+  SearchTraceHop,
+  SearchTraceNode,
+} from '../types';
+
+/** A trace as held by the live feed: same shape the backend sends, stamped
+ * with a client-side receive time so the live list can show "12s ago". */
+type LiveTrace = SearchTrace & { _receivedAt?: number };
 
 interface MemoryGraphProps {
   fetchRuntime: (path: string, init?: RequestInit) => Promise<Response>;
   pushActivity: (kind: ActivityNote['kind'], title: string, body: string, meta?: string) => void;
+  liveTraces: LiveTrace[];
 }
 
 /** Simulation canvas. The SVG scales to its container; these are layout units. */
@@ -15,6 +27,9 @@ const SETTLE_TICKS = 260;
 // renders instead of ~44.
 const TICKS_PER_FRAME = 26;
 const NODE_LIMIT = 300;
+
+const PLAYBACK_SPEEDS = { slow: 1700, normal: 950, fast: 480 } as const;
+type PlaybackSpeed = keyof typeof PLAYBACK_SPEEDS;
 
 type Point = { x: number; y: number; vx: number; vy: number };
 
@@ -116,17 +131,48 @@ function radiusFor(degree: number): number {
   return Math.min(26, 6 + Math.sqrt(degree) * 3.4);
 }
 
-export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
+function relativeTime(ms?: number): string {
+  if (!ms) return '';
+  const diff = Date.now() - ms;
+  if (diff < 5000) return 'just now';
+  if (diff < 60000) return `${Math.round(diff / 1000)}s ago`;
+  if (diff < 3600000) return `${Math.round(diff / 60000)}m ago`;
+  return `${Math.round(diff / 3600000)}h ago`;
+}
+
+function hopLabel(hop: SearchTraceHop): string {
+  const from = hop.from_ref || hop.from_id;
+  const to = hop.to_ref || hop.to_id;
+  const via = hop.via ? ` via [[${hop.via}]]` : '';
+  const kind = hop.kind ? ` (${hop.kind})` : '';
+  const boost = hop.boost ? ` +${hop.boost.toFixed(2)}` : '';
+  return `${from} →${via}${kind} ${to}${boost}`;
+}
+
+export function MemoryGraph({ fetchRuntime, pushActivity, liveTraces }: MemoryGraphProps) {
   const [topology, setTopology] = useState<MemoryTopology | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [includeIsolated, setIncludeIsolated] = useState(false);
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<string | null>(null);
+  const [neighboursShowAllFor, setNeighboursShowAllFor] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const [positions, setPositions] = useState<Point[]>([]);
   const [view, setView] = useState({ x: 0, y: 0, k: 1 });
   const [settling, setSettling] = useState(false);
+
+  // --- Multi-hop trace replay ---------------------------------------------
+  const [traceQuery, setTraceQuery] = useState('');
+  const [traceDepth, setTraceDepth] = useState(2);
+  const [traceLoading, setTraceLoading] = useState(false);
+  const [traceError, setTraceError] = useState('');
+  const [activeTrace, setActiveTrace] = useState<LiveTrace | null>(null);
+  const [liveListOpen, setLiveListOpen] = useState(false);
+  const [lastSeenLiveCount, setLastSeenLiveCount] = useState(0);
+  const [playhead, setPlayhead] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<PlaybackSpeed>('normal');
 
   const frameRef = useRef<number | null>(null);
   const dragRef = useRef<{ x: number; y: number; vx: number; vy: number } | null>(null);
@@ -242,11 +288,163 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
     return set;
   }, [focus, neighbours]);
 
-  function isDimmed(id: string): boolean {
-    if (matches && !matches.has(id)) return true;
-    if (focusSet && !focusSet.has(id)) return true;
-    return false;
+  // --- Trace derived state --------------------------------------------------
+
+  /** Hops grouped by hop depth, 1-indexed: layers[0] is depth-1 spread. */
+  const traceLayers = useMemo(() => {
+    if (!activeTrace) return [] as SearchTraceHop[][];
+    const byDepth = new Map<number, SearchTraceHop[]>();
+    for (const hop of activeTrace.hops ?? []) {
+      const depth = hop.depth > 0 ? hop.depth : 1;
+      if (!byDepth.has(depth)) byDepth.set(depth, []);
+      byDepth.get(depth)!.push(hop);
+    }
+    const maxDepth = byDepth.size ? Math.max(...byDepth.keys()) : 0;
+    const layers: SearchTraceHop[][] = [];
+    for (let d = 1; d <= maxDepth; d += 1) layers.push(byDepth.get(d) ?? []);
+    return layers;
+  }, [activeTrace]);
+
+  const maxPlayhead = traceLayers.length;
+
+  // Everything this trace ever mentions (seeds, ranked results, hop endpoints)
+  // merged into one lookup, so a node can show "why it was recalled" whether
+  // it's a seed, an intermediate hop, or a final ranked result.
+  const traceNodeInfo = useMemo(() => {
+    const map = new Map<string, SearchTraceNode>();
+    if (!activeTrace) return map;
+    const add = (node?: SearchTraceNode | null) => {
+      if (!node?.id) return;
+      map.set(node.id, { ...map.get(node.id), ...node });
+    };
+    activeTrace.seeds?.forEach((n) => add(n));
+    activeTrace.results?.forEach((n) => add(n));
+    activeTrace.hops?.forEach((hop) => {
+      if (hop.from_id && !map.has(hop.from_id)) add({ id: hop.from_id, ref: hop.from_ref });
+      if (hop.to_id && !map.has(hop.to_id)) add({ id: hop.to_id, ref: hop.to_ref });
+    });
+    return map;
+  }, [activeTrace]);
+
+  // Depth at which each node first becomes visible under the current playhead
+  // (0 = seed). Drives both node colour and the dimming of everything else.
+  const revealedNodeDepth = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!activeTrace) return map;
+    activeTrace.seeds?.forEach((n) => {
+      if (n.id) map.set(n.id, 0);
+    });
+    for (let d = 0; d < playhead; d += 1) {
+      for (const hop of traceLayers[d] ?? []) {
+        if (hop.from_id && !map.has(hop.from_id)) map.set(hop.from_id, 0);
+        if (hop.to_id) {
+          const prev = map.get(hop.to_id);
+          if (prev === undefined || hop.depth < prev) map.set(hop.to_id, hop.depth);
+        }
+      }
+    }
+    return map;
+  }, [activeTrace, traceLayers, playhead]);
+
+  const revealedNodeIds = useMemo(() => new Set(revealedNodeDepth.keys()), [revealedNodeDepth]);
+
+  /** Edge key -> the hop depth it was revealed at, for colour + "just arrived" glow. */
+  const revealedEdgeDepth = useMemo(() => {
+    const map = new Map<string, number>();
+    for (let d = 0; d < playhead; d += 1) {
+      for (const hop of traceLayers[d] ?? []) {
+        if (!hop.from_id || !hop.to_id) continue;
+        map.set(`${hop.from_id}->${hop.to_id}`, hop.depth);
+      }
+    }
+    return map;
+  }, [traceLayers, playhead]);
+
+  const orphanTraceNodes = useMemo(() => {
+    if (!activeTrace) return [] as Array<SearchTraceNode & { depth: number }>;
+    const out: Array<SearchTraceNode & { depth: number }> = [];
+    revealedNodeDepth.forEach((depth, id) => {
+      if (indexByID.has(id)) return;
+      const info = traceNodeInfo.get(id);
+      out.push({ id, depth, ...(info ?? {}) });
+    });
+    out.sort((a, b) => a.depth - b.depth);
+    return out;
+  }, [activeTrace, revealedNodeDepth, indexByID, traceNodeInfo]);
+
+  // Reset playback whenever a different trace is loaded.
+  useEffect(() => {
+    setPlayhead(0);
+    setPlaying(Boolean(activeTrace));
+  }, [activeTrace]);
+
+  // Advance the playhead on a timer while playing.
+  useEffect(() => {
+    if (!playing) return undefined;
+    if (playhead >= maxPlayhead) {
+      setPlaying(false);
+      return undefined;
+    }
+    const id = window.setTimeout(() => setPlayhead((p) => Math.min(maxPlayhead, p + 1)), PLAYBACK_SPEEDS[speed]);
+    return () => window.clearTimeout(id);
+  }, [playing, playhead, maxPlayhead, speed]);
+
+  // Keep the camera on whatever the trace has revealed so far.
+  useEffect(() => {
+    if (!activeTrace || revealedNodeIds.size === 0) return;
+    const pts: Point[] = [];
+    revealedNodeIds.forEach((id) => {
+      const idx = indexByID.get(id);
+      if (idx !== undefined && positions[idx]) pts.push(positions[idx]);
+    });
+    if (!pts.length) return;
+    const minX = Math.min(...pts.map((p) => p.x));
+    const maxX = Math.max(...pts.map((p) => p.x));
+    const minY = Math.min(...pts.map((p) => p.y));
+    const maxY = Math.max(...pts.map((p) => p.y));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    const spanX = Math.max(140, maxX - minX);
+    const spanY = Math.max(140, maxY - minY);
+    const k = Math.min(2.2, Math.max(0.45, Math.min((W * 0.72) / spanX, (H * 0.72) / spanY)));
+    setView({ x: W / 2 - cx * k, y: H / 2 - cy * k, k });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealedNodeIds, activeTrace]);
+
+  async function runTraceQuery() {
+    const q = traceQuery.trim();
+    if (!q) return;
+    setTraceLoading(true);
+    setTraceError('');
+    try {
+      const response = await fetchRuntime(`/v1/memory/recall/trace?q=${encodeURIComponent(q)}&graph_depth=${traceDepth}`);
+      if (!response.ok) throw new Error(`recall trace ${response.status}`);
+      const trace = (await response.json()) as SearchTrace;
+      setActiveTrace(trace);
+      setSelected(null);
+    } catch (traceLoadError) {
+      const message = String(traceLoadError);
+      setTraceError(message);
+      pushActivity('error', 'Memory trace failed', message);
+    } finally {
+      setTraceLoading(false);
+    }
   }
+
+  function pickLiveTrace(trace: LiveTrace) {
+    setActiveTrace(trace);
+    setSelected(null);
+    setLiveListOpen(false);
+  }
+
+  function toggleLiveList() {
+    setLiveListOpen((open) => {
+      if (!open) setLastSeenLiveCount(liveTraces.length);
+      return !open;
+    });
+  }
+
+  const unseenLiveCount = liveListOpen ? 0 : Math.max(0, liveTraces.length - lastSeenLiveCount);
 
   function onWheel(event: React.WheelEvent) {
     event.preventDefault();
@@ -274,8 +472,16 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
     if (target.hasPointerCapture(event.pointerId)) target.releasePointerCapture(event.pointerId);
   }
 
+  function isDimmed(id: string): boolean {
+    if (activeTrace) return !revealedNodeIds.has(id);
+    if (matches && !matches.has(id)) return true;
+    if (focusSet && !focusSet.has(id)) return true;
+    return false;
+  }
+
   const selectedNode: MemoryTopologyNode | null = selected ? nodes.find((node) => node.id === selected) ?? null : null;
   const selectedNeighbours = selected ? Array.from(neighbours.get(selected) ?? []) : [];
+  const selectedTraceInfo = selected ? traceNodeInfo.get(selected) ?? null : null;
 
   // Labelling every node turns the dense core into a smear. Only the hubs carry
   // a standing label; everything else names itself on hover, selection, or a
@@ -303,6 +509,103 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
           </button>
         </div>
       </header>
+
+      <section className="graph-trace-toolbar" aria-label="Trace a memory search">
+        <div className="graph-trace-query">
+          <span>Trace a query</span>
+          <input
+            value={traceQuery}
+            onChange={(event) => setTraceQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void runTraceQuery();
+            }}
+            placeholder="What would recall search for?"
+            spellCheck={false}
+          />
+          <select value={traceDepth} onChange={(event) => setTraceDepth(Number(event.target.value))} title="Graph hops">
+            <option value={1}>1 hop</option>
+            <option value={2}>2 hops</option>
+            <option value={3}>3 hops</option>
+          </select>
+          <button className="ghost" type="button" onClick={() => void runTraceQuery()} disabled={traceLoading || !traceQuery.trim()}>
+            {traceLoading ? 'Tracing…' : 'Trace'}
+          </button>
+          {activeTrace ? (
+            <button className="mini-button" type="button" onClick={() => setActiveTrace(null)}>
+              Clear trace
+            </button>
+          ) : null}
+        </div>
+        <div className="graph-trace-live">
+          <button className="mini-button" type="button" onClick={toggleLiveList}>
+            Live traces {liveTraces.length ? `(${liveTraces.length})` : ''}
+            {unseenLiveCount > 0 ? <span className="graph-trace-badge">{unseenLiveCount}</span> : null}
+          </button>
+          {liveListOpen ? (
+            <div className="graph-trace-live-list">
+              {liveTraces.length === 0 ? (
+                <p className="muted">No recalls observed yet. Ask the agent something that touches memory.</p>
+              ) : (
+                liveTraces.map((trace, index) => (
+                  <button
+                    key={`${trace.query}-${trace._receivedAt ?? index}`}
+                    type="button"
+                    className="graph-trace-live-item"
+                    onClick={() => pickLiveTrace(trace)}
+                  >
+                    <span className="graph-trace-live-query">{trace.query || '(empty query)'}</span>
+                    <small>
+                      {trace.results?.length ?? 0} hits · depth {trace.graph_depth} · {relativeTime(trace._receivedAt)}
+                    </small>
+                  </button>
+                ))
+              )}
+            </div>
+          ) : null}
+        </div>
+      </section>
+      {traceError ? <div className="trajectory-empty error-text">{traceError}</div> : null}
+
+      {activeTrace ? (
+        <section className="graph-trace-playback" aria-label="Trace playback controls">
+          <div className="graph-trace-playback-controls">
+            <button className="mini-button" type="button" onClick={() => setPlayhead(0)} disabled={playhead === 0}>
+              ⟲ Reset
+            </button>
+            <button className="mini-button" type="button" onClick={() => setPlayhead((p) => Math.max(0, p - 1))} disabled={playhead === 0}>
+              ◀ Step
+            </button>
+            <button
+              className="mini-button"
+              type="button"
+              onClick={() => setPlaying((p) => (playhead >= maxPlayhead ? (setPlayhead(0), true) : !p))}
+            >
+              {playing ? '⏸ Pause' : '▶ Play'}
+            </button>
+            <button
+              className="mini-button"
+              type="button"
+              onClick={() => setPlayhead((p) => Math.min(maxPlayhead, p + 1))}
+              disabled={playhead >= maxPlayhead}
+            >
+              Step ▶
+            </button>
+            <button className="mini-button" type="button" onClick={() => { setPlayhead(maxPlayhead); setPlaying(false); }} disabled={playhead >= maxPlayhead}>
+              Reveal all
+            </button>
+            <select value={speed} onChange={(event) => setSpeed(event.target.value as PlaybackSpeed)} title="Playback speed">
+              <option value="slow">Slow</option>
+              <option value="normal">Normal</option>
+              <option value="fast">Fast</option>
+            </select>
+          </div>
+          <div className="graph-trace-playback-status">
+            {playhead === 0 ? 'Seeds' : `Depth ${playhead}`} of {maxPlayhead || 0}
+            {' · '}
+            {revealedNodeIds.size} notes touched
+          </div>
+        </section>
+      ) : null}
 
       {topology ? (
         <section className="graph-stats" aria-label="Graph summary">
@@ -388,17 +691,14 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
                     const a = positions[from];
                     const b = positions[to];
                     if (!a || !b) return null;
-                    const active = focusSet ? focusSet.has(edge.source) && focusSet.has(edge.target) : false;
-                    return (
-                      <line
-                        key={`${edge.source}-${edge.target}-${index}`}
-                        x1={a.x}
-                        y1={a.y}
-                        x2={b.x}
-                        y2={b.y}
-                        className={`graph-edge ${focusSet ? (active ? 'active' : 'dim') : ''}`}
-                      />
-                    );
+                    let className = `graph-edge ${focusSet ? (focusSet.has(edge.source) && focusSet.has(edge.target) ? 'active' : 'dim') : ''}`;
+                    if (activeTrace) {
+                      const depth = revealedEdgeDepth.get(`${edge.source}->${edge.target}`) ?? revealedEdgeDepth.get(`${edge.target}->${edge.source}`);
+                      className = depth === undefined
+                        ? 'graph-edge trace-edge-hidden'
+                        : `graph-edge trace-edge trace-depth-${Math.min(3, depth)}${depth === playhead ? ' trace-edge-new' : ''}`;
+                    }
+                    return <line key={`${edge.source}-${edge.target}-${index}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className={className} />;
                   })}
                 </g>
                 <g className="graph-nodes">
@@ -411,11 +711,17 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
                       standingLabels.has(node.id) ||
                       focus === node.id ||
                       (focusSet?.has(node.id) ?? false) ||
-                      (matches?.has(node.id) ?? false);
+                      (matches?.has(node.id) ?? false) ||
+                      (activeTrace ? revealedNodeIds.has(node.id) : false);
+                    let className = `graph-node ${dim ? 'dim' : ''} ${selected === node.id ? 'selected' : ''}`;
+                    if (activeTrace && revealedNodeDepth.has(node.id)) {
+                      const depth = revealedNodeDepth.get(node.id)!;
+                      className += depth === 0 ? ' trace-seed' : ` trace-node trace-depth-${Math.min(3, depth)}`;
+                    }
                     return (
                       <g
                         key={node.id}
-                        className={`graph-node ${dim ? 'dim' : ''} ${selected === node.id ? 'selected' : ''}`}
+                        className={className}
                         transform={`translate(${point.x} ${point.y})`}
                         onMouseEnter={() => setHovered(node.id)}
                         onMouseLeave={() => setHovered(null)}
@@ -439,13 +745,41 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
             </svg>
 
             <div className="graph-legend">
-              <span><i className="swatch s1" /> 1–2 links</span>
-              <span><i className="swatch s2" /> 3–5</span>
-              <span><i className="swatch s3" /> 6–11</span>
-              <span><i className="swatch s4" /> 12+</span>
-              <span><i className="swatch dashed" /> unresolved</span>
+              {activeTrace ? (
+                <>
+                  <span><i className="swatch trace-swatch-seed" /> seed</span>
+                  <span><i className="swatch trace-swatch-1" /> hop 1</span>
+                  <span><i className="swatch trace-swatch-2" /> hop 2</span>
+                  <span><i className="swatch trace-swatch-3" /> hop 3+</span>
+                </>
+              ) : (
+                <>
+                  <span><i className="swatch s1" /> 1–2 links</span>
+                  <span><i className="swatch s2" /> 3–5</span>
+                  <span><i className="swatch s3" /> 6–11</span>
+                  <span><i className="swatch s4" /> 12+</span>
+                  <span><i className="swatch dashed" /> unresolved</span>
+                </>
+              )}
               {settling ? <span className="graph-settling">settling…</span> : null}
             </div>
+
+            {orphanTraceNodes.length > 0 ? (
+              <div className="graph-trace-orphans" aria-label="Notes touched by the trace but outside this graph view">
+                <h4>Off-graph notes ({orphanTraceNodes.length})</h4>
+                {orphanTraceNodes.map((node) => (
+                  <button
+                    key={node.id}
+                    type="button"
+                    className={`graph-trace-orphan trace-depth-${Math.min(3, node.depth)}`}
+                    onClick={() => setSelected(node.id)}
+                  >
+                    <span>{node.ref || node.id}</span>
+                    <small>{node.depth === 0 ? 'seed' : `hop ${node.depth}`}</small>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <aside className="graph-detail">
@@ -470,9 +804,19 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
                     {selectedNode.tags.map((tag) => <span key={tag}>#{tag}</span>)}
                   </div>
                 ) : null}
+                {selectedTraceInfo ? (
+                  <div className="graph-trace-scores">
+                    <h4>This trace</h4>
+                    <div className="kv-list">
+                      {selectedTraceInfo.score !== undefined ? <div className="kv"><span>Score</span><strong>{selectedTraceInfo.score.toFixed(3)}</strong></div> : null}
+                      {selectedTraceInfo.direct_score !== undefined ? <div className="kv"><span>Direct</span><strong>{selectedTraceInfo.direct_score.toFixed(3)}</strong></div> : null}
+                      {selectedTraceInfo.graph_score !== undefined ? <div className="kv"><span>Graph boost</span><strong>{selectedTraceInfo.graph_score.toFixed(3)}</strong></div> : null}
+                    </div>
+                  </div>
+                ) : null}
                 <div className="graph-neighbours">
                   <h4>Connected to {selectedNeighbours.length}</h4>
-                  {selectedNeighbours.slice(0, 40).map((id) => {
+                  {(neighboursShowAllFor === selected ? selectedNeighbours : selectedNeighbours.slice(0, 40)).map((id) => {
                     const neighbour = nodes.find((node) => node.id === id);
                     if (!neighbour) return null;
                     return (
@@ -482,7 +826,34 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
                       </button>
                     );
                   })}
+                  {neighboursShowAllFor !== selected && selectedNeighbours.length > 40 ? (
+                    <button
+                      type="button"
+                      className="graph-neighbour-more"
+                      onClick={() => setNeighboursShowAllFor(selected)}
+                    >
+                      Show all {selectedNeighbours.length}
+                    </button>
+                  ) : null}
                 </div>
+              </>
+            ) : selectedTraceInfo ? (
+              <>
+                <div className="graph-detail-head">
+                  <h3>{selectedTraceInfo.ref || selected}</h3>
+                  <button className="icon-button tiny" type="button" title="Clear selection" onClick={() => setSelected(null)}>
+                    ×
+                  </button>
+                </div>
+                <p className="muted">Not in the current graph view (outside the node limit or a different vault region).</p>
+                <div className="kv-list">
+                  {selectedTraceInfo.category ? <div className="kv"><span>Category</span><strong>{selectedTraceInfo.category}</strong></div> : null}
+                  {selectedTraceInfo.tier ? <div className="kv"><span>Tier</span><strong>{selectedTraceInfo.tier}</strong></div> : null}
+                  {selectedTraceInfo.score !== undefined ? <div className="kv"><span>Score</span><strong>{selectedTraceInfo.score.toFixed(3)}</strong></div> : null}
+                  {selectedTraceInfo.direct_score !== undefined ? <div className="kv"><span>Direct</span><strong>{selectedTraceInfo.direct_score.toFixed(3)}</strong></div> : null}
+                  {selectedTraceInfo.graph_score !== undefined ? <div className="kv"><span>Graph boost</span><strong>{selectedTraceInfo.graph_score.toFixed(3)}</strong></div> : null}
+                </div>
+                {selectedTraceInfo.content_preview ? <p className="graph-path">{selectedTraceInfo.content_preview}</p> : null}
               </>
             ) : (
               <div className="graph-detail-empty">
@@ -492,6 +863,33 @@ export function MemoryGraph({ fetchRuntime, pushActivity }: MemoryGraphProps) {
             )}
           </aside>
         </div>
+      ) : null}
+
+      {activeTrace ? (
+        <section className="graph-trace-timeline" aria-label="Trace narration">
+          <button
+            type="button"
+            className={`graph-trace-timeline-row ${playhead === 0 ? 'current' : ''}`}
+            onClick={() => { setPlayhead(0); setPlaying(false); }}
+          >
+            <strong>Seeds</strong>
+            <span>{(activeTrace.seeds ?? []).map((s) => s.ref || s.id).join(', ') || '(none matched directly)'}</span>
+          </button>
+          {traceLayers.map((layer, index) => {
+            const depth = index + 1;
+            return (
+              <button
+                key={depth}
+                type="button"
+                className={`graph-trace-timeline-row trace-depth-${Math.min(3, depth)} ${playhead === depth ? 'current' : ''}`}
+                onClick={() => { setPlayhead(depth); setPlaying(false); }}
+              >
+                <strong>Depth {depth}</strong>
+                <span>{layer.length ? layer.map((hop) => hopLabel(hop)).join(' · ') : '(no new notes at this depth)'}</span>
+              </button>
+            );
+          })}
+        </section>
       ) : null}
     </div>
   );

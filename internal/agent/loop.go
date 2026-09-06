@@ -134,7 +134,7 @@ const maxAllowedIterations = 300
 
 const (
 	maxEmptyResponseRetries        = 2
-	maxLengthContinuationRetries   = 3
+	defaultMaxLengthContinuations  = 8
 	searchSynthesisThreshold       = 2
 	emptyResponseRecoveryPrompt    = "Your last response was empty. Please provide a direct, complete answer to my previous request. Avoid tool calls unless required."
 	lengthRecoveryPrompt           = "Continue exactly from where you stopped. Do not repeat previous content."
@@ -143,6 +143,17 @@ const (
 	emptyFinalResponseMessage      = "I couldn't produce a complete answer this round. Please retry."
 	lengthTruncatedNotice          = "\n\n[Output may be truncated after multiple continuation attempts.]"
 )
+
+// maxLengthContinuations 返回长回复续写重试次数上限，可通过
+// limits.max_length_continuations 运行时配置；未配置时使用默认值。
+func (a *Agent) maxLengthContinuations() int {
+	if a != nil && a.cfg != nil {
+		if n := a.cfg.Get().Limits.MaxLengthContinuations; n > 0 {
+			return n
+		}
+	}
+	return defaultMaxLengthContinuations
+}
 
 // sanitizeLoopConfig 校验并修正 LoopConfig 的安全边界
 func sanitizeLoopConfig(cfg *LoopConfig) {
@@ -647,7 +658,7 @@ func (a *Agent) processDirectResponse(
 	if strings.EqualFold(resp.FinishReason, "length") {
 		appendContinuation(&loopState.continuedResponse, raw)
 		appendContinuation(&loopState.continuedReasoning, resp.ReasoningContent)
-		if loopState.lengthRecoveryCount < maxLengthContinuationRetries {
+		if loopState.lengthRecoveryCount < a.maxLengthContinuations() {
 			loopState.lengthRecoveryCount++
 			messages = append(messages, provider.Message{Role: "assistant", Content: raw, ReasoningContent: resp.ReasoningContent})
 			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
@@ -842,7 +853,12 @@ func (a *Agent) processToolCallBatch(
 		}
 		messages = append(messages, contextToolMsg)
 		if sess != nil {
-			sess.AddProviderMessage(contextToolMsg)
+			sess.AddProviderMessage(provider.Message{
+				Role:       "tool",
+				Content:    execResult.Result,
+				ToolCallID: execResult.ToolCall.ID,
+				Name:       execResult.ToolCall.Name,
+			})
 		}
 		logger.Debug("agent loop tool result appended",
 			"session_id", func() string {

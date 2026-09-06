@@ -72,6 +72,37 @@ func TestSendUsesCachedTenantTokenAndFeishuMessageAPI(t *testing.T) {
 	}
 }
 
+func TestSplitFeishuTextPreservesWhitespaceAndUnicode(t *testing.T) {
+	message := " \n" + strings.Repeat("你", feishuTextChunkLimit) + "\n "
+	chunks := splitFeishuText(message)
+	if got := strings.Join(chunks, ""); got != message {
+		t.Fatalf("reassembled chunks = %q, want %q", got, message)
+	}
+	for _, chunk := range chunks {
+		if got := len([]rune(chunk)); got > feishuTextChunkLimit {
+			t.Fatalf("chunk rune length = %d, limit %d", got, feishuTextChunkLimit)
+		}
+	}
+}
+
+func TestNewMessageRequestPreservesSurroundingWhitespace(t *testing.T) {
+	const message = " \ncomplete text\n "
+	request, err := newMessageRequest("oc_chat", message)
+	if err != nil {
+		t.Fatalf("newMessageRequest() error = %v", err)
+	}
+	if request.MsgType != "text" {
+		t.Fatalf("MsgType = %q, want text", request.MsgType)
+	}
+	var content map[string]string
+	if err := json.Unmarshal([]byte(request.Content), &content); err != nil {
+		t.Fatalf("decode text content: %v", err)
+	}
+	if got := content["text"]; got != message {
+		t.Fatalf("text content = %q, want %q", got, message)
+	}
+}
+
 func TestSendRendersMarkdownAndLongURLsAsFeishuPost(t *testing.T) {
 	const markdownURL = "https://platform.example.com/docs/agents/quickstart?utm_source=luckyagent&utm_medium=feishu&utm_campaign=long-link"
 	const bareURL = "https://downloads.example.com/releases/2026/09/luckyagent-linux-amd64.tar.gz?signature=abcdefghijklmnopqrstuvwxyz0123456789"
@@ -205,6 +236,51 @@ func TestSendWithReplyUsesReplyEndpoint(t *testing.T) {
 	}
 	if receipt.ID != "om_reply" || replyRequest.ReceiveID != "" || replyRequest.MsgType != "text" {
 		t.Fatalf("unexpected reply receipt/request: %#v %#v", receipt, replyRequest)
+	}
+}
+
+func TestSendWithReplyReceiptDeliversAllChunks(t *testing.T) {
+	var replyTexts, chatTexts []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case r.URL.Path == "/open-apis/im/v1/messages/om_parent/reply":
+			var request sendMessageRequest
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			var content map[string]string
+			_ = json.Unmarshal([]byte(request.Content), &content)
+			replyTexts = append(replyTexts, content["text"])
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_reply"}})
+		case r.URL.Path == "/open-apis/im/v1/messages":
+			var request sendMessageRequest
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if request.ReceiveID != "oc_chat" {
+				t.Errorf("follow-up receive_id = %q, want oc_chat", request.ReceiveID)
+			}
+			var content map[string]string
+			_ = json.Unmarshal([]byte(request.Content), &content)
+			chatTexts = append(chatTexts, content["text"])
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_followup"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	message := strings.Repeat("你", feishuTextChunkLimit) + "尾"
+	receipt, err := apiTestAdapter(server).SendWithReplyReceipt(context.Background(), "oc_chat", "om_parent", message)
+	if err != nil {
+		t.Fatalf("SendWithReplyReceipt() error = %v", err)
+	}
+	if len(replyTexts) != 1 || len(chatTexts) != 1 {
+		t.Fatalf("reply chunks=%d chat chunks=%d, want 1 and 1", len(replyTexts), len(chatTexts))
+	}
+	if got := replyTexts[0] + chatTexts[0]; got != message {
+		t.Fatalf("delivered text = %q, want %q", got, message)
+	}
+	if receipt.ID != "om_followup" || receipt.ChatID != "oc_chat" {
+		t.Fatalf("receipt = %#v, want final follow-up receipt", receipt)
 	}
 }
 

@@ -375,7 +375,8 @@ function isCommandOutput(item: StreamItem): boolean {
   return title === 'command' || title === 'review' || title === 'lh' || title.startsWith('lh ') || firstLine.startsWith('$ ');
 }
 
-function auxLineLimit(item: StreamItem): number {
+function auxLineLimit(item: StreamItem, expanded: boolean): number {
+  if (expanded) return Infinity;
   if (isCommandOutput(item)) return 18;
   switch (item.kind) {
     case 'status':
@@ -484,12 +485,6 @@ function redactSecrets(text: string): string {
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-***')
     .replace(/\b(ghp|gho|ghu|ghs)_[A-Za-z0-9_]{8,}\b/g, '$1_***')
     .replace(/\b(token|api[_-]?key|app[_-]?secret|secret)(\s*[:=]\s*)([^\s]+)/gi, '$1$2***');
-}
-
-function limitOutput(text: string, maxChars = 12000): string {
-  if (text.length <= maxChars) return text;
-  const hidden = text.length - maxChars;
-  return `${text.slice(0, maxChars)}\n... ${hidden} chars hidden`;
 }
 
 function repoRoot(): string {
@@ -698,7 +693,7 @@ function isToolCallLike(value: unknown): value is {
   return typeof value === 'object' && value !== null;
 }
 
-function renderItemLines(item: StreamItem, width: number): RenderLine[] {
+function renderItemLines(item: StreamItem, width: number, expanded: boolean): RenderLine[] {
   const lines: RenderLine[] = [];
   const color = kindColor(item.kind);
   const marker = kindMarker(item.kind);
@@ -746,7 +741,7 @@ function renderItemLines(item: StreamItem, width: number): RenderLine[] {
     bold: item.kind === 'error',
   });
   const rendered = renderMarkdown(item.body, contentWidth);
-  const limit = auxLineLimit(item);
+  const limit = auxLineLimit(item, expanded);
   const bodyLines = limit <= 0 ? [] : clampLines(rendered, limit);
   const dim = item.kind === 'reasoning';
   for (const [index, line] of bodyLines.entries()) {
@@ -803,6 +798,7 @@ export function App({ apiBase, session, model }: AppProps) {
   const [runtimeModel, setRuntimeModel] = useState(model);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [autoFollowBottom, setAutoFollowBottom] = useState(true);
+  const [expandedAll, setExpandedAll] = useState(false);
   const [backgroundJobs, setBackgroundJobs] = useState<BackgroundJob[]>([]);
   const socketRef = useRef<WebSocket | null>(null);
   const draftRef = useRef('');
@@ -1488,7 +1484,7 @@ export function App({ apiBase, session, model }: AppProps) {
     pushExistingItem({ id: itemId, kind: 'meta', title, body: `$ ${display}\nRunning...`, createdAt: Date.now() });
 
     execFile(lh.command, commandArgs, { cwd: repoRoot(), timeout: CLI_TIMEOUT_MS, maxBuffer: CLI_MAX_BUFFER }, (error, stdout, stderr) => {
-      const output = limitOutput(redactSecrets([stdout, stderr].filter(Boolean).join('\n').trim() || '(no output)'));
+      const output = redactSecrets([stdout, stderr].filter(Boolean).join('\n').trim() || '(no output)');
       const body = [`$ ${display}`, output].join('\n');
       if (error) {
         setItems((prev) =>
@@ -1903,6 +1899,14 @@ export function App({ apiBase, session, model }: AppProps) {
         }
       }
     } else {
+      if (key.ctrl && inputChar === 'e') {
+        setExpandedAll((prev) => {
+          const next = !prev;
+          setStatus(next ? 'Expanded folded entries' : 'Collapsed folded entries');
+          return next;
+        });
+        return;
+      }
       if (key.pageUp) {
         moveScroll(normalizedScrollOffset - transcriptHeight + 2, false);
         return;
@@ -1960,8 +1964,8 @@ export function App({ apiBase, session, model }: AppProps) {
   const chromeRows = heroRows + 6; // transcript margin + input margin + input box (3) + footer
   const transcriptHeight = Math.max(6, viewportHeight - chromeRows - 1 - pickerHeight - (pickerOpen ? 1 : 0));
   const transcriptLines = useMemo(
-    () => items.flatMap((item) => renderItemLines(item, viewportWidth)),
-    [items, viewportWidth],
+    () => items.flatMap((item) => renderItemLines(item, viewportWidth, expandedAll)),
+    [items, viewportWidth, expandedAll],
   );
   const maxScrollOffset = Math.max(0, transcriptLines.length - transcriptHeight);
   const normalizedScrollOffset = autoFollowBottom ? maxScrollOffset : Math.min(scrollOffset, maxScrollOffset);
@@ -2106,7 +2110,7 @@ export function App({ apiBase, session, model }: AppProps) {
         </Box>
         <Box justifyContent="space-between" paddingX={1}>
           <Text color={THEME.muted} wrap="truncate-end">{ellipsize(status, Math.max(16, Math.floor(viewportWidth * 0.5)))}</Text>
-          <Text color={THEME.muted} wrap="truncate-end">⏎ send · / cmds · ⇅ scroll · ^C quit</Text>
+          <Text color={THEME.muted} wrap="truncate-end">⏎ send · / cmds · ⇅ scroll · ^E {expandedAll ? 'collapse' : 'expand'} · ^C quit</Text>
         </Box>
       </Box>
     </Box>

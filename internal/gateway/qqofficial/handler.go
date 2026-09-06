@@ -2534,7 +2534,6 @@ func qqCompactTraceText(text string, maxLen int) string {
 }
 
 func splitQQMessageChunks(text string, limit int) []string {
-	text = strings.TrimSpace(text)
 	if text == "" {
 		return nil
 	}
@@ -2542,34 +2541,23 @@ func splitQQMessageChunks(text string, limit int) []string {
 		return []string{text}
 	}
 
-	var chunks []string
-	var current strings.Builder
-	for _, line := range strings.Split(text, "\n") {
-		for qqRuneLen(line) > limit {
-			if strings.TrimSpace(current.String()) != "" {
-				chunks = append(chunks, strings.TrimSpace(current.String()))
-				current.Reset()
+	runes := []rune(text)
+	chunks := make([]string, 0, len(runes)/limit+1)
+	for len(runes) > limit {
+		cut := limit
+		// Prefer a natural line boundary but retain that newline in the
+		// preceding chunk so concatenating chunks recreates the source exactly.
+		for i := limit; i > 0; i-- {
+			if runes[i-1] == '\n' {
+				cut = i
+				break
 			}
-			head, tail := splitRunes(line, limit)
-			chunks = append(chunks, strings.TrimSpace(head))
-			line = tail
 		}
-
-		extra := qqRuneLen(line)
-		if current.Len() > 0 {
-			extra++
-		}
-		if current.Len() > 0 && qqRuneLen(current.String())+extra > limit {
-			chunks = append(chunks, strings.TrimSpace(current.String()))
-			current.Reset()
-		}
-		if current.Len() > 0 {
-			current.WriteByte('\n')
-		}
-		current.WriteString(line)
+		chunks = append(chunks, string(runes[:cut]))
+		runes = runes[cut:]
 	}
-	if strings.TrimSpace(current.String()) != "" {
-		chunks = append(chunks, strings.TrimSpace(current.String()))
+	if len(runes) > 0 {
+		chunks = append(chunks, string(runes))
 	}
 	return chunks
 }

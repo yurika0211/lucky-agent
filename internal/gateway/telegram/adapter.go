@@ -228,12 +228,17 @@ func telegramRequestFileData(source string) (tgbotapi.RequestFileData, error) {
 	return tgbotapi.FilePath(source), nil
 }
 
-func truncateTelegramCaption(caption string) string {
-	caption = strings.TrimSpace(caption)
+// splitTelegramCaption splits a formatted (HTML) caption into what fits
+// inline on a photo/document (Telegram's 1024-char caption limit) and an
+// overflow remainder. Unlike a hard truncation, no content is dropped: when
+// the caption doesn't fit, it is sent whole as the overflow and the inline
+// caption is left empty, so the caller can follow up with a separate
+// full-text message instead of mangling HTML tags mid-cut.
+func splitTelegramCaption(caption string) (inline string, overflow string) {
 	if len(caption) <= 1024 {
-		return caption
+		return caption, ""
 	}
-	return caption[:1021] + "..."
+	return "", caption
 }
 
 // Stop gracefully shuts down the adapter.
@@ -421,8 +426,10 @@ func (a *Adapter) SendWithReplyHTML(ctx context.Context, chatID string, replyToM
 	return nil
 }
 
-// SendPhoto sends a photo to a chat, optionally replying to a message.
-func (a *Adapter) SendPhoto(_ context.Context, chatID string, replyToMsgID string, source string, caption string) error {
+// SendPhoto sends a photo to a chat, optionally replying to a message. If the
+// caption doesn't fit Telegram's inline caption limit, the full caption is
+// sent as a separate follow-up text message instead of being truncated.
+func (a *Adapter) SendPhoto(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
 	if !a.running || a.bot == nil {
 		return fmt.Errorf("telegram: adapter not running")
 	}
@@ -442,21 +449,33 @@ func (a *Adapter) SendPhoto(_ context.Context, chatID string, replyToMsgID strin
 		return err
 	}
 
+	inlineCaption, overflow := splitTelegramCaption(formatTelegramRichText(caption))
+
 	msg := tgbotapi.NewPhoto(chatIDInt, fileData)
-	msg.Caption = truncateTelegramCaption(formatTelegramRichText(caption))
+	msg.Caption = inlineCaption
 	msg.ParseMode = tgbotapi.ModeHTML
 	if replyToID > 0 {
 		msg.ReplyToMessageID = replyToID
 	}
 
-	if _, err := a.bot.Send(msg); err != nil {
+	sent, err := a.bot.Send(msg)
+	if err != nil {
 		return fmt.Errorf("telegram: send photo: %w", err)
+	}
+
+	if overflow != "" {
+		if err := a.SendWithReplyHTML(ctx, chatID, strconv.Itoa(sent.MessageID), overflow); err != nil {
+			return fmt.Errorf("telegram: send photo caption follow-up: %w", err)
+		}
 	}
 	return nil
 }
 
 // SendDocument sends a document to a chat, optionally replying to a message.
-func (a *Adapter) SendDocument(_ context.Context, chatID string, replyToMsgID string, source string, caption string) error {
+// If the caption doesn't fit Telegram's inline caption limit, the full
+// caption is sent as a separate follow-up text message instead of being
+// truncated.
+func (a *Adapter) SendDocument(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
 	if !a.running || a.bot == nil {
 		return fmt.Errorf("telegram: adapter not running")
 	}
@@ -476,15 +495,24 @@ func (a *Adapter) SendDocument(_ context.Context, chatID string, replyToMsgID st
 		return err
 	}
 
+	inlineCaption, overflow := splitTelegramCaption(formatTelegramRichText(caption))
+
 	msg := tgbotapi.NewDocument(chatIDInt, fileData)
-	msg.Caption = truncateTelegramCaption(formatTelegramRichText(caption))
+	msg.Caption = inlineCaption
 	msg.ParseMode = tgbotapi.ModeHTML
 	if replyToID > 0 {
 		msg.ReplyToMessageID = replyToID
 	}
 
-	if _, err := a.bot.Send(msg); err != nil {
+	sent, err := a.bot.Send(msg)
+	if err != nil {
 		return fmt.Errorf("telegram: send document: %w", err)
+	}
+
+	if overflow != "" {
+		if err := a.SendWithReplyHTML(ctx, chatID, strconv.Itoa(sent.MessageID), overflow); err != nil {
+			return fmt.Errorf("telegram: send document caption follow-up: %w", err)
+		}
 	}
 	return nil
 }

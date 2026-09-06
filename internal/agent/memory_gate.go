@@ -258,10 +258,9 @@ func (a *Agent) executePreparedMemoryGateToolCalls(
 			result := "Error: tool gateway not initialized"
 			gate.markExecuted(call.Name, result)
 			executed = append(executed, executedToolCall{
-				Index:       i,
-				ToolCall:    call,
-				Result:      result,
-				ShortResult: result,
+				Index:    i,
+				ToolCall: call,
+				Result:   result,
 			})
 		}
 		return executed
@@ -326,7 +325,12 @@ func (a *Agent) executeMemoryGateForLoop(
 		}
 		messages = append(messages, contextToolMsg)
 		if sess != nil {
-			sess.AddProviderMessage(contextToolMsg)
+			sess.AddProviderMessage(provider.Message{
+				Role:       "tool",
+				Content:    execResult.Result,
+				ToolCallID: execResult.ToolCall.ID,
+				Name:       execResult.ToolCall.Name,
+			})
 		}
 	}
 
@@ -353,7 +357,11 @@ func (a *Agent) continueAfterStreamMemoryGate(
 	calls := state.memoryGate.nextToolCalls()
 	var executed []executedToolCall
 	if len(calls) > 0 {
-		messages = append(messages, state.memoryGate.assistantToolCallMessage(calls))
+		assistantMsg := state.memoryGate.assistantToolCallMessage(calls)
+		messages = append(messages, assistantMsg)
+		if sess != nil {
+			sess.AddProviderMessage(assistantMsg)
+		}
 		emitChatToolCallEvents(events, calls)
 		executed = a.executePreparedMemoryGateToolCalls(
 			state.memoryGate,
@@ -368,13 +376,21 @@ func (a *Agent) continueAfterStreamMemoryGate(
 		)
 	}
 	for _, execResult := range executed {
-		emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
+		emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata)
 		messages = append(messages, provider.Message{
 			Role:       "tool",
 			Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence),
 			ToolCallID: execResult.ToolCall.ID,
 			Name:       execResult.ToolCall.Name,
 		})
+		if sess != nil {
+			sess.AddProviderMessage(provider.Message{
+				Role:       "tool",
+				Content:    execResult.Result,
+				ToolCallID: execResult.ToolCall.ID,
+				Name:       execResult.ToolCall.Name,
+			})
+		}
 		state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result, execResult.Duration)
 	}
 

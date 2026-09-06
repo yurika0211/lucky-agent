@@ -10,6 +10,7 @@ import type {
   ProviderMessage,
   RuntimeAttachment,
   RuntimeSession,
+  SearchTrace,
   SessionHistory,
   SessionsResponse,
   ToolStep,
@@ -404,6 +405,9 @@ export function App() {
   const [socketState, setSocketState] = useState<'idle' | 'connecting' | 'connected' | 'running' | 'error'>('idle');
   const [messages, setMessages] = useState<Bubble[]>([]);
   const [activity, setActivity] = useState<ActivityNote[]>([]);
+  // Lifted here (not local to MemoryGraph) because the Memory tab fully
+  // unmounts on view switch — live traces must survive that.
+  const [memoryTraces, setMemoryTraces] = useState<SearchTrace[]>([]);
   const [feed, setFeed] = useState<string[]>([]);
   const [sessions, setSessions] = useState<RuntimeSession[]>([]);
   const [sessionQuery, setSessionQuery] = useState('');
@@ -751,7 +755,7 @@ export function App() {
       const response = await fetchRuntime('/v1/uploads', { method: 'POST', body: form });
       if (!response.ok) {
         const detail = await response.text().catch(() => '');
-        throw new Error(detail ? `${response.status}: ${detail.slice(0, 160)}` : `upload ${response.status}`);
+        throw new Error(detail ? `${response.status}: ${detail}` : `upload ${response.status}`);
       }
       const payload = (await response.json()) as UploadResponse;
       const uploaded = payload.attachments?.[0];
@@ -837,7 +841,7 @@ export function App() {
       try {
         payload = JSON.parse(event.data) as WsPayload;
       } catch {
-        pushActivity('error', 'Protocol parse failed', String(event.data).slice(0, 200));
+        pushActivity('error', 'Protocol parse failed', String(event.data));
         return;
       }
       handleWsMessage(payload);
@@ -936,6 +940,17 @@ export function App() {
       }
       case 'tool_result': {
         const name = String(payload.name || 'tool');
+        if (name === '__memory_trace') {
+          try {
+            const trace = JSON.parse(String(payload.output || '')) as SearchTrace;
+            setMemoryTraces((prev) => [trace, ...prev].slice(0, 20));
+            pushActivity('tool', 'Memory recall', trace.query, `${trace.results?.length ?? 0} hits`);
+          } catch {
+            // Malformed trace payload: drop it silently, the underlying tool
+            // result was already reported through its own tool_result event.
+          }
+          break;
+        }
         const stepId = String(payload.step_id || '');
         // Same here: `output` carries the whole result, `display` is truncated
         // to ~160 characters for compact surfaces.
@@ -1617,7 +1632,7 @@ export function App() {
               {view === 'settings' ? (
                 <Settings fetchRuntime={fetchRuntime} pushActivity={pushActivity} />
               ) : view === 'memory' ? (
-                <MemoryGraph fetchRuntime={fetchRuntime} pushActivity={pushActivity} />
+                <MemoryGraph fetchRuntime={fetchRuntime} pushActivity={pushActivity} liveTraces={memoryTraces} />
               ) : view === 'gateways' ? (
                 <Gateways fetchRuntime={fetchRuntime} pushActivity={pushActivity} pushFeed={pushFeed} />
               ) : (

@@ -1338,6 +1338,7 @@ func hasToolMessage(messages []provider.Message, name string) bool {
 func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 	for _, mode := range []string{"simulated", "native"} {
 		t.Run(mode, func(t *testing.T) {
+			fullToolResult := "找到 1 条课程资料：" + strings.Repeat("第一章的完整内容。", 900)
 			sessMgr, err := session.NewManager(t.TempDir())
 			if err != nil {
 				t.Fatalf("NewManager() error = %v", err)
@@ -1362,7 +1363,7 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 					"query": {Type: "string", Required: true},
 				},
 				Handler: func(args map[string]any) (string, error) {
-					return "找到 1 条课程资料：第一章的正确内容", nil
+					return fullToolResult, nil
 				},
 				ParallelSafe: true,
 			})
@@ -1408,23 +1409,28 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 			}
 
 			messages := sess.GetMessages()
-			if len(messages) != 4 {
-				t.Fatalf("expected user, assistant tool-call, tool result, final assistant; got %d messages: %#v", len(messages), messages)
+			var userTurn, toolCall, toolResult, finalAnswer *provider.Message
+			for i := range messages {
+				message := &messages[i]
+				switch {
+				case message.Role == "user" && strings.Contains(message.Content, "第一章"):
+					userTurn = message
+				case message.Role == "assistant" && len(message.ToolCalls) == 1 && message.ToolCalls[0].Name == "rag_search":
+					toolCall = message
+				case message.Role == "tool" && message.Name == "rag_search" && message.ToolCallID == "call-rag-1":
+					toolResult = message
+				case message.Role == "assistant" && strings.Contains(message.Content, "final answer"):
+					finalAnswer = message
+				}
 			}
-			if messages[0].Role != "user" || !strings.Contains(messages[0].Content, "第一章") {
-				t.Fatalf("expected first message to be user turn, got %#v", messages[0])
+			if userTurn == nil || toolCall == nil || toolResult == nil || finalAnswer == nil {
+				t.Fatalf("expected user, assistant tool-call, tool result, and final assistant messages; got %#v", messages)
 			}
-			if messages[1].Role != "assistant" || len(messages[1].ToolCalls) != 1 || messages[1].ToolCalls[0].Name != "rag_search" {
-				t.Fatalf("expected assistant rag_search tool call, got %#v", messages[1])
+			if toolResult.Content != fullToolResult {
+				t.Fatalf("persisted rag_search result was truncated or altered")
 			}
-			if messages[2].Role != "tool" || messages[2].Name != "rag_search" || !strings.Contains(messages[2].Content, "第一章的正确内容") {
-				t.Fatalf("expected persisted rag_search tool result, got %#v", messages[2])
-			}
-			if messages[3].Role != "assistant" || !strings.Contains(messages[3].Content, "final answer") {
-				t.Fatalf("expected final assistant answer, got %#v", messages[3])
-			}
-			if !strings.Contains(messages[3].Content, naturalCitationHeader) {
-				t.Fatalf("expected persisted final assistant answer to include citations, got %#v", messages[3])
+			if !strings.Contains(finalAnswer.Content, naturalCitationHeader) {
+				t.Fatalf("expected persisted final assistant answer to include citations, got %#v", finalAnswer)
 			}
 		})
 	}

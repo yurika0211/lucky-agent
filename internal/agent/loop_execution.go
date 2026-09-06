@@ -156,7 +156,6 @@ type executedToolCall struct {
 	Index        int
 	ToolCall     provider.ToolCall
 	Result       string
-	ShortResult  string
 	Duration     time.Duration
 	Metadata     map[string]any
 	Observations []tool.Observation
@@ -200,16 +199,10 @@ func (a *Agent) executeToolCallsOrdered(
 				}
 			}
 		}
-		shortResult := resultText
-		if len(shortResult) > 200 {
-			shortResult = shortResult[:197] + "..."
-		}
-		shortResult = appendMemoryTracePayload(shortResult, toolResult.Metadata)
 		resultCh <- executedToolCall{
 			Index:        idx,
 			ToolCall:     tc,
 			Result:       resultText,
-			ShortResult:  shortResult,
 			Duration:     time.Since(start),
 			Metadata:     toolResult.Metadata,
 			Observations: toolResult.Observations,
@@ -384,7 +377,7 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 	allowed := make([]provider.ToolCall, 0, len(toolCalls))
 	for idx, tc := range toolCalls {
 		if msg, blocked := guard.blockMessage(tc); blocked {
-			result := executedToolCall{Index: idx, ToolCall: tc, Result: msg, ShortResult: msg}
+			result := executedToolCall{Index: idx, ToolCall: tc, Result: msg}
 			blockedResults[idx] = result
 			a.recordProactiveToolEvent(sess, result, true)
 			continue
@@ -392,7 +385,7 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 		if hooksActive {
 			finalArgs, blocked, blockMsg := a.hooks.RunPre(tc.Name, tc.Arguments, source, sessionID)
 			if blocked {
-				result := executedToolCall{Index: idx, ToolCall: tc, Result: blockMsg, ShortResult: blockMsg}
+				result := executedToolCall{Index: idx, ToolCall: tc, Result: blockMsg}
 				blockedResults[idx] = result
 				a.recordProactiveToolEvent(sess, result, true)
 				continue
@@ -489,15 +482,14 @@ func emitChatToolCallEvents(events chan<- ChatEvent, toolCalls []provider.ToolCa
 	}
 }
 
-func emitChatToolResultEvent(events chan<- ChatEvent, toolName, shortResult string) {
-	displayResult, memoryTracePayload, hasMemoryTrace := splitMemoryTracePayload(shortResult)
+func emitChatToolResultEvent(events chan<- ChatEvent, toolName, result string, metadata map[string]any) {
 	events <- ChatEvent{
 		Type:    ChatEventToolResult,
 		Name:    toolName,
-		Result:  displayResult,
-		Content: fmt.Sprintf("📋 %s → %s", toolName, displayResult),
+		Result:  result,
+		Content: fmt.Sprintf("📋 %s → %s", toolName, result),
 	}
-	if hasMemoryTrace {
+	if memoryTracePayload, ok := marshalMemoryTracePayload(metadata); ok {
 		events <- ChatEvent{
 			Type:    ChatEventToolResult,
 			Name:    chatEventMemoryTraceName,
@@ -553,29 +545,18 @@ func approvalEventFromMetadata(metadata map[string]any, toolName string) *Approv
 }
 
 const chatEventMemoryTraceName = "__memory_trace"
-const memoryTracePayloadMarker = "\n\n__LUCKYAGENT_MEMORY_TRACE__"
 
-func appendMemoryTracePayload(shortResult string, metadata map[string]any) string {
+func marshalMemoryTracePayload(metadata map[string]any) (payload string, ok bool) {
 	if len(metadata) == 0 {
-		return shortResult
+		return "", false
 	}
 	trace, ok := metadata["memory_trace"]
 	if !ok || trace == nil {
-		return shortResult
+		return "", false
 	}
 	data, err := json.Marshal(trace)
 	if err != nil || len(data) == 0 {
-		return shortResult
+		return "", false
 	}
-	return shortResult + memoryTracePayloadMarker + string(data)
-}
-
-func splitMemoryTracePayload(shortResult string) (displayResult string, payload string, ok bool) {
-	idx := strings.Index(shortResult, memoryTracePayloadMarker)
-	if idx < 0 {
-		return shortResult, "", false
-	}
-	display := strings.TrimSpace(shortResult[:idx])
-	payload = strings.TrimSpace(shortResult[idx+len(memoryTracePayloadMarker):])
-	return display, payload, payload != ""
+	return string(data), true
 }

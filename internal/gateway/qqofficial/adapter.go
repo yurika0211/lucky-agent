@@ -278,19 +278,36 @@ func (a *Adapter) IsRunning() bool {
 	return a.running
 }
 
+// qqOutgoingChunks 把一条待发送文本按 QQ 单条消息长度上限分段，避免超长回复
+// 被平台拒绝或静默截断。空/短消息原样返回单个分片。
+func qqOutgoingChunks(message string) []string {
+	chunks := splitQQMessageChunks(message, qqProgressTraceChunkLimit)
+	if len(chunks) == 0 {
+		return []string{message}
+	}
+	return chunks
+}
+
 func (a *Adapter) Send(ctx context.Context, chatID string, message string) error {
 	parts := strings.SplitN(chatID, ":", 2)
 	if len(parts) != 2 {
 		return fmt.Errorf("qqofficial: invalid chat id %q", chatID)
 	}
-	switch parts[0] {
-	case "c2c":
-		return a.sendC2CMessage(ctx, parts[1], "", message)
-	case "group":
-		return a.sendGroupMessage(ctx, parts[1], "", message)
-	default:
-		return fmt.Errorf("qqofficial: unsupported chat type %q", parts[0])
+	for _, chunk := range qqOutgoingChunks(message) {
+		var err error
+		switch parts[0] {
+		case "c2c":
+			err = a.sendC2CMessage(ctx, parts[1], "", chunk)
+		case "group":
+			err = a.sendGroupMessage(ctx, parts[1], "", chunk)
+		default:
+			return fmt.Errorf("qqofficial: unsupported chat type %q", parts[0])
+		}
+		if err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
@@ -298,14 +315,21 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 	if len(parts) != 2 {
 		return fmt.Errorf("qqofficial: invalid chat id %q", chatID)
 	}
-	switch parts[0] {
-	case "c2c":
-		return a.sendC2CMessage(ctx, parts[1], replyToMsgID, message)
-	case "group":
-		return a.sendGroupMessage(ctx, parts[1], replyToMsgID, message)
-	default:
-		return fmt.Errorf("qqofficial: unsupported chat type %q", parts[0])
+	for _, chunk := range qqOutgoingChunks(message) {
+		var err error
+		switch parts[0] {
+		case "c2c":
+			err = a.sendC2CMessage(ctx, parts[1], replyToMsgID, chunk)
+		case "group":
+			err = a.sendGroupMessage(ctx, parts[1], replyToMsgID, chunk)
+		default:
+			return fmt.Errorf("qqofficial: unsupported chat type %q", parts[0])
+		}
+		if err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func (a *Adapter) SendForwardedText(ctx context.Context, chatID string, title string, chunks []string) error {

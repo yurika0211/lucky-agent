@@ -50,6 +50,40 @@ func TestDefaultLoopConfig(t *testing.T) {
 	}
 }
 
+func TestMaxLengthContinuationsUsesRuntimeConfig(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+	a := &Agent{cfg: cfg}
+	if got := a.maxLengthContinuations(); got != defaultMaxLengthContinuations {
+		t.Fatalf("default max length continuations = %d, want %d", got, defaultMaxLengthContinuations)
+	}
+	if err := cfg.Set("limits.max_length_continuations", "12"); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	if got := a.maxLengthContinuations(); got != 12 {
+		t.Fatalf("configured max length continuations = %d, want 12", got)
+	}
+}
+
+func TestEmitChatToolResultEventRetainsFullResultAndMemoryTrace(t *testing.T) {
+	events := make(chan ChatEvent, 2)
+	result := "prefix-" + strings.Repeat("full tool output ", 100) + "-suffix"
+	emitChatToolResultEvent(events, "terminal", result, map[string]any{
+		"memory_trace": map[string]any{"source": "test"},
+	})
+
+	toolEvent := <-events
+	if toolEvent.Type != ChatEventToolResult || toolEvent.Result != result || !strings.Contains(toolEvent.Content, result) {
+		t.Fatalf("tool result event did not retain full output: %#v", toolEvent)
+	}
+	traceEvent := <-events
+	if traceEvent.Name != chatEventMemoryTraceName || !strings.Contains(traceEvent.Result, `"source":"test"`) {
+		t.Fatalf("memory trace event = %#v", traceEvent)
+	}
+}
+
 func TestComputerObserveOnlyBatch(t *testing.T) {
 	if !computerObserveOnlyBatch([]provider.ToolCall{{Name: "computer_observe"}}) {
 		t.Fatal("expected a single computer_observe call to be observation-only")

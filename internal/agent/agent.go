@@ -2644,7 +2644,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				if state.memoryGate != nil {
 					state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 				}
-				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
+				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata)
 				emitChatObservationEvents(events, execResult)
 				messages = append(messages, provider.Message{
 					Role:       "tool",
@@ -2655,7 +2655,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				if sess != nil {
 					sess.AddProviderMessage(provider.Message{
 						Role:       "tool",
-						Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, nil, nil),
+						Content:    execResult.Result,
 						ToolCallID: execResult.ToolCall.ID,
 						Name:       execResult.ToolCall.Name,
 					})
@@ -2735,7 +2735,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	if strings.EqualFold(streamFinishReason, "length") {
 		appendContinuation(&state.continuedResponse, response)
 		appendContinuation(&state.continuedReasoning, reasoning.String())
-		if state.lengthRecoveryCount < maxLengthContinuationRetries && remaining > 1 {
+		if state.lengthRecoveryCount < a.maxLengthContinuations() && remaining > 1 {
 			state.lengthRecoveryCount++
 			messages = append(messages, provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoning.String()})
 			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
@@ -2893,7 +2893,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			if state.memoryGate != nil {
 				state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 			}
-			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.ShortResult)
+			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata)
 			emitChatObservationEvents(events, execResult)
 			messages = append(messages, provider.Message{
 				Role:       "tool",
@@ -2904,7 +2904,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			if sess != nil {
 				sess.AddProviderMessage(provider.Message{
 					Role:       "tool",
-					Content:    buildContextToolResult(execResult.ToolCall.Name, execResult.Result, nil, nil),
+					Content:    execResult.Result,
 					ToolCallID: execResult.ToolCall.ID,
 					Name:       execResult.ToolCall.Name,
 				})
@@ -2980,7 +2980,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 		appendContinuation(&state.continuedResponse, response)
 		appendContinuation(&state.continuedReasoning, resp.ReasoningContent)
-		if state.lengthRecoveryCount < maxLengthContinuationRetries && remaining > 1 {
+		if state.lengthRecoveryCount < a.maxLengthContinuations() && remaining > 1 {
 			state.lengthRecoveryCount++
 			messages = append(messages, provider.Message{Role: "assistant", Content: response, ReasoningContent: resp.ReasoningContent})
 			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})

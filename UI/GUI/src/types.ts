@@ -115,6 +115,61 @@ export type MemoryTopology = {
   categories?: string[];
 };
 
+/** A node touched by a memory search: a recall seed, hop endpoint, or result. */
+export type SearchTraceNode = {
+  id: string;
+  ref?: string;
+  category?: string;
+  tier?: string;
+  score?: number;
+  direct_score?: number;
+  graph_score?: number;
+  content_preview?: string;
+};
+
+/** One graph-spread step the recall took from an already-activated note. */
+export type SearchTraceHop = {
+  depth: number;
+  from_id: string;
+  from_ref?: string;
+  to_id: string;
+  to_ref?: string;
+  via?: string;
+  kind?: string;
+  weight?: number;
+  boost?: number;
+  source_score?: number;
+  target_score?: number;
+};
+
+export type SearchTraceResult = SearchTraceNode & {
+  rank: number;
+};
+
+export type SearchTraceFilters = {
+  category?: string;
+  tier?: string;
+  include_inactive?: boolean;
+  include_expired?: boolean;
+  as_of?: string;
+};
+
+/** Full evidence trail for one memory search: seeds, hop-by-hop spread, final results. */
+export type SearchTrace = {
+  query: string;
+  mode?: string;
+  source?: string;
+  limit?: number;
+  graph_depth: number;
+  filters?: SearchTraceFilters;
+  seeds?: SearchTraceNode[];
+  hops?: SearchTraceHop[];
+  results?: SearchTraceResult[];
+  temporal_notes?: string[];
+  warnings?: string[];
+  duration_ms?: number;
+};
+
 /** A slash command the runtime can execute for a UI. */
 export type CommandSpec = {
   name: string;

@@ -362,6 +362,76 @@ func TestV054SendWithReplyMockBot(t *testing.T) {
 	}
 }
 
+func TestV054SendPhotoLongCaptionUsesFullFollowUp(t *testing.T) {
+	var mediaCaption string
+	var followUps []capturedBotMessage
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		switch {
+		case containsMethod(r.URL.Path, "sendPhoto"):
+			if err := r.ParseMultipartForm(1 << 20); err != nil {
+				t.Fatalf("ParseMultipartForm() error = %v", err)
+			}
+			mediaCaption = r.FormValue("caption")
+			return map[string]any{"ok": true, "result": map[string]any{
+				"message_id": 100,
+				"chat":       map[string]any{"id": 12345},
+			}}
+		case containsMethod(r.URL.Path, "sendMessage"):
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			followUps = append(followUps, capturedBotMessage{
+				Method:    "sendMessage",
+				Text:      r.Form.Get("text"),
+				ParseMode: r.Form.Get("parse_mode"),
+				ReplyTo:   r.Form.Get("reply_to_message_id"),
+			})
+			return map[string]any{"ok": true, "result": map[string]any{
+				"message_id": 101,
+				"chat":       map[string]any{"id": 12345},
+			}}
+		default:
+			return defaultMockBotResponse(r)
+		}
+	})
+	if err != nil {
+		t.Fatalf("newMockBot() error = %v", err)
+	}
+
+	adapter := NewAdapter(Config{Token: bot.Token})
+	adapter.bot = bot
+	adapter.running = true
+	photo := filepath.Join(t.TempDir(), "photo.png")
+	if err := os.WriteFile(photo, []byte("test image"), 0o600); err != nil {
+		t.Fatalf("write test photo: %v", err)
+	}
+	caption := strings.Repeat("full caption content ", 80)
+	formatted := formatTelegramRichText(caption)
+
+	if err := adapter.SendPhoto(context.Background(), "12345", "", photo, caption); err != nil {
+		t.Fatalf("SendPhoto() error = %v", err)
+	}
+	if mediaCaption != "" {
+		t.Fatalf("media caption = %q, want empty when caption overflows", mediaCaption)
+	}
+	if len(followUps) == 0 {
+		t.Fatal("expected a follow-up text message for the full caption")
+	}
+	var delivered strings.Builder
+	for _, followUp := range followUps {
+		if followUp.ReplyTo != "100" {
+			t.Fatalf("follow-up reply target = %q, want 100", followUp.ReplyTo)
+		}
+		if followUp.ParseMode != tgbotapi.ModeHTML {
+			t.Fatalf("follow-up parse mode = %q, want HTML", followUp.ParseMode)
+		}
+		delivered.WriteString(followUp.Text)
+	}
+	if got := delivered.String(); got != formatted {
+		t.Fatalf("follow-up text was altered: got %q, want %q", got, formatted)
+	}
+}
+
 func TestV054SendWithReplyNotRunning(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.Token = "test-token"
