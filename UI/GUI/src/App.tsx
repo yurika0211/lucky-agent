@@ -407,7 +407,7 @@ export function App() {
   const [activity, setActivity] = useState<ActivityNote[]>([]);
   // Lifted here (not local to MemoryGraph) because the Memory tab fully
   // unmounts on view switch — live traces must survive that.
-  const [memoryTraces, setMemoryTraces] = useState<SearchTrace[]>([]);
+  const [memoryTraces, setMemoryTraces] = useState<Array<SearchTrace & { _receivedAt: number }>>([]);
   const [feed, setFeed] = useState<string[]>([]);
   const [sessions, setSessions] = useState<RuntimeSession[]>([]);
   const [sessionQuery, setSessionQuery] = useState('');
@@ -943,7 +943,7 @@ export function App() {
         if (name === '__memory_trace') {
           try {
             const trace = JSON.parse(String(payload.output || '')) as SearchTrace;
-            setMemoryTraces((prev) => [trace, ...prev].slice(0, 20));
+            setMemoryTraces((prev) => [{ ...trace, _receivedAt: Date.now() }, ...prev].slice(0, 20));
             pushActivity('tool', 'Memory recall', trace.query, `${trace.results?.length ?? 0} hits`);
           } catch {
             // Malformed trace payload: drop it silently, the underlying tool

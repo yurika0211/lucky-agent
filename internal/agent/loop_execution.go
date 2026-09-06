@@ -469,14 +469,10 @@ func maybeAppendSearchSynthesisMessage(messages []provider.Message, forceSearchS
 
 func emitChatToolCallEvents(events chan<- ChatEvent, toolCalls []provider.ToolCall) {
 	for _, tc := range toolCalls {
-		shortArgs := tc.Arguments
-		if len(shortArgs) > 100 {
-			shortArgs = shortArgs[:97] + "..."
-		}
 		events <- ChatEvent{
 			Type:    ChatEventToolCall,
 			Name:    tc.Name,
-			Args:    shortArgs,
+			Args:    tc.Arguments,
 			Content: fmt.Sprintf("🔧 %s", tc.Name),
 		}
 	}
