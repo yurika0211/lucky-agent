@@ -382,5 +382,25 @@
         "script": ""
       }
     ]
+  },
+  "skills": {
+    "dir": "",
+    "auto_enable": true,
+    "install": {
+      "disabled": false,
+      "probe_cli": true,
+      "probe_timeout_seconds": 15,
+      "trial_timeout_seconds": 90,
+      "max_archive_bytes": 33554432,
+      "max_uncompressed_bytes": 67108864,
+      "max_single_file_bytes": 16777216,
+      "max_files": 2000,
+      "max_compression_ratio": 100,
+      "max_path_depth": 12,
+      "allowed_local_roots": [],
+      "block_on_secrets": false,
+      "keep_versions": 3,
+      "staging_ttl_hours": 24
+    }
   }
 }

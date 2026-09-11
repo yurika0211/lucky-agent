@@ -121,27 +121,38 @@ type Agent struct {
 	// shortTerm is retained only for source compatibility with older in-package
 	// tests/callers. New agents leave it nil; production conversation state is
 	// owned by shortTerms and keyed by session ID.
-	shortTerm             *memory.ShortTermBuffer
-	shortTerms            *memory.SessionShortTermStore
-	midTerm               *memory.MidTermStore // 中期会话摘要存储
-	sessions              *session.Manager
-	tools                 *tool.Registry
-	toolServices          *tool.Services
-	gateway               *tool.Gateway           // 统一工具网关
-	hooks                 *hook.Runner            // 工具执行前后的 hook 运行器
-	msgGateway            *gateway.GatewayManager // 消息平台网关
-	mcpClient             *tool.MCPClient         // MCP 客户端
-	delegate              *tool.DelegateManager   // 子代理委派管理器
-	contextWin            *contextx.ContextWindow // 上下文窗口管理器
-	contextEst            *contextx.TokenEstimator
-	ragManager            *rag.RAGManager         // RAG 知识库管理器
-	ragPersist            *rag.Persistence        // RAG 持久化
-	streamIndexer         *rag.StreamIndexer      // 流式索引器
-	embedderReg           *embedder.Registry      // 嵌入模型注册表
-	collabReg             *collab.Registry        // Agent 协作注册表
-	collabMgr             *collab.DelegateManager // 协作任务管理器
-	skills                []*tool.SkillInfo       // 已加载的 skill 列表
-	skillRegistry         *tool.SkillRegistry
+	shortTerm     *memory.ShortTermBuffer
+	shortTerms    *memory.SessionShortTermStore
+	midTerm       *memory.MidTermStore // 中期会话摘要存储
+	sessions      *session.Manager
+	tools         *tool.Registry
+	toolServices  *tool.Services
+	gateway       *tool.Gateway           // 统一工具网关
+	hooks         *hook.Runner            // 工具执行前后的 hook 运行器
+	msgGateway    *gateway.GatewayManager // 消息平台网关
+	mcpClient     *tool.MCPClient         // MCP 客户端
+	delegate      *tool.DelegateManager   // 子代理委派管理器
+	contextWin    *contextx.ContextWindow // 上下文窗口管理器
+	contextEst    *contextx.TokenEstimator
+	ragManager    *rag.RAGManager         // RAG 知识库管理器
+	ragPersist    *rag.Persistence        // RAG 持久化
+	streamIndexer *rag.StreamIndexer      // 流式索引器
+	embedderReg   *embedder.Registry      // 嵌入模型注册表
+	collabReg     *collab.Registry        // Agent 协作注册表
+	collabMgr     *collab.DelegateManager // 协作任务管理器
+	// skillMu guards the published skill fields below. It is a plain data guard:
+	// never call into SkillRegistry or tool.Registry while holding it, or you
+	// introduce a lock order that nothing else in the process observes.
+	skillMu       sync.RWMutex
+	skills        []*tool.SkillInfo // 已加载的 skill 列表
+	skillRegistry *tool.SkillRegistry
+	skillsDir     string
+	// skillLoadMu serializes whole LoadSkills bodies so two concurrent reloads
+	// cannot interleave "retire the previous generation" with "register the new
+	// one" and leave the tool Registry holding a mix of both.
+	skillLoadMu sync.Mutex
+	// skillInstall is built lazily by SkillInstaller; it is guarded by skillMu.
+	skillInstall          *tool.InstallManager
 	metrics               *metrics.Metrics // 指标收集器
 	proactiveStore        *proactive.Store
 	proactiveRuntime      *proactive.RuntimeService
@@ -227,12 +238,13 @@ func toProviderConfig(c *config.Config, modelOverride, apiBaseOverride string) p
 	}
 	return provider.Config{
 		LlmProvider: provider.LlmProvider{
-			Name:        c.Provider,
-			APIKey:      c.APIKey,
-			BaseURL:     apiBase,
-			Model:       model,
-			Protocol:    c.LlmProvider.Protocol,
-			Temperature: c.Temperature,
+			Name:             c.Provider,
+			APIKey:           c.APIKey,
+			BaseURL:          apiBase,
+			Model:            model,
+			Protocol:         c.LlmProvider.Protocol,
+			ReasoningSummary: c.LlmProvider.ReasoningSummary,
+			Temperature:      c.Temperature,
 		},
 		ExtraHeaders: c.ExtraHeaders,
 		Limits:       c.Limits,
@@ -414,19 +426,21 @@ func buildConfiguredProvider(c *config.Config, registry *provider.Registry) (pro
 	if len(c.Fallbacks) > 0 {
 		fallbackConfigs := make([]provider.FallbackConfig, 0, len(c.Fallbacks)+1)
 		fallbackConfigs = append(fallbackConfigs, provider.FallbackConfig{
-			Name:     c.Provider,
-			APIKey:   c.APIKey,
-			APIBase:  c.APIBase,
-			Model:    c.Model,
-			Protocol: c.LlmProvider.Protocol,
+			Name:             c.Provider,
+			APIKey:           c.APIKey,
+			APIBase:          c.APIBase,
+			Model:            c.Model,
+			Protocol:         c.LlmProvider.Protocol,
+			ReasoningSummary: c.LlmProvider.ReasoningSummary,
 		})
 		for _, fb := range c.Fallbacks {
 			fallbackConfigs = append(fallbackConfigs, provider.FallbackConfig{
-				Name:     fb.Provider,
-				APIKey:   fb.APIKey,
-				APIBase:  fb.APIBase,
-				Model:    fb.Model,
-				Protocol: fb.Protocol,
+				Name:             fb.Provider,
+				APIKey:           fb.APIKey,
+				APIBase:          fb.APIBase,
+				Model:            fb.Model,
+				Protocol:         fb.Protocol,
+				ReasoningSummary: fb.ReasoningSummary,
 			})
 		}
 		chain, err := provider.NewFallbackChain(fallbackConfigs, registry)
@@ -1298,7 +1312,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	supportRT.toolServices.RegisterCoreTools(supportRT.tools)
 
 	// v0.35.0: 自动加载 skills 目录
-	skillsDir := cfg.HomeDir() + "/skills"
+	skillsDir := resolveSkillsDir(cfg)
 	if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {
 		if count, err := a.LoadSkills(skillsDir); err == nil && count > 0 {
 			fmt.Printf("[agent] loaded %d skills from %s\n", count, skillsDir)
@@ -1979,6 +1993,7 @@ type ChatEvent struct {
 	Name        string // 工具名（Type=EventToolCall 时）
 	Args        string // 工具参数
 	Result      string // 工具结果
+	Round       int    // 所属轮次（Type=ChatEventReasoningContent 时使用）
 	Observation *ObservationEvent
 	Approval    *ApprovalEvent
 	Err         error
@@ -2020,6 +2035,7 @@ const (
 	ChatEventError                                 // ❌ 错误
 	ChatEventObservation                           // 🖼️ computer observation
 	ChatEventApprovalRequired                      // 🔐 approval required
+	ChatEventReasoningContent                      // 🧠 真实推理摘要内容
 )
 
 // StreamMode 流式输出模式
@@ -2569,6 +2585,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		"stream_tool_call_deltas", len(toolCallsAcc),
 		"text_tool_calls", len(textToolCalls),
 	)
+	if reasoning.Len() > 0 {
+		events <- ChatEvent{Type: ChatEventReasoningContent, Content: reasoning.String(), Round: round}
+	}
 
 	// 如果有累积的 tool_calls，处理它们
 	if len(toolCallsAcc) > 0 || len(textToolCalls) > 0 {
@@ -2844,6 +2863,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		"tool_calls", len(resp.ToolCalls),
 		"tool_names", strings.Join(toolCallNamesForLog(resp.ToolCalls), ","),
 	)
+	if len(resp.ReasoningContent) > 0 {
+		events <- ChatEvent{Type: ChatEventReasoningContent, Content: resp.ReasoningContent, Round: round}
+	}
 
 	// 有工具调用 → 展示过程 → 执行 → 继续循环
 	if len(resp.ToolCalls) > 0 {
@@ -3704,14 +3726,23 @@ func (a *Agent) MsgGateway() *gateway.GatewayManager {
 	return a.msgGateway
 }
 
-// LoadSkills 从目录加载 Skill 插件
+// LoadSkills 从目录加载 Skill 插件。
+//
+// The whole body runs under skillLoadMu so two concurrent reloads cannot
+// interleave. skillMu is taken only for the final field swap and is never held
+// across a call into SkillRegistry or tool.Registry.
 func (a *Agent) LoadSkills(skillsDir string) (int, error) {
+	a.skillLoadMu.Lock()
+	defer a.skillLoadMu.Unlock()
+
 	if a.tools == nil {
 		a.tools = tool.NewRegistry()
 	}
 	loader := tool.NewSkillLoader(skillsDir)
 	skillRegistry := tool.NewSkillRegistry(a.tools, loader)
 
+	// Parse phase. Nothing has been written into a.tools yet, so a failure here
+	// leaves the previous generation completely intact.
 	if _, err := skillRegistry.Discover(); err != nil {
 		return 0, fmt.Errorf("discover skills: %w", err)
 	}
@@ -3721,29 +3752,199 @@ func (a *Agent) LoadSkills(skillsDir string) (int, error) {
 	if err := skillRegistry.ValidateAll(); err != nil {
 		return 0, fmt.Errorf("validate skills: %w", err)
 	}
+
+	// Retire the previous generation. Without this, LoadSkills leaked: old
+	// skill_<name>_<tool> entries stayed in a.tools forever and were only ever
+	// replaced when the new generation happened to produce a byte-identical full
+	// name. Renamed, removed, or re-tooled skills left orphans behind — still
+	// enabled, still advertised to the model.
+	expected := make(map[string]struct{})
+	for _, info := range skillRegistry.SkillInfos() {
+		for _, td := range info.Tools {
+			expected[fmt.Sprintf("skill_%s_%s", info.Name, td.Name)] = struct{}{}
+		}
+	}
+	a.skillMu.RLock()
+	prev := a.skillRegistry
+	a.skillMu.RUnlock()
+	if prev != nil {
+		prev.UnloadAll()
+	}
+	// Belt and braces: sweep any skill-sourced tool that the new generation does
+	// not claim. This also catches orphans from a previous registry that had
+	// already errored out partway through. skill_read carries no Source, which is
+	// how it is excluded here.
+	for _, t := range a.tools.ListByCategory(tool.CatSkill) {
+		if t.Source == "" {
+			continue
+		}
+		if _, keep := expected[t.Name]; keep {
+			continue
+		}
+		a.tools.Unregister(t.Name)
+	}
+
 	if err := skillRegistry.RegisterAll(); err != nil {
 		return 0, fmt.Errorf("register skills: %w", err)
 	}
-	if err := skillRegistry.EnableAll(); err != nil {
-		return 0, fmt.Errorf("enable skills: %w", err)
+	// Skills land registered-but-disabled when auto-enable is off, so a freshly
+	// installed skill is not callable until it is explicitly turned on.
+	if !a.requireExplicitSkillEnable() {
+		if err := skillRegistry.EnableAll(); err != nil {
+			return 0, fmt.Errorf("enable skills: %w", err)
+		}
 	}
 
 	skills := skillRegistry.SkillInfos()
+
+	// skill_read closes over the slice handed to NewSkillToolService, so it must
+	// be rebuilt against the new generation. Registry.Register overwrites by name,
+	// so the previous service instance simply becomes garbage.
+	tool.NewSkillToolService(skills).RegisterReadTool(a.tools)
+
+	a.skillMu.Lock()
 	a.skillRegistry = skillRegistry
 	a.skills = skills
-	tool.NewSkillToolService(skills).RegisterReadTool(a.tools)
+	a.skillsDir = skillsDir
+	a.skillMu.Unlock()
 
 	return len(skills), nil
 }
 
+// SkillInstaller returns the install manager, lazily constructing it from the
+// current config. It is nil only when the agent has no config manager.
+func (a *Agent) SkillInstaller() *tool.InstallManager {
+	if a == nil || a.cfg == nil {
+		return nil
+	}
+	a.skillMu.RLock()
+	existing := a.skillInstall
+	a.skillMu.RUnlock()
+	if existing != nil {
+		return existing
+	}
+
+	// Everything below is computed outside the lock: skillMu guards fields only,
+	// and taking it around config or registry calls would invent a lock order.
+	c := a.cfg.Get()
+	home := a.cfg.HomeDir()
+	inst := c.Skills.Install
+
+	mgr := tool.NewInstallManager(tool.InstallManagerConfig{
+		SkillsDir:   resolveSkillsDir(a.cfg),
+		StagingDir:  filepath.Join(home, "skills-staging"),
+		VersionsDir: filepath.Join(home, "skills-versions"),
+		LedgerPath:  filepath.Join(home, "runtime", "skills.json"),
+		Limits: tool.InstallLimits{
+			MaxArchiveBytes:      inst.MaxArchiveBytes,
+			MaxUncompressedBytes: inst.MaxUncompressedBytes,
+			MaxSingleFileBytes:   inst.MaxSingleFileBytes,
+			MaxFiles:             inst.MaxFiles,
+			MaxCompressionRatio:  inst.MaxCompressionRatio,
+			MaxPathDepth:         inst.MaxPathDepth,
+			BlockOnSecrets:       inst.BlockOnSecrets,
+		},
+		ProbeCLI:          inst.ProbeCLI,
+		ProbeTimeout:      time.Duration(inst.ProbeTimeoutSeconds) * time.Second,
+		TrialBudget:       time.Duration(inst.TrialTimeoutSeconds) * time.Second,
+		AllowedLocalRoots: inst.AllowedLocalRoots,
+		KeepVersions:      inst.KeepVersions,
+		StagingTTL:        time.Duration(inst.StagingTTLHours) * time.Hour,
+	})
+	// ReloadSkills takes skillLoadMu, and SkillRegistry/Tools take skillMu — none
+	// of which is held here by the time these closures run.
+	mgr.SetRuntime(a.ReloadSkills, a.SkillRegistry, a.Tools)
+
+	a.skillMu.Lock()
+	defer a.skillMu.Unlock()
+	// Another caller may have won the race while we were building; prefer theirs
+	// so every caller shares one manager and therefore one set of per-name locks.
+	if a.skillInstall == nil {
+		a.skillInstall = mgr
+	}
+	return a.skillInstall
+}
+
+// resolveSkillsDir returns the configured skills directory, defaulting to
+// <home>/skills.
+func resolveSkillsDir(cfg *config.Manager) string {
+	if cfg == nil {
+		return ""
+	}
+	if c := cfg.Get(); c != nil {
+		if dir := strings.TrimSpace(c.Skills.Dir); dir != "" {
+			return dir
+		}
+	}
+	return filepath.Join(cfg.HomeDir(), "skills")
+}
+
+// requireExplicitSkillEnable reports whether skills must be turned on by hand
+// after loading. Absent configuration means "auto-enable", preserving the
+// behavior of every config.json written before the skills block existed.
+func (a *Agent) requireExplicitSkillEnable() bool {
+	if a == nil || a.cfg == nil {
+		return false
+	}
+	c := a.cfg.Get()
+	if c == nil || c.Skills.AutoEnable == nil {
+		return false
+	}
+	return !*c.Skills.AutoEnable
+}
+
+// ReloadSkills re-runs LoadSkills against the directory the agent last loaded
+// from, falling back to the configured skills directory.
+func (a *Agent) ReloadSkills() (int, error) {
+	dir := a.SkillsDir()
+	if dir == "" {
+		dir = resolveSkillsDir(a.cfg)
+	}
+	if dir == "" {
+		return 0, fmt.Errorf("skills directory is not configured")
+	}
+	return a.LoadSkills(dir)
+}
+
 // SkillRegistry returns the lifecycle registry for loaded skills.
 func (a *Agent) SkillRegistry() *tool.SkillRegistry {
+	if a == nil {
+		return nil
+	}
+	a.skillMu.RLock()
+	defer a.skillMu.RUnlock()
 	return a.skillRegistry
 }
 
-// Skills 返回已加载的 skill 列表
+// Skills 返回已加载的 skill 列表。
+//
+// The returned slice is treated as immutable after publication: SkillInfos()
+// already hands back per-skill copies, and LoadSkills replaces the whole slice
+// rather than mutating it in place.
 func (a *Agent) Skills() []*tool.SkillInfo {
+	return a.snapshotSkills()
+}
+
+// snapshotSkills reads the published skill slice under the guard. Internal
+// callers on the chat hot path should call this once and reuse the result rather
+// than touching a.skills directly.
+func (a *Agent) snapshotSkills() []*tool.SkillInfo {
+	if a == nil {
+		return nil
+	}
+	a.skillMu.RLock()
+	defer a.skillMu.RUnlock()
 	return a.skills
+}
+
+// SkillsDir returns the directory the agent last loaded skills from.
+func (a *Agent) SkillsDir() string {
+	if a == nil {
+		return ""
+	}
+	a.skillMu.RLock()
+	defer a.skillMu.RUnlock()
+	return a.skillsDir
 }
 
 // ConnectMCPServer 连接 MCP Server

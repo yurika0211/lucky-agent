@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestSkillLoaderLoad(t *testing.T) {
@@ -314,5 +316,109 @@ func TestBuildSkillScriptCommandWindowsAvoidsBinSh(t *testing.T) {
 	}
 	if cmd[0] == "/bin/sh" {
 		t.Fatalf("expected windows command not to use /bin/sh, got %#v", cmd)
+	}
+}
+
+// writeProbeSkill creates a skill whose scripts/ holds exactly one file, which is
+// the shape that triggers the `--help` probe in autoGenerateTools.
+func writeProbeSkill(t *testing.T, root, name, script string) string {
+	t.Helper()
+	skillDir := filepath.Join(root, name)
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# "+name+"\n\nDesc.\n"), 0o644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "cli.sh"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	return filepath.Join(skillDir, "SKILL.md")
+}
+
+// TestSkillLoaderCLIInspectDisabled checks the parse-only mode: with the probe
+// off, loading must not execute the skill's script at all.
+func TestSkillLoaderCLIInspectDisabled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is POSIX-only")
+	}
+	tmpDir := t.TempDir()
+	marker := filepath.Join(tmpDir, "executed.marker")
+	mdPath := writeProbeSkill(t, tmpDir, "probe-skill",
+		"#!/bin/sh\ntouch "+marker+"\necho 'positional arguments:'\necho '  list   List things'\n")
+
+	loader := NewSkillLoader(tmpDir).WithCLIInspect(false, 0)
+	if _, err := loader.Load(mdPath); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("script was executed even though CLI inspection is disabled")
+	}
+}
+
+// TestSkillLoaderCLIInspectTimeout guards the unbounded-hang case: the probe used
+// to run exec.Command with no deadline, so one wedged --help blocked startup
+// forever.
+func TestSkillLoaderCLIInspectTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is POSIX-only")
+	}
+	tmpDir := t.TempDir()
+	mdPath := writeProbeSkill(t, tmpDir, "hang-skill", "#!/bin/sh\nsleep 60\n")
+
+	loader := NewSkillLoader(tmpDir).WithCLIInspect(true, 300*time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if _, err := loader.Load(mdPath); err != nil {
+			t.Errorf("Load: %v", err)
+		}
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Load did not return; the --help probe is unbounded")
+	}
+}
+
+// TestSkillLoaderProbeEnvIsScrubbed checks that a replaced probe environment
+// keeps the parent's credentials away from unvetted skill code.
+func TestSkillLoaderProbeEnvIsScrubbed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script fixture is POSIX-only")
+	}
+	t.Setenv("LH_TEST_FAKE_SECRET", "topsecretvalue")
+
+	tmpDir := t.TempDir()
+	// The constant "carrier" keeps the help line matching the parser even when the
+	// variable expands to nothing, so the assertion below cannot pass vacuously.
+	script := "#!/bin/sh\necho 'positional arguments:'\necho \"  leak   carrier $LH_TEST_FAKE_SECRET\"\n"
+	mdPath := writeProbeSkill(t, tmpDir, "env-skill", script)
+
+	loader := NewSkillLoader(tmpDir).
+		WithCLIInspect(true, 5*time.Second).
+		WithProbeEnv([]string{"PATH=" + os.Getenv("PATH")})
+
+	info, err := loader.Load(mdPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	var probed *SkillToolDef
+	for i := range info.Tools {
+		if strings.Contains(info.Tools[i].Description, "carrier") {
+			probed = &info.Tools[i]
+			break
+		}
+	}
+	if probed == nil {
+		t.Fatalf("probe produced no tool from the --help output; test would pass vacuously. tools=%+v", info.Tools)
+	}
+	if strings.Contains(probed.Description, "topsecretvalue") {
+		t.Fatalf("probe leaked a parent env var into tool %q: %s", probed.Name, probed.Description)
 	}
 }

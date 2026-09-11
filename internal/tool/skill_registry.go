@@ -119,11 +119,10 @@ func (sr *SkillRegistry) Discover() ([]*SkillMetadata, error) {
 		return nil, fmt.Errorf("discover skills: %w", err)
 	}
 
-	sr.mu.Lock()
-	defer sr.mu.Unlock()
-
-	var discovered []*SkillMetadata
+	// Validate before touching any state. The duplicate check used to run while
+	// writing into sr.skills/sr.infos, so a collision left the maps half-updated.
 	seen := make(map[string]struct{}, len(skills))
+	valid := make([]*SkillInfo, 0, len(skills))
 	for _, info := range skills {
 		if info == nil || strings.TrimSpace(info.Name) == "" {
 			continue
@@ -132,11 +131,30 @@ func (sr *SkillRegistry) Discover() ([]*SkillMetadata, error) {
 			return nil, fmt.Errorf("duplicate skill id: %s", info.Name)
 		}
 		seen[info.Name] = struct{}{}
+		valid = append(valid, info)
+	}
 
-		meta := skillMetadataFromInfo(info, SkillDiscovered)
-		sr.skills[info.Name] = meta
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
+
+	discovered := make([]*SkillMetadata, 0, len(valid))
+	for _, info := range valid {
+		fresh := skillMetadataFromInfo(info, SkillDiscovered)
+		if existing, ok := sr.skills[info.Name]; ok {
+			// Re-scanning must not reset a skill that is already registered or
+			// enabled: its skill_<name>_<tool> entries are still live in the tool
+			// Registry, and a state reset would desynchronize the two — Disable()
+			// would then reject it as "not enabled" while its tools stay callable.
+			existing.Description = fresh.Description
+			existing.Dir = fresh.Dir
+			existing.Tools = fresh.Tools
+			sr.infos[info.Name] = info
+			discovered = append(discovered, existing)
+			continue
+		}
+		sr.skills[info.Name] = fresh
 		sr.infos[info.Name] = info
-		discovered = append(discovered, meta)
+		discovered = append(discovered, fresh)
 	}
 
 	return discovered, nil
@@ -463,6 +481,19 @@ func (sr *SkillRegistry) Unload(name string) error {
 	return nil
 }
 
+// UnloadAll unregisters every skill's tools. It is used when a whole registry
+// generation is retired, so that the outgoing generation's skill_<name>_<tool>
+// entries do not linger in the tool Registry. It takes no lock of its own; the
+// per-call locking inside List and Unload is sufficient.
+func (sr *SkillRegistry) UnloadAll() {
+	if sr == nil {
+		return
+	}
+	for _, meta := range sr.List() {
+		_ = sr.Unload(meta.Name)
+	}
+}
+
 // Get retrieves metadata for a skill.
 func (sr *SkillRegistry) Get(name string) (*SkillMetadata, bool) {
 	sr.mu.RLock()
@@ -685,23 +716,29 @@ func (sr *SkillRegistry) CountByState(state SkillState) int {
 	return count
 }
 
-// Reload reloads a skill: unload → discover → load → register → re-enable if was enabled.
+// Reload reloads a single skill: unload → load → register → re-enable if it was
+// enabled. Discover() is deliberately not called: it rebuilds metadata for every
+// skill directory, so reloading one skill would drag all the others back to
+// SkillDiscovered while their tools stayed registered.
 func (sr *SkillRegistry) Reload(name string) error {
 	sr.mu.RLock()
+	_, known := sr.skills[name]
 	wasEnabled := false
 	if meta, ok := sr.skills[name]; ok && meta.State == SkillEnabled {
 		wasEnabled = true
 	}
 	sr.mu.RUnlock()
 
+	if !known {
+		return fmt.Errorf("skill not found: %s", name)
+	}
+
 	if err := sr.Unload(name); err != nil {
 		return fmt.Errorf("reload: unload %s: %w", name, err)
 	}
 
-	if _, err := sr.Discover(); err != nil {
-		return fmt.Errorf("reload: discover: %w", err)
-	}
-
+	// Unload leaves the entry in SkillUnloaded, which Load() does not early-return
+	// on, so it re-parses SKILL.md from meta.Dir.
 	if err := sr.Load(name); err != nil {
 		return fmt.Errorf("reload: load %s: %w", name, err)
 	}

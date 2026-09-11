@@ -121,7 +121,10 @@ func isLuckyAgentMemoryBackendQuestion(input string) bool {
 }
 
 func (a *Agent) matchSkillRoute(userInput string) *skillRouteMatch {
-	if a == nil || len(a.skills) == 0 {
+	// One snapshot for the whole function: LoadSkills can swap the slice
+	// underneath us from an HTTP handler while a chat is streaming.
+	skills := a.snapshotSkills()
+	if a == nil || len(skills) == 0 {
 		return nil
 	}
 
@@ -135,7 +138,7 @@ func (a *Agent) matchSkillRoute(userInput string) *skillRouteMatch {
 	}
 
 	var matches []*skillRouteMatch
-	for _, skill := range a.skills {
+	for _, skill := range skills {
 		if skill == nil || strings.TrimSpace(skill.Name) == "" {
 			continue
 		}

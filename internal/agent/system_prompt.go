@@ -86,7 +86,7 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 			}
 		}
 	}
-	if len(a.skills) > 0 && slices.Contains(toolNames, "skill_read") {
+	if len(a.snapshotSkills()) > 0 && slices.Contains(toolNames, "skill_read") {
 		if skillPolicy := a.buildSkillPolicyPromptBlock(); skillPolicy != "" {
 			parts = append(parts, skillPolicy)
 		}
@@ -458,14 +458,15 @@ buildSkillsPromptBlock 生成技能摘要提示块。
 用于在 system prompt 中提示模型当前有哪些可用技能。
 */
 func (a *Agent) buildSkillsPromptBlock() string {
-	if a == nil || len(a.skills) == 0 {
+	skills := a.snapshotSkills()
+	if a == nil || len(skills) == 0 {
 		return ""
 	}
 
-	lines := make([]string, 0, min(8, len(a.skills))+1)
+	lines := make([]string, 0, min(8, len(skills))+1)
 	lines = append(lines, "Available skills:")
 	count := 0
-	for _, s := range a.skills {
+	for _, s := range skills {
 		if s == nil || strings.TrimSpace(s.Name) == "" {
 			continue
 		}

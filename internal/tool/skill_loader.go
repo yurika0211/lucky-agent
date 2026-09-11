@@ -2,6 +2,7 @@ package tool
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,16 +10,56 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
+)
+
+const (
+	// defaultCLIInspectTimeout bounds a single `<script> --help` probe. Nothing
+	// legitimate comes close; the ceiling exists so one wedged skill cannot hang
+	// agent startup forever.
+	defaultCLIInspectTimeout = 15 * time.Second
+	// cliInspectKillGrace mirrors internal/hook/external.go: after the context
+	// deadline, give the process this long to die before abandoning its pipes.
+	cliInspectKillGrace = 500 * time.Millisecond
 )
 
 // SkillLoader 从 SKILL.md 文件加载工具定义
 type SkillLoader struct {
 	skillsDir string // skills 目录路径
+
+	// cliInspect controls the `--help` probe used to derive subcommand tools.
+	// The probe *executes* the skill's script, so any pipeline that loads
+	// untrusted skills must turn it off until the content has been vetted.
+	cliInspect     bool
+	inspectTimeout time.Duration // <=0 uses defaultCLIInspectTimeout
+	probeEnv       []string      // nil inherits the parent environment
 }
 
 // NewSkillLoader 创建 Skill 加载器
 func NewSkillLoader(skillsDir string) *SkillLoader {
-	return &SkillLoader{skillsDir: skillsDir}
+	return &SkillLoader{skillsDir: skillsDir, cliInspect: true}
+}
+
+// WithCLIInspect toggles the `--help` probe and sets its per-invocation timeout.
+// Pass enabled=false for a parse-only load that executes nothing.
+func (sl *SkillLoader) WithCLIInspect(enabled bool, timeout time.Duration) *SkillLoader {
+	if sl == nil {
+		return nil
+	}
+	sl.cliInspect = enabled
+	sl.inspectTimeout = timeout
+	return sl
+}
+
+// WithProbeEnv replaces the environment handed to the `--help` probe. Use it to
+// keep credentials in the parent environment out of reach of skill code that has
+// not been reviewed yet.
+func (sl *SkillLoader) WithProbeEnv(env []string) *SkillLoader {
+	if sl == nil {
+		return nil
+	}
+	sl.probeEnv = env
+	return sl
 }
 
 // SkillInfo Skill 元信息
@@ -238,14 +279,18 @@ func (sl *SkillLoader) autoGenerateTools(info *SkillInfo, content string) []Skil
 }
 
 func (sl *SkillLoader) discoverCLITools(scriptPath string) []SkillToolDef {
-	top, err := inspectCLICommands(scriptPath, nil)
+	// The probe executes scriptPath. Callers loading unvetted content disable it.
+	if sl == nil || !sl.cliInspect {
+		return nil
+	}
+	top, err := sl.inspectCLICommands(scriptPath, nil)
 	if err != nil || len(top) == 0 {
 		return nil
 	}
 
 	var tools []SkillToolDef
 	for _, cmd := range top {
-		children, _ := inspectCLICommands(scriptPath, []string{cmd.Name})
+		children, _ := sl.inspectCLICommands(scriptPath, []string{cmd.Name})
 		if len(children) == 0 {
 			tools = append(tools, cliCommandToToolDef([]string{cmd.Name}, cmd.Description))
 			continue
@@ -265,13 +310,31 @@ type cliCommandInfo struct {
 	Description string
 }
 
-func inspectCLICommands(scriptPath string, prefix []string) ([]cliCommandInfo, error) {
+func (sl *SkillLoader) inspectCLICommands(scriptPath string, prefix []string) ([]cliCommandInfo, error) {
 	baseCmd, err := buildSkillScriptCommand(scriptPath, prefix...)
 	if err != nil {
 		return nil, err
 	}
 	baseCmd = append(baseCmd, "--help")
-	cmd := exec.Command(baseCmd[0], baseCmd[1:]...)
+
+	timeout := defaultCLIInspectTimeout
+	if sl != nil && sl.inspectTimeout > 0 {
+		timeout = sl.inspectTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, baseCmd[0], baseCmd[1:]...)
+	// Without WaitDelay, a --help that forks a child holding the stdout pipe keeps
+	// CombinedOutput blocked well past the deadline — killing the direct child is
+	// not enough. Same reasoning as internal/hook/external.go.
+	cmd.WaitDelay = cliInspectKillGrace
+	// Never let a probe block on stdin.
+	cmd.Stdin = nil
+	if sl != nil && sl.probeEnv != nil {
+		cmd.Env = sl.probeEnv
+	}
+
 	out, err := cmd.CombinedOutput()
 	if err != nil && len(out) == 0 {
 		return nil, err

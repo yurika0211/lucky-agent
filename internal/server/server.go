@@ -346,6 +346,8 @@ func (s *Server) Start() error {
 		{path: "/api/v1/memory/graph", handler: s.handleMemoryGraph},
 		{path: "/api/v1/proactive/status", handler: s.handleProactiveStatus},
 		{path: "/api/v1/tools", handler: s.handleTools},
+		{path: "/api/v1/skills", handler: s.handleSkills},
+		{path: "/api/v1/skills/", handler: s.handleSkillRoutes},
 		{path: "/api/v1/stats", handler: s.handleStats},
 		{path: "/api/v1/soul", handler: s.handleSoul},
 		{path: "/api/v1/context", handler: s.handleContext},
@@ -1438,7 +1440,9 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 			} else {
 				w.Header().Set("Access-Control-Allow-Origin", "*")
 			}
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			// DELETE is required by handleAgentsDeregister and by the skill uninstall
+			// alias; without it those endpoints fail preflight in a browser.
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key")
 			w.Header().Set("Access-Control-Max-Age", "86400")
 		}

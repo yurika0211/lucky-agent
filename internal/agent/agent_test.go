@@ -3910,3 +3910,119 @@ func mustSessionManager(t *testing.T) *session.Manager {
 	}
 	return mgr
 }
+
+// writeTestSkill creates <root>/<name>/SKILL.md declaring a single `do` tool.
+func writeTestSkill(t *testing.T, root, name string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", dir, err)
+	}
+	body := "# " + name + "\n\nDesc.\n\n## Tools\n\n- `do`: Do\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write SKILL.md for %s: %v", name, err)
+	}
+}
+
+// TestLoadSkillsUnregistersPreviousGeneration guards a leak: LoadSkills replaced
+// a.skillRegistry wholesale but never unregistered the outgoing generation's
+// skill_<name>_<tool> entries, so renamed or removed skills left orphan tools
+// behind — still enabled and still advertised to the model.
+func TestLoadSkillsUnregistersPreviousGeneration(t *testing.T) {
+	dirA := filepath.Join(t.TempDir(), "a")
+	dirB := filepath.Join(t.TempDir(), "b")
+	writeTestSkill(t, dirA, "alpha")
+	writeTestSkill(t, dirB, "beta")
+
+	a := &Agent{tools: tool.NewRegistry()}
+
+	if _, err := a.LoadSkills(dirA); err != nil {
+		t.Fatalf("LoadSkills(A): %v", err)
+	}
+	if _, ok := a.Tools().Get("skill_alpha_do"); !ok {
+		t.Fatal("skill_alpha_do was never registered")
+	}
+
+	if _, err := a.LoadSkills(dirB); err != nil {
+		t.Fatalf("LoadSkills(B): %v", err)
+	}
+	if _, ok := a.Tools().Get("skill_alpha_do"); ok {
+		t.Error("skill_alpha_do still registered after loading a different skills dir")
+	}
+	if _, ok := a.Tools().Get("skill_beta_do"); !ok {
+		t.Error("skill_beta_do missing after reload")
+	}
+	if got := a.SkillsDir(); got != dirB {
+		t.Errorf("SkillsDir() = %q, want %q", got, dirB)
+	}
+}
+
+// TestLoadSkillsRefreshesSkillRead checks that skill_read is rebound to the new
+// generation. It closes over the slice passed to NewSkillToolService, so a stale
+// instance would keep describing skills that are no longer loaded.
+func TestLoadSkillsRefreshesSkillRead(t *testing.T) {
+	dirA := filepath.Join(t.TempDir(), "a")
+	dirB := filepath.Join(t.TempDir(), "b")
+	writeTestSkill(t, dirA, "alpha")
+	writeTestSkill(t, dirB, "beta")
+
+	a := &Agent{tools: tool.NewRegistry()}
+	if _, err := a.LoadSkills(dirA); err != nil {
+		t.Fatalf("LoadSkills(A): %v", err)
+	}
+	if _, err := a.LoadSkills(dirB); err != nil {
+		t.Fatalf("LoadSkills(B): %v", err)
+	}
+
+	out, err := a.Tools().Call("skill_read", map[string]any{"action": "list", "format": "json"})
+	if err != nil {
+		t.Fatalf("call skill_read: %v", err)
+	}
+	if strings.Contains(out, "alpha") {
+		t.Errorf("skill_read still lists the retired skill: %s", out)
+	}
+	if !strings.Contains(out, "beta") {
+		t.Errorf("skill_read does not list the current skill: %s", out)
+	}
+}
+
+// TestSkillsSnapshotUnderRace exercises the published skill fields from a reader
+// while a writer reloads. Meaningful only under -race.
+func TestSkillsSnapshotUnderRace(t *testing.T) {
+	dirA := filepath.Join(t.TempDir(), "a")
+	dirB := filepath.Join(t.TempDir(), "b")
+	writeTestSkill(t, dirA, "alpha")
+	writeTestSkill(t, dirB, "beta")
+
+	a := &Agent{tools: tool.NewRegistry()}
+	if _, err := a.LoadSkills(dirA); err != nil {
+		t.Fatalf("LoadSkills(A): %v", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 20; i++ {
+			dir := dirA
+			if i%2 == 1 {
+				dir = dirB
+			}
+			if _, err := a.LoadSkills(dir); err != nil {
+				t.Errorf("LoadSkills: %v", err)
+				return
+			}
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 200; i++ {
+			_ = a.Skills()
+			_ = a.SkillRegistry()
+			_ = a.SkillsDir()
+			_ = a.matchSkillRoute("please use the alpha skill")
+			_ = a.buildSkillsPromptBlock()
+		}
+	}()
+	wg.Wait()
+}

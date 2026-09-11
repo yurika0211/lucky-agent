@@ -272,3 +272,125 @@ export type ActivityNote = {
   body: string;
   meta?: string;
 };
+
+/* ----------------------------------------------------------------- skills */
+
+/** Mirrors internal/server.skillToolDTO. */
+export type SkillTool = {
+  name: string;
+  full_name: string;
+  description?: string;
+  expose_to_model?: boolean;
+  /** Present in the tool registry. A declared tool may be missing if loading failed. */
+  registered?: boolean;
+  /** Callable and advertised to the model. */
+  enabled?: boolean;
+};
+
+export type SkillInstallSource = {
+  kind?: 'archive' | 'path';
+  origin?: string;
+  size?: number;
+};
+
+/** Mirrors internal/server.skillDTO. `state` is a string, never the raw int enum. */
+export type SkillSummary = {
+  name: string;
+  description?: string;
+  summary?: string;
+  state: string;
+  dir?: string;
+  aliases?: string[];
+  tools?: SkillTool[];
+  tool_count?: number;
+  available?: boolean;
+  version?: string;
+  author?: string;
+  loaded_at?: string;
+  error?: string;
+  unhealthy_tools?: string[];
+  /** False for skills copied into skills/ by hand — those have no rollback history. */
+  managed?: boolean;
+  install_id?: string;
+  digest?: string;
+  source?: SkillInstallSource;
+  installed_at?: string;
+  versions?: number;
+};
+
+export type SkillsResponse = {
+  skills?: SkillSummary[];
+  count?: number;
+  skills_dir?: string;
+};
+
+export type SkillScanFinding = {
+  rule: string;
+  severity: 'info' | 'warn' | 'block';
+  path?: string;
+  line?: number;
+  detail: string;
+};
+
+export type SkillScanReport = {
+  findings?: SkillScanFinding[];
+  files?: number;
+  bytes?: number;
+  blocked?: boolean;
+  warnings?: number;
+  digest?: string;
+  scanned_at?: string;
+};
+
+export type SkillCapabilityTool = {
+  name: string;
+  full_name?: string;
+  description?: string;
+  expose_to_model?: boolean;
+  command?: string[];
+  /** How the tool was derived: declared, script, or scraped from `--help`. */
+  origin?: 'declared' | 'script' | 'cli_probe';
+};
+
+export type SkillCapability = {
+  name?: string;
+  aliases?: string[];
+  description?: string;
+  summary?: string;
+  scripts?: string[];
+  tools?: SkillCapabilityTool[];
+  probed?: boolean;
+  probe_errors?: string[];
+  collisions?: string[];
+};
+
+export type SkillInstallStatus =
+  | 'staging'
+  | 'scanning'
+  | 'probing'
+  | 'ready'
+  | 'rejected'
+  | 'confirmed'
+  | 'aborted'
+  | 'failed';
+
+export type SkillInstall = {
+  install_id: string;
+  name?: string;
+  status: SkillInstallStatus;
+  mode?: string;
+  error?: string;
+  digest?: string;
+  source?: SkillInstallSource;
+  scan?: SkillScanReport;
+  capability?: SkillCapability;
+  created_at?: string;
+  updated_at?: string;
+  /** Server-computed: ready and not blocked. Do not re-derive this client-side. */
+  can_confirm?: boolean;
+};
+
+export type SkillInstallsResponse = {
+  installs?: SkillInstall[];
+  count?: number;
+};

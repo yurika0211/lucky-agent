@@ -64,8 +64,9 @@ type StreamEndData struct {
 // ReasoningData 推理摘要数据
 type ReasoningData struct {
 	Summary string `json:"summary"`
+	Content string `json:"content,omitempty"` // 真实推理文本（Stage=="content" 时有值）
 	Round   int    `json:"round,omitempty"`
-	Stage   string `json:"stage,omitempty"` // "start" | "continue" | "update"
+	Stage   string `json:"stage,omitempty"` // "start" | "continue" | "update" | "content"
 }
 
 // ToolCallData 工具调用通知数据
