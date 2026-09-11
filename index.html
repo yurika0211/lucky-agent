@@ -48,6 +48,7 @@
       height: 100%;
       margin: 0;
       overflow: hidden;
+      overflow-x: hidden;
     }
     .theme-light {
       --bg: #f6f4ec;
@@ -94,22 +95,25 @@
     }
     .publish-shell {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: 272px minmax(0, 1fr) 300px;
+      min-width: 0;
+      width: 100%;
       height: calc(100vh - 50px);
       min-height: calc(100vh - 50px);
       overflow: hidden;
     }
-    .content-column {
+    .nav-rail {
       border-right: 1px solid var(--line);
       min-height: 0;
       overflow-x: hidden;
       overflow-y: auto;
-      padding: 34px 48px 72px;
+      padding: 26px 20px 48px;
       scrollbar-gutter: stable;
     }
     .article-column {
       border-right: 1px solid var(--line);
       min-height: 0;
+      min-width: 0;
       overflow-x: hidden;
       overflow-y: auto;
       padding: 34px 48px 72px;
@@ -122,18 +126,18 @@
       padding: 32px 24px;
       scrollbar-gutter: stable;
     }
-    .content-column::-webkit-scrollbar,
+    .nav-rail::-webkit-scrollbar,
     .article-column::-webkit-scrollbar,
     .right-column::-webkit-scrollbar {
       width: 12px;
     }
-    .content-column::-webkit-scrollbar-track,
+    .nav-rail::-webkit-scrollbar-track,
     .article-column::-webkit-scrollbar-track,
     .right-column::-webkit-scrollbar-track {
       background: var(--bg);
       border-left: 1px solid var(--line);
     }
-    .content-column::-webkit-scrollbar-thumb,
+    .nav-rail::-webkit-scrollbar-thumb,
     .article-column::-webkit-scrollbar-thumb,
     .right-column::-webkit-scrollbar-thumb {
       min-height: 48px;
@@ -141,10 +145,115 @@
       border-radius: 999px;
       background: color-mix(in srgb, var(--muted) 58%, transparent);
     }
-    .content-column::-webkit-scrollbar-thumb:hover,
+    .nav-rail::-webkit-scrollbar-thumb:hover,
     .article-column::-webkit-scrollbar-thumb:hover,
     .right-column::-webkit-scrollbar-thumb:hover {
       background: color-mix(in srgb, var(--muted) 72%, transparent);
+    }
+    .nav-group-title {
+      display: flex;
+      width: 100%;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 2px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .nav-group-items {
+      margin-top: 2px;
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+    }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 4px;
+      border-left: 2px solid transparent;
+      padding: 6px 8px 6px 10px;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.3;
+      text-align: left;
+    }
+    .nav-item:hover {
+      background: var(--bg-soft);
+    }
+    .nav-item-active {
+      border-left-color: var(--accent);
+      background: var(--accent-soft);
+      font-weight: 600;
+    }
+    .hamburger-button {
+      display: none;
+    }
+    .nav-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(0, 0, 0, .4);
+    }
+    .nav-drawer {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 41;
+      width: min(84vw, 320px);
+      overflow-y: auto;
+      background: var(--bg);
+      border-right: 1px solid var(--line);
+      padding: 20px 20px 48px;
+      transform: translateX(-100%);
+      transition: transform .2s ease;
+    }
+    .nav-drawer.nav-drawer-open {
+      transform: translateX(0);
+    }
+    .outline-toggle {
+      display: none;
+    }
+    .graph-modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+      background: rgba(0, 0, 0, .5);
+    }
+    .graph-modal {
+      position: fixed;
+      z-index: 51;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: min(92vw, 720px);
+      max-height: 86vh;
+      overflow-y: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 20px;
+    }
+    .graph-scope-toggle {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .graph-scope-option {
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .graph-scope-option.graph-scope-active {
+      background: var(--accent-soft);
+      color: var(--text);
+      font-weight: 600;
     }
     .brand-mark {
       width: 28px;
@@ -156,6 +265,9 @@
       font-weight: 400;
       line-height: 1.05;
       letter-spacing: 0;
+    }
+    .markdown-page {
+      overflow-wrap: anywhere;
     }
     .markdown-page h2 {
       margin: 38px 0 14px;
@@ -169,6 +281,8 @@
       max-width: 620px;
       font-size: 17px;
       line-height: 1.5;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .markdown-page a,
     .link-button {
@@ -226,6 +340,91 @@
     .publish-table th {
       font-weight: 600;
     }
+    .config-guide-intro {
+      margin-top: 18px;
+      border-left: 3px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 14px 16px;
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.6;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+    .config-guide-intro strong {
+      font-weight: 600;
+    }
+    .config-guide-intro code {
+      overflow-wrap: anywhere;
+    }
+    .config-guide-section {
+      margin-top: 34px;
+      scroll-margin-top: 18px;
+    }
+    .config-guide-section-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 10px;
+    }
+    .config-guide-section h3 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 600;
+    }
+    .config-guide-section-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+      text-align: right;
+    }
+    .config-guide-table-wrap {
+      max-width: 100%;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+    }
+    .config-guide-table {
+      width: 100%;
+      min-width: 680px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .config-guide-table th,
+    .config-guide-table td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .config-guide-table tr:last-child td {
+      border-bottom: 0;
+    }
+    .config-guide-table th {
+      background: var(--bg-soft);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+    .config-guide-table th:first-child,
+    .config-guide-table td:first-child {
+      width: 28%;
+    }
+    .config-guide-table th:nth-child(2),
+    .config-guide-table td:nth-child(2) {
+      width: 27%;
+    }
+    .config-guide-table code {
+      color: var(--accent);
+      font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
+    .config-guide-table td:last-child {
+      color: var(--muted);
+      line-height: 1.55;
+    }
     .sidebar-title {
       color: var(--muted);
       font-size: 15px;
@@ -247,50 +446,67 @@
     }
     .graph-box {
       position: relative;
-      height: 292px;
+      height: 220px;
       overflow: hidden;
       border: 1px solid var(--line);
       border-radius: 6px;
       background: color-mix(in srgb, var(--bg) 92%, var(--accent) 8%);
+    }
+    .graph-box-lg {
+      height: 480px;
+      margin-top: 14px;
     }
     .mini-node {
       position: absolute;
       z-index: 2;
       display: flex;
       max-width: 92px;
+      min-height: 28px;
       align-items: center;
       gap: 4px;
       border: 0;
       background: transparent;
       color: var(--text);
-      font-size: 9.5px;
-      line-height: 1.05;
+      font-size: 11px;
+      line-height: 1.1;
       text-align: left;
       transform: translate(-50%, -50%);
-      cursor: pointer;
+      cursor: grab;
+      touch-action: none;
+    }
+    .mini-node.dragging {
+      cursor: grabbing;
+      z-index: 4;
+    }
+    .graph-box-lg .mini-node {
+      max-width: 120px;
+      font-size: 12px;
     }
     .mini-node-label {
       max-width: 74px;
       overflow: hidden;
       text-overflow: clip;
     }
+    .graph-box-lg .mini-node-label {
+      max-width: 96px;
+    }
     .mini-node-dot {
-      width: 9px;
-      height: 9px;
+      width: 14px;
+      height: 14px;
       flex: 0 0 auto;
       border-radius: 999px;
       background: var(--accent);
       box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg) 76%, transparent);
     }
     .mini-node.active .mini-node-dot {
-      width: 17px;
-      height: 17px;
+      width: 20px;
+      height: 20px;
       background: var(--accent);
       box-shadow: 0 0 0 4px var(--accent-soft);
     }
     .mini-node.active {
       z-index: 3;
-      font-size: 10.5px;
+      font-size: 12px;
       font-weight: 600;
     }
     .terminal {
@@ -339,8 +555,7 @@
       font-size: 13px;
     }
     @media (max-width: 1180px) {
-      .publish-shell { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-      .content-column,
+      .publish-shell { grid-template-columns: 240px minmax(0, 1fr) 270px; }
       .article-column {
         padding-left: 36px;
         padding-right: 36px;
@@ -353,6 +568,8 @@
     @media (max-width: 900px) {
       .publish-shell {
         display: block;
+        width: 100%;
+        min-width: 0;
         height: auto;
         overflow: visible;
       }
@@ -361,23 +578,33 @@
         height: auto;
         overflow: auto;
       }
-      .content-column {
-        height: auto;
-        overflow: visible;
-        border-right: 0;
-        padding: 26px 22px 34px;
+      .nav-rail {
+        display: none;
+      }
+      .hamburger-button {
+        display: grid;
       }
       .article-column {
         height: auto;
+        width: 100vw;
+        max-width: 100vw;
         overflow: visible;
-        border-top: 1px solid var(--line);
+        border-top: 0;
         border-right: 0;
-        padding: 28px 22px 34px;
+        padding: 24px 22px 34px;
       }
       .right-column {
+        display: none;
         height: auto;
         border-top: 1px solid var(--line);
-        padding: 24px 22px 42px;
+        padding: 20px 22px 42px;
+      }
+      .outline-toggle {
+        display: flex;
+        margin-bottom: 18px;
+      }
+      .shell-outline-open .right-column {
+        display: block;
       }
       .site-header { height: auto; }
       .markdown-page h1 {
@@ -400,24 +627,44 @@
         padding: 12px 14px;
       }
       .graph-box {
-        height: 260px;
+        height: 240px;
+      }
+      .graph-modal {
+        width: 94vw;
+        max-height: 90vh;
+        padding: 16px;
+      }
+      .graph-box-lg {
+        height: 380px;
+      }
+      .config-guide-section-head {
+        display: block;
+      }
+      .config-guide-section-head p {
+        margin-top: 4px;
+        text-align: left;
       }
     }
   </style>
 </head>
 <body>
-  <div x-data="deploymentVault()" x-init="init()" :class="dark ? 'theme-dark' : 'theme-light'">
+  <div x-data="deploymentVault()" x-init="init()" :class="(dark ? 'theme-dark' : 'theme-light') + (outlineOpen ? ' shell-outline-open' : '')">
     <header class="site-header flex items-center justify-between px-5">
-      <a href="#home" @click.prevent="goHome()" class="flex items-center gap-4 text-sm font-semibold no-underline" style="color: var(--text);">
-        <svg class="brand-mark" viewBox="0 0 34 34" fill="none" aria-hidden="true">
-          <path d="M4 28L14 5L30 28H4Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"></path>
-          <path d="M14 5V28" stroke="currentColor" stroke-width="2.2"></path>
-          <path d="M14 19L25 28" stroke="currentColor" stroke-width="2.2"></path>
-        </svg>
-        <span>LuckyAgent Deploy Vault</span>
-      </a>
+      <div class="flex items-center gap-3">
+        <button type="button" @click="navOpen = true" class="hamburger-button h-8 w-8 place-items-center rounded border" style="border-color: var(--line); background: var(--panel); color: var(--text);" title="打开导航">
+          <i data-lucide="menu" class="h-4 w-4"></i>
+        </button>
+        <a href="#home" @click.prevent="goHome()" class="flex items-center gap-4 text-sm font-semibold no-underline" style="color: var(--text);">
+          <svg class="brand-mark" viewBox="0 0 34 34" fill="none" aria-hidden="true">
+            <path d="M4 28L14 5L30 28H4Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"></path>
+            <path d="M14 5V28" stroke="currentColor" stroke-width="2.2"></path>
+            <path d="M14 19L25 28" stroke="currentColor" stroke-width="2.2"></path>
+          </svg>
+          <span>LuckyAgent Deploy Vault</span>
+        </a>
+      </div>
       <div class="flex items-center gap-2">
-        <button type="button" @click="focusGraph()" class="grid h-8 w-8 place-items-center rounded border" style="border-color: var(--line); background: var(--panel); color: var(--text);" title="Interactive Graph">
+        <button type="button" @click="graphOpen = true; ensureModalSim(); $nextTick(() => refreshIcons())" class="grid h-8 w-8 place-items-center rounded border" style="border-color: var(--line); background: var(--panel); color: var(--text);" title="Interactive Graph">
           <i data-lucide="network" class="h-4 w-4"></i>
         </button>
         <button type="button" @click="dark = !dark; $nextTick(() => refreshIcons())" class="grid h-8 w-8 place-items-center rounded border" style="border-color: var(--line); background: var(--panel); color: var(--text);" title="切换主题">
@@ -426,54 +673,93 @@
       </div>
     </header>
 
+    <div x-show="navOpen" x-transition.opacity @click="navOpen = false" class="nav-backdrop"></div>
+    <nav class="nav-drawer" :class="navOpen ? 'nav-drawer-open' : ''">
+      <div class="relative">
+        <i data-lucide="search" class="pointer-events-none absolute left-3 top-2.5 h-4 w-4" style="color: var(--faint);"></i>
+        <input id="nav-search-mobile" name="nav-search-mobile" x-model="query" class="search-input" type="search" placeholder="Search page or heading..." />
+      </div>
+      <template x-if="query.trim()">
+        <div class="mt-4 space-y-1">
+          <template x-for="item in visibleNotes()" :key="item.id">
+            <button type="button" @click="jump(item.id)" class="nav-item w-full" :class="active === item.id ? 'nav-item-active' : ''">
+              <i :data-lucide="item.icon" class="h-3.5 w-3.5"></i>
+              <span x-text="item.title"></span>
+            </button>
+          </template>
+          <template x-if="visibleNotes().length === 0">
+            <p class="text-sm" style="color: var(--muted);">没有匹配节点</p>
+          </template>
+        </div>
+      </template>
+      <template x-if="!query.trim()">
+        <div class="mt-4 space-y-4">
+          <template x-for="group in groupedNotes()" :key="group.name">
+            <div>
+              <button type="button" class="nav-group-title" @click="toggleGroup(group.name)">
+                <i :data-lucide="collapsedGroups.includes(group.name) ? 'chevron-right' : 'chevron-down'" class="h-3.5 w-3.5"></i>
+                <span x-text="group.name"></span>
+              </button>
+              <div class="nav-group-items" x-show="!collapsedGroups.includes(group.name)">
+                <template x-for="item in group.items" :key="item.id">
+                  <button type="button" @click="jump(item.id)" class="nav-item w-full" :class="active === item.id ? 'nav-item-active' : ''">
+                    <i :data-lucide="item.icon" class="h-3.5 w-3.5"></i>
+                    <span x-text="item.title"></span>
+                  </button>
+                </template>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+    </nav>
+
     <div class="publish-shell">
-      <main id="home" x-ref="homeColumn" class="content-column markdown-page">
-        <article>
-          <h1>Home</h1>
-          <p>
-            LuckyAgent 是一套围绕 Agent 运行时构建的部署知识库。这里把 README 里的配置、源码运行、Docker、NapCat、Telegram、OpenCLI 和运维排查拆成可跳转的笔记节点。
-          </p>
-          <p>
-            这个页面不是线性教程，而是一个可浏览的部署 vault。你可以从任意节点进入：先看总览，再沿着 graph、入口卡片、表格或 backlinks 找到下一步。
-          </p>
-
-          <hr class="publish-rule" />
-
-          <div class="grid gap-8 sm:grid-cols-3">
-            <template x-for="card in entryCards()" :key="card.id">
-              <button type="button" @click="jump(card.id)" class="entry-card">
-                <span class="block text-[16px] font-semibold underline underline-offset-2" x-text="card.title"></span>
-                <span class="mt-2 block text-sm leading-5" style="color: var(--muted);" x-text="card.description"></span>
+      <nav class="nav-rail">
+        <div class="relative">
+          <i data-lucide="search" class="pointer-events-none absolute left-3 top-2.5 h-4 w-4" style="color: var(--faint);"></i>
+          <input id="nav-search-desktop" name="nav-search-desktop" x-model="query" class="search-input" type="search" placeholder="Search page or heading..." />
+        </div>
+        <template x-if="query.trim()">
+          <div class="mt-4 space-y-1">
+            <template x-for="item in visibleNotes()" :key="item.id">
+              <button type="button" @click="jump(item.id)" class="nav-item w-full" :class="active === item.id ? 'nav-item-active' : ''">
+                <i :data-lucide="item.icon" class="h-3.5 w-3.5"></i>
+                <span x-text="item.title"></span>
               </button>
             </template>
+            <template x-if="visibleNotes().length === 0">
+              <p class="text-sm" style="color: var(--muted);">没有匹配节点</p>
+            </template>
           </div>
-
-          <hr class="publish-rule" />
-
-          <h2 id="recent">部署入口</h2>
-          <table class="publish-table">
-            <thead>
-              <tr>
-                <th>节点</th>
-                <th>位置</th>
-              </tr>
-            </thead>
-            <tbody>
-              <template x-for="item in recentRows()" :key="item.id">
-                <tr :style="active === item.id ? 'background: var(--accent-soft);' : ''">
-                  <td>
-                    <button type="button" @click="jump(item.id)" class="link-button text-left" x-text="node(item.id).title"></button>
-                  </td>
-                  <td x-text="item.label"></td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-
-        </article>
-      </main>
+        </template>
+        <template x-if="!query.trim()">
+          <div class="mt-4 space-y-4">
+            <template x-for="group in groupedNotes()" :key="group.name">
+              <div>
+                <button type="button" class="nav-group-title" @click="toggleGroup(group.name)">
+                  <i :data-lucide="collapsedGroups.includes(group.name) ? 'chevron-right' : 'chevron-down'" class="h-3.5 w-3.5"></i>
+                  <span x-text="group.name"></span>
+                </button>
+                <div class="nav-group-items" x-show="!collapsedGroups.includes(group.name)">
+                  <template x-for="item in group.items" :key="item.id">
+                    <button type="button" @click="jump(item.id)" class="nav-item w-full" :class="active === item.id ? 'nav-item-active' : ''">
+                      <i :data-lucide="item.icon" class="h-3.5 w-3.5"></i>
+                      <span x-text="item.title"></span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </nav>
 
       <section x-ref="articleColumn" class="article-column markdown-page">
+        <button type="button" class="outline-toggle items-center gap-2 rounded border px-3 py-1.5 text-sm" style="border-color: var(--line); background: var(--panel); color: var(--text);" @click="toggleOutline()">
+          <i data-lucide="panel-right" class="h-3.5 w-3.5"></i>
+          <span x-text="outlineOpen ? '收起大纲' : '大纲 / 图谱 / Backlinks'"></span>
+        </button>
         <article :id="'note-' + active" class="note-section">
           <div id="article-top" class="note-kicker mb-3" x-text="current().group"></div>
           <h1 x-text="current().title"></h1>
@@ -494,6 +780,43 @@
               <li x-text="point"></li>
             </template>
           </ul>
+
+          <template x-if="current().configGuide && current().configGuide.length">
+            <section id="article-config-guide" class="config-guide">
+              <h2>配置说明书</h2>
+              <div class="config-guide-intro">
+                <strong>填写顺序：</strong>先在 <code>models.active</code> 选择模型，再在 <code>models.endpoints</code> 填提供商、API 地址和密钥；其他配置只填写你需要启用或调整的功能。JSON 中布尔值、数字和数组要保持对应类型，暂时不用的密钥可以留空。
+              </div>
+              <template x-for="section in current().configGuide" :key="section.id">
+                <section class="config-guide-section" :id="'config-guide-' + section.id">
+                  <div class="config-guide-section-head">
+                    <h3 x-text="section.title"></h3>
+                    <p x-text="section.description"></p>
+                  </div>
+                  <div class="config-guide-table-wrap">
+                    <table class="config-guide-table">
+                      <thead>
+                        <tr>
+                          <th>配置项</th>
+                          <th>如何填写</th>
+                          <th>作用与注意事项</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="row in section.fields" :key="row.field">
+                          <tr>
+                            <td><code x-text="row.field"></code></td>
+                            <td><code x-text="row.example"></code></td>
+                            <td x-text="row.description"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </template>
+            </section>
+          </template>
 
           <h2 id="article-links">链接到</h2>
           <p class="flex flex-wrap gap-x-3 gap-y-2">
@@ -516,45 +839,63 @@
               </template>
             </div>
           </template>
+
+          <template x-if="active === 'overview'">
+            <div>
+              <hr class="publish-rule" />
+
+              <h2 id="article-entry">快速入口</h2>
+              <div class="grid gap-8 sm:grid-cols-3">
+                <template x-for="card in entryCards()" :key="card.id">
+                  <button type="button" @click="jump(card.id)" class="entry-card">
+                    <span class="block text-[16px] font-semibold underline underline-offset-2" x-text="card.title"></span>
+                    <span class="mt-2 block text-sm leading-5" style="color: var(--muted);" x-text="card.description"></span>
+                  </button>
+                </template>
+              </div>
+
+              <h2 id="article-deploy-table" class="mt-9">部署入口</h2>
+              <table class="publish-table">
+                <thead>
+                  <tr>
+                    <th>节点</th>
+                    <th>位置</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <template x-for="item in recentRows()" :key="item.id">
+                    <tr :style="active === item.id ? 'background: var(--accent-soft);' : ''">
+                      <td>
+                        <button type="button" @click="jump(item.id)" class="link-button text-left" x-text="node(item.id).title"></button>
+                      </td>
+                      <td x-text="item.label"></td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </template>
         </article>
       </section>
 
-      <aside class="right-column">
-        <div class="relative">
-          <i data-lucide="search" class="pointer-events-none absolute left-3 top-2.5 h-4 w-4" style="color: var(--faint);"></i>
-          <input id="page-search" name="page-search" x-model="query" class="search-input" type="search" placeholder="Search page or heading..." />
-        </div>
-        <template x-if="query.trim()">
-          <section class="mt-4">
-            <div class="mb-2 text-xs uppercase tracking-wide" style="color: var(--faint);">Search results</div>
-            <div class="space-y-2">
-              <template x-for="item in visibleNotes()" :key="item.id">
-                <button type="button" @click="jump(item.id)" class="block w-full text-left text-sm" style="color: var(--muted);" x-text="item.title"></button>
-              </template>
-              <template x-if="visibleNotes().length === 0">
-                <p class="text-sm" style="color: var(--muted);">没有匹配节点</p>
-              </template>
-            </div>
-          </section>
-        </template>
-
-        <section id="interactive-graph" class="mt-9">
+      <aside x-ref="rightColumn" class="right-column">
+        <section id="interactive-graph" class="mt-2">
           <div class="mb-2 flex items-center justify-between">
             <div class="sidebar-title uppercase tracking-wide">Interactive Graph</div>
             <div class="flex gap-2">
               <button type="button" @click="copyNoteLink(active)" title="复制当前节点">
                 <i data-lucide="share-2" class="h-4 w-4"></i>
               </button>
-              <button type="button" @click="jump(active)" title="打开当前节点">
-                <i data-lucide="arrow-up-right" class="h-4 w-4"></i>
+              <button type="button" @click="graphOpen = true; ensureModalSim(); $nextTick(() => refreshIcons())" title="展开图谱">
+                <i data-lucide="maximize-2" class="h-4 w-4"></i>
               </button>
             </div>
           </div>
-          <!-- 交互: 点击 graph 中的节点会跳到对应 note，并高亮当前节点相关边 -->
+          <!-- 交互: 力导向布局，节点可拖拽，点击(无位移)跳到对应 note -->
           <div class="graph-box">
-            <svg class="graph-lines pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" x-html="localEdgeSvg()"></svg>
-            <template x-for="graphNode in localGraphNodes()" :key="graphNode.id">
-              <button type="button" @click="jump(graphNode.id)" class="mini-node" :class="active === graphNode.id ? 'active' : ''" :style="`left:${graphNode.x}%; top:${graphNode.y}%`">
+            <svg class="graph-lines pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" x-html="edgeSvgFor(previewSim, false)"></svg>
+            <template x-for="graphNode in previewSim.nodes" :key="graphNode.id">
+              <button type="button" @pointerdown="nodePointerDown($event, previewSim, graphNode.id, false)" class="mini-node" :class="(active === graphNode.id ? 'active ' : '') + (draggingNode && draggingNode.id === graphNode.id ? 'dragging' : '')" :style="`left:${graphNode.x}%; top:${graphNode.y}%`">
                 <span class="mini-node-dot"></span>
                 <span class="mini-node-label" x-text="graphNode.title"></span>
               </button>
@@ -597,21 +938,107 @@
       </aside>
     </div>
 
+    <div x-show="graphOpen" x-transition.opacity @click="closeGraphModal()" class="graph-modal-backdrop"></div>
+    <div x-show="graphOpen" x-transition class="graph-modal">
+      <div class="mb-1 flex items-center justify-between">
+        <div class="sidebar-title uppercase tracking-wide">Interactive Graph</div>
+        <button type="button" @click="closeGraphModal()" title="关闭">
+          <i data-lucide="x" class="h-4 w-4"></i>
+        </button>
+      </div>
+      <div class="mt-2 flex items-center justify-between">
+        <p class="text-sm" style="color: var(--muted);" x-text="current().title"></p>
+        <div class="graph-scope-toggle">
+          <button type="button" class="graph-scope-option" :class="graphScope === 'local' ? 'graph-scope-active' : ''" @click="graphScope = 'local'; ensureModalSim()">关联节点</button>
+          <button type="button" class="graph-scope-option" :class="graphScope === 'all' ? 'graph-scope-active' : ''" @click="graphScope = 'all'; ensureModalSim()">全部节点</button>
+        </div>
+      </div>
+      <div class="graph-box graph-box-lg">
+        <svg class="graph-lines pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true" x-html="edgeSvgFor(modalSim, true)"></svg>
+        <template x-for="graphNode in modalSim.nodes" :key="graphNode.id">
+          <button type="button" @pointerdown="nodePointerDown($event, modalSim, graphNode.id, true)" class="mini-node" :class="(active === graphNode.id ? 'active ' : '') + (draggingNode && draggingNode.id === graphNode.id ? 'dragging' : '')" :style="`left:${graphNode.x}%; top:${graphNode.y}%`">
+            <span class="mini-node-dot"></span>
+            <span class="mini-node-label" x-text="graphNode.title"></span>
+          </button>
+        </template>
+      </div>
+    </div>
+
     <div x-show="copied" x-transition class="toast">已复制</div>
   </div>
 
   <script>
+    function stepGraphForces(nodes, links) {
+      const centerX = 50;
+      const centerY = 50;
+      const repelStrength = 220;
+      const springStrength = 0.02;
+      const springLength = 26;
+      const centerStrength = 0.006;
+      const damping = 0.82;
+      for (const node of nodes) {
+        if (node.fx != null) { node.x = node.fx; node.y = node.fy; node.vx = 0; node.vy = 0; continue; }
+        let fx = (centerX - node.x) * centerStrength;
+        let fy = (centerY - node.y) * centerStrength;
+        for (const other of nodes) {
+          if (other === node) continue;
+          let dx = node.x - other.x;
+          let dy = node.y - other.y;
+          let distSq = dx * dx + dy * dy;
+          if (distSq < 0.01) { dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); distSq = 0.01; }
+          const force = repelStrength / distSq;
+          const dist = Math.sqrt(distSq);
+          fx += (dx / dist) * force;
+          fy += (dy / dist) * force;
+        }
+        node.fx_ = fx;
+        node.fy_ = fy;
+      }
+      for (const edge of links) {
+        const a = edge.a;
+        const b = edge.b;
+        if (a.fx != null && b.fx != null) continue;
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+        const force = (dist - springLength) * springStrength;
+        const ax = (dx / dist) * force;
+        const ay = (dy / dist) * force;
+        if (a.fx == null) { a.fx_ += ax; a.fy_ += ay; }
+        if (b.fx == null) { b.fx_ -= ax; b.fy_ -= ay; }
+      }
+      let energy = 0;
+      for (const node of nodes) {
+        if (node.fx != null) continue;
+        node.vx = (node.vx + node.fx_) * damping;
+        node.vy = (node.vy + node.fy_) * damping;
+        node.x = Math.min(94, Math.max(6, node.x + node.vx));
+        node.y = Math.min(94, Math.max(6, node.y + node.vy));
+        energy += node.vx * node.vx + node.vy * node.vy;
+      }
+      return energy;
+    }
+
     function deploymentVault() {
       return {
         active: 'overview',
         query: '',
         copied: false,
         dark: false,
+        previewSim: { nodes: [], links: [], raf: null, settleFrames: 0 },
+        modalSim: { nodes: [], links: [], raf: null, settleFrames: 0 },
+        draggingNode: null,
+        navOpen: false,
+        graphOpen: false,
+        outlineOpen: false,
+        graphScope: 'local',
+        collapsedGroups: [],
         edges: [
           ['overview', 'install-tui'],
           ['overview', 'config'],
           ['overview', 'runtime'],
           ['install-tui', 'config'],
+          ['config', 'config-reference'],
           ['install-tui', 'runtime'],
           ['config', 'source'],
           ['config', 'dev-docker'],
@@ -694,12 +1121,347 @@
             points: [
               '本机默认读取当前用户 HOME 下的 .luckyagent/config.json。',
               'Docker 中推荐 HOME=/var/lib/luckyagent。',
-              'provider、api_key、api_base、model 是最小可用配置。',
-              '消息网关配置集中在 msg_gateway。'
+              '模型选择和连接信息统一放在 models.active 与 models.endpoints。',
+              '消息网关配置集中在 msg_gateway；完整字段说明见配置说明书。'
             ],
-            related: ['runtime', 'source', 'dev-docker', 'prod-docker', 'napcat'],
+            related: ['config-reference', 'runtime', 'source', 'dev-docker', 'prod-docker', 'napcat'],
             commands: [
               { label: '初始化和配置', body: 'lh init\nlh config set provider openai\nlh config set api_key sk-your-api-key\nlh config set api_base https://api.openai.com/v1\nlh config set model gpt-5.4-mini\nlh config list' }
+            ]
+          },
+          {
+            id: 'config-reference',
+            title: '配置说明书',
+            short: 'config.example.json 全字段填写指南',
+            group: '10 Runtime',
+            icon: 'book-open',
+            kind: 'core',
+            x: 30,
+            y: 38,
+            summary: '这份说明与 config.example.json 对齐，按配置块解释填写方式、运行作用和容易混淆的字段。',
+            points: [
+              '推荐复制 config.example.json 为 config.json，再按需替换示例值。',
+              '模型 ID 只填写在 models.active，提供商、地址和密钥只填写在 models.endpoints。',
+              '没有启用的功能可以保留默认值或留空；API 密钥不要提交到公共仓库。',
+              '修改配置后，已启用的服务通常需要执行 /api/v1/config/reload 或重启才能使用新值。'
+            ],
+            related: ['config', 'runtime', 'opencli', 'api', 'telegram', 'napcat'],
+            commands: [
+              { label: '最小可用配置', body: '{\n  "models": {\n    "active": {\n      "chat": "gpt-5.4-mini"\n    },\n    "endpoints": {\n      "chat": {\n        "provider": "openai",\n        "api_key": "sk-your-api-key",\n        "api_base": "https://api.openai.com/v1",\n        "protocol": "chat_completions"\n      }\n    }\n  }\n}' }
+            ],
+            configGuide: [
+              {
+                id: 'models',
+                title: 'models · 模型中心',
+                description: '统一管理不同用途的模型；这是模板中的模型配置入口。',
+                fields: [
+                  { field: 'models.active.chat', example: 'gpt-5.4-mini', description: '对话和 Agent 主循环使用的模型 ID。填写提供商实际支持的名称。' },
+                  { field: 'models.active.vision', example: 'gpt-5.4-mini', description: '图片理解模型 ID。通常与 chat 模型不同，图片分析未配置密钥时会被跳过。' },
+                  { field: 'models.active.embedding', example: 'jina-embeddings-v4', description: '记忆和 RAG 向量化模型 ID。模型更换后，已有向量可能需要重新索引。' },
+                  { field: 'models.active.transcription', example: 'whisper-1', description: '音频转文字模型 ID。用于音频附件或语音输入。' },
+                  { field: 'models.active.image', example: 'gpt-image-1.5', description: '图片生成模型 ID。具体参数在 image_generation 中配置。' },
+                  { field: 'models.active.tts', example: 'gpt-4o-mini-tts', description: '文字转语音模型 ID。声音、格式和速度在 tts 中配置。' },
+                  { field: 'models.active.reranker', example: '""', description: 'RAG 重排模型 ID。当前留空即可，保留该字段是为了兼容统一模型中心。' },
+                  { field: 'models.endpoints.<kind>.provider', example: 'openai', description: '对应模型用途的提供商名称，例如 openai、gemini、ollama 或 openai-compatible。' },
+                  { field: 'models.endpoints.<kind>.api_key', example: 'sk-your-api-key', description: '对应提供商的 API 密钥。未启用的模型留空；不要把真实密钥提交到 Git。' },
+                  { field: 'models.endpoints.<kind>.api_base', example: 'https://api.openai.com/v1', description: 'API 根地址。使用代理或兼容服务时填写该服务的地址，通常不要重复拼接具体接口路径。' },
+                  { field: 'models.endpoints.<kind>.protocol', example: 'chat_completions', description: '对话模型协议，可填 chat_completions 或 responses；其他用途通常留空。' },
+                  { field: 'models.endpoints.<kind>.reasoning_summary', example: 'detailed', description: 'Responses 协议的推理摘要级别，可填 auto、concise 或 detailed。' },
+                  { field: 'models.endpoints.<kind>.extra_headers', example: '{ "User-Agent": "luckyagent" }', description: '发送给该模型端点的额外 HTTP 请求头，键和值都必须是字符串。' },
+                  { field: 'models.profiles.<name>', example: '{}', description: '命名模型组合，只保存各用途的模型 ID，不保存密钥。通过模型配置中心或 API 应用。' }
+                ]
+              },
+              {
+                id: 'custom-models',
+                title: 'custom_models · 自定义模型目录',
+                description: '当提供商无法自动发现模型，或需要标注自定义能力时使用。',
+                fields: [
+                  { field: 'custom_models[]', example: '[]', description: '数组；每个元素描述一个手动登记的模型。没有自定义模型时保持空数组。' },
+                  { field: 'custom_models[].id', example: 'my-model', description: '提供商实际接受的模型 ID，必填。' },
+                  { field: 'custom_models[].provider', example: 'openai-compatible', description: '模型所属提供商，用于展示和校验。' },
+                  { field: 'custom_models[].display_name', example: 'My Vision Model', description: '界面和模型列表中显示的友好名称。' },
+                  { field: 'custom_models[].kinds', example: '["chat", "vision"]', description: '模型用途，可填 chat、vision、embedding、transcription、image、tts 或 reranker。' },
+                  { field: 'custom_models[].capabilities', example: '["chat", "streaming", "tools", "vision"]', description: '能力标签；例如 vision 能帮助系统判断模型是否能接收图片。' },
+                  { field: 'custom_models[].context_window', example: '128000', description: '模型上下文窗口大小，用于模型目录展示和容量判断。' },
+                  { field: 'custom_models[].cost_per_1k_in / out', example: '0.001', description: '每 1K token 的输入/输出成本，用于目录信息和成本估算。' }
+                ]
+              },
+              {
+                id: 'media',
+                title: 'embedding / multimodal / image_generation / tts · 媒体能力',
+                description: '连接参数已集中到 models.endpoints，这里只保留各能力独有的选项。',
+                fields: [
+                  { field: 'embedding.dimension', example: '2048', description: '向量维度，必须与 embedding 模型实际输出一致；更换维度后通常要重建索引。' },
+                  { field: 'multimodal.image_provider', example: '""', description: '指定已注册的图片分析提供商名称；留空时使用默认提供商。' },
+                  { field: 'image_generation.auth_mode', example: 'bearer', description: '图片生成鉴权方式，常用 bearer；Gemini 等服务按适配器要求填写。' },
+                  { field: 'image_generation.size', example: '1024x1024', description: '生成图片尺寸，是否支持取决于提供商和模型。' },
+                  { field: 'image_generation.quality', example: 'auto', description: '图片质量档位，例如 auto；不支持的模型应按提供商要求调整。' },
+                  { field: 'image_generation.background', example: 'auto', description: '背景模式，例如 auto、transparent 或 opaque，取决于模型能力。' },
+                  { field: 'image_generation.output_format', example: 'png', description: '输出格式，例如 png 或 jpeg。' },
+                  { field: 'image_generation.output_compression', example: '0', description: '输出压缩级别；0 通常表示不额外压缩或使用默认值。' },
+                  { field: 'image_generation.count', example: '1', description: '一次生成的图片数量，建议从 1 开始以控制成本。' },
+                  { field: 'tts.auth_mode', example: 'bearer', description: 'TTS 鉴权方式，通常填 bearer。' },
+                  { field: 'tts.voice', example: 'alloy', description: '语音音色名称，必须是 TTS 提供商支持的 voice。' },
+                  { field: 'tts.format', example: 'mp3', description: '音频输出格式，例如 mp3 或 wav。' },
+                  { field: 'tts.speed', example: '1.0', description: '朗读速度；1.0 为正常速度，必须是正数。' }
+                ]
+              },
+              {
+                id: 'runtime',
+                title: '运行时基础配置',
+                description: '控制身份文件、上下文窗口、采样温度和降级链。',
+                fields: [
+                  { field: 'soul_path', example: '""', description: 'SOUL.md 路径；留空时使用 ${HOME}/.luckyagent/memory/prompts/SOUL.md。' },
+                  { field: 'max_tokens', example: '4096', description: '上下文窗口预算，不是单次回答最大输出 token 数。' },
+                  { field: 'temperature', example: '0.7', description: '主对话模型采样温度；越高越发散，越低越稳定。' },
+                  { field: 'stream_mode', example: 'native', description: '流式模式；native 使用原生流式，simulated 使用非流式结果模拟推送。' },
+                  { field: 'fallbacks[]', example: '[]', description: '主模型失败后的降级提供商数组，按顺序尝试。' },
+                  { field: 'fallbacks[].provider / api_key / api_base / model', example: 'openai / sk-... / https://... / gpt-4.1-mini', description: '降级节点的提供商、密钥、地址和模型。每个节点至少要能组成一条可用调用链。' },
+                  { field: 'fallbacks[].protocol / reasoning_summary', example: 'chat_completions / auto', description: '降级节点的协议和 Responses 推理摘要设置，可留空使用默认值。' }
+                ]
+              },
+              {
+                id: 'web',
+                title: 'web_search / opencli · 网页读取',
+                description: 'web_search 负责搜索，opencli 负责网页内容抽取；两者是不同阶段。',
+                fields: [
+                  { field: 'web_search.provider', example: 'brave', description: '搜索提供商，例如 brave、ddgs 或 searxng。' },
+                  { field: 'web_search.api_key', example: '""', description: 'Brave、Tavily 或 Jina 等服务的密钥；不需要密钥的提供商留空。' },
+                  { field: 'web_search.base_url', example: '""', description: '自部署 SearXNG 等服务的地址；使用默认服务时留空。' },
+                  { field: 'web_search.max_results', example: '5', description: '每次搜索最多返回的结果数，数值越大上下文和请求成本越高。' },
+                  { field: 'web_search.proxy', example: '""', description: '搜索请求使用的 HTTP 或 SOCKS5 代理地址。' },
+                  { field: 'opencli.enabled', example: 'false', description: '是否启用 OpenCLI 网页抽取器。' },
+                  { field: 'opencli.command', example: 'opencli', description: 'OpenCLI 可执行文件名或路径。' },
+                  { field: 'opencli.args', example: '["web", "read", "--url", "{url}", "-f", "md"]', description: '命令参数模板；支持 {url}、{max_chars} 等占位符，数组元素不要合并成一条 shell 字符串。' },
+                  { field: 'opencli.timeout_seconds', example: '20', description: '单次网页抽取超时时间，单位为秒。' },
+                  { field: 'opencli.max_chars', example: '50000', description: '网页抽取结果的最大字符数，防止网页内容撑满上下文。' },
+                  { field: 'opencli.fallback_to_web_fetch', example: 'true', description: 'OpenCLI 失败后是否回退到内置 web_fetch。' }
+                ]
+              },
+              {
+                id: 'memory',
+                title: 'memory / rag · 记忆和检索',
+                description: 'memory 管理持久记忆，rag 管理文档检索；两者不要混作同一类数据。',
+                fields: [
+                  { field: 'memory.short_term_max_turns', example: '10', description: '短期会话记忆保留的最大轮数。' },
+                  { field: 'memory.midterm_expire_days', example: '365', description: '中期摘要的过期天数。' },
+                  { field: 'memory.midterm_max_summaries', example: '100', description: '中期摘要最多保留的条数。' },
+                  { field: 'memory.tidal.enabled', example: 'false', description: '是否启用 Tidal 记忆重排；默认关闭。' },
+                  { field: 'memory.tidal.beta', example: '0.15', description: 'Tidal 评分的基础权重参数。' },
+                  { field: 'memory.tidal.max_boost', example: '0.35', description: '记忆重排允许增加的最高分数。' },
+                  { field: 'memory.tidal.learning_rate', example: '0.2', description: '反馈学习速率，范围通常为 0 到 1。' },
+                  { field: 'memory.tidal.min_samples', example: '1', description: '开始学习前所需的最少样本数。' },
+                  { field: 'memory.tidal.store_path', example: '""', description: 'Tidal 持久化数据库路径；留空使用运行时默认路径。' },
+                  { field: 'rag.top_k', example: '5', description: '检索返回的候选数量。' },
+                  { field: 'rag.min_score', example: '0.3', description: '检索结果最低相关度分数，越高越严格。' },
+                  { field: 'rag.use_hybrid', example: 'true', description: '是否混合关键词和向量检索。' },
+                  { field: 'rag.dense_weight', example: '0.65', description: '混合检索中向量检索的权重。' },
+                  { field: 'rag.use_mmr', example: 'false', description: '是否使用 MMR 降低结果重复。' },
+                  { field: 'rag.mmr_lambda', example: '0.5', description: 'MMR 中相关性与多样性的平衡参数。' },
+                  { field: 'rag.rewrite_followups', example: 'true', description: '是否先改写依赖上下文的追问，再执行 RAG 检索。' }
+                ]
+              },
+              {
+                id: 'routing-limits',
+                title: 'model_router / limits · 路由和限制',
+                description: '模型路由决定用哪个模型，limits 决定单次调用和工具执行上限。',
+                fields: [
+                  { field: 'model_router.enable', example: 'false', description: '是否按任务复杂度自动切换模型。' },
+                  { field: 'model_router.simple_model', example: 'gpt-5.4-mini', description: '简单任务使用的模型。' },
+                  { field: 'model_router.complex_model', example: 'gpt-5.4', description: '复杂任务使用的模型。' },
+                  { field: 'model_router.local_model', example: 'qwen2.5-coder-32b', description: '中等任务优先使用的本地模型 ID。' },
+                  { field: 'model_router.local_base_url', example: 'http://127.0.0.1:11434/v1', description: '本地模型的 OpenAI 兼容 API 地址。' },
+                  { field: 'model_router.token_threshold', example: '500', description: '超过该 token 估算值时视为复杂任务。' },
+                  { field: 'limits.max_tokens', example: '4096', description: '单次模型回答的最大输出 token 数；与顶层 max_tokens 的上下文预算不同。' },
+                  { field: 'limits.timeout_seconds', example: '60', description: '默认请求超时时间。' },
+                  { field: 'limits.max_timeout_seconds', example: '600', description: '允许的最大请求超时时间。' },
+                  { field: 'limits.max_tool_calls', example: '5', description: '单轮最多执行的工具调用数量。' },
+                  { field: 'limits.max_concurrent_tool_calls', example: '3', description: '工具并发执行上限。' },
+                  { field: 'limits.max_length_continuations', example: '8', description: '模型因输出过长而继续请求的最多次数。' }
+                ]
+              },
+              {
+                id: 'context-agent',
+                title: 'context / agent · 上下文和 Agent 循环',
+                description: '控制历史消息、自动压缩、工具循环和调试行为。',
+                fields: [
+                  { field: 'context.max_history_turns', example: '50', description: '最多带入的历史对话轮数。' },
+                  { field: 'context.max_context_tokens', example: '8000', description: '上下文规划器使用的最大 token 预算。' },
+                  { field: 'context.compression_threshold', example: '0.8', description: '历史上下文达到预算比例后触发压缩判断。' },
+                  { field: 'context.auto_compact', example: 'true', description: '是否自动压缩过长的对话上下文。' },
+                  { field: 'context.auto_compact_threshold', example: '0.82', description: '自动压缩的触发比例。' },
+                  { field: 'context.auto_compact_target_ratio', example: '0.5', description: '压缩后希望占用的预算比例。' },
+                  { field: 'context.auto_compact_min_messages', example: '24', description: '至少积累多少条消息后才允许自动压缩。' },
+                  { field: 'context.auto_compact_cooldown_turns', example: '8', description: '两次自动压缩之间至少间隔的轮数。' },
+                  { field: 'context.auto_compact_retain_turns', example: '6', description: '压缩时始终保留最近的对话轮数。' },
+                  { field: 'context.auto_compact_reserved_summary_tokens', example: '1200', description: '给压缩摘要预留的 token 数。' },
+                  { field: 'context.memory_hygiene_before_context', example: 'false', description: '组装上下文前是否检查记忆卫生问题。' },
+                  { field: 'context.memory_hygiene_action', example: 'quarantine', description: '发现问题记忆后的处理方式，例如 quarantine。' },
+                  { field: 'context.memory_hygiene_min_severity', example: 'high', description: '达到何种严重级别才处理。' },
+                  { field: 'context.memory_hygiene_max_findings', example: '25', description: '单次最多处理的问题数。' },
+                  { field: 'agent.max_iterations', example: '10', description: '单个 Agent 回合允许的最大循环次数。' },
+                  { field: 'agent.timeout_seconds', example: '60', description: '单个 Agent 回合的超时时间。' },
+                  { field: 'agent.auto_approve', example: 'false', description: '是否自动批准需要确认的工具调用；生产环境建议保持 false。' },
+                  { field: 'agent.repeat_tool_call_limit', example: '3', description: '同一工具重复调用的限制。' },
+                  { field: 'agent.tool_only_iteration_limit', example: '3', description: '连续只执行工具、不产生文本时允许的循环数。' },
+                  { field: 'agent.duplicate_fetch_limit', example: '1', description: '重复抓取同一资源的允许次数。' },
+                  { field: 'agent.context_debug', example: 'false', description: '是否输出上下文规划调试信息。' },
+                  { field: 'agent.simple_local_inspection.*', example: '见 config.example.json', description: '本地简单检查任务的独立循环、超时和重复调用限制，字段含义与 agent 对应字段相同。' }
+                ]
+              },
+              {
+                id: 'resilience',
+                title: 'retry / circuit_breaker / rate_limit · 稳定性',
+                description: '控制失败重试、熔断和请求限流，避免上游故障放大。',
+                fields: [
+                  { field: 'retry.enabled', example: 'true', description: '是否启用自动重试。' },
+                  { field: 'retry.max_attempts', example: '3', description: '一次请求最多尝试次数。' },
+                  { field: 'retry.initial_delay_ms', example: '1000', description: '首次重试前等待的毫秒数。' },
+                  { field: 'retry.max_delay_ms', example: '10000', description: '指数退避的最大等待毫秒数。' },
+                  { field: 'retry.retry_on_rate_limit / timeout / server_error', example: 'true', description: '分别控制遇到限流、超时和服务端错误时是否重试。' },
+                  { field: 'circuit_breaker.enabled', example: 'false', description: '是否启用熔断器。' },
+                  { field: 'circuit_breaker.error_threshold', example: '5', description: '窗口内达到多少错误后打开熔断。' },
+                  { field: 'circuit_breaker.window_seconds', example: '60', description: '统计错误的时间窗口。' },
+                  { field: 'circuit_breaker.timeout_seconds', example: '30', description: '熔断打开后等待多久再尝试恢复。' },
+                  { field: 'circuit_breaker.half_open_max_requests', example: '1', description: '半开状态允许的探测请求数。' },
+                  { field: 'rate_limit.enabled', example: 'true', description: '是否启用运行时限流。' },
+                  { field: 'rate_limit.requests_per_minute', example: '60', description: '每分钟最大请求数。' },
+                  { field: 'rate_limit.tokens_per_minute', example: '100000', description: '每分钟最大 token 数。' },
+                  { field: 'rate_limit.burst_size', example: '10', description: '允许的瞬时突发请求数。' }
+                ]
+              },
+              {
+                id: 'services',
+                title: 'server / dashboard · 服务入口',
+                description: 'server 提供 API，dashboard 提供管理界面地址。',
+                fields: [
+                  { field: 'server.addr', example: '127.0.0.1:9090', description: 'HTTP API 监听地址；容器对外提供服务时通常填 0.0.0.0:9090。' },
+                  { field: 'server.api_keys', example: '[]', description: '访问 API 时允许的密钥数组；公网部署建议配置。' },
+                  { field: 'server.enable_cors', example: 'true', description: '是否启用跨域响应。' },
+                  { field: 'server.cors_origins', example: '["*"]', description: '允许跨域的来源列表；生产环境不建议长期使用 *。' },
+                  { field: 'server.rate_limit', example: '60', description: 'HTTP API 每分钟请求上限。' },
+                  { field: 'server.metrics_addr', example: '""', description: 'Prometheus 指标监听地址；留空表示不单独监听。' },
+                  { field: 'server.log_level / log_format', example: 'info / text', description: '日志级别和格式，可按部署环境调整。' },
+                  { field: 'dashboard.addr', example: ':8765', description: 'Dashboard 监听地址或端口。' }
+                ]
+              },
+              {
+                id: 'autonomy-proactive',
+                title: 'autonomy / proactive · 自动化行为',
+                description: '高权限或主动行为默认关闭，启用前应先配置限制和审计。',
+                fields: [
+                  { field: 'autonomy.enabled', example: 'false', description: '是否启用自主 worker。' },
+                  { field: 'autonomy.worker.max_iterations / timeout_seconds', example: '300 / 300', description: '自主任务的最大循环数和总超时时间。' },
+                  { field: 'autonomy.worker.auto_approve', example: 'true', description: '自主 worker 是否自动批准工具调用；只应在隔离环境中开启。' },
+                  { field: 'autonomy.worker.repeat_tool_call_limit / tool_only_iteration_limit / duplicate_fetch_limit', example: '300', description: '自主 worker 的重复调用、连续工具循环和重复抓取上限。' },
+                  { field: 'autonomy.worker.disabled_tools', example: '["autonomy"]', description: '自主 worker 禁止使用的工具列表。' },
+                  { field: 'proactive.enabled', example: 'false', description: '是否启用主动任务状态估计和动作建议。' },
+                  { field: 'proactive.dry_run', example: 'true', description: '只记录建议、不真正执行主动动作；调试时建议保持 true。' },
+                  { field: 'proactive.confidence_threshold', example: '0.6', description: '主动动作需要达到的置信度。' },
+                  { field: 'proactive.horizon_seconds', example: '300', description: '主动预测的时间范围。' },
+                  { field: 'proactive.store_path', example: '""', description: '主动行为状态存储路径；留空使用默认路径。' },
+                  { field: 'proactive.action_interval_seconds / action_cooldown_seconds', example: '300', description: '动作检查间隔和同类动作冷却时间。' },
+                  { field: 'proactive.max_actions', example: '2', description: '单次最多提出或执行的主动动作数。' },
+                  { field: 'proactive.allowed_actions', example: '["warm_memory_context"]', description: '允许的主动动作名称白名单。' },
+                  { field: 'proactive.kernel_learning_enabled / kernel_learning_rate / kernel_min_samples', example: 'true / 0.08 / 2', description: '是否学习主动行为反馈、学习速率和最少样本数。' }
+                ]
+              },
+              {
+                id: 'tools',
+                title: 'tools / tool_trace · 工具和追踪',
+                description: '控制文件读取范围、桌面自动化权限以及工具步骤展示。',
+                fields: [
+                  { field: 'tools.filesystem.allowed_read_roots', example: '[]', description: '文件工具允许读取的根目录；留空表示按运行时默认策略处理。' },
+                  { field: 'tools.computer_use.enabled', example: 'false', description: '是否启用桌面观察和操作工具。该能力可接触屏幕和输入，默认关闭。' },
+                  { field: 'tools.computer_use.mode', example: 'observe', description: '桌面工具模式：observe、assist 或 control。' },
+                  { field: 'tools.computer_use.backend', example: 'auto', description: '桌面后端：auto、x11、wayland、windows 或 darwin。' },
+                  { field: 'tools.computer_use.capture_dir', example: '""', description: '截图或观察帧保存目录；留空使用临时目录。' },
+                  { field: 'tools.computer_use.allowed_sources / allowed_windows', example: '["cli", "tui"] / []', description: '允许调用来源和窗口白名单；空窗口列表表示不额外限制窗口。' },
+                  { field: 'tools.computer_use.require_approval', example: 'true', description: '高风险桌面操作是否需要人工批准。' },
+                  { field: 'tools.computer_use.max_steps', example: '50', description: '一次桌面任务最多执行的动作步数。' },
+                  { field: 'tools.computer_use.timeout_seconds / step_timeout_seconds', example: '300 / 30', description: '整个桌面任务和单步动作的超时时间。' },
+                  { field: 'tools.computer_use.settle_ms', example: '350', description: '动作完成后等待界面稳定的毫秒数。配置中使用这个名称，不要同时填写旧别名 settle_milliseconds。' },
+                  { field: 'tools.computer_use.max_observation_bytes', example: '10485760', description: '单次观察结果允许返回的最大字节数。' },
+                  { field: 'tools.computer_use.max_screenshot_width', example: '0', description: '截图最大宽度；0 表示不限制。' },
+                  { field: 'tools.computer_use.keep_frames', example: '2', description: '每个会话保留的截图帧数量。配置中使用这个名称，不要同时填写旧别名 retain_frames。' },
+                  { field: 'tools.computer_use.allow_text_input / allow_high_risk_actions', example: 'false', description: '是否允许文本输入和高风险动作，生产环境建议保持 false。' },
+                  { field: 'tool_trace.templates', example: '{}', description: '按工具名配置简短的人类可读步骤模板，例如 {"file_read":"读取 {path}"}。' }
+                ]
+              },
+              {
+                id: 'gateways',
+                title: 'msg_gateway · 消息网关',
+                description: '网关共有设置在顶部，各平台私有设置分别放在 telegram、qqofficial、napcat、feishu、weixin 和 openclawweixin。',
+                fields: [
+                  { field: 'msg_gateway.platform', example: 'telegram', description: '默认启动的平台名称。单独启动时也可使用 --platform 覆盖。' },
+                  { field: 'msg_gateway.start_all', example: 'false', description: '是否同时启动所有已配置平台。' },
+                  { field: 'msg_gateway.api_addr', example: '127.0.0.1:9090', description: '网关使用的本地 API 地址，应与 server.addr 对齐。' },
+                  { field: 'msg_gateway.telegram.token / proxy', example: 'your-bot-token / ""', description: 'Telegram Bot token 和可选 HTTP/SOCKS5 代理。' },
+                  { field: 'msg_gateway.telegram.chat_timeout_seconds', example: '600', description: 'Telegram 单次对话总超时时间。' },
+                  { field: 'msg_gateway.telegram.progress_as_messages / progress_as_natural_language', example: 'true / false', description: '是否发送独立进度消息，以及是否把中间步骤转成自然语言。' },
+                  { field: 'msg_gateway.telegram.progress_summary_with_llm', example: 'false', description: '是否让模型为未完成轮次生成进度摘要，会额外消耗模型请求。' },
+                  { field: 'msg_gateway.telegram.show_tool_details_in_result', example: 'false', description: '最终回答前是否附加工具步骤摘要。' },
+                  { field: 'msg_gateway.telegram.disable_auto_reaction', example: 'false', description: '是否关闭群聊请求的自动确认表情。' },
+                  { field: 'msg_gateway.telegram.max_concurrent_sessions', example: '8', description: 'Telegram 会话 worker 并发上限。' },
+                  { field: 'msg_gateway.telegram.memory_trace / memory_trace_level', example: 'true / summary', description: '是否发送记忆追踪卡片，以及显示 summary 或 full 级别。' },
+                  { field: 'msg_gateway.telegram.memory_trace_max_results / max_hops', example: '6 / 8', description: '记忆追踪卡片展示的结果数和图路径数上限。' },
+                  { field: 'msg_gateway.qqofficial.app_id / app_secret', example: 'your-app-id / your-app-secret', description: 'QQ 官方机器人凭证。' },
+                  { field: 'msg_gateway.qqofficial.proxy / sandbox', example: '"" / true', description: 'QQ API 代理和沙箱环境开关。' },
+                  { field: 'msg_gateway.qqofficial.api_base_url / gateway_url', example: '""', description: 'QQ API 和网关地址覆盖项；通常留空使用适配器默认值。' },
+                  { field: 'msg_gateway.qqofficial.allowed_chats / allowed_users', example: '[]', description: '允许处理的群聊和用户白名单；生产环境建议至少配置一类白名单。' },
+                  { field: 'msg_gateway.qqofficial.remove_at', example: 'true', description: '是否移除消息中的 @ 机器人标记。' },
+                  { field: 'msg_gateway.qqofficial.heartbeat_sec / reconnect_wait_seconds', example: '25 / 5', description: '心跳间隔和断线重连等待时间。' },
+                  { field: 'msg_gateway.qqofficial.intents', example: '["public_guild_messages", "group_and_c2c_messages"]', description: 'QQ 事件订阅意图列表。' },
+                  { field: 'msg_gateway.napcat.listen_addr / path', example: '127.0.0.1:6701 / /onebot/v11/ws', description: 'NapCat 反向 WebSocket 监听地址和路径，必须与 NapCat 配置一致。' },
+                  { field: 'msg_gateway.napcat.access_token', example: 'your-strong-token', description: 'NapCat WebSocket 访问令牌；跨机器部署时必须配置。' },
+                  { field: 'msg_gateway.napcat.allowed_chats / allowed_users', example: '[]', description: 'NapCat 群聊和用户白名单。' },
+                  { field: 'msg_gateway.napcat.remove_at / group_trigger_mode', example: 'true / mention', description: '是否移除 @ 标记，以及群聊触发模式。' },
+                  { field: 'msg_gateway.napcat.cross_group_read.*', example: 'enabled=false', description: '跨群读取历史的开关、确认、群组白名单/黑名单和审计设置；涉及隐私，默认关闭。' },
+                  { field: 'msg_gateway.feishu.app_id / app_secret', example: 'cli_xxx / your-secret', description: '飞书应用凭证。' },
+                  { field: 'msg_gateway.feishu.verification_token / encrypt_key', example: '""', description: '飞书事件回调校验和加密配置；按飞书事件模式填写。' },
+                  { field: 'msg_gateway.feishu.listen_addr / path / api_base_url', example: '127.0.0.1:6710 / /feishu/events / https://open.feishu.cn', description: '飞书回调监听地址、路径和 Open API 地址。' },
+                  { field: 'msg_gateway.feishu.allowed_chats / allowed_users', example: '[]', description: '飞书群聊和用户白名单。' },
+                  { field: 'msg_gateway.feishu.remove_at / group_trigger_mode', example: 'true / mention', description: '是否移除 @ 标记，以及群聊触发模式。' },
+                  { field: 'msg_gateway.weixin.token / account_id', example: 'your-token / your-account-id', description: '微信 iLink Bot token 和账号标识。' },
+                  { field: 'msg_gateway.weixin.base_url', example: 'https://ilinkai.weixin.qq.com', description: '微信 iLink API 地址。' },
+                  { field: 'msg_gateway.weixin.dm_policy / group_policy', example: 'open / disabled', description: '私聊和群聊策略，例如 open、disabled。' },
+                  { field: 'msg_gateway.weixin.allowed_users / group_allowed_users', example: '[]', description: '微信私聊和群聊用户白名单。' },
+                  { field: 'msg_gateway.weixin.split_multiline_messages', example: 'false', description: '是否把多行回复拆成多条消息。' },
+                  { field: 'msg_gateway.weixin.poll_timeout_ms / send_chunk_delay_ms', example: '35000 / 350', description: '轮询超时和分块发送间隔，单位为毫秒。' },
+                  { field: 'msg_gateway.openclawweixin.account_id / state_dir', example: '""', description: 'OpenClaw 登录微信账号和登录状态目录。' },
+                  { field: 'msg_gateway.openclawweixin.dm_policy / group_policy', example: 'open / disabled', description: 'OpenClaw 微信私聊和群聊策略。' },
+                  { field: 'msg_gateway.openclawweixin.allowed_users / group_allowed_users', example: '[]', description: 'OpenClaw 微信用户白名单。' },
+                  { field: 'msg_gateway.openclawweixin.split_multiline_messages', example: 'false', description: '是否拆分多行消息。' },
+                  { field: 'msg_gateway.openclawweixin.poll_timeout_ms / send_chunk_delay_ms', example: '35000 / 350', description: '轮询超时和分块发送间隔，单位为毫秒。' }
+                ]
+              },
+              {
+                id: 'hooks-skills',
+                title: 'hooks / skills · 扩展边界',
+                description: 'hooks 保护工具执行边界，skills 控制技能加载和安装限制。',
+                fields: [
+                  { field: 'hooks.enabled', example: 'false', description: '是否启用 PreToolUse 和 PostToolUse hook。' },
+                  { field: 'hooks.timeout_seconds', example: '30', description: '单个 hook 的执行超时时间。' },
+                  { field: 'hooks.fail_closed', example: 'false', description: 'hook 出错或超时时是否拦截工具调用；安全敏感环境可考虑 true。' },
+                  { field: 'hooks.pre_tool_use / post_tool_use', example: '[]', description: '工具执行前/后的 hook 规则数组。' },
+                  { field: 'hooks.*[].match', example: '["shell", "terminal"]', description: '匹配的工具名；空数组匹配全部工具，支持 * 通配符。' },
+                  { field: 'hooks.*[].sources', example: '["telegram"]', description: '限制来源，例如 cli、tui、telegram；空数组匹配全部来源。' },
+                  { field: 'hooks.*[].command', example: 'python3 ./hooks/check.py', description: '通过平台 shell 执行的外部命令，与 script 二选一。' },
+                  { field: 'hooks.*[].script', example: '~/.luckyagent/hooks/audit_log.py', description: '由扩展名选择解释器执行的脚本路径，与 command 二选一。' },
+                  { field: 'skills.dir', example: '""', description: '技能目录覆盖路径；留空使用 ${HOME}/.luckyagent/skills。' },
+                  { field: 'skills.auto_enable', example: 'true', description: '启动后是否自动启用全部已发现技能。' },
+                  { field: 'skills.install.disabled', example: 'false', description: '是否关闭技能安装管线。' },
+                  { field: 'skills.install.probe_cli', example: 'true', description: '安装时是否执行脚本 --help 来推导 CLI；会运行被安装代码。' },
+                  { field: 'skills.install.probe_timeout_seconds / trial_timeout_seconds', example: '15 / 90', description: 'CLI 探测和安装试运行超时时间。' },
+                  { field: 'skills.install.max_archive_bytes / max_uncompressed_bytes', example: '33554432 / 67108864', description: '压缩包大小和解压后大小上限。' },
+                  { field: 'skills.install.max_single_file_bytes', example: '16777216', description: '单个技能文件的大小上限。' },
+                  { field: 'skills.install.max_files / max_path_depth', example: '2000 / 12', description: '单次安装允许的文件数和路径深度。' },
+                  { field: 'skills.install.max_compression_ratio', example: '100', description: '压缩包允许的最大压缩比，防止压缩炸弹。' },
+                  { field: 'skills.install.allowed_local_roots', example: '[]', description: '允许从本地目录安装技能的根路径白名单；留空表示关闭本地目录来源。' },
+                  { field: 'skills.install.block_on_secrets', example: 'false', description: '发现疑似密钥时是否直接阻止安装。' },
+                  { field: 'skills.install.keep_versions / staging_ttl_hours', example: '3 / 24', description: '保留的技能旧版本数，以及暂存目录的过期小时数。' }
+                ]
+              }
             ]
           },
           {
@@ -1030,6 +1792,7 @@
           if (id && this.node(id).id) {
             this.active = id;
           }
+          this.ensurePreviewSim();
           this.$nextTick(() => {
             this.refreshIcons();
             if (id) this.scrollTo(id, false);
@@ -1038,7 +1801,25 @@
             const next = this.idFromHash();
             if (next && this.node(next).id) {
               this.active = next;
+              this.ensurePreviewSim();
+              if (this.graphOpen) this.ensureModalSim();
               this.$nextTick(() => this.scrollTo(next, false));
+            }
+          });
+          window.addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return;
+            this.navOpen = false;
+            this.closeGraphModal();
+          });
+          window.addEventListener('pointermove', (event) => this.onNodePointerMove(event));
+          window.addEventListener('pointerup', () => this.onNodePointerUp());
+          document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+              this.stopSim(this.previewSim);
+              this.stopSim(this.modalSim);
+            } else {
+              this.startSim(this.previewSim);
+              if (this.graphOpen) this.startSim(this.modalSim);
             }
           });
         },
@@ -1059,7 +1840,12 @@
           if (!q) return this.notes;
           return this.notes.filter((note) => {
             const commands = (note.commands || []).map((cmd) => `${cmd.label} ${cmd.body}`).join(' ');
-            return [note.title, note.short, note.group, note.summary, note.points.join(' '), commands].join(' ').toLowerCase().includes(q);
+            const guide = (note.configGuide || []).map((section) => [
+              section.title,
+              section.description,
+              ...(section.fields || []).flatMap((field) => [field.field, field.example, field.description])
+            ].join(' ')).join(' ');
+            return [note.title, note.short, note.group, note.summary, note.points.join(' '), commands, guide].join(' ').toLowerCase().includes(q);
           });
         },
         groupedNotes() {
@@ -1098,24 +1884,34 @@
           const q = this.query.trim();
           const ids = q
             ? this.visibleNotes().map((note) => note.id)
-            : ['overview', 'install-tui', 'config', 'runtime', 'source', 'dev-docker', 'prod-docker', 'api', 'opencli', 'napcat', 'ops', 'troubleshooting', 'commands'];
+            : ['overview', 'install-tui', 'config', 'config-reference', 'runtime', 'source', 'dev-docker', 'prod-docker', 'api', 'opencli', 'napcat', 'ops', 'troubleshooting', 'commands'];
           return ids.map((id) => this.node(id)).filter((note) => note.id);
         },
         articleSections() {
           const sections = [
             { id: 'article-top', title: currentTitle(this.current()) },
-            { id: 'article-points', title: '要点' },
-            { id: 'article-links', title: '链接到' }
+            { id: 'article-points', title: '要点' }
           ];
+          if (this.current().configGuide && this.current().configGuide.length) {
+            sections.push({ id: 'article-config-guide', title: '配置说明书' });
+            for (const group of this.current().configGuide) {
+              sections.push({ id: 'config-guide-' + group.id, title: group.title });
+            }
+          }
+          sections.push({ id: 'article-links', title: '链接到' });
           if (this.current().commands && this.current().commands.length) {
             sections.push({ id: 'article-commands', title: '命令' });
+          }
+          if (this.active === 'overview') {
+            sections.push({ id: 'article-entry', title: '快速入口' });
+            sections.push({ id: 'article-deploy-table', title: '部署入口' });
           }
           return sections;
         },
         backlinks(id) {
           return this.notes.filter((note) => note.related && note.related.includes(id));
         },
-        localGraphNodes() {
+        localNeighborIds() {
           const center = this.current();
           if (!center.id) return [];
           const ids = [];
@@ -1124,66 +1920,166 @@
           };
           for (const id of center.related || []) push(id);
           for (const note of this.backlinks(center.id)) push(note.id);
-
-          const ring = ids.slice(0, 10);
-          const nodes = [{ id: center.id, title: center.title, x: 50, y: 50 }];
-          const radiusX = ring.length > 7 ? 36 : 32;
-          const radiusY = ring.length > 7 ? 34 : 30;
-          ring.forEach((id, index) => {
-            const angle = (-90 + (360 / ring.length) * index) * Math.PI / 180;
+          return ids.slice(0, 10);
+        },
+        seedNodePosition(id, index, ring, useNoteCoords) {
+          if (useNoteCoords) {
             const note = this.node(id);
-            nodes.push({
-              id,
-              title: note.title,
-              x: 50 + Math.cos(angle) * radiusX,
-              y: 50 + Math.sin(angle) * radiusY
-            });
+            return { x: note.x != null ? note.x : 50, y: note.y != null ? note.y : 50 };
+          }
+          const radiusX = ring > 7 ? 36 : 32;
+          const radiusY = ring > 7 ? 34 : 30;
+          const angle = (-90 + (360 / Math.max(ring, 1)) * index) * Math.PI / 180;
+          return { x: 50 + Math.cos(angle) * radiusX, y: 50 + Math.sin(angle) * radiusY };
+        },
+        syncSim(sim, ids, useNoteCoords) {
+          const idSet = new Set(ids);
+          sim.nodes = sim.nodes.filter((node) => idSet.has(node.id));
+          const existingIds = new Set(sim.nodes.map((node) => node.id));
+          const ring = ids.length - 1;
+          ids.forEach((id, index) => {
+            if (existingIds.has(id)) return;
+            const note = this.node(id);
+            if (!note.id) return;
+            const isCenter = index === 0 && !useNoteCoords;
+            const pos = isCenter ? { x: 50, y: 50 } : this.seedNodePosition(id, index - (useNoteCoords ? 0 : 1), ring, useNoteCoords);
+            sim.nodes.push({ id, title: note.title, x: pos.x, y: pos.y, vx: 0, vy: 0, fx: null, fy: null });
           });
-          return nodes;
+          const nodeById = {};
+          for (const node of sim.nodes) nodeById[node.id] = node;
+          if (useNoteCoords) {
+            sim.links = this.edges
+              .filter(([from, to]) => nodeById[from] && nodeById[to])
+              .map(([from, to]) => ({ a: nodeById[from], b: nodeById[to] }));
+          } else {
+            const center = nodeById[ids[0]];
+            sim.links = center ? ids.slice(1).filter((id) => nodeById[id]).map((id) => ({ a: center, b: nodeById[id] })) : [];
+          }
         },
-        localEdgeSvg() {
-          const nodes = this.localGraphNodes();
-          const center = nodes[0];
-          if (!center) return '';
-          return nodes.slice(1).map((node) => {
-            return `<line x1="${center.x}" y1="${center.y}" x2="${node.x}" y2="${node.y}" stroke="currentColor" opacity=".3" stroke-width=".55" vector-effect="non-scaling-stroke"></line>`;
-          }).join('');
+        startSim(sim) {
+          if (sim.raf) return;
+          sim.settleFrames = 0;
+          const tick = () => {
+            const energy = stepGraphForces(sim.nodes, sim.links);
+            if (energy < 0.01) {
+              sim.settleFrames += 1;
+            } else {
+              sim.settleFrames = 0;
+            }
+            if (sim.settleFrames > 90) {
+              sim.raf = null;
+              return;
+            }
+            sim.raf = requestAnimationFrame(tick);
+          };
+          sim.raf = requestAnimationFrame(tick);
         },
-        edgeSvg() {
-          return this.edges.map(([from, to]) => {
-            const a = this.node(from);
-            const b = this.node(to);
-            if (!a.id || !b.id) return '';
-            const activeEdge = from === this.active || to === this.active;
+        stopSim(sim) {
+          if (sim.raf) cancelAnimationFrame(sim.raf);
+          sim.raf = null;
+        },
+        ensurePreviewSim() {
+          this.syncSim(this.previewSim, [this.active, ...this.localNeighborIds()], false);
+          this.startSim(this.previewSim);
+        },
+        edgeSvgFor(sim, highlightActive) {
+          return sim.links.map((edge) => {
+            if (!highlightActive) {
+              return `<line x1="${edge.a.x}" y1="${edge.a.y}" x2="${edge.b.x}" y2="${edge.b.y}" stroke="currentColor" opacity=".3" stroke-width=".55" vector-effect="non-scaling-stroke"></line>`;
+            }
+            const activeEdge = edge.a.id === this.active || edge.b.id === this.active;
             const stroke = activeEdge ? 'rgba(35,116,82,.72)' : 'rgba(36,49,61,.28)';
             const width = activeEdge ? '.72' : '.42';
-            return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="${stroke}" stroke-width="${width}" vector-effect="non-scaling-stroke"></line>`;
+            return `<line x1="${edge.a.x}" y1="${edge.a.y}" x2="${edge.b.x}" y2="${edge.b.y}" stroke="${stroke}" stroke-width="${width}" vector-effect="non-scaling-stroke"></line>`;
           }).join('');
+        },
+        closeGraphModal() {
+          this.graphOpen = false;
+          this.stopSim(this.modalSim);
+        },
+        ensureModalSim() {
+          if (this.graphScope === 'all') {
+            this.syncSim(this.modalSim, this.notes.map((note) => note.id), true);
+          } else {
+            this.syncSim(this.modalSim, [this.active, ...this.localNeighborIds()], false);
+          }
+          this.startSim(this.modalSim);
+        },
+        graphBoxRect(event) {
+          const box = event.target.closest('.graph-box');
+          return box ? box.getBoundingClientRect() : null;
+        },
+        nodePointerDown(event, sim, id, closeOnClick) {
+          const rect = this.graphBoxRect(event);
+          if (!rect) return;
+          event.preventDefault();
+          event.stopPropagation();
+          event.target.closest('.mini-node').setPointerCapture(event.pointerId);
+          this.draggingNode = { sim, id, closeOnClick, rect, startX: event.clientX, startY: event.clientY, moved: false };
+          this.startSim(sim);
+        },
+        onNodePointerMove(event) {
+          const drag = this.draggingNode;
+          if (!drag) return;
+          const node = drag.sim.nodes.find((n) => n.id === drag.id);
+          if (!node) return;
+          const dx = event.clientX - drag.startX;
+          const dy = event.clientY - drag.startY;
+          if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+          const px = ((event.clientX - drag.rect.left) / drag.rect.width) * 100;
+          const py = ((event.clientY - drag.rect.top) / drag.rect.height) * 100;
+          node.fx = Math.min(94, Math.max(6, px));
+          node.fy = Math.min(94, Math.max(6, py));
+        },
+        onNodePointerUp() {
+          const drag = this.draggingNode;
+          if (!drag) return;
+          const node = drag.sim.nodes.find((n) => n.id === drag.id);
+          if (node) {
+            node.vx = 0;
+            node.vy = 0;
+            if (!drag.moved) { node.fx = null; node.fy = null; }
+          }
+          if (!drag.moved) {
+            this.jump(drag.id);
+            if (drag.closeOnClick) this.closeGraphModal();
+          }
+          this.draggingNode = null;
         },
         jump(id) {
           if (!this.node(id).id) return;
           this.active = id;
+          this.navOpen = false;
+          this.outlineOpen = false;
           history.replaceState(null, '', '#note-' + encodeURIComponent(id));
+          this.ensurePreviewSim();
+          if (this.graphOpen) this.ensureModalSim();
           this.$nextTick(() => {
             this.refreshIcons();
             this.scrollTo(id, true);
           });
         },
         goHome() {
-          this.active = 'overview';
-          history.replaceState(null, '', window.location.href.split('#')[0]);
-          this.$nextTick(() => {
-            this.refreshIcons();
-            if (this.$refs.homeColumn) {
-              this.$refs.homeColumn.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-            if (this.$refs.articleColumn) {
-              this.$refs.articleColumn.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-            if (window.matchMedia('(max-width: 900px)').matches) {
-              window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-          });
+          this.jump('overview');
+        },
+        toggleOutline() {
+          this.outlineOpen = !this.outlineOpen;
+          if (this.outlineOpen) {
+            this.$nextTick(() => {
+              if (this.$refs.rightColumn) {
+                this.$refs.rightColumn.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              }
+            });
+          }
+        },
+        toggleGroup(name) {
+          const index = this.collapsedGroups.indexOf(name);
+          if (index === -1) {
+            this.collapsedGroups.push(name);
+          } else {
+            this.collapsedGroups.splice(index, 1);
+          }
+          this.$nextTick(() => this.refreshIcons());
         },
         scrollTo(id, smooth) {
           const article = this.$refs.articleColumn;
@@ -1200,10 +2096,7 @@
           if (!article || !el) return;
           const top = article.scrollTop + el.getBoundingClientRect().top - article.getBoundingClientRect().top;
           article.scrollTo({ top: Math.max(0, top - 8), behavior: 'smooth' });
-        },
-        focusGraph() {
-          const el = document.getElementById('interactive-graph');
-          if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          this.outlineOpen = false;
         },
         async copyText(value) {
           try {

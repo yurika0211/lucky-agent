@@ -1,15 +1,4 @@
 {
-  "provider": "openai",
-  "api_key": "sk-your-api-key",
-  "api_base": "https://api.openai.com/v1",
-  "model": "gpt-5.4-mini",
-  "llm_provider": {
-    "name": "openai",
-    "api_key": "sk-your-api-key",
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-5.4-mini",
-    "protocol": "chat_completions"
-  },
   "models": {
     "active": {
       "chat": "gpt-5.4-mini",
@@ -17,26 +6,50 @@
       "embedding": "jina-embeddings-v4",
       "transcription": "whisper-1",
       "image": "gpt-image-1.5",
-      "tts": "gpt-4o-mini-tts"
+      "tts": "gpt-4o-mini-tts",
+      "reranker": ""
     },
     "endpoints": {
       "chat": {
         "provider": "openai",
+        "api_key": "sk-your-api-key",
         "api_base": "https://api.openai.com/v1",
-        "protocol": "chat_completions"
+        "protocol": "chat_completions",
+        "reasoning_summary": "detailed",
+        "extra_headers": {
+          "User-Agent": "luckyagent"
+        }
+      },
+      "vision": {
+        "provider": "openai",
+        "api_key": "",
+        "api_base": "https://api.openai.com/v1"
+      },
+      "embedding": {
+        "provider": "openai-compatible",
+        "api_key": "",
+        "api_base": "https://proxy.pieixan.icu/v1"
+      },
+      "transcription": {
+        "provider": "openai",
+        "api_key": "",
+        "api_base": "https://api.openai.com/v1"
+      },
+      "image": {
+        "provider": "openai",
+        "api_key": "",
+        "api_base": "https://api.openai.com/v1"
+      },
+      "tts": {
+        "provider": "openai",
+        "api_key": "",
+        "api_base": "https://api.openai.com/v1"
       }
     },
-    "profiles": {
-      "fast": {
-        "chat": "gpt-5.4-mini",
-        "vision": "gpt-5.4-mini"
-      }
-    }
+    "profiles": {}
   },
+  "custom_models": [],
   "embedding": {
-    "model": "jina-embeddings-v4",
-    "api_key": "",
-    "api_base": "https://proxy.pieixan.icu/v1",
     "dimension": 2048
   },
   "rag": {
@@ -49,19 +62,10 @@
     "rewrite_followups": true
   },
   "multimodal": {
-    "provider": "openai",
-    "api_key": "",
-    "api_base": "",
-    "image_model": "gpt-5.4-mini",
-    "transcription_model": "whisper-1",
     "image_provider": ""
   },
   "image_generation": {
-    "provider": "openai",
-    "api_key": "",
-    "api_base": "https://api.openai.com/v1",
     "auth_mode": "bearer",
-    "model": "gpt-image-1.5",
     "size": "1024x1024",
     "quality": "auto",
     "background": "auto",
@@ -70,21 +74,14 @@
     "count": 1
   },
   "tts": {
-    "provider": "openai",
-    "api_key": "",
-    "api_base": "https://api.openai.com/v1",
     "auth_mode": "bearer",
-    "model": "gpt-4o-mini-tts",
     "voice": "alloy",
     "format": "mp3",
     "speed": 1.0
   },
-  "soul_path": "/home/you/.luckyagent/SOUL.md",
+  "soul_path": "",
   "max_tokens": 4096,
   "temperature": 0.7,
-  "extra_headers": {
-    "User-Agent": "luckyagent"
-  },
   "fallbacks": [
     {
       "provider": "openai",
@@ -112,7 +109,15 @@
   "memory": {
     "short_term_max_turns": 10,
     "midterm_expire_days": 365,
-    "midterm_max_summaries": 100
+    "midterm_max_summaries": 100,
+    "tidal": {
+      "enabled": false,
+      "beta": 0.15,
+      "max_boost": 0.35,
+      "learning_rate": 0.2,
+      "min_samples": 1,
+      "store_path": ""
+    }
   },
   "model_router": {
     "enable": false,
@@ -124,11 +129,11 @@
   },
   "limits": {
     "max_tokens": 4096,
-    "temperature": 0.7,
     "timeout_seconds": 60,
     "max_timeout_seconds": 600,
     "max_tool_calls": 5,
-    "max_concurrent_tool_calls": 3
+    "max_concurrent_tool_calls": 3,
+    "max_length_continuations": 8
   },
   "retry": {
     "enabled": true,
@@ -247,15 +252,16 @@
       "timeout_seconds": 300,
       "step_timeout_seconds": 30,
       "settle_ms": 350,
-      "settle_milliseconds": 350,
       "max_observation_bytes": 10485760,
       "max_screenshot_width": 0,
       "keep_frames": 2,
       "frame_ttl_seconds": 600,
-      "retain_frames": 2,
       "allow_text_input": false,
       "allow_high_risk_actions": false
     }
+  },
+  "tool_trace": {
+    "templates": {}
   },
   "msg_gateway": {
     "platform": "telegram",
@@ -269,6 +275,8 @@
       "progress_as_natural_language": false,
       "progress_summary_with_llm": false,
       "show_tool_details_in_result": false,
+      "disable_auto_reaction": false,
+      "max_concurrent_sessions": 8,
       "memory_trace": true,
       "memory_trace_level": "summary",
       "memory_trace_max_results": 6,
@@ -352,34 +360,29 @@
       {
         "match": [],
         "sources": [],
-        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/audit_log.py",
-        "script": ""
+        "script": "~/.luckyagent/hooks/audit_log.py"
       },
       {
         "match": ["file_write", "file_patch", "file_delete", "file_move", "file_mkdir", "shell", "terminal"],
         "sources": [],
-        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/workspace_guard.py",
-        "script": ""
+        "script": "~/.luckyagent/hooks/protect_paths.py"
       },
       {
         "match": ["shell", "terminal", "sql_query"],
         "sources": [],
-        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/block_dangerous.py",
-        "script": ""
+        "script": "~/.luckyagent/hooks/block_dangerous.py"
+      },
+      {
+        "match": ["skill_*"],
+        "sources": [],
+        "script": "~/.luckyagent/hooks/skill_capability_guard.py"
       }
     ],
     "post_tool_use": [
       {
         "match": [],
         "sources": [],
-        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/redact_secrets.py",
-        "script": ""
-      },
-      {
-        "match": [],
-        "sources": [],
-        "command": "/media/shiokou/DevRepo60/DevHub/Projects/2026-myapp/luckyagent/hooks/truncate_output.py",
-        "script": ""
+        "script": "~/.luckyagent/hooks/redact_secrets.py"
       }
     ]
   },
