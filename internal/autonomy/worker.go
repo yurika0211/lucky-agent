@@ -408,7 +408,7 @@ func (p *WorkerPool) dispatch(ctx context.Context) {
 			count := len(p.workers)
 			p.mu.RUnlock()
 
-			if count < p.config.MaxWorkers {
+			if p.config.AutoScale && count < p.config.MaxWorkers {
 				worker = p.spawnWorker(ctx)
 			} else {
 				// All workers busy, wait a bit

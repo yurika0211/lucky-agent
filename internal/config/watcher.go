@@ -317,7 +317,7 @@ func classifyReload(oldCfg, newCfg *Config) (hotReloaded, restartRequired []stri
 	if !reflect.DeepEqual(oldCfg.MsgGateway, newCfg.MsgGateway) {
 		restartRequired = append(restartRequired, "msg_gateway")
 	}
-	if !reflect.DeepEqual(oldCfg.Embedding, newCfg.Embedding) || !reflect.DeepEqual(oldCfg.RAG, newCfg.RAG) || !reflect.DeepEqual(oldCfg.Memory, newCfg.Memory) || !reflect.DeepEqual(oldCfg.Tools, newCfg.Tools) || !reflect.DeepEqual(oldCfg.Multimodal, newCfg.Multimodal) || !reflect.DeepEqual(oldCfg.ImageGeneration, newCfg.ImageGeneration) || !reflect.DeepEqual(oldCfg.TTS, newCfg.TTS) || !reflect.DeepEqual(oldCfg.Autonomy, newCfg.Autonomy) || !reflect.DeepEqual(oldCfg.Proactive, newCfg.Proactive) {
+	if !reflect.DeepEqual(oldCfg.Embedding, newCfg.Embedding) || !reflect.DeepEqual(oldCfg.RAG, newCfg.RAG) || !reflect.DeepEqual(oldCfg.Memory, newCfg.Memory) || !reflect.DeepEqual(oldCfg.Tools, newCfg.Tools) || !reflect.DeepEqual(oldCfg.Multimodal, newCfg.Multimodal) || !reflect.DeepEqual(oldCfg.ImageGeneration, newCfg.ImageGeneration) || !reflect.DeepEqual(oldCfg.TTS, newCfg.TTS) || !reflect.DeepEqual(oldCfg.Autonomy, newCfg.Autonomy) || !reflect.DeepEqual(oldCfg.Delegate, newCfg.Delegate) || !reflect.DeepEqual(oldCfg.Proactive, newCfg.Proactive) {
 		restartRequired = append(restartRequired, "runtime_services")
 	}
 	return hotReloaded, restartRequired

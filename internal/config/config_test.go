@@ -42,6 +42,12 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit != 2 {
 		t.Errorf("expected simple_local_inspection.tool_only_iteration_limit 2, got %d", cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit)
 	}
+	if cfg.Delegate.MaxConcurrent != 3 || cfg.Delegate.TimeoutSeconds != 120 || cfg.Delegate.MaxChildren != 3 {
+		t.Errorf("unexpected delegate defaults: %#v", cfg.Delegate)
+	}
+	if cfg.Delegate.Child.MaxIterations != 5 || cfg.Delegate.Child.TimeoutSeconds != 60 || cfg.Delegate.Child.AutoApprove == nil || *cfg.Delegate.Child.AutoApprove {
+		t.Errorf("unexpected delegate child defaults: %#v", cfg.Delegate.Child)
+	}
 	if cfg.Autonomy.Enabled {
 		t.Errorf("expected autonomy.enabled false by default, got true")
 	}
@@ -65,6 +71,12 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if len(cfg.Autonomy.Worker.DisabledTools) != 1 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" {
 		t.Errorf("expected autonomy.worker.disabled_tools [autonomy], got %v", cfg.Autonomy.Worker.DisabledTools)
+	}
+	if cfg.Autonomy.QueueBuffer != 64 || cfg.Autonomy.Pool.MaxWorkers != 8 || cfg.Autonomy.Pool.QueueBuffer != 64 || cfg.Autonomy.Pool.AutoScale || cfg.Autonomy.Pool.MinWorkers != 1 {
+		t.Errorf("unexpected autonomy pool defaults: %#v", cfg.Autonomy.Pool)
+	}
+	if cfg.Autonomy.Heartbeat.Mode != "proactive" || cfg.Autonomy.Heartbeat.IntervalSeconds != 900 || cfg.Autonomy.Heartbeat.ActiveStart != 6 || cfg.Autonomy.Heartbeat.ActiveEnd != 23 || cfg.Autonomy.Heartbeat.MaxTasksPerBeat != 3 {
+		t.Errorf("unexpected autonomy heartbeat defaults: %#v", cfg.Autonomy.Heartbeat)
 	}
 	if cfg.Proactive.Enabled {
 		t.Errorf("expected proactive.enabled false by default, got true")
@@ -578,6 +590,65 @@ func TestManagerSetAutonomyWorkerConfig(t *testing.T) {
 	}
 	if len(cfg.Autonomy.Worker.DisabledTools) != 2 || cfg.Autonomy.Worker.DisabledTools[0] != "autonomy" || cfg.Autonomy.Worker.DisabledTools[1] != "cron_add" {
 		t.Fatalf("unexpected disabled tools: %v", cfg.Autonomy.Worker.DisabledTools)
+	}
+}
+
+func TestManagerSetDelegateAndAutonomyRuntimeConfig(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	values := map[string]string{
+		"delegate.max_concurrent":                    "5",
+		"delegate.timeout_seconds":                   "240",
+		"delegate.min_timeout_seconds":               "10",
+		"delegate.max_timeout_seconds":               "900",
+		"delegate.max_result_bytes_inline":            "8000",
+		"delegate.max_children":                      "4",
+		"delegate.child.max_iterations":              "12",
+		"delegate.child.timeout_seconds":              "90",
+		"delegate.child.auto_approve":                 "true",
+		"delegate.child.repeat_tool_call_limit":       "4",
+		"delegate.child.tool_only_iteration_limit":    "5",
+		"delegate.child.duplicate_fetch_limit":        "2",
+		"delegate.child.disabled_tools":               "terminal,delegate_task",
+		"delegate.child.allow_recursive_delegate":     "true",
+		"autonomy.queue_buffer":                      "128",
+		"autonomy.pool.max_workers":                  "6",
+		"autonomy.pool.queue_buffer":                 "96",
+		"autonomy.pool.auto_scale":                   "true",
+		"autonomy.pool.min_workers":                  "2",
+		"autonomy.heartbeat.mode":                    "passive",
+		"autonomy.heartbeat.interval_seconds":        "600",
+		"autonomy.heartbeat.active_start":            "7",
+		"autonomy.heartbeat.active_end":              "22",
+		"autonomy.heartbeat.max_tasks_per_beat":      "5",
+	}
+	for key, value := range values {
+		if err := mgr.Set(key, value); err != nil {
+			t.Fatalf("Set %s: %v", key, err)
+		}
+	}
+
+	cfg := mgr.Get()
+	if cfg.Delegate.MaxConcurrent != 5 || cfg.Delegate.TimeoutSeconds != 240 || cfg.Delegate.MaxChildren != 4 {
+		t.Fatalf("unexpected delegate config: %#v", cfg.Delegate)
+	}
+	if cfg.Delegate.MinTimeoutSeconds != 10 || cfg.Delegate.MaxTimeoutSeconds != 900 || cfg.Delegate.MaxResultBytesInline != 8000 {
+		t.Fatalf("unexpected delegate timeout/result config: %#v", cfg.Delegate)
+	}
+	if cfg.Delegate.Child.MaxIterations != 12 || cfg.Delegate.Child.TimeoutSeconds != 90 || cfg.Delegate.Child.AutoApprove == nil || !*cfg.Delegate.Child.AutoApprove {
+		t.Fatalf("unexpected delegate child loop config: %#v", cfg.Delegate.Child)
+	}
+	if len(cfg.Delegate.Child.DisabledTools) != 2 || cfg.Delegate.Child.DisabledTools[0] != "terminal" || cfg.Delegate.Child.DisabledTools[1] != "delegate_task" || !cfg.Delegate.Child.AllowRecursiveDelegate {
+		t.Fatalf("unexpected delegate child policy: %#v", cfg.Delegate.Child)
+	}
+	if cfg.Autonomy.QueueBuffer != 128 || cfg.Autonomy.Pool.MaxWorkers != 6 || cfg.Autonomy.Pool.QueueBuffer != 96 || !cfg.Autonomy.Pool.AutoScale || cfg.Autonomy.Pool.MinWorkers != 2 {
+		t.Fatalf("unexpected autonomy pool config: %#v", cfg.Autonomy)
+	}
+	if cfg.Autonomy.Heartbeat.Mode != "passive" || cfg.Autonomy.Heartbeat.IntervalSeconds != 600 || cfg.Autonomy.Heartbeat.ActiveStart != 7 || cfg.Autonomy.Heartbeat.ActiveEnd != 22 || cfg.Autonomy.Heartbeat.MaxTasksPerBeat != 5 {
+		t.Fatalf("unexpected autonomy heartbeat config: %#v", cfg.Autonomy.Heartbeat)
 	}
 }
 

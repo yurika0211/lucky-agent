@@ -200,6 +200,74 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Context.MemoryHygieneMinSeverity)
 	case "context.memory_hygiene_max_findings":
 		fmt.Println(cfg.Context.MemoryHygieneMaxFindings)
+	case "delegate.max_concurrent":
+		fmt.Println(cfg.Delegate.MaxConcurrent)
+	case "delegate.timeout_seconds":
+		fmt.Println(cfg.Delegate.TimeoutSeconds)
+	case "delegate.min_timeout_seconds":
+		fmt.Println(cfg.Delegate.MinTimeoutSeconds)
+	case "delegate.max_timeout_seconds":
+		fmt.Println(cfg.Delegate.MaxTimeoutSeconds)
+	case "delegate.max_result_bytes_inline":
+		fmt.Println(cfg.Delegate.MaxResultBytesInline)
+	case "delegate.max_children":
+		fmt.Println(cfg.Delegate.MaxChildren)
+	case "delegate.child.max_iterations":
+		fmt.Println(cfg.Delegate.Child.MaxIterations)
+	case "delegate.child.timeout_seconds":
+		fmt.Println(cfg.Delegate.Child.TimeoutSeconds)
+	case "delegate.child.auto_approve":
+		fmt.Println(delegateChildAutoApprove(cfg))
+	case "delegate.child.repeat_tool_call_limit":
+		fmt.Println(cfg.Delegate.Child.RepeatToolCallLimit)
+	case "delegate.child.tool_only_iteration_limit":
+		fmt.Println(cfg.Delegate.Child.ToolOnlyIterationLimit)
+	case "delegate.child.duplicate_fetch_limit":
+		fmt.Println(cfg.Delegate.Child.DuplicateFetchLimit)
+	case "delegate.child.disabled_tools":
+		fmt.Println(strings.Join(cfg.Delegate.Child.DisabledTools, ","))
+	case "delegate.child.allow_recursive_delegate":
+		fmt.Println(cfg.Delegate.Child.AllowRecursiveDelegate)
+	case "autonomy.enabled":
+		fmt.Println(cfg.Autonomy.Enabled)
+	case "autonomy.queue_buffer":
+		fmt.Println(cfg.Autonomy.QueueBuffer)
+	case "autonomy.pool.max_workers":
+		fmt.Println(cfg.Autonomy.Pool.MaxWorkers)
+	case "autonomy.pool.queue_buffer":
+		fmt.Println(cfg.Autonomy.Pool.QueueBuffer)
+	case "autonomy.pool.auto_scale":
+		fmt.Println(cfg.Autonomy.Pool.AutoScale)
+	case "autonomy.pool.min_workers":
+		fmt.Println(cfg.Autonomy.Pool.MinWorkers)
+	case "autonomy.worker.max_iterations":
+		fmt.Println(cfg.Autonomy.Worker.MaxIterations)
+	case "autonomy.worker.timeout_seconds":
+		fmt.Println(cfg.Autonomy.Worker.TimeoutSeconds)
+	case "autonomy.worker.auto_approve":
+		if cfg.Autonomy.Worker.AutoApprove == nil {
+			fmt.Println(false)
+		} else {
+			fmt.Println(*cfg.Autonomy.Worker.AutoApprove)
+		}
+	case "autonomy.worker.repeat_tool_call_limit":
+		fmt.Println(cfg.Autonomy.Worker.RepeatToolCallLimit)
+	case "autonomy.worker.tool_only_iteration_limit":
+		fmt.Println(cfg.Autonomy.Worker.ToolOnlyIterationLimit)
+	case "autonomy.worker.duplicate_fetch_limit":
+		fmt.Println(cfg.Autonomy.Worker.DuplicateFetchLimit)
+	case "autonomy.worker.disabled_tools":
+		fmt.Println(strings.Join(cfg.Autonomy.Worker.DisabledTools, ","))
+	case "autonomy.heartbeat.mode":
+		fmt.Println(cfg.Autonomy.Heartbeat.Mode)
+	case "autonomy.heartbeat.interval_seconds":
+		fmt.Println(cfg.Autonomy.Heartbeat.IntervalSeconds)
+	case "autonomy.heartbeat.active_start":
+		fmt.Println(cfg.Autonomy.Heartbeat.ActiveStart)
+	case "autonomy.heartbeat.active_end":
+		fmt.Println(cfg.Autonomy.Heartbeat.ActiveEnd)
+	case "autonomy.heartbeat.max_tasks_per_beat":
+		fmt.Println(cfg.Autonomy.Heartbeat.MaxTasksPerBeat)
 	case "memory.tidal.enabled":
 		fmt.Println(cfg.Memory.Tidal.Enabled)
 	case "memory.tidal.beta":
@@ -384,6 +452,18 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  soul_path: %s\n", cfg.SoulPath)
 	fmt.Printf("  max_tokens: %d\n", cfg.MaxTokens)
 	fmt.Printf("  temperature: %.1f\n", cfg.Temperature)
+	fmt.Printf("  delegate.max_concurrent: %d\n", cfg.Delegate.MaxConcurrent)
+	fmt.Printf("  delegate.timeout_seconds: %d\n", cfg.Delegate.TimeoutSeconds)
+	fmt.Printf("  delegate.max_children: %d\n", cfg.Delegate.MaxChildren)
+	fmt.Printf("  delegate.child.max_iterations: %d\n", cfg.Delegate.Child.MaxIterations)
+	fmt.Printf("  delegate.child.timeout_seconds: %d\n", cfg.Delegate.Child.TimeoutSeconds)
+	fmt.Printf("  delegate.child.auto_approve: %t\n", delegateChildAutoApprove(cfg))
+	fmt.Printf("  autonomy.enabled: %t\n", cfg.Autonomy.Enabled)
+	fmt.Printf("  autonomy.worker.max_iterations: %d\n", cfg.Autonomy.Worker.MaxIterations)
+	fmt.Printf("  autonomy.worker.timeout_seconds: %d\n", cfg.Autonomy.Worker.TimeoutSeconds)
+	fmt.Printf("  autonomy.worker.auto_approve: %t\n", autonomyWorkerAutoApprove(cfg))
+	fmt.Printf("  autonomy.pool.max_workers: %d\n", cfg.Autonomy.Pool.MaxWorkers)
+	fmt.Printf("  autonomy.heartbeat.interval_seconds: %d\n", cfg.Autonomy.Heartbeat.IntervalSeconds)
 	fmt.Printf("  memory.tidal.enabled: %t\n", cfg.Memory.Tidal.Enabled)
 	fmt.Printf("  memory.tidal.beta: %.2f\n", cfg.Memory.Tidal.Beta)
 	fmt.Printf("  memory.tidal.max_boost: %.2f\n", cfg.Memory.Tidal.MaxBoost)
@@ -403,6 +483,20 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func delegateChildAutoApprove(cfg *config.Config) bool {
+	if cfg == nil || cfg.Delegate.Child.AutoApprove == nil {
+		return false
+	}
+	return *cfg.Delegate.Child.AutoApprove
+}
+
+func autonomyWorkerAutoApprove(cfg *config.Config) bool {
+	if cfg == nil || cfg.Autonomy.Worker.AutoApprove == nil {
+		return false
+	}
+	return *cfg.Autonomy.Worker.AutoApprove
+}
+
 // runConfigTimeout prints the effective timeout budget for each runtime layer.
 // Values come from the normalized configuration, so omitted settings show the
 // same defaults that a running Agent would use.
@@ -418,6 +512,8 @@ func runConfigTimeout(cmd *cobra.Command, args []string) error {
 	fmt.Println("LuckyAgent 超时配置（有效值）:")
 	fmt.Printf("  Telegram Gateway Chat:       %ds (%s)  [msg_gateway.telegram.chat_timeout_seconds]\n", cfg.MsgGateway.Telegram.ChatTimeoutSeconds, formatTimeoutDuration(cfg.MsgGateway.Telegram.ChatTimeoutSeconds))
 	fmt.Printf("  Agent Loop:                  %ds (%s)  [agent.timeout_seconds]\n", cfg.Agent.TimeoutSeconds, formatTimeoutDuration(cfg.Agent.TimeoutSeconds))
+	fmt.Printf("  Delegate Task:               %ds (%s)  [delegate.timeout_seconds]\n", cfg.Delegate.TimeoutSeconds, formatTimeoutDuration(cfg.Delegate.TimeoutSeconds))
+	fmt.Printf("  Delegate Child Loop:         %ds (%s)  [delegate.child.timeout_seconds]\n", cfg.Delegate.Child.TimeoutSeconds, formatTimeoutDuration(cfg.Delegate.Child.TimeoutSeconds))
 	fmt.Printf("  Simple Local Inspection:     %ds (%s)  [agent.simple_local_inspection.timeout_seconds]\n", cfg.Agent.SimpleLocalInspection.TimeoutSeconds, formatTimeoutDuration(cfg.Agent.SimpleLocalInspection.TimeoutSeconds))
 	fmt.Printf("  OpenCLI:                     %ds (%s)  [opencli.timeout_seconds]\n", cfg.OpenCLI.TimeoutSeconds, formatTimeoutDuration(cfg.OpenCLI.TimeoutSeconds))
 	fmt.Printf("  Computer Use (total):        %ds (%s)  [tools.computer_use.timeout_seconds]\n", cfg.Tools.ComputerUse.TimeoutSeconds, formatTimeoutDuration(cfg.Tools.ComputerUse.TimeoutSeconds))

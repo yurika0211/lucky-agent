@@ -4,6 +4,31 @@ LuckyAgent 的 autonomy 工具组用于管理后台任务队列、worker、heart
 
 这些工具属于运行时调度和后台执行，不是普通文件或网络查询工具。
 
+## 运行时配置
+
+后台 `autonomy` worker 的配置位于 `config.json` 的 `autonomy` 段：
+
+```bash
+lh cfg s autonomy.enabled true
+lh cfg s autonomy.worker.max_iterations 100
+lh cfg s autonomy.worker.timeout_seconds 180
+lh cfg s autonomy.worker.auto_approve false
+lh cfg s autonomy.pool.max_workers 4
+lh cfg s autonomy.pool.auto_scale true
+lh cfg s autonomy.heartbeat.interval_seconds 600
+lh cfg s autonomy.heartbeat.active_start 8
+lh cfg s autonomy.heartbeat.active_end 22
+```
+
+可配置的范围包括：
+
+- `autonomy.worker.*`：worker 的 Agent Loop 迭代次数、超时、自动批准、重复调用限制、纯工具轮次限制、重复 URL 限制和隐藏工具。
+- `autonomy.queue_buffer`：任务队列缓冲区大小。
+- `autonomy.pool.*`：最大 worker 数、结果缓冲区、是否自动扩容和最小 worker 数。
+- `autonomy.heartbeat.*`：`passive`/`proactive` 模式、轮询间隔、活动时间窗口和每次最多处理的任务数。
+
+这些配置在 Agent 创建时装配到 `AutonomyKit`，修改后需要重启 Agent 进程。
+
 ## 工具定义
 
 实现位置：

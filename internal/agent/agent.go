@@ -741,7 +741,7 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		}
 	}
 
-	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
+	delegateMgr := tool.NewDelegateManager(buildDelegateRuntimeConfig(c))
 	imageGenDefaults := tool.ImageGenerationDefaults{
 		Model:             strings.TrimSpace(c.ImageGeneration.Model),
 		Size:              strings.TrimSpace(c.ImageGeneration.Size),
@@ -834,7 +834,108 @@ func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
 	if worker.TimeoutSeconds > 0 {
 		cfg.Pool.TaskTimeout = time.Duration(worker.TimeoutSeconds) * time.Second
 	}
+	if c.Autonomy.QueueBuffer > 0 {
+		cfg.QueueBuf = c.Autonomy.QueueBuffer
+	}
+	if c.Autonomy.Pool.MaxWorkers > 0 {
+		cfg.Pool.MaxWorkers = c.Autonomy.Pool.MaxWorkers
+	}
+	if c.Autonomy.Pool.QueueBuffer > 0 {
+		cfg.Pool.QueueBuffer = c.Autonomy.Pool.QueueBuffer
+	}
+	cfg.Pool.AutoScale = c.Autonomy.Pool.AutoScale
+	if c.Autonomy.Pool.MinWorkers > 0 {
+		cfg.Pool.MinWorkers = c.Autonomy.Pool.MinWorkers
+	}
+	if cfg.Pool.MinWorkers > cfg.Pool.MaxWorkers {
+		cfg.Pool.MinWorkers = cfg.Pool.MaxWorkers
+	}
+	if mode := strings.ToLower(strings.TrimSpace(c.Autonomy.Heartbeat.Mode)); mode == "passive" || mode == "proactive" {
+		cfg.Heartbeat.Mode = autonomy.HeartbeatMode(mode)
+	}
+	if c.Autonomy.Heartbeat.IntervalSeconds > 0 {
+		cfg.Heartbeat.Interval = time.Duration(c.Autonomy.Heartbeat.IntervalSeconds) * time.Second
+	}
+	if c.Autonomy.Heartbeat.ActiveStart >= 0 && c.Autonomy.Heartbeat.ActiveStart <= 23 {
+		cfg.Heartbeat.ActiveStart = c.Autonomy.Heartbeat.ActiveStart
+	}
+	if c.Autonomy.Heartbeat.ActiveEnd >= 0 && c.Autonomy.Heartbeat.ActiveEnd <= 23 {
+		cfg.Heartbeat.ActiveEnd = c.Autonomy.Heartbeat.ActiveEnd
+	}
+	if c.Autonomy.Heartbeat.MaxTasksPerBeat > 0 {
+		cfg.Heartbeat.MaxTasksPerBeat = c.Autonomy.Heartbeat.MaxTasksPerBeat
+	}
 	return cfg
+}
+
+func buildDelegateRuntimeConfig(c *config.Config) tool.DelegateConfig {
+	cfg := tool.DefaultDelegateConfig()
+	if c == nil {
+		return cfg
+	}
+	d := c.Delegate
+	if d.MaxConcurrent > 0 {
+		cfg.MaxConcurrent = d.MaxConcurrent
+	}
+	if d.TimeoutSeconds > 0 {
+		cfg.Timeout = time.Duration(d.TimeoutSeconds) * time.Second
+	}
+	if d.MinTimeoutSeconds > 0 {
+		cfg.MinTimeout = time.Duration(d.MinTimeoutSeconds) * time.Second
+	}
+	if d.MaxTimeoutSeconds > 0 {
+		cfg.MaxTimeout = time.Duration(d.MaxTimeoutSeconds) * time.Second
+	}
+	if d.MaxResultBytesInline > 0 {
+		cfg.MaxResultBytesInline = d.MaxResultBytesInline
+	}
+	if d.MaxChildren > 0 {
+		cfg.MaxChildren = d.MaxChildren
+	}
+	if d.Child.MaxIterations > 0 {
+		cfg.ChildMaxIterations = d.Child.MaxIterations
+	}
+	if d.Child.TimeoutSeconds > 0 {
+		cfg.ChildTimeout = time.Duration(d.Child.TimeoutSeconds) * time.Second
+	}
+	if d.Child.AutoApprove != nil {
+		cfg.ChildAutoApprove = *d.Child.AutoApprove
+	}
+	if d.Child.RepeatToolCallLimit > 0 {
+		cfg.ChildRepeatToolLimit = d.Child.RepeatToolCallLimit
+	}
+	if d.Child.ToolOnlyIterationLimit > 0 {
+		cfg.ChildToolOnlyLimit = d.Child.ToolOnlyIterationLimit
+	}
+	if d.Child.DuplicateFetchLimit > 0 {
+		cfg.ChildDuplicateLimit = d.Child.DuplicateFetchLimit
+	}
+	if d.Child.DisabledTools != nil {
+		cfg.ChildDisabledTools = append([]string(nil), d.Child.DisabledTools...)
+	}
+	cfg.ChildAllowRecursive = d.Child.AllowRecursiveDelegate
+	return cfg
+}
+
+func buildDelegateChildLoopConfig(delegateCfg tool.DelegateConfig, allowRecursive bool) LoopConfig {
+	loopCfg := DefaultLoopConfig()
+	loopCfg.MaxIterations = delegateCfg.ChildMaxIterations
+	loopCfg.Timeout = delegateCfg.ChildTimeout
+	loopCfg.AutoApprove = delegateCfg.ChildAutoApprove
+	loopCfg.RepeatToolCallLimit = delegateCfg.ChildRepeatToolLimit
+	loopCfg.ToolOnlyIterationLimit = delegateCfg.ChildToolOnlyLimit
+	loopCfg.DuplicateFetchLimit = delegateCfg.ChildDuplicateLimit
+	loopCfg.DisabledTools = append([]string(nil), delegateCfg.ChildDisabledTools...)
+	if !allowRecursive {
+		loopCfg.DisabledTools = append(loopCfg.DisabledTools,
+			"delegate_task",
+			"delegate_parallel",
+			"delegate_to_skill",
+			"delegate_to_mcp",
+		)
+	}
+	loopCfg.DisabledTools = normalizeToolNameList(loopCfg.DisabledTools)
+	return loopCfg
 }
 
 /**
@@ -1333,7 +1434,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 	}
 
 	// v0.38.0: 设置 delegate 的 Agent 执行器，让 delegate_task 真正走 Agent Loop
-	supportRT.delegateMgr.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
+	delegateCfg := supportRT.delegateMgr.Config()
+	supportRT.delegateMgr.SetAgentExecutorWithOptions(func(ctx context.Context, description, contextStr string, options tool.AgentExecutorOptions) (string, error) {
 		sess := memoryRT.sessions.NewWithTitle("delegate-task")
 		if workspace := tool.ExtractDelegateWorkspace(contextStr); workspace != "" {
 			if err := os.MkdirAll(workspace, 0o755); err == nil {
@@ -1344,9 +1446,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		if contextStr != "" {
 			prompt = fmt.Sprintf("%s\n\nContext: %s", description, contextStr)
 		}
-		loopCfg := DefaultLoopConfig()
-		loopCfg.AutoApprove = false // 子代理不自动批准危险工具
-		loopCfg.MaxIterations = 5   // 子代理限制更严格
+		loopCfg := buildDelegateChildLoopConfig(delegateCfg, options.AllowRecursiveDelegate)
 		result, err := a.RunLoopWithSession(ctx, sess, prompt, loopCfg)
 		if result != nil {
 			lastTool := ""
