@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -11,8 +12,9 @@ import (
 type ActivationOptions struct {
 	Limit        int
 	IncludeGraph bool
-	// MaxGraphDepth is currently capped to shallow one-hop graph spread. The
-	// field is kept in options so later path expansion can grow without API churn.
+	// MaxGraphDepth bounds how many hops the graph spread walks outward from the
+	// seed set (breadth-first). Depth 1 matches the original single-hop spread;
+	// deeper hops apply an additional decay so distant notes contribute less.
 	MaxGraphDepth     int
 	MaxGraphBoost     float64
 	MaxGraphSeeds     int
@@ -443,29 +445,70 @@ func tierActivationMultiplier(t Tier) float64 {
 	}
 }
 
+// spreadActivationGraphLocked walks the graph breadth-first from the seed set,
+// up to opts.MaxGraphDepth hops. A node is expanded at most once (first time
+// it is reached), matching the visited-set BFS used by the standalone
+// knowledge-graph activation engine in internal/rag/graph_activation.go.
 func (s *Store) spreadActivationGraphLocked(scores map[string]*ActivationScore, seeds []string, now time.Time, opts ActivationOptions) {
+	visited := make(map[string]int, len(seeds)*4)
+	queue := make([]string, 0, len(seeds))
 	for _, id := range seeds {
+		if scores[id] == nil {
+			continue
+		}
+		if _, seen := visited[id]; seen {
+			continue
+		}
+		visited[id] = 0
+		queue = append(queue, id)
+	}
+
+	for len(queue) > 0 {
+		id := queue[0]
+		queue = queue[1:]
+		depth := visited[id]
+		if depth >= opts.MaxGraphDepth {
+			continue
+		}
 		source := scores[id]
 		if source == nil {
 			continue
 		}
-		s.spreadActivationFromLocked(scores, source, id, now, opts)
+		for _, targetID := range s.spreadActivationFromLocked(scores, source, id, depth+1, now, opts) {
+			if _, seen := visited[targetID]; seen {
+				continue
+			}
+			visited[targetID] = depth + 1
+			queue = append(queue, targetID)
+		}
 	}
 }
 
-func (s *Store) spreadActivationFromLocked(scores map[string]*ActivationScore, source *ActivationScore, id string, now time.Time, opts ActivationOptions) {
+// spreadActivationFromLocked applies one hop of boost from id to its graph
+// neighbors at the given depth, and returns the distinct neighbor IDs touched
+// so the BFS caller can continue expanding from them.
+func (s *Store) spreadActivationFromLocked(scores map[string]*ActivationScore, source *ActivationScore, id string, depth int, now time.Time, opts ActivationOptions) []string {
 	entry := s.entries[id]
 	if !entryIsActive(entry, now) {
-		return
+		return nil
+	}
+
+	var touched []string
+	visit := func(targetID string) {
+		if targetID != "" && targetID != id {
+			touched = append(touched, targetID)
+		}
 	}
 
 	for _, link := range s.graph.Forward[id] {
 		for _, key := range graphKeysForLink(link) {
 			for _, targetID := range s.graph.Names[key] {
-				s.addActivationBoostLocked(scores, source, targetID, id, "wikilink_target", link, 0.55, now, opts)
+				s.addActivationBoostLocked(scores, source, targetID, id, "wikilink_target", link, 0.55, depth, now, opts)
+				visit(targetID)
 			}
 			for _, targetID := range s.graph.Backlinks[key] {
-				s.addActivationBoostLocked(scores, source, targetID, id, "backlink", link, 0.35, now, opts)
+				s.addActivationBoostLocked(scores, source, targetID, id, "backlink", link, 0.35, depth, now, opts)
+				visit(targetID)
 			}
 		}
 	}
@@ -473,19 +516,33 @@ func (s *Store) spreadActivationFromLocked(scores map[string]*ActivationScore, s
 	for _, alias := range graphAliasesForEntry(entry) {
 		key := graphKey(alias)
 		for _, targetID := range s.graph.Backlinks[key] {
-			s.addActivationBoostLocked(scores, source, targetID, id, "alias_backlink", alias, 0.45, now, opts)
+			s.addActivationBoostLocked(scores, source, targetID, id, "alias_backlink", alias, 0.45, depth, now, opts)
+			visit(targetID)
 		}
 	}
 
 	for _, tag := range entry.Tags {
 		key := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(tag)), "#")
 		for _, targetID := range s.graph.Tags[key] {
-			s.addActivationBoostLocked(scores, source, targetID, id, "shared_tag", tag, 0.18, now, opts)
+			s.addActivationBoostLocked(scores, source, targetID, id, "shared_tag", tag, 0.18, depth, now, opts)
+			visit(targetID)
 		}
 	}
+
+	return touched
 }
 
-func (s *Store) addActivationBoostLocked(scores map[string]*ActivationScore, source *ActivationScore, targetID, sourceID, kind, via string, coefficient float64, now time.Time, opts ActivationOptions) {
+// graphHopDecay discounts boosts from hops beyond the first so distant notes
+// contribute less than direct neighbors. Depth 1 keeps the original,
+// undiscounted single-hop strength for backward compatibility.
+func graphHopDecay(depth int) float64 {
+	if depth <= 1 {
+		return 1
+	}
+	return math.Pow(0.6, float64(depth-1))
+}
+
+func (s *Store) addActivationBoostLocked(scores map[string]*ActivationScore, source *ActivationScore, targetID, sourceID, kind, via string, coefficient float64, depth int, now time.Time, opts ActivationOptions) {
 	if targetID == "" || targetID == sourceID {
 		return
 	}
@@ -496,7 +553,7 @@ func (s *Store) addActivationBoostLocked(scores map[string]*ActivationScore, sou
 	if isConceptEntry(target) {
 		return
 	}
-	boost := source.Score * coefficient * max(target.Weight(now), 0.05)
+	boost := source.Score * coefficient * graphHopDecay(depth) * max(target.Weight(now), 0.05)
 	if boost <= 0 {
 		return
 	}
@@ -532,7 +589,7 @@ func (s *Store) addActivationBoostLocked(scores map[string]*ActivationScore, sou
 		Via:    strings.TrimSpace(via),
 		Kind:   kind,
 		Weight: coefficient,
-		Depth:  1,
+		Depth:  depth,
 		Boost:  boost,
 	})
 }

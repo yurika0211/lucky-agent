@@ -18,6 +18,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.MaxTokens != 4096 {
 		t.Errorf("expected max_tokens 4096, got %d", cfg.MaxTokens)
 	}
+	if cfg.Limits.MaxLengthContinuations != 8 {
+		t.Errorf("expected limits.max_length_continuations 8, got %d", cfg.Limits.MaxLengthContinuations)
+	}
 	if cfg.Agent.RepeatToolCallLimit != 3 {
 		t.Errorf("expected repeat_tool_call_limit 3, got %d", cfg.Agent.RepeatToolCallLimit)
 	}
@@ -123,6 +126,7 @@ func TestManagerSetAndGet(t *testing.T) {
 	mgr.Set("model", "claude-3")
 	mgr.Set("max_tokens", "8192")
 	mgr.Set("temperature", "0.5")
+	mgr.Set("limits.max_length_continuations", "12")
 
 	cfg := mgr.Get()
 	if cfg.Provider != "anthropic" {
@@ -136,6 +140,9 @@ func TestManagerSetAndGet(t *testing.T) {
 	}
 	if cfg.Temperature != 0.5 {
 		t.Errorf("expected 0.5, got %f", cfg.Temperature)
+	}
+	if cfg.Limits.MaxLengthContinuations != 12 {
+		t.Errorf("expected max_length_continuations 12, got %d", cfg.Limits.MaxLengthContinuations)
 	}
 }
 
@@ -1693,4 +1700,109 @@ func TestInitHome_SoulAlreadyExists(t *testing.T) {
 	}
 
 	t.Logf("InitHome correctly preserves existing SOUL.md")
+}
+
+func TestDefaultSkillsConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Skills.AutoEnable == nil || !*cfg.Skills.AutoEnable {
+		t.Error("skills.auto_enable should default to true to preserve existing behavior")
+	}
+	if cfg.Skills.Install.MaxFiles != 2000 {
+		t.Errorf("MaxFiles = %d, want 2000", cfg.Skills.Install.MaxFiles)
+	}
+	if len(cfg.Skills.Install.AllowedLocalRoots) != 0 {
+		t.Error("allowed_local_roots must default to empty: local-path installs are an arbitrary-read primitive")
+	}
+}
+
+// TestNormalizeBackfillsSkillLimits covers upgrades: a config.json written before
+// the skills block existed decodes to a zero-valued struct, which would otherwise
+// mean "no limits at all".
+func TestNormalizeBackfillsSkillLimits(t *testing.T) {
+	cfg := &Config{}
+	normalizeConfig(cfg)
+
+	def := DefaultConfig()
+	if cfg.Skills.AutoEnable == nil || !*cfg.Skills.AutoEnable {
+		t.Error("auto_enable not back-filled; existing installs would stop enabling skills")
+	}
+	checks := []struct {
+		name string
+		got  int64
+		want int64
+	}{
+		{"MaxArchiveBytes", cfg.Skills.Install.MaxArchiveBytes, def.Skills.Install.MaxArchiveBytes},
+		{"MaxUncompressedBytes", cfg.Skills.Install.MaxUncompressedBytes, def.Skills.Install.MaxUncompressedBytes},
+		{"MaxSingleFileBytes", cfg.Skills.Install.MaxSingleFileBytes, def.Skills.Install.MaxSingleFileBytes},
+		{"MaxFiles", int64(cfg.Skills.Install.MaxFiles), int64(def.Skills.Install.MaxFiles)},
+		{"MaxCompressionRatio", int64(cfg.Skills.Install.MaxCompressionRatio), int64(def.Skills.Install.MaxCompressionRatio)},
+		{"MaxPathDepth", int64(cfg.Skills.Install.MaxPathDepth), int64(def.Skills.Install.MaxPathDepth)},
+		{"KeepVersions", int64(cfg.Skills.Install.KeepVersions), int64(def.Skills.Install.KeepVersions)},
+		{"StagingTTLHours", int64(cfg.Skills.Install.StagingTTLHours), int64(def.Skills.Install.StagingTTLHours)},
+		{"ProbeTimeoutSeconds", int64(cfg.Skills.Install.ProbeTimeoutSeconds), int64(def.Skills.Install.ProbeTimeoutSeconds)},
+		{"TrialTimeoutSeconds", int64(cfg.Skills.Install.TrialTimeoutSeconds), int64(def.Skills.Install.TrialTimeoutSeconds)},
+	}
+	for _, c := range checks {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d", c.name, c.got, c.want)
+		}
+	}
+}
+
+// TestNormalizeKeepsExplicitAutoEnableFalse is the reason AutoEnable is a *bool:
+// a plain bool could not tell "absent" from "explicitly disabled".
+func TestNormalizeKeepsExplicitAutoEnableFalse(t *testing.T) {
+	cfg := &Config{Skills: SkillsConfig{AutoEnable: boolPtr(false)}}
+	normalizeConfig(cfg)
+	if cfg.Skills.AutoEnable == nil || *cfg.Skills.AutoEnable {
+		t.Error("an explicit auto_enable=false was overwritten by the default")
+	}
+}
+
+func TestCloneConfigDeepCopiesSkillsAndHooks(t *testing.T) {
+	in := DefaultConfig()
+	in.Skills.Install.AllowedLocalRoots = []string{"/srv/skills"}
+	in.Hooks.PreToolUse = []HookSpec{{Match: []string{"skill_*"}, Script: "/tmp/x.py"}}
+
+	cp := cloneConfig(in)
+
+	cp.Skills.Install.AllowedLocalRoots[0] = "/mutated"
+	if in.Skills.Install.AllowedLocalRoots[0] != "/srv/skills" {
+		t.Error("AllowedLocalRoots is shared between clone and original")
+	}
+
+	*cp.Skills.AutoEnable = false
+	if !*in.Skills.AutoEnable {
+		t.Error("AutoEnable pointer is shared between clone and original")
+	}
+
+	cp.Hooks.PreToolUse[0].Match[0] = "mutated"
+	if in.Hooks.PreToolUse[0].Match[0] != "skill_*" {
+		t.Error("HookSpec.Match is shared between clone and original")
+	}
+}
+
+func TestInitHomeCreatesSkillInstallDirs(t *testing.T) {
+	tmp := t.TempDir()
+	m, err := NewManagerWithDir(tmp)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	if err := m.InitHome(); err != nil {
+		t.Fatalf("InitHome: %v", err)
+	}
+	for _, name := range []string{"skills", "skills-staging", "skills-versions"} {
+		info, err := os.Stat(filepath.Join(tmp, name))
+		if err != nil {
+			t.Errorf("stat %s: %v", name, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("%s is not a directory", name)
+		}
+	}
+	guard := filepath.Join(tmp, "hooks", "skill_capability_guard.py")
+	if _, err := os.Stat(guard); err != nil {
+		t.Errorf("default guard hook not written: %v", err)
+	}
 }

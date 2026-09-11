@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -52,11 +54,26 @@ func newExternalCommandHook(event Event, spec Spec, timeout time.Duration, maxOu
 		match:      spec.Match,
 		sources:    spec.Sources,
 		command:    strings.TrimSpace(spec.Command),
-		script:     strings.TrimSpace(spec.Script),
+		script:     expandHomePath(strings.TrimSpace(spec.Script)),
 		timeout:    timeout,
 		maxOutput:  maxOutput,
 		failClosed: failClosed,
 	}
+}
+
+// expandHomePath resolves a leading ~/ against the user's home directory. A
+// Script is handed straight to an interpreter via exec, never to a shell, so an
+// unexpanded ~ fails with ENOENT — which reads as "the hook allowed the call"
+// rather than as a configuration error.
+func expandHomePath(p string) string {
+	if !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, p[2:])
 }
 
 // Event returns the lifecycle event this hook is bound to.
@@ -75,8 +92,8 @@ func (h *ExternalCommandHook) Matches(toolName, source string) bool {
 	return true
 }
 
-// listMatches returns true when filter is empty (match-all) or value is in
-// filter. When fold is true the comparison is case-insensitive.
+// listMatches returns true when filter is empty (match-all) or value matches an
+// entry. When fold is true the comparison is case-insensitive.
 func listMatches(filter []string, value string, fold bool) bool {
 	if len(filter) == 0 {
 		return true
@@ -86,15 +103,35 @@ func listMatches(filter []string, value string, fold bool) bool {
 		if item == "" {
 			continue
 		}
-		if fold {
-			if strings.EqualFold(item, value) {
-				return true
-			}
-		} else if item == value {
+		if matchPattern(item, value, fold) {
 			return true
 		}
 	}
 	return false
+}
+
+// matchPattern compares one filter entry against a value. Entries containing
+// *, ? or [ are treated as globs; everything else compares literally, which
+// preserves the previous exact-match behavior for every existing config.
+//
+// The glob form is what makes a whole tool family addressable — `skill_*` covers
+// every skill_<name>_<tool> the skill registry produces, which is otherwise
+// unreachable since Spec.Sources filters on gateway origin (cli/telegram/...),
+// not on the tool's own Source field.
+func matchPattern(pattern, value string, fold bool) bool {
+	if fold {
+		pattern = strings.ToLower(pattern)
+		value = strings.ToLower(value)
+	}
+	if strings.ContainsAny(pattern, "*?[") {
+		// path.Match treats '/' as a separator, which is fine: tool names and
+		// gateway sources contain none. A malformed pattern falls through to the
+		// literal comparison rather than silently matching nothing.
+		if ok, err := path.Match(pattern, value); err == nil {
+			return ok
+		}
+	}
+	return pattern == value
 }
 
 // Run executes the external command with the payload on stdin and decodes the

@@ -7,7 +7,7 @@
   ],
   "scripts": {
     "build": "npm run typecheck --workspace GUI && npm run typecheck --workspace TUI && npm run build --workspace GUI && npm run build:tui",
-    "build:tui": "esbuild TUI/src/index.tsx --bundle --platform=node --format=esm --target=node22 --define:process.env.DEV=\"false\" --alias:react-devtools-core=./TUI/src/react-devtools-core-shim.ts --outfile=TUI/dist/tui.mjs",
+    "build:tui": "esbuild TUI/src/index.tsx --bundle --platform=node --format=esm --target=node22 --define:process.env.DEV=\"false\" --alias:react-devtools-core=./TUI/src/react-devtools-core-shim.ts --banner:js='import { createRequire } from \"node:module\"; const require = createRequire(import.meta.url);' --outfile=TUI/dist/tui.mjs",
     "dev:dashboard": "npm run dev --workspace GUI",
     "dev:tui": "node --import tsx TUI/src/index.tsx",
     "start:tui": "node --import tsx TUI/src/index.tsx",

@@ -84,6 +84,65 @@ func TestActivateRecordsGraphPaths(t *testing.T) {
 	t.Fatalf("expected propagated allergy memory, got %#v", scores)
 }
 
+func TestActivateSpreadsMultipleHops(t *testing.T) {
+	store, err := NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if err := store.SaveWithTierAndTags("Sprint planning notes mention [[Falcon Initiative]].", "planning", TierMedium, 0.6, []string{"planning"}); err != nil {
+		t.Fatalf("save seed: %v", err)
+	}
+	if err := store.SaveWithTierAndTags("[[Falcon Initiative]] depends on [[Nimbus Cluster]] for compute.", "engineering", TierMedium, 0.6, []string{"engineering"}); err != nil {
+		t.Fatalf("save hop1: %v", err)
+	}
+	if err := store.SaveWithTierAndTags("[[Nimbus Cluster]] outages are tracked in the ops channel.", "ops", TierMedium, 0.6, []string{"ops"}); err != nil {
+		t.Fatalf("save hop2: %v", err)
+	}
+
+	findClusterScore := func(scores []ActivationScore) (ActivationScore, bool) {
+		for _, score := range scores {
+			if strings.Contains(score.Entry.Content, "ops channel") {
+				return score, true
+			}
+		}
+		return ActivationScore{}, false
+	}
+
+	shallow := store.Activate("Sprint planning", ActivationOptions{
+		IncludeGraph:      true,
+		MaxGraphDepth:     1,
+		UpdateAccessStats: false,
+		Explain:           true,
+	})
+	if _, ok := findClusterScore(shallow); ok {
+		t.Fatalf("expected depth-1 spread to NOT reach the second hop, got %#v", shallow)
+	}
+
+	deep := store.Activate("Sprint planning", ActivationOptions{
+		IncludeGraph:      true,
+		MaxGraphDepth:     2,
+		UpdateAccessStats: false,
+		Explain:           true,
+	})
+	score, ok := findClusterScore(deep)
+	if !ok {
+		t.Fatalf("expected depth-2 spread to reach the second hop, got %#v", deep)
+	}
+	if score.Components.GraphBoost <= 0 {
+		t.Fatalf("expected graph boost for two-hop memory, got %#v", score.Components)
+	}
+	foundDepthTwo := false
+	for _, path := range score.Paths {
+		if path.Depth == 2 {
+			foundDepthTwo = true
+			break
+		}
+	}
+	if !foundDepthTwo {
+		t.Fatalf("expected an activation path recorded at depth 2, got %#v", score.Paths)
+	}
+}
+
 func TestSearchParallelUsesUnifiedActivation(t *testing.T) {
 	store, err := NewStore(t.TempDir())
 	if err != nil {

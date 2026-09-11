@@ -104,6 +104,48 @@ type Config struct {
 
 	// Hooks 配置工具执行前后的可插拔 hook（PreToolUse / PostToolUse）
 	Hooks HooksConfig `json:"hooks,omitempty"`
+
+	// Skills 配置 skill 的加载目录与安装管线
+	Skills SkillsConfig `json:"skills,omitempty"`
+}
+
+// SkillsConfig 配置 skill 的加载与安装。
+type SkillsConfig struct {
+	// Dir 覆盖 skill 目录；为空时使用 <home>/skills。
+	Dir string `json:"dir,omitempty"`
+	// AutoEnable 决定启动加载后是否自动启用全部 skill。
+	//
+	// 用指针而非 bool：omitempty 的 bool 分不清"未设置"和"显式 false"，
+	// 用普通 bool 会让所有存量 config.json 静默停止自动启用 skill。
+	AutoEnable *bool `json:"auto_enable,omitempty"`
+	// Install 配置安装管线的限额与开关。
+	Install SkillInstallConfig `json:"install,omitempty"`
+}
+
+// SkillInstallConfig 配置 skill 安装管线。所有上限同时作用于压缩包解包和
+// 本地目录拷贝两条路径。
+type SkillInstallConfig struct {
+	Disabled bool `json:"disabled,omitempty"`
+	// ProbeCLI 允许安装期执行 `<script> --help` 来推导子命令工具。
+	// 这会运行被安装的代码，因此只在静态扫描通过后才进行。
+	ProbeCLI            bool `json:"probe_cli,omitempty"`
+	ProbeTimeoutSeconds int  `json:"probe_timeout_seconds,omitempty"`
+	TrialTimeoutSeconds int  `json:"trial_timeout_seconds,omitempty"`
+
+	MaxArchiveBytes      int64 `json:"max_archive_bytes,omitempty"`
+	MaxUncompressedBytes int64 `json:"max_uncompressed_bytes,omitempty"`
+	MaxSingleFileBytes   int64 `json:"max_single_file_bytes,omitempty"`
+	MaxFiles             int   `json:"max_files,omitempty"`
+	MaxCompressionRatio  int   `json:"max_compression_ratio,omitempty"`
+	MaxPathDepth         int   `json:"max_path_depth,omitempty"`
+
+	// AllowedLocalRoots 白名单化"从本地目录安装"。留空即关闭该来源：
+	// 否则它就是一个任意路径读取原语，被读到的内容随后会经 skill_read 喂给模型。
+	AllowedLocalRoots []string `json:"allowed_local_roots,omitempty"`
+	// BlockOnSecrets 把疑似密钥从 warn 升级为 block。
+	BlockOnSecrets  bool `json:"block_on_secrets,omitempty"`
+	KeepVersions    int  `json:"keep_versions,omitempty"`
+	StagingTTLHours int  `json:"staging_ttl_hours,omitempty"`
 }
 
 type ToolsConfig struct {
@@ -164,12 +206,13 @@ type HookSpec struct {
 }
 
 type LlmProviderConfig struct {
-	Name     string `json:"name,omitempty"`
-	APIKey   string `json:"api_key,omitempty"`
-	BaseURL  string `json:"base_url,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Protocol string `json:"protocol,omitempty"` // chat_completions (default) or responses
-	Vision   bool   `json:"vision,omitempty"`   // 模型是否支持视觉能力
+	Name             string `json:"name,omitempty"`
+	APIKey           string `json:"api_key,omitempty"`
+	BaseURL          string `json:"base_url,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Protocol         string `json:"protocol,omitempty"`          // chat_completions (default) or responses
+	ReasoningSummary string `json:"reasoning_summary,omitempty"` // Responses API reasoning.summary verbosity: "", "auto", "concise", "detailed"
+	Vision           bool   `json:"vision,omitempty"`            // 模型是否支持视觉能力
 }
 
 // CustomModelInfo 自定义模型信息配置
@@ -243,6 +286,7 @@ type LimitsConfig struct {
 	MaxTimeoutSeconds      int     `json:"max_timeout_seconds"`
 	MaxToolCalls           int     `json:"max_tool_calls"`
 	MaxConcurrentToolCalls int     `json:"max_concurrent_tool_calls"`
+	MaxLengthContinuations int     `json:"max_length_continuations"`
 }
 
 // RetryConfig 重试配置
@@ -627,11 +671,12 @@ type OpenCLIConfig struct {
 
 // FallbackEntry 是降级链中的一个节点配置
 type FallbackEntry struct {
-	Provider string `json:"provider"`
-	APIKey   string `json:"api_key,omitempty"`
-	APIBase  string `json:"api_base,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Protocol string `json:"protocol,omitempty"`
+	Provider         string `json:"provider"`
+	APIKey           string `json:"api_key,omitempty"`
+	APIBase          string `json:"api_base,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Protocol         string `json:"protocol,omitempty"`
+	ReasoningSummary string `json:"reasoning_summary,omitempty"`
 }
 
 // DefaultConfig 返回默认配置
@@ -639,8 +684,9 @@ func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
 		LlmProvider: LlmProviderConfig{
-			Name:  "openai",
-			Model: "gpt-5.4-mini",
+			Name:             "openai",
+			Model:            "gpt-5.4-mini",
+			ReasoningSummary: "detailed",
 		},
 		Provider:     "openai",
 		Model:        "gpt-5.4-mini",
@@ -715,6 +761,7 @@ func DefaultConfig() *Config {
 			MaxTimeoutSeconds:      600,
 			MaxToolCalls:           5,
 			MaxConcurrentToolCalls: 3,
+			MaxLengthContinuations: 8,
 		},
 		Retry: RetryConfig{
 			Enabled:            true,
@@ -832,6 +879,23 @@ func DefaultConfig() *Config {
 		},
 		Hooks: HooksConfig{
 			TimeoutSeconds: 30,
+		},
+		Skills: SkillsConfig{
+			AutoEnable: boolPtr(true),
+			Install: SkillInstallConfig{
+				ProbeCLI:             true,
+				ProbeTimeoutSeconds:  15,
+				TrialTimeoutSeconds:  90,
+				MaxArchiveBytes:      32 << 20,
+				MaxUncompressedBytes: 64 << 20,
+				MaxSingleFileBytes:   16 << 20,
+				MaxFiles:             2000,
+				MaxCompressionRatio:  100,
+				MaxPathDepth:         12,
+				AllowedLocalRoots:    []string{},
+				KeepVersions:         3,
+				StagingTTLHours:      24,
+			},
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
@@ -1043,6 +1107,9 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Limits.MaxConcurrentToolCalls <= 0 {
 		cfg.Limits.MaxConcurrentToolCalls = def.Limits.MaxConcurrentToolCalls
 	}
+	if cfg.Limits.MaxLengthContinuations <= 0 {
+		cfg.Limits.MaxLengthContinuations = def.Limits.MaxLengthContinuations
+	}
 
 	if cfg.Retry.MaxAttempts <= 0 {
 		cfg.Retry.MaxAttempts = def.Retry.MaxAttempts
@@ -1068,6 +1135,45 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Hooks.TimeoutSeconds <= 0 {
 		cfg.Hooks.TimeoutSeconds = def.Hooks.TimeoutSeconds
+	}
+
+	// Skills: back-fill every limit so a config written before this block existed
+	// (or one that only sets a couple of keys) still gets sane bounds.
+	if cfg.Skills.AutoEnable == nil {
+		cfg.Skills.AutoEnable = boolPtr(*def.Skills.AutoEnable)
+	}
+	if cfg.Skills.Install.ProbeTimeoutSeconds <= 0 {
+		cfg.Skills.Install.ProbeTimeoutSeconds = def.Skills.Install.ProbeTimeoutSeconds
+	}
+	if cfg.Skills.Install.TrialTimeoutSeconds <= 0 {
+		cfg.Skills.Install.TrialTimeoutSeconds = def.Skills.Install.TrialTimeoutSeconds
+	}
+	if cfg.Skills.Install.MaxArchiveBytes <= 0 {
+		cfg.Skills.Install.MaxArchiveBytes = def.Skills.Install.MaxArchiveBytes
+	}
+	if cfg.Skills.Install.MaxUncompressedBytes <= 0 {
+		cfg.Skills.Install.MaxUncompressedBytes = def.Skills.Install.MaxUncompressedBytes
+	}
+	if cfg.Skills.Install.MaxSingleFileBytes <= 0 {
+		cfg.Skills.Install.MaxSingleFileBytes = def.Skills.Install.MaxSingleFileBytes
+	}
+	if cfg.Skills.Install.MaxFiles <= 0 {
+		cfg.Skills.Install.MaxFiles = def.Skills.Install.MaxFiles
+	}
+	if cfg.Skills.Install.MaxCompressionRatio <= 0 {
+		cfg.Skills.Install.MaxCompressionRatio = def.Skills.Install.MaxCompressionRatio
+	}
+	if cfg.Skills.Install.MaxPathDepth <= 0 {
+		cfg.Skills.Install.MaxPathDepth = def.Skills.Install.MaxPathDepth
+	}
+	if cfg.Skills.Install.KeepVersions <= 0 {
+		cfg.Skills.Install.KeepVersions = def.Skills.Install.KeepVersions
+	}
+	if cfg.Skills.Install.StagingTTLHours <= 0 {
+		cfg.Skills.Install.StagingTTLHours = def.Skills.Install.StagingTTLHours
+	}
+	if cfg.Skills.Install.AllowedLocalRoots == nil {
+		cfg.Skills.Install.AllowedLocalRoots = []string{}
 	}
 
 	if cfg.RateLimit.RequestsPerMinute <= 0 {
@@ -1484,7 +1590,31 @@ func cloneConfig(in *Config) *Config {
 	if in.Proactive.AllowedActions != nil {
 		cp.Proactive.AllowedActions = append([]string{}, in.Proactive.AllowedActions...)
 	}
+	// HookSpec carries Match/Sources slices, so copying the outer slice is not
+	// enough — without this every clone shared the originals' backing arrays.
+	cp.Hooks.PreToolUse = cloneHookSpecs(in.Hooks.PreToolUse)
+	cp.Hooks.PostToolUse = cloneHookSpecs(in.Hooks.PostToolUse)
+	if in.Skills.AutoEnable != nil {
+		v := *in.Skills.AutoEnable
+		cp.Skills.AutoEnable = &v
+	}
+	if in.Skills.Install.AllowedLocalRoots != nil {
+		cp.Skills.Install.AllowedLocalRoots = append([]string{}, in.Skills.Install.AllowedLocalRoots...)
+	}
 	return &cp
+}
+
+func cloneHookSpecs(in []HookSpec) []HookSpec {
+	if in == nil {
+		return nil
+	}
+	out := make([]HookSpec, len(in))
+	for i, spec := range in {
+		spec.Match = append([]string(nil), in[i].Match...)
+		spec.Sources = append([]string(nil), in[i].Sources...)
+		out[i] = spec
+	}
+	return out
 }
 
 // Manager 管理配置的加载和保存
@@ -2103,6 +2233,10 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Limits.MaxConcurrentToolCalls = n
+	case "limits.max_length_continuations":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Limits.MaxLengthContinuations = n
 	case "retry.enabled":
 		m.config.Retry.Enabled = parseBool(value)
 	case "retry.max_attempts":
@@ -2282,6 +2416,11 @@ func (m *Manager) InitHome() error {
 		filepath.Join(m.homeDir, "memory", "prompts", "functions"),
 		filepath.Join(m.homeDir, "logs"),
 		filepath.Join(m.homeDir, "skills"),
+		// Staging holds unvetted uploads mid-install; versions holds pre-upgrade
+		// snapshots for rollback. Both are siblings of skills/ so the commit step
+		// is a plain rename on the same filesystem.
+		filepath.Join(m.homeDir, "skills-staging"),
+		filepath.Join(m.homeDir, "skills-versions"),
 		filepath.Join(m.homeDir, "tokens"),
 		filepath.Join(m.homeDir, "rag"),
 		filepath.Join(m.homeDir, "workspace"),
@@ -2402,10 +2541,11 @@ func (m *Manager) initDefaultHooks() error {
 	hooksDir := filepath.Join(m.homeDir, "hooks")
 
 	hooks := map[string]string{
-		"audit_log.py":       defaultAuditLogHook(),
-		"protect_paths.py":   defaultProtectPathsHook(),
-		"block_dangerous.py": defaultBlockDangerousHook(),
-		"redact_secrets.py":  defaultRedactSecretsHook(),
+		"audit_log.py":              defaultAuditLogHook(),
+		"protect_paths.py":          defaultProtectPathsHook(),
+		"block_dangerous.py":        defaultBlockDangerousHook(),
+		"redact_secrets.py":         defaultRedactSecretsHook(),
+		"skill_capability_guard.py": defaultSkillCapabilityGuardHook(),
 	}
 
 	for filename, content := range hooks {
@@ -2605,6 +2745,112 @@ if __name__ == "__main__":
 }
 
 // defaultRedactSecretsHook 返回默认的密钥脱敏 hook
+func defaultSkillCapabilityGuardHook() string {
+	return `#!/usr/bin/env python3
+"""PreToolUse hook: confine skill tools to the capabilities they declare.
+
+Reads the hook Payload as JSON on stdin and emits a Decision on stdout.
+Match this on: ["skill_*"] — skill tools are named skill_<skill>_<tool>.
+
+Why this exists: skill tools are registered with PermApprove, but the tool
+Registry only blocks PermDeny, and the Telegram/cron/heartbeat/autonomy paths
+all run with AutoApprove=true. PreToolUse is the one gate that runs on every
+channel, so it is where a skill's declared capabilities actually get enforced.
+
+Policy lives in ~/.luckyagent/hooks/skill_policy.json:
+
+    {
+      "default": "allow",
+      "quarantine": ["freshly_installed_skill"],
+      "skills": {
+        "blog_api": {"allow": ["run", "posts_*"], "deny": ["*_delete"]}
+      }
+    }
+
+Resolution order: quarantine -> deny glob -> non-empty allow with no match ->
+default. A missing or unparseable policy file allows the call (fail-open,
+matching redact_secrets.py) and appends a line to ~/.luckyagent/hook-audit.jsonl.
+"""
+import sys
+import json
+import os
+import fnmatch
+from datetime import datetime, timezone
+
+HOME = os.path.expanduser("~/.luckyagent")
+POLICY_PATH = os.path.join(HOME, "hooks", "skill_policy.json")
+AUDIT_PATH = os.path.join(HOME, "hook-audit.jsonl")
+
+
+def audit(note, **fields):
+    try:
+        row = {"at": datetime.now(timezone.utc).isoformat(), "hook": "skill_capability_guard", "note": note}
+        row.update(fields)
+        with open(AUDIT_PATH, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def split_tool(tool_name, known_skills):
+    """Split skill_<skill>_<tool>. Both halves may contain underscores, so match
+    the longest known skill name rather than splitting on the first separator."""
+    body = tool_name[len("skill_"):]
+    best = None
+    for skill in known_skills:
+        prefix = skill + "_"
+        if body.startswith(prefix) and (best is None or len(skill) > len(best)):
+            best = skill
+    if best is None:
+        return None, body
+    return best, body[len(best) + 1:]
+
+
+def main() -> None:
+    payload = json.load(sys.stdin)
+    tool = payload.get("tool", "") or ""
+    if not tool.startswith("skill_"):
+        print(json.dumps({"decision": "allow"}))
+        return
+
+    try:
+        with open(POLICY_PATH, encoding="utf-8") as handle:
+            policy = json.load(handle)
+    except (OSError, ValueError) as err:
+        audit("policy unreadable, allowing", tool=tool, error=str(err))
+        print(json.dumps({"decision": "allow"}))
+        return
+
+    skills = policy.get("skills", {}) or {}
+    skill, action = split_tool(tool, list(skills.keys()) + list(policy.get("quarantine", []) or []))
+
+    if skill and skill in (policy.get("quarantine", []) or []):
+        print(json.dumps({"decision": "block", "reason": "skill %s is quarantined" % skill}))
+        return
+
+    rules = skills.get(skill or "", {}) or {}
+    for pattern in rules.get("deny", []) or []:
+        if fnmatch.fnmatch(action, pattern):
+            print(json.dumps({"decision": "block", "reason": "%s denies %s" % (skill, action)}))
+            return
+
+    allow = rules.get("allow", []) or []
+    if allow and not any(fnmatch.fnmatch(action, pattern) for pattern in allow):
+        print(json.dumps({"decision": "block", "reason": "%s does not allow %s" % (skill, action)}))
+        return
+
+    if policy.get("default", "allow") == "block" and not rules:
+        print(json.dumps({"decision": "block", "reason": "no policy entry for %s" % (skill or tool)}))
+        return
+
+    print(json.dumps({"decision": "allow"}))
+
+
+if __name__ == "__main__":
+    main()
+`
+}
+
 func defaultRedactSecretsHook() string {
 	return `#!/usr/bin/env python3
 """PostToolUse hook: redact secrets from tool output.

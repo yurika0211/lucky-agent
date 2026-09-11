@@ -48,12 +48,13 @@ func ParseModelKind(value string) (ModelKind, error) {
 // for each model purpose. Model IDs remain in Models.Active for concise and
 // backward-compatible configuration files.
 type ModelEndpointConfig struct {
-	Provider       string            `json:"provider,omitempty"`
-	APIKey         string            `json:"api_key,omitempty"`
-	APIBase        string            `json:"api_base,omitempty"`
-	Protocol       string            `json:"protocol,omitempty"`
-	ExtraHeaders   map[string]string `json:"extra_headers,omitempty"`
-	TimeoutSeconds int               `json:"timeout_seconds,omitempty"`
+	Provider         string            `json:"provider,omitempty"`
+	APIKey           string            `json:"api_key,omitempty"`
+	APIBase          string            `json:"api_base,omitempty"`
+	Protocol         string            `json:"protocol,omitempty"`
+	ReasoningSummary string            `json:"reasoning_summary,omitempty"`
+	ExtraHeaders     map[string]string `json:"extra_headers,omitempty"`
+	TimeoutSeconds   int               `json:"timeout_seconds,omitempty"`
 }
 
 // ModelsConfig is the unified model selection section. Legacy fields are kept
@@ -66,13 +67,14 @@ type ModelsConfig struct {
 
 // ModelSelection is a resolved model reference without exposing credentials.
 type ModelSelection struct {
-	ID             string
-	Kind           ModelKind
-	Provider       string
-	APIBase        string
-	Protocol       string
-	ExtraHeaders   map[string]string
-	TimeoutSeconds int
+	ID               string
+	Kind             ModelKind
+	Provider         string
+	APIBase          string
+	Protocol         string
+	ReasoningSummary string
+	ExtraHeaders     map[string]string
+	TimeoutSeconds   int
 }
 
 func normalizeModels(cfg *Config) {
@@ -126,6 +128,9 @@ func mergeModelEndpoint(base, override ModelEndpointConfig) ModelEndpointConfig 
 	if value := strings.TrimSpace(override.Protocol); value != "" {
 		result.Protocol = value
 	}
+	if value := strings.TrimSpace(override.ReasoningSummary); value != "" {
+		result.ReasoningSummary = value
+	}
 	if override.ExtraHeaders != nil {
 		result.ExtraHeaders = cloneStringMap(override.ExtraHeaders)
 	}
@@ -141,6 +146,7 @@ func legacyModelSelection(cfg *Config, kind ModelKind) ModelSelection {
 	selection.Provider = endpoint.Provider
 	selection.APIBase = endpoint.APIBase
 	selection.Protocol = endpoint.Protocol
+	selection.ReasoningSummary = endpoint.ReasoningSummary
 	selection.ExtraHeaders = cloneStringMap(endpoint.ExtraHeaders)
 	selection.TimeoutSeconds = endpoint.TimeoutSeconds
 	switch kind {
@@ -164,11 +170,12 @@ func legacyEndpoint(cfg *Config, kind ModelKind) ModelEndpointConfig {
 	switch kind {
 	case ModelKindChat:
 		return ModelEndpointConfig{
-			Provider:     cfg.LlmProvider.Name,
-			APIKey:       cfg.LlmProvider.APIKey,
-			APIBase:      cfg.LlmProvider.BaseURL,
-			Protocol:     cfg.LlmProvider.Protocol,
-			ExtraHeaders: cloneStringMap(cfg.ExtraHeaders),
+			Provider:         cfg.LlmProvider.Name,
+			APIKey:           cfg.LlmProvider.APIKey,
+			APIBase:          cfg.LlmProvider.BaseURL,
+			Protocol:         cfg.LlmProvider.Protocol,
+			ReasoningSummary: cfg.LlmProvider.ReasoningSummary,
+			ExtraHeaders:     cloneStringMap(cfg.ExtraHeaders),
 		}
 	case ModelKindEmbedding:
 		return ModelEndpointConfig{APIKey: cfg.Embedding.APIKey, APIBase: cfg.Embedding.APIBase}
@@ -194,6 +201,7 @@ func syncLegacyModels(cfg *Config) {
 			cfg.LlmProvider.APIKey = endpoint.APIKey
 			cfg.LlmProvider.BaseURL = endpoint.APIBase
 			cfg.LlmProvider.Protocol = endpoint.Protocol
+			cfg.LlmProvider.ReasoningSummary = endpoint.ReasoningSummary
 			cfg.Provider = cfg.LlmProvider.Name
 			cfg.APIKey = cfg.LlmProvider.APIKey
 			cfg.APIBase = cfg.LlmProvider.BaseURL
@@ -252,6 +260,7 @@ func (c *Config) ModelSelection(kind ModelKind) (ModelSelection, bool) {
 		selection.Provider = endpoint.Provider
 		selection.APIBase = endpoint.APIBase
 		selection.Protocol = endpoint.Protocol
+		selection.ReasoningSummary = endpoint.ReasoningSummary
 		selection.ExtraHeaders = cloneStringMap(endpoint.ExtraHeaders)
 		selection.TimeoutSeconds = endpoint.TimeoutSeconds
 	}

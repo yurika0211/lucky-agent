@@ -59,7 +59,7 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 			Code:    "INVALID_DATA",
 			Message: fmt.Sprintf("invalid chat data: %v", err),
 		})
-		client.Send <- errMsg
+		client.TrySend(errMsg)
 		return
 	}
 
@@ -68,7 +68,7 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 		State:   "thinking",
 		Message: "processing your message",
 	})
-	client.Send <- status
+	client.TrySend(status)
 
 	// 取消该 session 之前的请求
 	h.mu.Lock()
@@ -103,7 +103,7 @@ func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatDa
 		State:   "executing",
 		Message: "agent is running",
 	})
-	client.Send <- status
+	client.TrySend(status)
 
 	sessionID := h.ensureSession(client.SessionID)
 	turn := agent.MultimodalUserTurnInput(data.Message, data.Attachments)
@@ -114,7 +114,7 @@ func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatDa
 			Message: err.Error(),
 		})
 		errMsg.ParentID = parentID
-		client.Send <- errMsg
+		client.TrySend(errMsg)
 		return
 	}
 
@@ -124,13 +124,13 @@ func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatDa
 		Iterations:   1,
 	})
 	endMsg.ParentID = parentID
-	client.Send <- endMsg
+	client.TrySend(endMsg)
 
 	// 发送 idle 状态
 	idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
 		State: "idle",
 	})
-	client.Send <- idle
+	client.TrySend(idle)
 }
 
 // streamChat 流式聊天（逐块推送）
@@ -140,7 +140,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 		State:   "executing",
 		Message: "agent is streaming",
 	})
-	client.Send <- status
+	client.TrySend(status)
 
 	sessionID := h.ensureSession(client.SessionID)
 	turn := agent.MultimodalUserTurnInput(data.Message, data.Attachments)
@@ -151,7 +151,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			Message: err.Error(),
 		})
 		errMsg.ParentID = parentID
-		client.Send <- errMsg
+		client.TrySend(errMsg)
 		return
 	}
 
@@ -163,7 +163,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 	sendIdle := func() {
 		idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: "idle"})
 		idle.ParentID = parentID
-		client.Send <- idle
+		client.TrySend(idle)
 	}
 
 	sendError := func(err error) {
@@ -172,7 +172,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			Message: err.Error(),
 		})
 		errMsg.ParentID = parentID
-		client.Send <- errMsg
+		client.TrySend(errMsg)
 		sendIdle()
 	}
 
@@ -188,7 +188,19 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			}
 			msg, _ := NewMessage(TypeReasoning, client.SessionID, reasoning)
 			msg.ParentID = parentID
-			client.Send <- msg
+			client.TrySend(msg)
+
+		case agent.ChatEventReasoningContent:
+			if currentRound == 0 {
+				currentRound = evt.Round
+			}
+			msg, _ := NewMessage(TypeReasoning, client.SessionID, ReasoningData{
+				Content: evt.Content,
+				Round:   evt.Round,
+				Stage:   "content",
+			})
+			msg.ParentID = parentID
+			client.TrySend(msg)
 
 		case agent.ChatEventToolCall:
 			if currentRound == 0 {
@@ -215,7 +227,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Visibility: step.Visibility,
 			})
 			msg.ParentID = parentID
-			client.Send <- msg
+			client.TrySend(msg)
 
 		case agent.ChatEventToolResult:
 			if currentRound == 0 {
@@ -233,7 +245,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Visibility: step.Visibility,
 			})
 			msg.ParentID = parentID
-			client.Send <- msg
+			client.TrySend(msg)
 
 		case agent.ChatEventContent:
 			fullResponse.WriteString(evt.Content)
@@ -242,7 +254,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Done:    false,
 			})
 			msg.ParentID = parentID
-			client.Send <- msg
+			client.TrySend(msg)
 
 		case agent.ChatEventDone:
 			if evt.Content != "" {
@@ -254,7 +266,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Iterations:   max(currentRound, 1),
 			})
 			endMsg.ParentID = parentID
-			client.Send <- endMsg
+			client.TrySend(endMsg)
 			sendIdle()
 			return
 
@@ -270,7 +282,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			Iterations:   max(currentRound, 1),
 		})
 		endMsg.ParentID = parentID
-		client.Send <- endMsg
+		client.TrySend(endMsg)
 	}
 	sendIdle()
 }

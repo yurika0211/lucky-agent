@@ -10,6 +10,7 @@ import type {
   ProviderMessage,
   RuntimeAttachment,
   RuntimeSession,
+  SearchTrace,
   SessionHistory,
   SessionsResponse,
   ToolStep,
@@ -21,15 +22,18 @@ import { Gateways } from './components/Gateways';
 import { Settings } from './components/Settings';
 import { Trajectory } from './components/Trajectory';
 import { MemoryGraph } from './components/MemoryGraph';
+import { Skills } from './components/Skills';
 
 type ThemeMode = 'light' | 'dark';
-type WorkspaceView = 'chat' | 'trajectory' | 'gateways' | 'settings' | 'memory';
+type WorkspaceView = 'chat' | 'trajectory' | 'gateways' | 'skills' | 'settings' | 'memory';
 
 type Bubble = ChatMessage & {
   attachments?: Array<{ type: 'image' | 'file'; name: string; url: string }>;
   /** Correlates a `tool_call` with the `tool_result` that completes it. */
   stepId?: string;
   tool?: ToolStep;
+  /** Round this step belongs to (role === 'reasoning'), used to merge in the real content once it arrives. */
+  round?: number;
 };
 
 /**
@@ -233,6 +237,15 @@ function IconTool() {
   );
 }
 
+function IconSkill() {
+  return (
+    <svg {...stroke}>
+      <path d="M12 3.2 4.8 7v10L12 20.8 19.2 17V7Z" />
+      <path d="M12 3.2V20.8M4.8 7l7.2 4 7.2-4" />
+    </svg>
+  );
+}
+
 function IconGraph() {
   return (
     <svg {...stroke}>
@@ -384,6 +397,7 @@ const VIEW_TITLES: Record<WorkspaceView, string> = {
   chat: 'Chat',
   trajectory: 'Tool trajectory',
   gateways: 'Messaging gateways',
+  skills: 'Skills',
   settings: 'Settings',
   memory: 'Memory graph',
 };
@@ -404,6 +418,9 @@ export function App() {
   const [socketState, setSocketState] = useState<'idle' | 'connecting' | 'connected' | 'running' | 'error'>('idle');
   const [messages, setMessages] = useState<Bubble[]>([]);
   const [activity, setActivity] = useState<ActivityNote[]>([]);
+  // Lifted here (not local to MemoryGraph) because the Memory tab fully
+  // unmounts on view switch — live traces must survive that.
+  const [memoryTraces, setMemoryTraces] = useState<Array<SearchTrace & { _receivedAt: number }>>([]);
   const [feed, setFeed] = useState<string[]>([]);
   const [sessions, setSessions] = useState<RuntimeSession[]>([]);
   const [sessionQuery, setSessionQuery] = useState('');
@@ -509,6 +526,26 @@ export function App() {
       const at = anchor ? prev.findIndex((item) => item.id === anchor) : -1;
       const next = at >= 0 ? [...prev.slice(0, at), step, ...prev.slice(at)] : [...prev, step];
       return next.slice(-messageCapRef.current);
+    });
+  }
+
+  /**
+   * Replaces a reasoning step's placeholder body ("Analyzing the request") with
+   * the model's real reasoning text once it arrives, in place, instead of
+   * inserting a second card for the same round.
+   */
+  function upsertReasoningStep(round: number, body: string) {
+    setMessages((prev) => {
+      let index = -1;
+      for (let i = prev.length - 1; i >= 0; i -= 1) {
+        if (prev[i].role === 'reasoning' && prev[i].round === round) {
+          index = i;
+          break;
+        }
+      }
+      if (index < 0) return prev;
+      const updated: Bubble = { ...prev[index], body, meta: nowLabel() };
+      return prev.map((item, i) => (i === index ? updated : item));
     });
   }
 
@@ -751,7 +788,7 @@ export function App() {
       const response = await fetchRuntime('/v1/uploads', { method: 'POST', body: form });
       if (!response.ok) {
         const detail = await response.text().catch(() => '');
-        throw new Error(detail ? `${response.status}: ${detail.slice(0, 160)}` : `upload ${response.status}`);
+        throw new Error(detail ? `${response.status}: ${detail}` : `upload ${response.status}`);
       }
       const payload = (await response.json()) as UploadResponse;
       const uploaded = payload.attachments?.[0];
@@ -837,7 +874,7 @@ export function App() {
       try {
         payload = JSON.parse(event.data) as WsPayload;
       } catch {
-        pushActivity('error', 'Protocol parse failed', String(event.data).slice(0, 200));
+        pushActivity('error', 'Protocol parse failed', String(event.data));
         return;
       }
       handleWsMessage(payload);
@@ -900,6 +937,14 @@ export function App() {
         break;
       }
       case 'reasoning': {
+        const roundNum = Number(payload.round) || undefined;
+        if (payload.stage === 'content') {
+          const content = String(payload.content || '').trim();
+          if (!content || !roundNum) break;
+          pushActivity('reasoning', `Reasoning round ${roundNum}`, content);
+          upsertReasoningStep(roundNum, content);
+          break;
+        }
         const summary = String(payload.summary || '').trim();
         if (!summary) break;
         const round = payload.round ? ` round ${payload.round}` : '';
@@ -912,6 +957,7 @@ export function App() {
           title: `Thought${round}`,
           body: summary,
           meta: nowLabel(),
+          round: roundNum,
         });
         break;
       }
@@ -936,6 +982,17 @@ export function App() {
       }
       case 'tool_result': {
         const name = String(payload.name || 'tool');
+        if (name === '__memory_trace') {
+          try {
+            const trace = JSON.parse(String(payload.output || '')) as SearchTrace;
+            setMemoryTraces((prev) => [{ ...trace, _receivedAt: Date.now() }, ...prev].slice(0, 20));
+            pushActivity('tool', 'Memory recall', trace.query, `${trace.results?.length ?? 0} hits`);
+          } catch {
+            // Malformed trace payload: drop it silently, the underlying tool
+            // result was already reported through its own tool_result event.
+          }
+          break;
+        }
         const stepId = String(payload.step_id || '');
         // Same here: `output` carries the whole result, `display` is truncated
         // to ~160 characters for compact surfaces.
@@ -1270,6 +1327,10 @@ export function App() {
           <button className={`nav-item ${view === 'gateways' ? 'active' : ''}`} type="button" onClick={() => setView('gateways')}>
             <IconPlug />
             <span>Gateways</span>
+          </button>
+          <button className={`nav-item ${view === 'skills' ? 'active' : ''}`} type="button" onClick={() => setView('skills')}>
+            <IconSkill />
+            <span>Skills</span>
           </button>
           <button className={`nav-item ${view === 'settings' ? 'active' : ''}`} type="button" onClick={() => setView('settings')}>
             <IconGear />
@@ -1617,9 +1678,11 @@ export function App() {
               {view === 'settings' ? (
                 <Settings fetchRuntime={fetchRuntime} pushActivity={pushActivity} />
               ) : view === 'memory' ? (
-                <MemoryGraph fetchRuntime={fetchRuntime} pushActivity={pushActivity} />
+                <MemoryGraph fetchRuntime={fetchRuntime} pushActivity={pushActivity} liveTraces={memoryTraces} />
               ) : view === 'gateways' ? (
                 <Gateways fetchRuntime={fetchRuntime} pushActivity={pushActivity} pushFeed={pushFeed} />
+              ) : view === 'skills' ? (
+                <Skills fetchRuntime={fetchRuntime} pushActivity={pushActivity} />
               ) : (
                 <Trajectory
                   session={session}

@@ -40,13 +40,18 @@ func validateOpenAIProtocol(protocol string) error {
 }
 
 type responsesRequest struct {
-	Model           string          `json:"model"`
-	Input           []any           `json:"input"`
-	MaxOutputTokens int             `json:"max_output_tokens,omitempty"`
-	Temperature     float64         `json:"temperature,omitempty"`
-	Stream          bool            `json:"stream"`
-	Tools           []responsesTool `json:"tools,omitempty"`
-	ToolChoice      any             `json:"tool_choice,omitempty"`
+	Model           string              `json:"model"`
+	Input           []any               `json:"input"`
+	MaxOutputTokens int                 `json:"max_output_tokens,omitempty"`
+	Temperature     float64             `json:"temperature,omitempty"`
+	Stream          bool                `json:"stream"`
+	Tools           []responsesTool     `json:"tools,omitempty"`
+	ToolChoice      any                 `json:"tool_choice,omitempty"`
+	Reasoning       *responsesReasoning `json:"reasoning,omitempty"`
+}
+
+type responsesReasoning struct {
+	Summary string `json:"summary,omitempty"`
 }
 
 type responsesTool struct {
@@ -125,6 +130,9 @@ func buildResponsesRequest(cfg Config, messages []Message, opts CallOptions, str
 		} else {
 			req.ToolChoice = "auto"
 		}
+	}
+	if summary := strings.TrimSpace(cfg.LlmProvider.ReasoningSummary); summary != "" {
+		req.Reasoning = &responsesReasoning{Summary: summary}
 	}
 	return req, nil
 }

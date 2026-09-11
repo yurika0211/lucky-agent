@@ -617,3 +617,132 @@ func indexOf(slice []string, item string) int {
 	}
 	return -1
 }
+
+// TestSkillRegistryReloadPreservesOtherSkillStates guards a bug where Reload
+// called Discover, which rebuilt metadata for *every* skill directory and reset
+// them all to SkillDiscovered. The other skills' tools stayed registered and
+// enabled in the tool Registry, so the two tables silently desynchronized and a
+// later Disable would fail with "is not enabled".
+func TestSkillRegistryReloadPreservesOtherSkillStates(t *testing.T) {
+	tmpDir := t.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		skillDir := filepath.Join(tmpDir, name)
+		os.MkdirAll(skillDir, 0755)
+		os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# "+name+"\n\nDesc.\n\n## Tools\n\n- `do`: Do\n"), 0644)
+	}
+
+	r := NewRegistry()
+	sr := NewSkillRegistry(r, NewSkillLoader(tmpDir))
+
+	if _, err := sr.Discover(); err != nil {
+		t.Fatalf("Discover: %v", err)
+	}
+	for _, name := range []string{"alpha", "beta"} {
+		if err := sr.Load(name); err != nil {
+			t.Fatalf("Load %s: %v", name, err)
+		}
+		if err := sr.Register(name); err != nil {
+			t.Fatalf("Register %s: %v", name, err)
+		}
+		if err := sr.Enable(name); err != nil {
+			t.Fatalf("Enable %s: %v", name, err)
+		}
+	}
+
+	if err := sr.Reload("alpha"); err != nil {
+		t.Fatalf("Reload alpha: %v", err)
+	}
+
+	meta, ok := sr.Get("beta")
+	if !ok {
+		t.Fatal("beta disappeared after reloading alpha")
+	}
+	if meta.State != SkillEnabled {
+		t.Errorf("beta state after reloading alpha = %s, want enabled", meta.State)
+	}
+	// The metadata state must still agree with the tool Registry.
+	if err := sr.Disable("beta"); err != nil {
+		t.Errorf("Disable beta after reloading alpha: %v", err)
+	}
+}
+
+// TestSkillRegistryDiscoverPreservesState covers the same desynchronization from
+// the other direction: a plain re-scan must not walk back an enabled skill.
+func TestSkillRegistryDiscoverPreservesState(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "keeper")
+	os.MkdirAll(skillDir, 0755)
+	os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# keeper\n\nDesc.\n\n## Tools\n\n- `do`: Do\n"), 0644)
+
+	r := NewRegistry()
+	sr := NewSkillRegistry(r, NewSkillLoader(tmpDir))
+	sr.Discover()
+	sr.Load("keeper")
+	sr.Register("keeper")
+	sr.Enable("keeper")
+
+	if _, err := sr.Discover(); err != nil {
+		t.Fatalf("second Discover: %v", err)
+	}
+
+	meta, _ := sr.Get("keeper")
+	if meta.State != SkillEnabled {
+		t.Errorf("state after re-Discover = %s, want enabled", meta.State)
+	}
+}
+
+// TestSkillRegistryDiscoverDuplicateDoesNotMutate guards the half-updated-map
+// path: the duplicate check used to run while writing, so a collision left
+// earlier entries behind.
+func TestSkillRegistryDiscoverDuplicateDoesNotMutate(t *testing.T) {
+	tmpDir := t.TempDir()
+	// Both directory names sanitize to "dup_skill".
+	for _, name := range []string{"dup skill", "dup-skill"} {
+		skillDir := filepath.Join(tmpDir, name)
+		os.MkdirAll(skillDir, 0755)
+		// Force the same skill name via frontmatter so the collision is certain
+		// regardless of how sanitizeName treats spaces versus dashes.
+		os.WriteFile(filepath.Join(skillDir, "SKILL.md"),
+			[]byte("---\nname: dup_skill\n---\n\n# dup\n\nDesc.\n"), 0644)
+	}
+
+	r := NewRegistry()
+	sr := NewSkillRegistry(r, NewSkillLoader(tmpDir))
+
+	if _, err := sr.Discover(); err == nil {
+		t.Fatal("expected a duplicate skill id error")
+	}
+	if got := sr.Count(); got != 0 {
+		t.Errorf("registry mutated on the error path: Count()=%d, want 0", got)
+	}
+}
+
+// TestSkillRegistryUnloadAll checks that retiring a whole generation clears its
+// tools out of the tool Registry.
+func TestSkillRegistryUnloadAll(t *testing.T) {
+	tmpDir := t.TempDir()
+	for _, name := range []string{"one", "two"} {
+		skillDir := filepath.Join(tmpDir, name)
+		os.MkdirAll(skillDir, 0755)
+		os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# "+name+"\n\nDesc.\n\n## Tools\n\n- `do`: Do\n"), 0644)
+	}
+
+	r := NewRegistry()
+	sr := NewSkillRegistry(r, NewSkillLoader(tmpDir))
+	sr.Discover()
+	sr.LoadAll()
+	sr.RegisterAll()
+	sr.EnableAll()
+
+	if _, ok := r.Get("skill_one_do"); !ok {
+		t.Fatal("skill_one_do was never registered")
+	}
+
+	sr.UnloadAll()
+
+	for _, name := range []string{"skill_one_do", "skill_two_do"} {
+		if _, ok := r.Get(name); ok {
+			t.Errorf("%s still registered after UnloadAll", name)
+		}
+	}
+}

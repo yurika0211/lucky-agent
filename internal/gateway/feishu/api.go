@@ -51,6 +51,34 @@ type sendMessageResponse struct {
 	} `json:"data"`
 }
 
+// feishuTextChunkLimit bounds how many runes go into a single Feishu message.
+// Feishu's own text-content limit is far higher, but very long messages hurt
+// readability in the client; splitting keeps each message reasonably sized
+// instead of sending one giant block.
+const feishuTextChunkLimit = 4000
+
+// splitFeishuText splits message into chunks of at most feishuTextChunkLimit
+// runes each. It never drops content — unlike a hard truncation, every rune
+// of the input ends up in some returned chunk.
+func splitFeishuText(message string) []string {
+	if message == "" {
+		return nil
+	}
+	runes := []rune(message)
+	if len(runes) <= feishuTextChunkLimit {
+		return []string{message}
+	}
+	out := make([]string, 0, len(runes)/feishuTextChunkLimit+1)
+	for len(runes) > feishuTextChunkLimit {
+		out = append(out, string(runes[:feishuTextChunkLimit]))
+		runes = runes[feishuTextChunkLimit:]
+	}
+	if len(runes) > 0 {
+		out = append(out, string(runes))
+	}
+	return out
+}
+
 func (a *Adapter) Send(ctx context.Context, chatID string, message string) error {
 	_, err := a.SendWithReceipt(ctx, chatID, message)
 	return err
@@ -61,16 +89,27 @@ func (a *Adapter) SendWithReceipt(ctx context.Context, chatID string, message st
 	if chatID == "" {
 		return gateway.SentMessage{}, fmt.Errorf("feishu: chat id is required")
 	}
-	payload, err := newMessageRequest(chatID, message)
-	if err != nil {
-		return gateway.SentMessage{}, err
+	chunks := splitFeishuText(message)
+	if len(chunks) == 0 {
+		chunks = []string{message}
 	}
-	var response sendMessageResponse
-	query := url.Values{"receive_id_type": []string{"chat_id"}}
-	if err := a.authorizedJSON(ctx, http.MethodPost, "/open-apis/im/v1/messages", query, payload, &response); err != nil {
-		return gateway.SentMessage{}, fmt.Errorf("feishu: send message: %w", err)
+	var receipt gateway.SentMessage
+	for _, chunk := range chunks {
+		payload, err := newMessageRequest(chatID, chunk)
+		if err != nil {
+			return gateway.SentMessage{}, err
+		}
+		var response sendMessageResponse
+		query := url.Values{"receive_id_type": []string{"chat_id"}}
+		if err := a.authorizedJSON(ctx, http.MethodPost, "/open-apis/im/v1/messages", query, payload, &response); err != nil {
+			return gateway.SentMessage{}, fmt.Errorf("feishu: send message: %w", err)
+		}
+		receipt, err = a.recordSentMessage(chatID, response)
+		if err != nil {
+			return gateway.SentMessage{}, err
+		}
 	}
-	return a.recordSentMessage(chatID, response)
+	return receipt, nil
 }
 
 func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID string, message string) error {
@@ -80,25 +119,47 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 
 func (a *Adapter) SendWithReplyReceipt(ctx context.Context, chatID string, replyToMsgID string, message string) (gateway.SentMessage, error) {
 	replyToMsgID = strings.TrimSpace(replyToMsgID)
-	if replyToMsgID == "" {
-		return a.SendWithReceipt(ctx, chatID, message)
+	chunks := splitFeishuText(message)
+	if len(chunks) == 0 {
+		chunks = []string{message}
 	}
-	payload, err := newMessageRequest("", message)
+	if replyToMsgID == "" {
+		return a.sendChunksAsChatMessages(ctx, chatID, chunks)
+	}
+
+	payload, err := newMessageRequest("", chunks[0])
 	if err != nil {
 		return gateway.SentMessage{}, err
 	}
 	var response sendMessageResponse
 	path := "/open-apis/im/v1/messages/" + url.PathEscape(replyToMsgID) + "/reply"
-	if err := a.authorizedJSON(ctx, http.MethodPost, path, nil, payload, &response); err == nil {
-		if receipt, receiptErr := a.recordSentMessage(chatID, response); receiptErr == nil {
-			return receipt, nil
-		} else {
-			log.Printf("[feishu] reply response was invalid, falling back to chat send: %v", receiptErr)
-		}
-	} else {
+	if err := a.authorizedJSON(ctx, http.MethodPost, path, nil, payload, &response); err != nil {
 		log.Printf("[feishu] reply message failed, falling back to chat send: %v", err)
+		return a.sendChunksAsChatMessages(ctx, chatID, chunks)
 	}
-	return a.SendWithReceipt(ctx, chatID, message)
+	receipt, receiptErr := a.recordSentMessage(chatID, response)
+	if receiptErr != nil {
+		log.Printf("[feishu] reply response was invalid, falling back to chat send: %v", receiptErr)
+		return a.sendChunksAsChatMessages(ctx, chatID, chunks)
+	}
+	if len(chunks) > 1 {
+		return a.sendChunksAsChatMessages(ctx, chatID, chunks[1:])
+	}
+	return receipt, nil
+}
+
+// sendChunksAsChatMessages sends each chunk as a plain (non-reply) chat
+// message and returns the receipt of the last one sent.
+func (a *Adapter) sendChunksAsChatMessages(ctx context.Context, chatID string, chunks []string) (gateway.SentMessage, error) {
+	var receipt gateway.SentMessage
+	for _, chunk := range chunks {
+		r, err := a.SendWithReceipt(ctx, chatID, chunk)
+		if err != nil {
+			return gateway.SentMessage{}, err
+		}
+		receipt = r
+	}
+	return receipt, nil
 }
 
 func (a *Adapter) recordSentMessage(chatID string, response sendMessageResponse) (gateway.SentMessage, error) {
@@ -111,7 +172,6 @@ func (a *Adapter) recordSentMessage(chatID string, response sendMessageResponse)
 }
 
 func newTextMessageRequest(receiveID, message string) (sendMessageRequest, error) {
-	message = strings.TrimSpace(message)
 	if message == "" {
 		message = " "
 	}
@@ -131,16 +191,20 @@ func newTextMessageRequest(receiveID, message string) (sendMessageRequest, error
 // retaining the complete destination in href; plain responses keep the
 // existing text-message behavior.
 func newMessageRequest(receiveID, message string) (sendMessageRequest, error) {
-	if content, ok := newFeishuPostContent(message); ok {
-		encoded, err := json.Marshal(content)
-		if err != nil {
-			return sendMessageRequest{}, fmt.Errorf("feishu: encode post content: %w", err)
+	// The post renderer intentionally normalizes surrounding whitespace. Keep
+	// messages that contain it as plain text so transport never drops bytes.
+	if message == strings.TrimSpace(message) {
+		if content, ok := newFeishuPostContent(message); ok {
+			encoded, err := json.Marshal(content)
+			if err != nil {
+				return sendMessageRequest{}, fmt.Errorf("feishu: encode post content: %w", err)
+			}
+			return sendMessageRequest{
+				ReceiveID: receiveID,
+				MsgType:   "post",
+				Content:   string(encoded),
+			}, nil
 		}
-		return sendMessageRequest{
-			ReceiveID: receiveID,
-			MsgType:   "post",
-			Content:   string(encoded),
-		}, nil
 	}
 	return newTextMessageRequest(receiveID, message)
 }

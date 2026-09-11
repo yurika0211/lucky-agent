@@ -244,3 +244,78 @@ func TestReloadSwapsHooksLive(t *testing.T) {
 		t.Error("after disabling reload the runner should passthrough")
 	}
 }
+
+// TestHookMatchGlob covers glob entries in Match/Sources. The motivating case is
+// `skill_*`: skill tools are named skill_<name>_<tool>, and Spec.Sources filters
+// on gateway origin rather than on the tool's Source, so a glob on Match is the
+// only way to address the whole family.
+func TestHookMatchGlob(t *testing.T) {
+	h := newExternalCommandHook(PreToolUse, Spec{
+		Match:   []string{"skill_*"},
+		Command: "true",
+	}, time.Second, 1024, false)
+	if h == nil {
+		t.Fatal("hook not built")
+	}
+
+	cases := []struct {
+		tool string
+		want bool
+	}{
+		{"skill_blog_api_run", true},
+		{"skill_read", true},
+		{"file_write", false},
+		{"myskill_run", false},
+	}
+	for _, c := range cases {
+		if got := h.Matches(c.tool, ""); got != c.want {
+			t.Errorf("Matches(%q)=%v want %v", c.tool, got, c.want)
+		}
+	}
+
+	// Literal entries must keep comparing exactly.
+	exact := newExternalCommandHook(PreToolUse, Spec{Match: []string{"file_write"}, Command: "true"}, time.Second, 1024, false)
+	if !exact.Matches("file_write", "") {
+		t.Error("literal match regressed")
+	}
+	if exact.Matches("file_write_all", "") {
+		t.Error("literal entry matched a prefix; it must be exact")
+	}
+
+	// Sources globs fold case, matching the documented behavior of that field.
+	src := newExternalCommandHook(PreToolUse, Spec{Sources: []string{"tele*"}, Command: "true"}, time.Second, 1024, false)
+	if !src.Matches("any_tool", "Telegram") {
+		t.Error("source glob should match case-insensitively")
+	}
+	if src.Matches("any_tool", "cli") {
+		t.Error("source glob matched an unrelated source")
+	}
+
+	// A malformed pattern falls back to a literal comparison instead of matching
+	// nothing (or everything).
+	bad := newExternalCommandHook(PreToolUse, Spec{Match: []string{"["}, Command: "true"}, time.Second, 1024, false)
+	if !bad.Matches("[", "") {
+		t.Error("malformed pattern should fall back to a literal comparison")
+	}
+	if bad.Matches("anything", "") {
+		t.Error("malformed pattern must not match everything")
+	}
+}
+
+// TestHookScriptTildeExpansion guards a silent fail-open: Script is exec'd
+// directly, never through a shell, so "~/..." used to resolve to a literal
+// directory named "~" and the hook would never run.
+func TestHookScriptTildeExpansion(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home directory")
+	}
+	h := newExternalCommandHook(PreToolUse, Spec{Script: "~/.luckyagent/hooks/x.py"}, time.Second, 1024, false)
+	if h == nil {
+		t.Fatal("hook not built")
+	}
+	want := filepath.Join(home, ".luckyagent/hooks/x.py")
+	if h.script != want {
+		t.Errorf("script = %q, want %q", h.script, want)
+	}
+}

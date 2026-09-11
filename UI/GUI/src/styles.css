@@ -43,6 +43,15 @@
   --viz-3: #4f7c2b;
   --viz-4: #356123;
 
+  /* Trace ramp for recall replay: deliberately a magenta→blue hue walk, not a
+     shade of the green --viz ramp, so "how many hops away" never reads as
+     "how many links this note has". Seed is the warmest stop. */
+  --trace-seed: #b23fae;
+  --trace-1: #8850c9;
+  --trace-2: #5d6bd6;
+  --trace-3: #3f93c9;
+  --trace-seed-soft: rgba(178, 63, 174, 0.14);
+
   --ok: #4a9440;
   --ok-soft: rgba(74, 148, 64, 0.14);
   --warn: #b0762a;
@@ -109,6 +118,13 @@
   --viz-2: #86b544;
   --viz-3: #a5cf62;
   --viz-4: #c3e08a;
+
+  /* Same magenta→blue trace ramp, re-stepped brighter for the dark surface. */
+  --trace-seed: #e07ddb;
+  --trace-1: #b596f2;
+  --trace-2: #8fa2f2;
+  --trace-3: #7ccaf2;
+  --trace-seed-soft: rgba(224, 125, 219, 0.18);
 
   --ok: #7cc45e;
   --ok-soft: rgba(124, 196, 94, 0.15);
@@ -3084,6 +3100,349 @@ a:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.graph-neighbour-more {
+  width: 100%;
+  padding: 6px 9px;
+  margin-top: 2px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent, var(--text-2));
+  text-align: center;
+  transition: background 120ms var(--ease), color 120ms var(--ease);
+}
+
+.graph-neighbour-more:hover {
+  background: var(--hover);
+}
+
+/* --------------------------------------------------------- trace replay */
+
+.graph-trace-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.graph-trace-query {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.graph-trace-query > span {
+  font-size: 12px;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+.graph-trace-query input {
+  min-width: 240px;
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 13.5px;
+  outline: none;
+}
+
+.graph-trace-query input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.graph-trace-query select {
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 12.5px;
+  color: var(--text-2);
+}
+
+.graph-trace-live {
+  position: relative;
+}
+
+.graph-trace-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: var(--trace-seed);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.graph-trace-live-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 320px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.graph-trace-live-list p.muted {
+  margin: 4px;
+  font-size: 12.5px;
+}
+
+.graph-trace-live-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 9px;
+  border-radius: var(--radius-sm);
+  text-align: left;
+  transition: background 120ms var(--ease);
+}
+
+.graph-trace-live-item:hover {
+  background: var(--hover);
+}
+
+.graph-trace-live-query {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-trace-live-item small {
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.graph-trace-playback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--trace-seed-soft);
+}
+
+.graph-trace-playback-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.graph-trace-playback-controls select {
+  padding: 5px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.graph-trace-playback-status {
+  font-size: 12px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Depth colouring overrides the degree-based fill from fillStep()/radiusFor() —
+   presentation attributes lose to any matching class selector, so this wins
+   even though the SVG element also carries an inline fill="...". */
+.graph-node.trace-seed circle,
+.graph-node.trace-node.trace-depth-1 circle,
+.graph-node.trace-node.trace-depth-2 circle,
+.graph-node.trace-node.trace-depth-3 circle {
+  animation: trace-pop 480ms var(--ease);
+}
+
+.graph-node.trace-seed circle { fill: var(--trace-seed); }
+.graph-node.trace-node.trace-depth-1 circle { fill: var(--trace-1); }
+.graph-node.trace-node.trace-depth-2 circle { fill: var(--trace-2); }
+.graph-node.trace-node.trace-depth-3 circle { fill: var(--trace-3); }
+
+.graph-edge.trace-edge {
+  stroke-width: 1.8px;
+  opacity: 0.8;
+  transition: opacity 200ms var(--ease);
+}
+
+.graph-edge.trace-depth-1 { stroke: var(--trace-1); }
+.graph-edge.trace-depth-2 { stroke: var(--trace-2); }
+.graph-edge.trace-depth-3 { stroke: var(--trace-3); }
+
+.graph-edge.trace-edge-hidden {
+  opacity: 0.05;
+}
+
+.graph-edge.trace-edge-new {
+  stroke-width: 2.6px;
+  stroke-dasharray: 7 5;
+  animation: trace-flow 650ms linear infinite;
+}
+
+@keyframes trace-pop {
+  0% { r: 2px; opacity: 0.2; }
+  55% { opacity: 1; }
+  100% { opacity: 1; }
+}
+
+@keyframes trace-flow {
+  from { stroke-dashoffset: 24; }
+  to { stroke-dashoffset: 0; }
+}
+
+.graph-legend .swatch.trace-swatch-seed { background: var(--trace-seed); }
+.graph-legend .swatch.trace-swatch-1 { background: var(--trace-1); }
+.graph-legend .swatch.trace-swatch-2 { background: var(--trace-2); }
+.graph-legend .swatch.trace-swatch-3 { background: var(--trace-3); }
+
+.graph-trace-orphans {
+  position: absolute;
+  right: 14px;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 220px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  backdrop-filter: blur(6px);
+}
+
+.graph-trace-orphans h4 {
+  margin: 0 0 2px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+.graph-trace-orphan {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 7px;
+  border-left: 2px solid var(--trace-1);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  color: var(--text-2);
+  text-align: left;
+  transition: background 120ms var(--ease);
+}
+
+.graph-trace-orphan:hover {
+  background: var(--hover);
+}
+
+.graph-trace-orphan span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.graph-trace-orphan small {
+  flex: none;
+  color: var(--text-3);
+}
+
+.graph-trace-orphan.trace-depth-0 { border-left-color: var(--trace-seed); }
+.graph-trace-orphan.trace-depth-1 { border-left-color: var(--trace-1); }
+.graph-trace-orphan.trace-depth-2 { border-left-color: var(--trace-2); }
+.graph-trace-orphan.trace-depth-3 { border-left-color: var(--trace-3); }
+
+.graph-trace-scores {
+  padding-top: 10px;
+  border-top: 1px dashed var(--line);
+}
+
+.graph-trace-scores h4 {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--trace-1);
+}
+
+.graph-trace-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.graph-trace-timeline-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid transparent;
+  text-align: left;
+  transition: background 120ms var(--ease), border-color 120ms var(--ease);
+}
+
+.graph-trace-timeline-row:hover {
+  background: var(--hover);
+}
+
+.graph-trace-timeline-row.current {
+  background: var(--trace-seed-soft);
+  border-left-color: var(--trace-seed);
+}
+
+.graph-trace-timeline-row strong {
+  flex: none;
+  min-width: 64px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
+.graph-trace-timeline-row span {
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.graph-trace-timeline-row.trace-depth-1 { border-left-color: color-mix(in srgb, var(--trace-1) 55%, transparent); }
+.graph-trace-timeline-row.trace-depth-2 { border-left-color: color-mix(in srgb, var(--trace-2) 55%, transparent); }
+.graph-trace-timeline-row.trace-depth-3 { border-left-color: color-mix(in srgb, var(--trace-3) 55%, transparent); }
+.graph-trace-timeline-row.trace-depth-1.current { border-left-color: var(--trace-1); }
+.graph-trace-timeline-row.trace-depth-2.current { border-left-color: var(--trace-2); }
+.graph-trace-timeline-row.trace-depth-3.current { border-left-color: var(--trace-3); }
+
 /* ------------------------------------------------------------ responsive */
 
 @media (max-width: 1100px) {
@@ -3137,4 +3496,168 @@ a:focus-visible {
   .user-bubble {
     max-width: 92%;
   }
+}
+
+/* ----------------------------------------------------------------- skills */
+/* Only the shapes the Skills panel adds. Layout, buttons, chips, panels and
+   disclosures all reuse the existing primitives; colors come from the theme
+   variables so light and dark both work without a second definition. */
+
+.skills {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.skill-install-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  padding: 16px;
+}
+
+.skill-path-field {
+  flex: 1 1 22rem;
+  min-width: 16rem;
+}
+
+.skill-install-review {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+}
+
+.skill-capability {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.skill-tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skill-tool-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.skill-tool-list code {
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+}
+
+.skill-findings h3 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.skill-findings ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.skill-finding {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--line-strong);
+  background: var(--surface-2);
+  font-size: 0.85rem;
+}
+
+/* Severity is carried by the left border so the row stays readable against
+   both surfaces without tinting the text. */
+.skill-finding.err {
+  border-left-color: var(--err);
+  background: var(--err-soft);
+}
+
+.skill-finding.warn {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.skill-finding.info {
+  border-left-color: var(--info);
+  background: var(--info-soft);
+}
+
+.skill-finding code {
+  font-weight: 600;
+}
+
+.skill-ack {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.skill-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.skill-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.skill-item:last-child {
+  border-bottom: 0;
+}
+
+.skill-item-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+}
+
+.skill-item-desc {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 0.87rem;
+  line-height: 1.5;
+}
+
+.skill-item-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.skill-details summary {
+  font-size: 0.84rem;
+}
+
+.mini-button.danger {
+  border-color: var(--err);
+  color: var(--err);
 }

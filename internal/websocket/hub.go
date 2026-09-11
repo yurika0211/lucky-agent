@@ -22,6 +22,39 @@ type Client struct {
 	Hub        *Hub
 	Send       chan *Message
 	LastActive time.Time
+
+	sendMu sync.Mutex
+	closed bool
+}
+
+// TrySend enqueues msg for delivery to the client. It returns false instead
+// of panicking if the client has already disconnected (Send closed) or its
+// outbound buffer is full — callers that need disconnect cleanup should
+// treat a false return as "unregister this client".
+func (c *Client) TrySend(msg *Message) bool {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.closed {
+		return false
+	}
+	select {
+	case c.Send <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
+// Close marks the client as disconnected and closes Send exactly once. Safe
+// to call concurrently and more than once.
+func (c *Client) Close() {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if c.closed {
+		return
+	}
+	c.closed = true
+	close(c.Send)
 }
 
 // Hub coordinates websocket clients and session broadcasts.
@@ -167,7 +200,7 @@ func (h *Hub) Run() {
 						delete(h.sessions, client.SessionID)
 					}
 				}
-				close(client.Send)
+				client.Close()
 			}
 			h.mu.Unlock()
 
@@ -181,9 +214,7 @@ func (h *Hub) Run() {
 			if sess, ok := h.sessions[msg.SessionID]; ok {
 				for clientID := range sess {
 					if client, ok := h.clients[clientID]; ok {
-						select {
-						case client.Send <- msg:
-						default:
+						if !client.TrySend(msg) {
 							h.mu.RUnlock()
 							h.unregister <- client
 							h.mu.RLock()
@@ -210,7 +241,7 @@ func (h *Hub) closeAll() {
 	defer h.mu.Unlock()
 
 	for id, client := range h.clients {
-		close(client.Send)
+		client.Close()
 		client.Conn.Close()
 		delete(h.clients, id)
 	}
@@ -256,9 +287,7 @@ func (h *Hub) SendToClient(clientID string, msg *Message) {
 	client, ok := h.clients[clientID]
 	h.mu.RUnlock()
 	if ok {
-		select {
-		case client.Send <- msg:
-		default:
+		if !client.TrySend(msg) {
 			h.unregister <- client
 		}
 	}
@@ -323,7 +352,7 @@ func (c *Client) readPump() {
 				Code:    "PARSE_ERROR",
 				Message: err.Error(),
 			})
-			c.Send <- errMsg
+			c.TrySend(errMsg)
 			continue
 		}
 
@@ -331,7 +360,7 @@ func (c *Client) readPump() {
 
 		if msg.Type == TypePing {
 			pong, _ := NewMessage(TypePong, c.SessionID, nil)
-			c.Send <- pong
+			c.TrySend(pong)
 			continue
 		}
 
@@ -344,7 +373,7 @@ func (c *Client) readPump() {
 				State:   "connected",
 				Message: "reconnected",
 			})
-			c.Send <- status
+			c.TrySend(status)
 			continue
 		}
 

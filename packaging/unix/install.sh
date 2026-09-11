@@ -24,7 +24,15 @@ rm -rf "$app_dir"
 mv "$stage_dir" "$app_dir"
 trap - EXIT
 
-cat > "$bin_dir/lh" <<EOF
+install_launcher() {
+  target=$1
+  temporary=$(mktemp "$bin_dir/.luckyagent-launcher.XXXXXX")
+  cat > "$temporary"
+  chmod 0755 "$temporary"
+  mv -f "$temporary" "$target"
+}
+
+install_launcher "$bin_dir/lh" <<EOF
 #!/usr/bin/env sh
 set -eu
 APP_ROOT='$app_dir'
@@ -33,15 +41,13 @@ export LH_TUI_DIR="\$APP_ROOT/UI"
 export LH_DASHBOARD_STATIC="\$APP_ROOT/UI/GUI/dist"
 exec "\$APP_ROOT/lh" "\$@"
 EOF
-chmod 0755 "$bin_dir/lh"
 
-cat > "$bin_dir/luckyagent-tui" <<EOF
+install_launcher "$bin_dir/luckyagent-tui" <<EOF
 #!/usr/bin/env sh
 exec '$bin_dir/lh' tui "\$@"
 EOF
-chmod 0755 "$bin_dir/luckyagent-tui"
 
-cat > "$bin_dir/luckyagent-gui" <<EOF
+install_launcher "$bin_dir/luckyagent-gui" <<EOF
 #!/usr/bin/env sh
 set -eu
 runtime_dir="\${HOME}/.luckyagent/runtime"
@@ -66,7 +72,6 @@ elif command -v open >/dev/null 2>&1; then
   open http://127.0.0.1:8765 >/dev/null 2>&1 &
 fi
 EOF
-chmod 0755 "$bin_dir/luckyagent-gui"
 
 profile_file=${LH_PROFILE_FILE:-"$HOME/.profile"}
 path_line="export PATH=\"$bin_dir:\$PATH\" # LuckyAgent"

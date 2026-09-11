@@ -104,13 +104,14 @@ type EmbeddingProvider struct {
 }
 
 type LlmProvider struct {
-	Name        string  `json:"name"`
-	APIKey      string  `json:"api_key"`
-	BaseURL     string  `json:"base_url"`
-	Model       string  `json:"model"`
-	Protocol    string  `json:"protocol,omitempty"`
-	Dimension   int     `json:"dimension"`
-	Temperature float64 `json:"temperature"`
+	Name             string  `json:"name"`
+	APIKey           string  `json:"api_key"`
+	BaseURL          string  `json:"base_url"`
+	Model            string  `json:"model"`
+	Protocol         string  `json:"protocol,omitempty"`
+	ReasoningSummary string  `json:"reasoning_summary,omitempty"`
+	Dimension        int     `json:"dimension"`
+	Temperature      float64 `json:"temperature"`
 }
 
 // Config 是 Provider 的配置

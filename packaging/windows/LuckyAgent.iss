@@ -21,6 +21,7 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
 UninstallDisplayIcon={app}\lh.exe
+ChangesEnvironment=yes
 
 [Files]
 Source: "{#SourceRoot}\lh.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -52,13 +53,6 @@ Type: filesandordirs; Name: "{app}"
 [Code]
 const
   UserEnvironmentKey = 'Environment';
-
-procedure BroadcastEnvironmentChange;
-var
-  ResultCode: DWORD;
-begin
-  SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', SMTO_ABORTIFHUNG, 5000, ResultCode);
-end;
 
 function PathContains(const Value, Entry: String): Boolean;
 begin
@@ -102,7 +96,6 @@ begin
   if CurStep = ssPostInstall then begin
     AddUserPath(ExpandConstant('{app}'));
     AddUserPath(ExpandConstant('{app}\runtime\node'));
-    BroadcastEnvironmentChange;
   end;
 end;
 
@@ -111,6 +104,5 @@ begin
   if CurUninstallStep = usUninstall then begin
     RemoveUserPath(ExpandConstant('{app}'));
     RemoveUserPath(ExpandConstant('{app}\runtime\node'));
-    BroadcastEnvironmentChange;
   end;
 end;
