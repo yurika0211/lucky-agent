@@ -2578,6 +2578,83 @@ func TestBuildAutonomyRuntimeConfigAllowsEmptyDisabledTools(t *testing.T) {
 	}
 }
 
+func TestBuildDelegateRuntimeConfigUsesConfig(t *testing.T) {
+	autoApprove := true
+	cfg := &config.Config{
+		Delegate: config.DelegateConfig{
+			MaxConcurrent:        5,
+			TimeoutSeconds:       240,
+			MinTimeoutSeconds:    10,
+			MaxTimeoutSeconds:    900,
+			MaxResultBytesInline: 8000,
+			MaxChildren:          4,
+			Child: config.DelegateChildConfig{
+				MaxIterations:          12,
+				TimeoutSeconds:         90,
+				AutoApprove:            &autoApprove,
+				RepeatToolCallLimit:    4,
+				ToolOnlyIterationLimit: 5,
+				DuplicateFetchLimit:    2,
+				DisabledTools:          []string{"terminal"},
+				AllowRecursiveDelegate: false,
+			},
+		},
+	}
+
+	got := buildDelegateRuntimeConfig(cfg)
+	if got.MaxConcurrent != 5 || got.Timeout != 240*time.Second || got.MinTimeout != 10*time.Second || got.MaxTimeout != 900*time.Second || got.MaxResultBytesInline != 8000 || got.MaxChildren != 4 {
+		t.Fatalf("unexpected delegate runtime config: %#v", got)
+	}
+	if got.ChildMaxIterations != 12 || got.ChildTimeout != 90*time.Second || !got.ChildAutoApprove || got.ChildRepeatToolLimit != 4 || got.ChildToolOnlyLimit != 5 || got.ChildDuplicateLimit != 2 {
+		t.Fatalf("unexpected delegate child runtime config: %#v", got)
+	}
+	if len(got.ChildDisabledTools) != 1 || got.ChildDisabledTools[0] != "terminal" {
+		t.Fatalf("unexpected delegate child disabled tools: %v", got.ChildDisabledTools)
+	}
+
+	childLoop := buildDelegateChildLoopConfig(got, false)
+	if childLoop.MaxIterations != 12 || childLoop.Timeout != 90*time.Second || !childLoop.AutoApprove || childLoop.RepeatToolCallLimit != 4 || childLoop.ToolOnlyIterationLimit != 5 || childLoop.DuplicateFetchLimit != 2 {
+		t.Fatalf("unexpected child loop config: %#v", childLoop)
+	}
+	for _, name := range []string{"terminal", "delegate_task", "delegate_parallel", "delegate_to_skill", "delegate_to_mcp"} {
+		found := false
+		for _, disabled := range childLoop.DisabledTools {
+			if disabled == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected child loop to disable %q, got %v", name, childLoop.DisabledTools)
+		}
+	}
+	if len(buildDelegateChildLoopConfig(got, true).DisabledTools) != 1 {
+		t.Fatalf("expected recursive child loop to retain only configured disabled tools, got %v", buildDelegateChildLoopConfig(got, true).DisabledTools)
+	}
+}
+
+func TestBuildAutonomyRuntimeConfigUsesPoolAndHeartbeatConfig(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Autonomy.QueueBuffer = 128
+	cfg.Autonomy.Pool.MaxWorkers = 6
+	cfg.Autonomy.Pool.QueueBuffer = 96
+	cfg.Autonomy.Pool.AutoScale = true
+	cfg.Autonomy.Pool.MinWorkers = 2
+	cfg.Autonomy.Heartbeat.Mode = "passive"
+	cfg.Autonomy.Heartbeat.IntervalSeconds = 600
+	cfg.Autonomy.Heartbeat.ActiveStart = 7
+	cfg.Autonomy.Heartbeat.ActiveEnd = 22
+	cfg.Autonomy.Heartbeat.MaxTasksPerBeat = 5
+
+	got := buildAutonomyRuntimeConfig(cfg)
+	if got.QueueBuf != 128 || got.Pool.MaxWorkers != 6 || got.Pool.QueueBuffer != 96 || !got.Pool.AutoScale || got.Pool.MinWorkers != 2 {
+		t.Fatalf("unexpected autonomy pool config: %#v", got)
+	}
+	if got.Heartbeat.Mode != autonomy.HeartbeatPassive || got.Heartbeat.Interval != 600*time.Second || got.Heartbeat.ActiveStart != 7 || got.Heartbeat.ActiveEnd != 22 || got.Heartbeat.MaxTasksPerBeat != 5 {
+		t.Fatalf("unexpected autonomy heartbeat config: %#v", got.Heartbeat)
+	}
+}
+
 func TestAutonomyWorkerCompletionNotifiesRecentChat(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)

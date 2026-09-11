@@ -23,6 +23,37 @@ LuckyAgent 的 delegate 工具组用于把任务委派给子代理、查询任�
 - `delegate_to_skill`
 - `delegate_to_mcp`
 
+## 运行时配置
+
+前台 `delegate_task` 的全局限制位于 `config.json` 的 `delegate` 段。单次工具参数可以进一步收紧限制，但不能超过全局上限：
+
+| 配置项 | 默认值 | 说明 |
+| --- | ---: | --- |
+| `delegate.max_concurrent` | `3` | 同时运行的委派任务数。 |
+| `delegate.timeout_seconds` | `120` | 单个委派任务的默认外层超时。 |
+| `delegate.min_timeout_seconds` | `5` | 单次 `timeout` 的最小值。 |
+| `delegate.max_timeout_seconds` | `1800` | 单次 `timeout` 的最大值。 |
+| `delegate.max_result_bytes_inline` | `4000` | `task_status` 内联结果上限。 |
+| `delegate.max_children` | `3` | `auto` 规划允许的最大子任务数。 |
+| `delegate.child.max_iterations` | `5` | 子 Agent Loop 最大迭代次数。 |
+| `delegate.child.timeout_seconds` | `60` | 子 Agent Loop 单轮超时。 |
+| `delegate.child.auto_approve` | `false` | 子 Agent 是否自动批准工具调用，建议保持关闭。 |
+| `delegate.child.repeat_tool_call_limit` | `3` | 子 Agent 重复工具调用上限。 |
+| `delegate.child.tool_only_iteration_limit` | `3` | 子 Agent 连续纯工具轮次上限。 |
+| `delegate.child.duplicate_fetch_limit` | `1` | 子 Agent 同一 URL 抓取上限。 |
+| `delegate.child.disabled_tools` | `[]` | 额外对 child 隐藏的工具。递归委派还受单独开关控制。 |
+| `delegate.child.allow_recursive_delegate` | `false` | 全局允许递归委派；单次请求还必须传入 `allow_recursive_delegate=true`。 |
+
+示例：
+
+```bash
+lh cfg s delegate.max_concurrent 5
+lh cfg s delegate.child.max_iterations 10
+lh cfg s delegate.child.disabled_tools terminal,file_delete
+```
+
+修改 `delegate.*` 后需要重启 Agent 进程；这些参数不会被当前配置热加载器重新装配到已有的 `DelegateManager`。
+
 ## 工具列表
 
 | 工具 | 权限 | 说明 |

@@ -188,6 +188,24 @@
       "tool_only_iteration_limit": 2
     }
   },
+  "delegate": {
+    "max_concurrent": 3,
+    "timeout_seconds": 120,
+    "min_timeout_seconds": 5,
+    "max_timeout_seconds": 1800,
+    "max_result_bytes_inline": 4000,
+    "max_children": 3,
+    "child": {
+      "max_iterations": 5,
+      "timeout_seconds": 60,
+      "auto_approve": false,
+      "repeat_tool_call_limit": 3,
+      "tool_only_iteration_limit": 3,
+      "duplicate_fetch_limit": 1,
+      "disabled_tools": [],
+      "allow_recursive_delegate": false
+    }
+  },
   "server": {
     "addr": "127.0.0.1:9090",
     "api_keys": [],
@@ -205,6 +223,7 @@
   },
   "autonomy": {
     "enabled": false,
+    "queue_buffer": 64,
     "worker": {
       "max_iterations": 300,
       "timeout_seconds": 300,
@@ -215,6 +234,19 @@
       "disabled_tools": [
         "autonomy"
       ]
+    },
+    "pool": {
+      "max_workers": 8,
+      "queue_buffer": 64,
+      "auto_scale": false,
+      "min_workers": 1
+    },
+    "heartbeat": {
+      "mode": "proactive",
+      "interval_seconds": 900,
+      "active_start": 6,
+      "active_end": 23,
+      "max_tasks_per_beat": 3
     }
   },
   "proactive": {

@@ -81,6 +81,9 @@ type Config struct {
 	// Agent Loop 配置
 	Agent AgentLoopConfig `json:"agent,omitempty"`
 
+	// 前台 delegate 子 Agent 配置
+	Delegate DelegateConfig `json:"delegate,omitempty"`
+
 	// API Server 配置
 	Server ServerConfig `json:"server,omitempty"`
 
@@ -355,6 +358,32 @@ type AgentLoopConfig struct {
 	SimpleLocalInspection  SimpleLocalInspectionConfig `json:"simple_local_inspection,omitempty"`
 }
 
+// DelegateChildConfig controls the Agent Loop used by a foreground delegated
+// child. It is separate from AgentLoopConfig so child safety limits do not
+// silently change with the parent request defaults.
+type DelegateChildConfig struct {
+	MaxIterations          int      `json:"max_iterations,omitempty"`
+	TimeoutSeconds         int      `json:"timeout_seconds,omitempty"`
+	AutoApprove            *bool    `json:"auto_approve,omitempty"`
+	RepeatToolCallLimit    int      `json:"repeat_tool_call_limit,omitempty"`
+	ToolOnlyIterationLimit int      `json:"tool_only_iteration_limit,omitempty"`
+	DuplicateFetchLimit    int      `json:"duplicate_fetch_limit,omitempty"`
+	DisabledTools          []string `json:"disabled_tools,omitempty"`
+	AllowRecursiveDelegate bool     `json:"allow_recursive_delegate,omitempty"`
+}
+
+// DelegateConfig controls foreground delegate task scheduling and child
+// execution. Per-task tool arguments may further reduce these limits.
+type DelegateConfig struct {
+	MaxConcurrent        int                 `json:"max_concurrent,omitempty"`
+	TimeoutSeconds       int                 `json:"timeout_seconds,omitempty"`
+	MinTimeoutSeconds    int                 `json:"min_timeout_seconds,omitempty"`
+	MaxTimeoutSeconds    int                 `json:"max_timeout_seconds,omitempty"`
+	MaxResultBytesInline int                 `json:"max_result_bytes_inline,omitempty"`
+	MaxChildren          int                 `json:"max_children,omitempty"`
+	Child                DelegateChildConfig `json:"child,omitempty"`
+}
+
 // ServerConfig API Server 配置
 type ServerConfig struct {
 	Addr        string   `json:"addr,omitempty"`
@@ -383,10 +412,30 @@ type AutonomyWorkerConfig struct {
 	DisabledTools          []string `json:"disabled_tools,omitempty"`
 }
 
+// AutonomyPoolConfig controls the background worker pool.
+type AutonomyPoolConfig struct {
+	MaxWorkers  int  `json:"max_workers,omitempty"`
+	QueueBuffer int  `json:"queue_buffer,omitempty"`
+	AutoScale   bool `json:"auto_scale,omitempty"`
+	MinWorkers  int  `json:"min_workers,omitempty"`
+}
+
+// AutonomyHeartbeatConfig controls when the background queue is polled.
+type AutonomyHeartbeatConfig struct {
+	Mode            string `json:"mode,omitempty"`
+	IntervalSeconds int    `json:"interval_seconds,omitempty"`
+	ActiveStart     int    `json:"active_start,omitempty"`
+	ActiveEnd       int    `json:"active_end,omitempty"`
+	MaxTasksPerBeat int    `json:"max_tasks_per_beat,omitempty"`
+}
+
 // AutonomyConfig 自主工作套件配置
 type AutonomyConfig struct {
-	Enabled bool                 `json:"enabled,omitempty"`
-	Worker  AutonomyWorkerConfig `json:"worker,omitempty"`
+	Enabled     bool                    `json:"enabled,omitempty"`
+	QueueBuffer int                     `json:"queue_buffer,omitempty"`
+	Worker      AutonomyWorkerConfig    `json:"worker,omitempty"`
+	Pool        AutonomyPoolConfig      `json:"pool,omitempty"`
+	Heartbeat   AutonomyHeartbeatConfig `json:"heartbeat,omitempty"`
 }
 
 // ProactiveConfig controls the proactive state estimator and gate. It is
@@ -815,6 +864,22 @@ func DefaultConfig() *Config {
 				ToolOnlyIterationLimit: 2,
 			},
 		},
+		Delegate: DelegateConfig{
+			MaxConcurrent:        3,
+			TimeoutSeconds:       120,
+			MinTimeoutSeconds:    5,
+			MaxTimeoutSeconds:    1800,
+			MaxResultBytesInline: 4000,
+			MaxChildren:          3,
+			Child: DelegateChildConfig{
+				MaxIterations:          5,
+				TimeoutSeconds:         60,
+				AutoApprove:            boolPtr(false),
+				RepeatToolCallLimit:    3,
+				ToolOnlyIterationLimit: 3,
+				DuplicateFetchLimit:    1,
+			},
+		},
 		Server: ServerConfig{
 			Addr:        "127.0.0.1:9090",
 			EnableCORS:  true,
@@ -827,7 +892,8 @@ func DefaultConfig() *Config {
 			Addr: ":8765",
 		},
 		Autonomy: AutonomyConfig{
-			Enabled: false,
+			Enabled:     false,
+			QueueBuffer: 64,
 			Worker: AutonomyWorkerConfig{
 				MaxIterations:          300,
 				TimeoutSeconds:         300,
@@ -836,6 +902,19 @@ func DefaultConfig() *Config {
 				ToolOnlyIterationLimit: 300,
 				DuplicateFetchLimit:    300,
 				DisabledTools:          []string{"autonomy"},
+			},
+			Pool: AutonomyPoolConfig{
+				MaxWorkers:  8,
+				QueueBuffer: 64,
+				AutoScale:   false,
+				MinWorkers:  1,
+			},
+			Heartbeat: AutonomyHeartbeatConfig{
+				Mode:            "proactive",
+				IntervalSeconds: 900,
+				ActiveStart:     6,
+				ActiveEnd:       23,
+				MaxTasksPerBeat: 3,
 			},
 		},
 		Proactive: ProactiveConfig{
@@ -1261,6 +1340,85 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit <= 0 {
 		cfg.Agent.SimpleLocalInspection.ToolOnlyIterationLimit = def.Agent.SimpleLocalInspection.ToolOnlyIterationLimit
+	}
+
+	if cfg.Delegate.MaxConcurrent <= 0 {
+		cfg.Delegate.MaxConcurrent = def.Delegate.MaxConcurrent
+	}
+	if cfg.Delegate.TimeoutSeconds <= 0 {
+		cfg.Delegate.TimeoutSeconds = def.Delegate.TimeoutSeconds
+	}
+	if cfg.Delegate.MinTimeoutSeconds <= 0 {
+		cfg.Delegate.MinTimeoutSeconds = def.Delegate.MinTimeoutSeconds
+	}
+	if cfg.Delegate.MaxTimeoutSeconds <= 0 {
+		cfg.Delegate.MaxTimeoutSeconds = def.Delegate.MaxTimeoutSeconds
+	}
+	if cfg.Delegate.MaxTimeoutSeconds < cfg.Delegate.MinTimeoutSeconds {
+		cfg.Delegate.MaxTimeoutSeconds = cfg.Delegate.MinTimeoutSeconds
+	}
+	if cfg.Delegate.TimeoutSeconds < cfg.Delegate.MinTimeoutSeconds {
+		cfg.Delegate.TimeoutSeconds = cfg.Delegate.MinTimeoutSeconds
+	}
+	if cfg.Delegate.TimeoutSeconds > cfg.Delegate.MaxTimeoutSeconds {
+		cfg.Delegate.TimeoutSeconds = cfg.Delegate.MaxTimeoutSeconds
+	}
+	if cfg.Delegate.MaxResultBytesInline <= 0 {
+		cfg.Delegate.MaxResultBytesInline = def.Delegate.MaxResultBytesInline
+	}
+	if cfg.Delegate.MaxChildren <= 0 {
+		cfg.Delegate.MaxChildren = def.Delegate.MaxChildren
+	}
+	if cfg.Delegate.Child.MaxIterations <= 0 {
+		cfg.Delegate.Child.MaxIterations = def.Delegate.Child.MaxIterations
+	}
+	if cfg.Delegate.Child.TimeoutSeconds <= 0 {
+		cfg.Delegate.Child.TimeoutSeconds = def.Delegate.Child.TimeoutSeconds
+	}
+	if cfg.Delegate.Child.AutoApprove == nil {
+		cfg.Delegate.Child.AutoApprove = def.Delegate.Child.AutoApprove
+	}
+	if cfg.Delegate.Child.RepeatToolCallLimit <= 0 {
+		cfg.Delegate.Child.RepeatToolCallLimit = def.Delegate.Child.RepeatToolCallLimit
+	}
+	if cfg.Delegate.Child.ToolOnlyIterationLimit <= 0 {
+		cfg.Delegate.Child.ToolOnlyIterationLimit = def.Delegate.Child.ToolOnlyIterationLimit
+	}
+	if cfg.Delegate.Child.DuplicateFetchLimit <= 0 {
+		cfg.Delegate.Child.DuplicateFetchLimit = def.Delegate.Child.DuplicateFetchLimit
+	}
+	if cfg.Autonomy.QueueBuffer <= 0 {
+		cfg.Autonomy.QueueBuffer = def.Autonomy.QueueBuffer
+	}
+	if cfg.Autonomy.Pool.MaxWorkers <= 0 {
+		cfg.Autonomy.Pool.MaxWorkers = def.Autonomy.Pool.MaxWorkers
+	}
+	if cfg.Autonomy.Pool.QueueBuffer <= 0 {
+		cfg.Autonomy.Pool.QueueBuffer = def.Autonomy.Pool.QueueBuffer
+	}
+	if cfg.Autonomy.Pool.MinWorkers <= 0 {
+		cfg.Autonomy.Pool.MinWorkers = def.Autonomy.Pool.MinWorkers
+	}
+	if cfg.Autonomy.Pool.MinWorkers > cfg.Autonomy.Pool.MaxWorkers {
+		cfg.Autonomy.Pool.MinWorkers = cfg.Autonomy.Pool.MaxWorkers
+	}
+	if strings.TrimSpace(cfg.Autonomy.Heartbeat.Mode) == "" {
+		cfg.Autonomy.Heartbeat.Mode = def.Autonomy.Heartbeat.Mode
+	}
+	if cfg.Autonomy.Heartbeat.Mode != "passive" && cfg.Autonomy.Heartbeat.Mode != "proactive" {
+		cfg.Autonomy.Heartbeat.Mode = def.Autonomy.Heartbeat.Mode
+	}
+	if cfg.Autonomy.Heartbeat.IntervalSeconds <= 0 {
+		cfg.Autonomy.Heartbeat.IntervalSeconds = def.Autonomy.Heartbeat.IntervalSeconds
+	}
+	if cfg.Autonomy.Heartbeat.ActiveStart < 0 || cfg.Autonomy.Heartbeat.ActiveStart > 23 {
+		cfg.Autonomy.Heartbeat.ActiveStart = def.Autonomy.Heartbeat.ActiveStart
+	}
+	if cfg.Autonomy.Heartbeat.ActiveEnd < 0 || cfg.Autonomy.Heartbeat.ActiveEnd > 23 {
+		cfg.Autonomy.Heartbeat.ActiveEnd = def.Autonomy.Heartbeat.ActiveEnd
+	}
+	if cfg.Autonomy.Heartbeat.MaxTasksPerBeat <= 0 {
+		cfg.Autonomy.Heartbeat.MaxTasksPerBeat = def.Autonomy.Heartbeat.MaxTasksPerBeat
 	}
 	if cfg.Autonomy.Worker.MaxIterations <= 0 {
 		cfg.Autonomy.Worker.MaxIterations = def.Autonomy.Worker.MaxIterations
@@ -1896,6 +2054,57 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Agent.SimpleLocalInspection.ToolOnlyIterationLimit = n
+	case "delegate.max_concurrent":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.MaxConcurrent = n
+	case "delegate.timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.TimeoutSeconds = n
+	case "delegate.min_timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.MinTimeoutSeconds = n
+	case "delegate.max_timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.MaxTimeoutSeconds = n
+	case "delegate.max_result_bytes_inline":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.MaxResultBytesInline = n
+	case "delegate.max_children":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.MaxChildren = n
+	case "delegate.child.max_iterations":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.Child.MaxIterations = n
+	case "delegate.child.timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.Child.TimeoutSeconds = n
+	case "delegate.child.auto_approve":
+		v := parseBool(value)
+		m.config.Delegate.Child.AutoApprove = &v
+	case "delegate.child.repeat_tool_call_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.Child.RepeatToolCallLimit = n
+	case "delegate.child.tool_only_iteration_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.Child.ToolOnlyIterationLimit = n
+	case "delegate.child.duplicate_fetch_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Delegate.Child.DuplicateFetchLimit = n
+	case "delegate.child.disabled_tools":
+		m.config.Delegate.Child.DisabledTools = splitCSV(value)
+	case "delegate.child.allow_recursive_delegate":
+		m.config.Delegate.Child.AllowRecursiveDelegate = parseBool(value)
 	case "server.addr":
 		m.config.Server.Addr = value
 	case "server.api_keys":
@@ -1918,6 +2127,42 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Dashboard.Addr = value
 	case "autonomy.enabled":
 		m.config.Autonomy.Enabled = parseBool(value)
+	case "autonomy.queue_buffer":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.QueueBuffer = n
+	case "autonomy.pool.max_workers":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Pool.MaxWorkers = n
+	case "autonomy.pool.queue_buffer":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Pool.QueueBuffer = n
+	case "autonomy.pool.auto_scale":
+		m.config.Autonomy.Pool.AutoScale = parseBool(value)
+	case "autonomy.pool.min_workers":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Pool.MinWorkers = n
+	case "autonomy.heartbeat.mode":
+		m.config.Autonomy.Heartbeat.Mode = strings.ToLower(strings.TrimSpace(value))
+	case "autonomy.heartbeat.interval_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Heartbeat.IntervalSeconds = n
+	case "autonomy.heartbeat.active_start":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Heartbeat.ActiveStart = n
+	case "autonomy.heartbeat.active_end":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Heartbeat.ActiveEnd = n
+	case "autonomy.heartbeat.max_tasks_per_beat":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Autonomy.Heartbeat.MaxTasksPerBeat = n
 	case "autonomy.worker.max_iterations":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

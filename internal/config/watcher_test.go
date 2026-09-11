@@ -315,11 +315,12 @@ func TestReloadClassificationSeparatesRestartRequiredSettings(t *testing.T) {
 	normalizeConfig(newCfg)
 	newCfg.Server.Addr = ":9091"
 	newCfg.MsgGateway.Telegram.Token = "changed-token"
+	newCfg.Delegate.MaxConcurrent = 4
 	hotReloaded, restartRequired := ReloadClassification(oldCfg, newCfg)
 	if len(hotReloaded) == 0 || hotReloaded[0] != "llm_provider" {
 		t.Fatalf("expected llm_provider hot reload, got %#v", hotReloaded)
 	}
-	if len(restartRequired) != 2 || restartRequired[0] != "server" || restartRequired[1] != "msg_gateway" {
+	if len(restartRequired) != 3 || restartRequired[0] != "server" || restartRequired[1] != "msg_gateway" || restartRequired[2] != "runtime_services" {
 		t.Fatalf("unexpected restart-required groups %#v", restartRequired)
 	}
 }

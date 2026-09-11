@@ -42,7 +42,16 @@ type DelegateConfig struct {
 	MinTimeout           time.Duration // 最小子代理超时
 	MaxTimeout           time.Duration // 最大子代理超时
 	MaxResultBytesInline int           // task_status 内联结果上限
+	MaxChildren          int           // 单次规划允许的最大子任务数
 	AutoApprove          bool          // 自动批准子代理任务
+	ChildMaxIterations   int           // 子 Agent Loop 最大迭代次数
+	ChildTimeout         time.Duration // 子 Agent Loop 单轮超时
+	ChildAutoApprove     bool          // 子 Agent 是否自动批准工具调用
+	ChildRepeatToolLimit int           // 子 Agent 重复工具调用上限
+	ChildToolOnlyLimit   int           // 子 Agent 连续纯工具轮次上限
+	ChildDuplicateLimit  int           // 子 Agent 同 URL 抓取上限
+	ChildDisabledTools   []string      // 子 Agent 默认隐藏的工具
+	ChildAllowRecursive  bool          // 是否允许子 Agent 再次创建子 Agent
 }
 
 // DefaultDelegateConfig 默认委派配置
@@ -53,7 +62,15 @@ func DefaultDelegateConfig() DelegateConfig {
 		MinTimeout:           minDelegateTimeoutSeconds * time.Second,
 		MaxTimeout:           maxDelegateTimeoutSeconds * time.Second,
 		MaxResultBytesInline: defaultDelegateResultInline,
+		MaxChildren:          3,
 		AutoApprove:          false,
+		ChildMaxIterations:   5,
+		ChildTimeout:         60 * time.Second,
+		ChildAutoApprove:     false,
+		ChildRepeatToolLimit: 3,
+		ChildToolOnlyLimit:   3,
+		ChildDuplicateLimit:  1,
+		ChildAllowRecursive:  false,
 	}
 }
 
@@ -81,6 +98,27 @@ func normalizeDelegateConfig(cfg DelegateConfig) DelegateConfig {
 	}
 	if cfg.MaxResultBytesInline <= 0 {
 		cfg.MaxResultBytesInline = defaultDelegateResultInline
+	}
+	if cfg.MaxChildren <= 0 {
+		cfg.MaxChildren = 3
+	}
+	if cfg.ChildMaxIterations <= 0 {
+		cfg.ChildMaxIterations = 5
+	}
+	if cfg.ChildTimeout <= 0 {
+		cfg.ChildTimeout = 60 * time.Second
+	}
+	if cfg.ChildRepeatToolLimit <= 0 {
+		cfg.ChildRepeatToolLimit = 3
+	}
+	if cfg.ChildToolOnlyLimit <= 0 {
+		cfg.ChildToolOnlyLimit = 3
+	}
+	if cfg.ChildDuplicateLimit <= 0 {
+		cfg.ChildDuplicateLimit = 1
+	}
+	if cfg.ChildDisabledTools != nil {
+		cfg.ChildDisabledTools = append([]string(nil), cfg.ChildDisabledTools...)
 	}
 	return cfg
 }
@@ -232,23 +270,24 @@ func (s TaskStatus) String() string {
 
 // DelegateTask 子代理任务
 type DelegateTask struct {
-	ID             string
-	Description    string
-	Context        string
-	Workspace      string
-	Mode           taskstore.Mode
-	PlannedMode    taskstore.Mode
-	PlannerSummary string
-	Status         TaskStatus
-	Result         string
-	Error          string
-	StartedAt      time.Time
-	CompletedAt    time.Time
-	ToolCalls      int
-	LastTool       string
-	OwnerSessionID string
-	OwnerSource    string
-	RequestKey     string
+	ID                     string
+	Description            string
+	Context                string
+	Workspace              string
+	Mode                   taskstore.Mode
+	PlannedMode            taskstore.Mode
+	PlannerSummary         string
+	Status                 TaskStatus
+	Result                 string
+	Error                  string
+	StartedAt              time.Time
+	CompletedAt            time.Time
+	ToolCalls              int
+	LastTool               string
+	OwnerSessionID         string
+	OwnerSource            string
+	RequestKey             string
+	AllowRecursiveDelegate bool
 }
 
 type delegateTaskOwner struct {
@@ -357,6 +396,16 @@ type delegateWaitResponse struct {
 // v0.38.0: 让 delegate 不再是占位，而是真正走 LLM
 type AgentExecutorFunc func(ctx context.Context, description, contextStr string) (string, error)
 
+// AgentExecutorOptions carries per-task child execution policy without
+// changing the original AgentExecutorFunc signature.
+type AgentExecutorOptions struct {
+	AllowRecursiveDelegate bool
+}
+
+// AgentExecutorWithOptionsFunc executes a delegated child with effective
+// per-task policy options.
+type AgentExecutorWithOptionsFunc func(ctx context.Context, description, contextStr string, options AgentExecutorOptions) (string, error)
+
 type delegateTaskIDContextKey struct{}
 
 // DelegateTaskID returns the task id while a delegate executor is running.
@@ -372,14 +421,15 @@ func DelegateTaskID(ctx context.Context) string {
 
 // DelegateManager 子代理委派管理器
 type DelegateManager struct {
-	mu            sync.RWMutex
-	config        DelegateConfig
-	tasks         map[string]*DelegateTask
-	cancels       map[string]context.CancelFunc
-	nextID        int
-	agentExecutor AgentExecutorFunc // v0.38.0: 真正的 Agent 执行器
-	taskStore     taskstore.Store
-	taskEvents    *taskstore.EventBus
+	mu                       sync.RWMutex
+	config                   DelegateConfig
+	tasks                    map[string]*DelegateTask
+	cancels                  map[string]context.CancelFunc
+	nextID                   int
+	agentExecutor            AgentExecutorFunc // v0.38.0: 真正的 Agent 执行器
+	agentExecutorWithOptions AgentExecutorWithOptionsFunc
+	taskStore                taskstore.Store
+	taskEvents               *taskstore.EventBus
 }
 
 // NewDelegateManager 创建子代理委派管理器
@@ -397,6 +447,28 @@ func (dm *DelegateManager) SetAgentExecutor(fn AgentExecutorFunc) {
 	dm.mu.Lock()
 	defer dm.mu.Unlock()
 	dm.agentExecutor = fn
+	dm.agentExecutorWithOptions = nil
+}
+
+// SetAgentExecutorWithOptions installs an executor that receives effective
+// per-task child policy while preserving SetAgentExecutor compatibility.
+func (dm *DelegateManager) SetAgentExecutorWithOptions(fn AgentExecutorWithOptionsFunc) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.agentExecutorWithOptions = fn
+	dm.agentExecutor = nil
+}
+
+// Config returns the normalized delegate runtime configuration.
+func (dm *DelegateManager) Config() DelegateConfig {
+	if dm == nil {
+		return normalizeDelegateConfig(DelegateConfig{})
+	}
+	dm.mu.RLock()
+	defer dm.mu.RUnlock()
+	cfg := dm.config
+	cfg.ChildDisabledTools = append([]string(nil), cfg.ChildDisabledTools...)
+	return cfg
 }
 
 func (dm *DelegateManager) SetTaskStore(store taskstore.Store) {
@@ -1002,15 +1074,22 @@ func (dm *DelegateManager) handleDelegateWithOwner(args map[string]any, owner de
 	if err != nil {
 		return "", err
 	}
-	maxChildren := 3
+	delegateCfg := dm.Config()
+	maxChildren := delegateCfg.MaxChildren
+	if maxChildren <= 0 {
+		maxChildren = 3
+	}
 	if n, ok := delegateIntArg(args["max_children"]); ok {
 		maxChildren = n
 	}
 	if maxChildren <= 0 {
 		maxChildren = 1
 	}
+	if maxChildren > delegateCfg.MaxChildren {
+		maxChildren = delegateCfg.MaxChildren
+	}
 	mode, plannedMode, plannerSummary, plannerTrace := planDelegateTaskMode(description, contextStr, requestedMode, timeout, maxChildren)
-	allowRecursive := delegateBoolArg(args, "allow_recursive_delegate", false)
+	allowRecursive := delegateBoolArg(args, "allow_recursive_delegate", false) && delegateCfg.ChildAllowRecursive
 
 	// Reuse an existing task when the same request is dispatched more than
 	// once. This makes retries from a streaming provider idempotent.
@@ -1051,18 +1130,19 @@ func (dm *DelegateManager) handleDelegateWithOwner(args map[string]any, owner de
 		return "", err
 	}
 	task := &DelegateTask{
-		ID:             taskID,
-		Description:    description,
-		Context:        contextStr,
-		Workspace:      workspace,
-		Mode:           mode,
-		PlannedMode:    plannedMode,
-		PlannerSummary: plannerSummary,
-		Status:         StatusPending,
-		StartedAt:      time.Now(),
-		OwnerSessionID: owner.SessionID,
-		OwnerSource:    owner.Source,
-		RequestKey:     owner.RequestKey,
+		ID:                     taskID,
+		Description:            description,
+		Context:                contextStr,
+		Workspace:              workspace,
+		Mode:                   mode,
+		PlannedMode:            plannedMode,
+		PlannerSummary:         plannerSummary,
+		Status:                 StatusPending,
+		StartedAt:              time.Now(),
+		OwnerSessionID:         owner.SessionID,
+		OwnerSource:            owner.Source,
+		RequestKey:             owner.RequestKey,
+		AllowRecursiveDelegate: allowRecursive,
 	}
 	dm.tasks[taskID] = task
 	store := dm.taskStore
@@ -1098,6 +1178,8 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), delegateTaskIDContextKey{}, taskID), timeout)
 	dm.cancels[taskID] = cancel
 	executor := dm.agentExecutor
+	executorWithOptions := dm.agentExecutorWithOptions
+	allowRecursive := task.AllowRecursiveDelegate && dm.config.ChildAllowRecursive
 	store := dm.taskStore
 	events := dm.taskEvents
 	dm.mu.Unlock()
@@ -1110,8 +1192,16 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 	}()
 
 	// v0.38.0: 如果配置了 agentExecutor，通过 Agent Loop 执行
-	if executor != nil {
-		result, err := executor(ctx, description, contextStr)
+	if executorWithOptions != nil || executor != nil {
+		var result string
+		var err error
+		if executorWithOptions != nil {
+			result, err = executorWithOptions(ctx, description, contextStr, AgentExecutorOptions{
+				AllowRecursiveDelegate: allowRecursive,
+			})
+		} else {
+			result, err = executor(ctx, description, contextStr)
+		}
 		dm.mu.Lock()
 		if task.Status == StatusCancelled {
 			// Cancellation was requested through delegate_cancel; preserve it.
@@ -1916,10 +2006,18 @@ func (dm *DelegateManager) DelegateParallel(descriptions []string, contextStr st
 
 			if workspaceErr != nil {
 				err = workspaceErr
-			} else if dm.agentExecutor != nil {
-				result, err = dm.agentExecutor(ctx, description, enrichedContext)
 			} else {
-				result = fmt.Sprintf("Sub-agent task completed (no executor): %s", description)
+				dm.mu.RLock()
+				executor := dm.agentExecutor
+				executorWithOptions := dm.agentExecutorWithOptions
+				dm.mu.RUnlock()
+				if executorWithOptions != nil {
+					result, err = executorWithOptions(ctx, description, enrichedContext, AgentExecutorOptions{})
+				} else if executor != nil {
+					result, err = executor(ctx, description, enrichedContext)
+				} else {
+					result = fmt.Sprintf("Sub-agent task completed (no executor): %s", description)
+				}
 			}
 
 			// 更新任务状态
