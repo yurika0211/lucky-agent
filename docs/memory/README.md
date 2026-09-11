@@ -372,7 +372,7 @@ Tidal memory 是可选的 post-recall reranker。默认关闭。
 - 有反馈时最多以保守 boost 调整分数。
 - telemetry 和 kernels 可以持久化到 SQLite。
 
-CLI 可通过 `lh memory tidal-stats` 或 `lh memory tidal stats` 查看统计。
+CLI 可通过 `lh memory tidal stats` 查看统计。
 
 ## 工具、CLI 和 API
 
@@ -394,7 +394,6 @@ REPL 命令：
 CLI：
 
 - `lh memory migrate-graph [--apply] [--archive-dirty] [--limit N]`
-- `lh memory tidal-stats`
 - `lh memory tidal stats`
 
 HTTP API：

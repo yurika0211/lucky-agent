@@ -17,32 +17,29 @@ import (
 
 func addDashboardCmd(root *cobra.Command) {
 	dashboardCmd := &cobra.Command{
-		Use:   "dashboard",
-		Short: "Start or inspect the web dashboard",
+		Use:     "dashboard",
+		Aliases: []string{"web"},
+		Short:   "Start or inspect the web dashboard",
 	}
 
 	startCmd := &cobra.Command{
-		Use:   "start [addr]",
-		Short: "Start the dashboard server",
-		Args:  cobra.MaximumNArgs(1),
-		RunE:  runDashboardStart,
+		Use:     "start [addr]",
+		Aliases: []string{"s", "run"},
+		Short:   "Start the dashboard server",
+		Args:    cobra.MaximumNArgs(1),
+		RunE:    runDashboardStart,
 	}
-	startCmd.Flags().String("addr", "", "Dashboard listen address")
-	startCmd.Flags().Bool("open", false, "Print the dashboard URL for quick access")
+	startCmd.Flags().StringP("addr", "a", "", "Dashboard listen address")
+	startCmd.Flags().BoolP("open", "o", false, "Print the dashboard URL for quick access")
 
 	statusCmd := &cobra.Command{
-		Use:   "status",
-		Short: "Print the dashboard address and runtime status",
-		RunE:  runDashboardStatus,
+		Use:     "status",
+		Aliases: []string{"st"},
+		Short:   "Print the dashboard address and runtime status",
+		RunE:    runDashboardStatus,
 	}
 
-	stopCmd := &cobra.Command{
-		Use:   "stop",
-		Short: "Stop is not available for this CLI process",
-		RunE:  runDashboardStop,
-	}
-
-	dashboardCmd.AddCommand(startCmd, statusCmd, stopCmd)
+	dashboardCmd.AddCommand(startCmd, statusCmd)
 	root.AddCommand(dashboardCmd)
 }
 
@@ -108,10 +105,6 @@ func runDashboardStatus(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Dashboard url: %s\n", dashboardURL(addr))
 	fmt.Println("Status: use `lh dashboard start` to run it in this process")
 	return nil
-}
-
-func runDashboardStop(cmd *cobra.Command, args []string) error {
-	return fmt.Errorf("dashboard stop is only supported inside the REPL or the same process")
 }
 
 type cliDashboardProvider struct {

@@ -14,17 +14,19 @@ import (
 
 func newSessionCmd() *cobra.Command {
 	sessionCmd := &cobra.Command{
-		Use:   "session",
-		Short: "管理会话",
+		Use:     "session",
+		Aliases: []string{"sess"},
+		Short:   "管理会话",
 	}
 
 	var dryRun bool
 	var forceLocal bool
 	var keepAfter bool
 	compactCmd := &cobra.Command{
-		Use:   "compact <session-id>",
-		Short: "压缩指定会话历史",
-		Args:  cobra.ExactArgs(1),
+		Use:     "compact <session-id>",
+		Aliases: []string{"c"},
+		Short:   "压缩指定会话历史",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSessionCompact(cmd.Context(), args[0], dryRun, forceLocal)
 		},
@@ -43,21 +45,24 @@ func newSessionCmd() *cobra.Command {
 	compactCmd.AddCommand(compactUndoCmd)
 
 	backupCmd := &cobra.Command{
-		Use:   "backup",
-		Short: "管理会话的独立备份",
+		Use:     "backup",
+		Aliases: []string{"b"},
+		Short:   "管理会话的独立备份",
 	}
 	backupListCmd := &cobra.Command{
-		Use:   "list <session-id>",
-		Short: "列出会话备份",
-		Args:  cobra.ExactArgs(1),
+		Use:     "list <session-id>",
+		Aliases: []string{"ls"},
+		Short:   "列出会话备份",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSessionBackupList(args[0])
 		},
 	}
 	backupRestoreCmd := &cobra.Command{
-		Use:   "restore <session-id> <backup-id>",
-		Short: "从独立备份恢复会话",
-		Args:  cobra.ExactArgs(2),
+		Use:     "restore <session-id> <backup-id>",
+		Aliases: []string{"r"},
+		Short:   "从独立备份恢复会话",
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runSessionBackupRestore(args[0], args[1])
 		},

@@ -622,6 +622,7 @@ func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGa
 	if !cmd.Flags().Changed("platform") && cfg != nil && cfg.MsgGateway.Platform != "" {
 		opts.Platform = cfg.MsgGateway.Platform
 	}
+	opts.Platform = normalizeMsgGatewayPlatform(opts.Platform)
 
 	opts.Token, _ = cmd.Flags().GetString("token")
 	if !cmd.Flags().Changed("token") && cfg != nil {
@@ -686,6 +687,25 @@ func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGa
 	}
 
 	return opts
+}
+
+func normalizeMsgGatewayPlatform(platform string) string {
+	switch strings.ToLower(strings.TrimSpace(platform)) {
+	case "tg", "telegram":
+		return "telegram"
+	case "qq", "qqo", "qqofficial", "official":
+		return "qqofficial"
+	case "nap", "napcat", "onebot":
+		return "napcat"
+	case "fs", "feishu", "lark":
+		return "feishu"
+	case "wx", "weixin", "ilink":
+		return "weixin"
+	case "ocwx", "openclaw", "openclawweixin":
+		return "openclawweixin"
+	default:
+		return strings.TrimSpace(platform)
+	}
 }
 
 func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
@@ -1378,15 +1398,6 @@ func sendPlainGatewayAgentInput(ctx context.Context, platform string, runtime *a
 		return gw.Send(ctx, msg.Chat.ID, prefix+": "+err.Error())
 	}
 	return gw.SendWithReply(ctx, msg.Chat.ID, msg.ID, reply)
-}
-
-func runMsgGatewayStop(cmd *cobra.Command, args []string) error {
-	return fmt.Errorf("msg-gateway stop 已禁用：消息网关不再依赖 HTTP API 进行进程外控制。请在运行网关的终端中使用 Ctrl+C 停止")
-}
-
-func runMsgGatewayStatus(cmd *cobra.Command, args []string) error {
-	fmt.Println("msg-gateway status 已禁用：消息网关不再依赖 HTTP API 暴露状态。请直接查看启动终端日志。")
-	return nil
 }
 
 func runRAGIndex(cmd *cobra.Command, args []string) error {

@@ -39,7 +39,7 @@ func initCommandLogger() {
 
 func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "la",
+		Use:   "lh",
 		Short: "LuckyAgent bot-first CLI",
 		Long:  "LuckyAgent 精简版命令行入口，面向聊天与消息网关工作流。",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -96,43 +96,47 @@ func newRootCmd() *cobra.Command {
 	chatCmd.Flags().SetInterspersed(false)
 
 	configCmd := &cobra.Command{
-		Use:   "config",
-		Short: "管理配置",
+		Use:     "config",
+		Aliases: []string{"cfg"},
+		Short:   "管理配置",
 	}
 	configGetCmd := &cobra.Command{
-		Use:   "get [key]",
-		Short: "获取配置项",
-		Args:  cobra.ExactArgs(1),
-		RunE:  runConfigGet,
+		Use:     "get [key]",
+		Aliases: []string{"g"},
+		Short:   "获取配置项",
+		Args:    cobra.ExactArgs(1),
+		RunE:    runConfigGet,
 	}
 	configSetCmd := &cobra.Command{
-		Use:   "set [key] [value]",
-		Short: "设置配置项",
-		Args:  cobra.ExactArgs(2),
-		RunE:  runConfigSet,
+		Use:     "set [key] [value]",
+		Aliases: []string{"s"},
+		Short:   "设置配置项",
+		Args:    cobra.ExactArgs(2),
+		RunE:    runConfigSet,
 	}
 	configListCmd := &cobra.Command{
-		Use:   "list",
-		Short: "列出所有配置",
-		RunE:  runConfigList,
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "列出所有配置",
+		RunE:    runConfigList,
 	}
 	configTimeoutCmd := &cobra.Command{
-		Use:   "timeout",
-		Short: "查看各运行层的有效超时配置",
-		Args:  cobra.NoArgs,
-		RunE:  runConfigTimeout,
+		Use:     "timeout",
+		Aliases: []string{"t"},
+		Short:   "查看各运行层的有效超时配置",
+		Args:    cobra.NoArgs,
+		RunE:    runConfigTimeout,
 	}
-	configTimeoutCmd.Flags().Bool("list", false, "以列表形式显示有效超时配置（兼容别名）")
 	configCmd.AddCommand(configGetCmd, configSetCmd, configListCmd, configTimeoutCmd)
 
-	diagCmd := &cobra.Command{Use: "diag", Short: "查看运行诊断信息"}
+	diagCmd := &cobra.Command{Use: "diag", Aliases: []string{"d"}, Short: "查看运行诊断信息"}
 	diagTimeoutCmd := &cobra.Command{
-		Use:   "timeout",
-		Short: "查看最近一次超时诊断",
-		Args:  cobra.NoArgs,
-		RunE:  runDiagTimeout,
+		Use:     "timeout",
+		Aliases: []string{"t"},
+		Short:   "查看最近一次超时诊断",
+		Args:    cobra.NoArgs,
+		RunE:    runDiagTimeout,
 	}
-	diagTimeoutCmd.Flags().Bool("last-error", false, "显示最近一次超时记录")
 	diagCmd.AddCommand(diagTimeoutCmd)
 
 	soulCmd := &cobra.Command{
@@ -159,8 +163,9 @@ func newRootCmd() *cobra.Command {
 	soulCmd.AddCommand(soulShowCmd, soulListCmd, soulSwitchCmd)
 
 	versionCmd := &cobra.Command{
-		Use:   "version",
-		Short: "显示版本",
+		Use:     "version",
+		Aliases: []string{"v"},
+		Short:   "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("LuckyAgent %s\n", buildVersion)
 			fmt.Printf("   commit: %s\n", buildCommit)
@@ -169,22 +174,25 @@ func newRootCmd() *cobra.Command {
 	}
 
 	serveCmd := &cobra.Command{
-		Use:   "serve",
-		Short: "启动 HTTP API Server",
-		RunE:  runServe,
+		Use:     "serve",
+		Aliases: []string{"api"},
+		Short:   "启动 HTTP API Server",
+		RunE:    runServe,
 	}
-	serveCmd.Flags().String("addr", "", "监听地址，默认使用 config.json 中的 server.addr")
+	serveCmd.Flags().StringP("addr", "a", "", "监听地址，默认使用 config.json 中的 server.addr")
 
 	msgGatewayCmd := &cobra.Command{
-		Use:   "msg-gateway",
-		Short: "消息平台网关管理",
+		Use:     "msg-gateway",
+		Aliases: []string{"gw", "gateway"},
+		Short:   "消息平台网关管理",
 	}
 	msgGatewayStartCmd := &cobra.Command{
-		Use:   "start [--platform PLATFORM]",
-		Short: "启动消息网关",
-		RunE:  runMsgGatewayStart,
+		Use:     "start [--platform PLATFORM]",
+		Aliases: []string{"s", "run"},
+		Short:   "启动消息网关",
+		RunE:    runMsgGatewayStart,
 	}
-	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial, napcat, feishu, weixin, openclawweixin)")
+	msgGatewayStartCmd.Flags().StringP("platform", "p", "", "平台名称 (telegram/tg, qqofficial/qq, napcat/nap, feishu/fs, weixin/wx, openclawweixin/ocwx)")
 	msgGatewayStartCmd.Flags().String("token", "", "Bot token (Telegram)")
 	msgGatewayStartCmd.Flags().String("qq-appid", "", "QQ 官方机器人 AppID")
 	msgGatewayStartCmd.Flags().String("qq-appsecret", "", "QQ 官方机器人 AppSecret")
@@ -197,22 +205,12 @@ func newRootCmd() *cobra.Command {
 	msgGatewayStartCmd.Flags().String("feishu-verification-token", "", "可选：填写后使用飞书 HTTP 事件回调")
 	msgGatewayStartCmd.Flags().String("feishu-listen", "", "飞书事件回调监听地址")
 	msgGatewayStartCmd.Flags().String("feishu-path", "", "飞书事件回调路径")
-	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
-	msgGatewayStopCmd := &cobra.Command{
-		Use:   "stop [platform]",
-		Short: "停止消息网关",
-		Args:  cobra.MaximumNArgs(1),
-		RunE:  runMsgGatewayStop,
-	}
-	msgGatewayStatusCmd := &cobra.Command{
-		Use:   "status",
-		Short: "查看消息网关状态",
-		RunE:  runMsgGatewayStatus,
-	}
+	msgGatewayStartCmd.Flags().BoolP("all", "a", false, "启动所有已配置的网关")
 	msgGatewayWeixinLoginCmd := &cobra.Command{
-		Use:   "weixin-login",
-		Short: "获取微信登录二维码并写回 iLink 配置",
-		RunE:  runMsgGatewayWeixinLogin,
+		Use:     "weixin-login",
+		Aliases: []string{"login"},
+		Short:   "获取微信登录二维码并写回 iLink 配置",
+		RunE:    runMsgGatewayWeixinLogin,
 	}
 	msgGatewayWeixinLoginCmd.Flags().String("driver", "ilink", "weixin login driver: ilink or openclaw")
 	msgGatewayWeixinLoginCmd.Flags().String("base-url", "", "iLink API base URL")
@@ -220,70 +218,76 @@ func newRootCmd() *cobra.Command {
 	msgGatewayWeixinLoginCmd.Flags().Duration("timeout", 3*time.Minute, "扫码登录超时时间")
 	msgGatewayWeixinLoginCmd.Flags().Bool("no-save", false, "只打印登录结果，不写入 config.json")
 	msgGatewayWeixinLoginCmd.Flags().Bool("print-status", true, "打印二维码状态变化")
-	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayStopCmd, msgGatewayStatusCmd, msgGatewayWeixinLoginCmd)
+	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayWeixinLoginCmd)
 
 	ragCmd := &cobra.Command{
-		Use:   "rag",
-		Short: "RAG 知识库管理",
+		Use:     "rag",
+		Aliases: []string{"kb"},
+		Short:   "RAG 知识库管理",
 	}
 	ragIndexCmd := &cobra.Command{
-		Use:   "index <path>",
-		Short: "索引文件或目录到知识库",
-		Args:  cobra.ExactArgs(1),
-		RunE:  runRAGIndex,
+		Use:     "index <path>",
+		Aliases: []string{"i"},
+		Short:   "索引文件或目录到知识库",
+		Args:    cobra.ExactArgs(1),
+		RunE:    runRAGIndex,
 	}
 	ragSearchCmd := &cobra.Command{
-		Use:   "search <query>",
-		Short: "搜索知识库",
-		Args:  cobra.ExactArgs(1),
-		RunE:  runRAGSearch,
+		Use:     "search <query>",
+		Aliases: []string{"s"},
+		Short:   "搜索知识库",
+		Args:    cobra.ExactArgs(1),
+		RunE:    runRAGSearch,
 	}
 	ragStatsCmd := &cobra.Command{
-		Use:   "stats",
-		Short: "知识库统计",
-		RunE:  runRAGStats,
+		Use:     "stats",
+		Aliases: []string{"st"},
+		Short:   "知识库统计",
+		RunE:    runRAGStats,
 	}
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
 
 	memoryCmd := &cobra.Command{
-		Use:   "memory",
-		Short: "管理 LuckyAgent Markdown 记忆库",
+		Use:     "memory",
+		Aliases: []string{"mem"},
+		Short:   "管理 LuckyAgent Markdown 记忆库",
 	}
 	memoryMigrateGraphCmd := &cobra.Command{
-		Use:   "migrate-graph",
-		Short: "将现有记忆迁移为 Obsidian-first graph memory",
-		RunE:  runMemoryMigrateGraph,
+		Use:    "migrate-graph",
+		Short:  "将现有记忆迁移为 Obsidian-first graph memory",
+		Hidden: true,
+		RunE:   runMemoryMigrateGraph,
 	}
 	memoryMigrateGraphCmd.Flags().Bool("apply", false, "实际写入迁移结果；默认只 dry-run")
 	memoryMigrateGraphCmd.Flags().Bool("archive-dirty", true, "将 high/critical 脏记忆归档到 90_Archive/dirty")
 	memoryMigrateGraphCmd.Flags().Int("limit", 200, "最多审计/展示的脏记忆数量")
 	memoryRenameNotesCmd := &cobra.Command{
-		Use:   "rename-notes",
-		Short: "Rename memory notes to human-readable Obsidian filenames",
-		RunE:  runMemoryRenameNotes,
+		Use:    "rename-notes",
+		Short:  "Rename memory notes to human-readable Obsidian filenames",
+		Hidden: true,
+		RunE:   runMemoryRenameNotes,
 	}
 	memoryRenameNotesCmd.Flags().Bool("apply", false, "Write renamed files; default is dry-run")
 	memoryRenameNotesCmd.Flags().Int("limit", 1000, "Maximum planned note renames")
-	memoryTidalStatsCmd := &cobra.Command{
-		Use:   "tidal-stats",
-		Short: "查看潮汐记忆 reranker 的持久化统计",
-		RunE:  runMemoryTidalStats,
-	}
 	memoryTidalCmd := &cobra.Command{
-		Use:   "tidal",
-		Short: "管理潮汐记忆 reranker",
+		Use:     "tidal",
+		Aliases: []string{"td"},
+		Short:   "管理潮汐记忆 reranker",
 	}
 	memoryTidalNestedStatsCmd := &cobra.Command{
-		Use:   "stats",
-		Short: "查看潮汐记忆 reranker 的持久化统计",
-		RunE:  runMemoryTidalStats,
+		Use:     "stats",
+		Aliases: []string{"st"},
+		Short:   "查看潮汐记忆 reranker 的持久化统计",
+		RunE:    runMemoryTidalStats,
 	}
 	memoryTidalCmd.AddCommand(memoryTidalNestedStatsCmd)
-	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryRenameNotesCmd, memoryTidalStatsCmd, memoryTidalCmd)
+	memoryCmd.AddCommand(memoryMigrateGraphCmd, memoryRenameNotesCmd, memoryTidalCmd)
 
 	proactiveCmd := &cobra.Command{
-		Use:   "proactive",
-		Short: "管理 proactive state estimator",
+		Use:     "proactive",
+		Aliases: []string{"pro"},
+		Short:   "管理 proactive state estimator",
+		Hidden:  true,
 	}
 	proactiveStatusCmd := &cobra.Command{
 		Use:   "status",
