@@ -199,14 +199,73 @@ func TestRunConfigTimeoutPrintsEffectiveValues(t *testing.T) {
 	}
 }
 
-func TestConfigTimeoutListFlagIsRegistered(t *testing.T) {
+func TestShortCommandAliases(t *testing.T) {
 	root := newRootCmd()
-	config, _, err := root.Find([]string{"config", "timeout"})
-	if err != nil {
-		t.Fatalf("find config timeout command: %v", err)
+	for _, path := range [][]string{
+		{"cfg", "g"},
+		{"cfg", "s"},
+		{"d", "t"},
+		{"gw", "s"},
+		{"kb", "s"},
+		{"mem", "td", "st"},
+		{"sess", "c"},
+		{"web", "s"},
+		{"api"},
+		{"v"},
+	} {
+		cmd, _, err := root.Find(path)
+		if err != nil {
+			t.Fatalf("find short command %v: %v", path, err)
+		}
+		if cmd == nil {
+			t.Fatalf("find short command %v returned nil command", path)
+		}
 	}
-	if config.Flags().Lookup("list") == nil {
-		t.Fatal("expected config timeout --list compatibility flag")
+
+	findChild := func(parent *cobra.Command, name string) *cobra.Command {
+		for _, child := range parent.Commands() {
+			if child.Name() == name {
+				return child
+			}
+		}
+		return nil
+	}
+	for _, path := range [][]string{
+		{"msg-gateway", "stop"},
+		{"msg-gateway", "status"},
+		{"dashboard", "stop"},
+		{"memory", "tidal-stats"},
+	} {
+		parent := root
+		for _, name := range path[:len(path)-1] {
+			parent = findChild(parent, name)
+			if parent == nil {
+				break
+			}
+		}
+		if parent != nil && findChild(parent, path[len(path)-1]) != nil {
+			t.Fatalf("expected removed command %v to be unavailable", path)
+		}
+	}
+}
+
+func TestNormalizeMsgGatewayPlatform(t *testing.T) {
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: "tg", want: "telegram"},
+		{input: " telegram ", want: "telegram"},
+		{input: "qq", want: "qqofficial"},
+		{input: "nap", want: "napcat"},
+		{input: "fs", want: "feishu"},
+		{input: "wx", want: "weixin"},
+		{input: "ocwx", want: "openclawweixin"},
+		{input: "custom", want: "custom"},
+	} {
+		if got := normalizeMsgGatewayPlatform(test.input); got != test.want {
+			t.Errorf("normalizeMsgGatewayPlatform(%q) = %q, want %q", test.input, got, test.want)
+		}
 	}
 }
 
@@ -222,17 +281,6 @@ func TestRunDiagTimeoutWithoutRecord(t *testing.T) {
 	}
 	if strings.TrimSpace(out) != "暂无超时诊断记录。" {
 		t.Fatalf("unexpected diagnostic output: %q", out)
-	}
-}
-
-func TestDiagTimeoutLastErrorFlagIsRegistered(t *testing.T) {
-	root := newRootCmd()
-	diag, _, err := root.Find([]string{"diag", "timeout"})
-	if err != nil {
-		t.Fatalf("find diag timeout command: %v", err)
-	}
-	if diag.Flags().Lookup("last-error") == nil {
-		t.Fatal("expected diag timeout --last-error flag")
 	}
 }
 
