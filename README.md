@@ -192,6 +192,7 @@ lh rag search "deployment"
 - [记忆系统](docs/memory_system.md)
 - [Graph RAG 快速开始](docs/GRAPH_RAG_QUICKSTART.md)
 - [多 Agent 协作](docs/multi-agent/collaboration.md)
+- [Benchmark：Hybrid 检索](docs/benchmarks/rag-hybrid-retrieval/REPORT.md)：精确标识符 Recall@1 `0.000 → 1.000`，语义召回无回退，含延迟代价与复现步骤
 
 ## Prompt 和运行数据
 
