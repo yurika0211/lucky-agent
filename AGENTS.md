@@ -190,3 +190,5 @@ the change crosses package boundaries. For UI work, run commands inside
   without direct evidence.
 - Keep explanations operational; avoid broad philosophy or transient debug logs
   in this file.
+-
+- 如果修改了功能，注意比对是否需要同步更新config.example.json, 然后是否需要在githubpage的部分进行相关字段的补充说明，并及时更新。
