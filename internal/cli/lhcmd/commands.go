@@ -40,6 +40,8 @@ var (
 	yolo      bool
 )
 
+const msgGatewayShutdownTimeout = 2 * time.Second
+
 func runInit(cmd *cobra.Command, args []string) error {
 	mgr, err := config.NewManager()
 	if err != nil {
@@ -1195,7 +1197,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		_ = gm.StopAll()
+		if err := stopGatewaysWithTimeout(gm.StopAll, msgGatewayShutdownTimeout); err != nil {
+			fmt.Fprintln(os.Stderr, "warning:", err)
+		}
 		return nil
 	}
 
@@ -1401,9 +1405,38 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
-	_ = gm.StopAll()
+	if err := stopGatewaysWithTimeout(gm.StopAll, msgGatewayShutdownTimeout); err != nil {
+		fmt.Fprintln(os.Stderr, "warning:", err)
+	}
 	syncTelegramState(false, false)
 	return nil
+}
+
+// stopGatewaysWithTimeout bounds process shutdown after SIGINT or SIGTERM.
+// Gateway adapters should stop promptly after their contexts are canceled, but
+// a broken proxy or an uncooperative upstream must not keep the CLI PID alive
+// indefinitely. Returning from the command ends the process and its remaining
+// goroutines, while normal adapter restarts still use GatewayManager.StopAll
+// directly and retain its full graceful-wait behavior.
+func stopGatewaysWithTimeout(stop func() error, timeout time.Duration) error {
+	if stop == nil {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = msgGatewayShutdownTimeout
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- stop()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("message gateway shutdown exceeded %s; exiting process", timeout)
+	}
 }
 
 func handlePlainGatewayMessageWithLucky(ctx context.Context, platform string, runtime *agent.Agent, gw gateway.Gateway, lucky *luckycollector.Lucky, msg *gateway.Message, errorPrefix string) error {

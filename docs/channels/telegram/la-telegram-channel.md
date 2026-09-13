@@ -544,6 +544,8 @@ chatID -> chatTask
 🛑 当前任务已停止
 ```
 
+主机终端的 `Ctrl+C` / `SIGTERM` 会取消 Telegram 的 long-poll 请求。正常情况下会立即退出；如果代理或上游 HTTP 请求在 2 秒内仍未释放，CLI 会输出 warning 后结束进程，避免网关 PID 无限等待。
+
 ## 当前边界
 
 当前 Telegram 渠道的边界：
