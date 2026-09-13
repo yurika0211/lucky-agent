@@ -100,13 +100,16 @@ func (a *Adapter) Start(ctx context.Context) error {
 		return fmt.Errorf("telegram: bot token is required")
 	}
 
-	client, err := a.newHTTPClient()
+	pollCtx, cancel := context.WithCancel(ctx)
+	client, err := a.newHTTPClientWithContext(pollCtx)
 	if err != nil {
+		cancel()
 		return err
 	}
 
 	bot, err := tgbotapi.NewBotAPIWithClient(a.cfg.Token, tgbotapi.APIEndpoint, client)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("telegram: create bot: %w", err)
 	}
 
@@ -117,7 +120,6 @@ func (a *Adapter) Start(ctx context.Context) error {
 	}
 
 	// Create cancellable context for the polling loop
-	pollCtx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
 	a.running = true
 
@@ -176,6 +178,43 @@ func (a *Adapter) newHTTPClient() (*http.Client, error) {
 	}
 
 	return &http.Client{Transport: transport}, nil
+}
+
+// newHTTPClientWithContext binds Telegram API requests to the adapter
+// lifecycle while preserving per-request cancellation and deadlines.
+func (a *Adapter) newHTTPClientWithContext(ctx context.Context) (*http.Client, error) {
+	client, err := a.newHTTPClient()
+	if err != nil {
+		return nil, err
+	}
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = &lifecycleRoundTripper{ctx: ctx, base: base}
+	return client, nil
+}
+
+type lifecycleRoundTripper struct {
+	ctx  context.Context
+	base http.RoundTripper
+}
+
+func (t *lifecycleRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t == nil || t.base == nil {
+		return nil, fmt.Errorf("telegram: HTTP transport is not initialized")
+	}
+	if t.ctx == nil {
+		return t.base.RoundTrip(req)
+	}
+
+	requestCtx, cancel := context.WithCancel(req.Context())
+	stop := context.AfterFunc(t.ctx, cancel)
+	defer func() {
+		stop()
+		cancel()
+	}()
+	return t.base.RoundTrip(req.Clone(requestCtx))
 }
 
 func parseReplyToMessageID(replyToMsgID string) (int, error) {

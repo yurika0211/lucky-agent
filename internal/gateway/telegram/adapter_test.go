@@ -3,9 +3,11 @@ package telegram
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -108,6 +110,45 @@ func TestNewHTTPClientUnsupportedProxyScheme(t *testing.T) {
 	assert.Nil(t, client)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported proxy scheme")
+}
+
+func TestLifecycleRoundTripperCancelsActiveRequest(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	lifecycleCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	transport := &lifecycleRoundTripper{ctx: lifecycleCtx, base: http.DefaultTransport}
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("NewRequest() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, roundTripErr := transport.RoundTrip(req)
+		done <- roundTripErr
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach test server")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected request cancellation error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("request was not canceled promptly")
+	}
 }
 
 func TestAdapterStartNoToken(t *testing.T) {
