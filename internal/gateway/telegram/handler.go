@@ -43,6 +43,7 @@ type chatRuntime interface {
 	ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
 	ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 	ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error)
+	ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error)
 	AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error)
 }
 
@@ -140,6 +141,7 @@ type agentConfigSnapshot struct {
 	ProgressAsMessages        bool
 	ProgressAsNaturalLanguage bool
 	ProgressSummaryWithLLM    bool
+	ProgressSummaryPrompt     string
 	ShowToolDetailsInResult   bool
 	DisableAutoReaction       bool
 	MaxConcurrentSessions     int
@@ -239,6 +241,10 @@ func (a agentProviderAdapter) ChatWithSessionStreamInput(ctx context.Context, se
 
 func (a agentProviderAdapter) ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error) {
 	return a.inner.ProgressFeedback(ctx, userInput, round, observations)
+}
+
+func (a agentProviderAdapter) ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error) {
+	return a.inner.ProgressFeedbackWithPrompt(ctx, userInput, round, observations, presentationPrompt)
 }
 
 func (a agentProviderAdapter) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
@@ -352,6 +358,7 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 		ProgressAsMessages:        cfg.MsgGateway.Telegram.ProgressAsMessages,
 		ProgressAsNaturalLanguage: cfg.MsgGateway.Telegram.ProgressAsNaturalLanguage,
 		ProgressSummaryWithLLM:    cfg.MsgGateway.Telegram.ProgressSummaryWithLLM,
+		ProgressSummaryPrompt:     cfg.MsgGateway.Telegram.ProgressSummaryPrompt,
 		ShowToolDetailsInResult:   cfg.MsgGateway.Telegram.ShowToolDetailsInResult,
 		DisableAutoReaction:       cfg.MsgGateway.Telegram.DisableAutoReaction,
 		MaxConcurrentSessions:     cfg.MsgGateway.Telegram.MaxConcurrentSessions,
@@ -439,6 +446,8 @@ type Handler struct {
 	progressAsNaturalLanguage bool
 	// 每轮未完成时是否发送一条由 LLM 生成的总结性反馈
 	progressSummaryWithLLM bool
+	// Reasoning Trace 进度摘要的展示提示词；为空使用 Agent 内置默认值
+	progressSummaryPrompt string
 	// 最终回答前是否附上自然语言工具摘要
 	showToolDetailsInResult bool
 	// 是否关闭群聊请求确认表情
@@ -512,6 +521,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		progressAsMessages:        resolveProgressAsMessages(state),
 		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(state),
 		progressSummaryWithLLM:    resolveProgressSummaryWithLLM(state),
+		progressSummaryPrompt:     resolveProgressSummaryPrompt(state),
 		showToolDetailsInResult:   resolveShowToolDetailsInResult(state),
 		disableAutoReaction:       resolveDisableAutoReaction(state),
 		toolTraceTemplates:        resolveToolTraceTemplates(state),
@@ -674,6 +684,13 @@ func resolveProgressSummaryWithLLM(state stateRuntime) bool {
 	}
 	cfg := state.Config().Get()
 	return cfg.ProgressSummaryWithLLM
+}
+
+func resolveProgressSummaryPrompt(state stateRuntime) string {
+	if state == nil {
+		return ""
+	}
+	return strings.TrimSpace(state.Config().Get().ProgressSummaryPrompt)
 }
 
 func resolveShowToolDetailsInResult(state stateRuntime) bool {
@@ -896,6 +913,13 @@ func (h *Handler) effectiveProgressAsNaturalLanguage() bool {
 
 func (h *Handler) effectiveProgressSummaryWithLLM() bool {
 	return h.progressSummaryWithLLM
+}
+
+func (h *Handler) effectiveProgressSummaryPrompt() string {
+	if state := h.stateService(); state != nil {
+		return strings.TrimSpace(state.Config().Get().ProgressSummaryPrompt)
+	}
+	return strings.TrimSpace(h.progressSummaryPrompt)
 }
 
 func (h *Handler) effectiveShowToolDetailsInResult() bool {
@@ -2105,7 +2129,7 @@ func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gatewa
 		progressObservations = append([]string{"Previous user-facing update: " + prev}, progressObservations...)
 	}
 
-	summary, err := chat.ProgressFeedback(summaryCtx, userInput, round, progressObservations)
+	summary, err := chat.ProgressFeedbackWithPrompt(summaryCtx, userInput, round, progressObservations, h.effectiveProgressSummaryPrompt())
 	if err != nil {
 		return ""
 	}

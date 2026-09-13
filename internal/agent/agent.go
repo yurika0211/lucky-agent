@@ -1496,6 +1496,13 @@ func (a *Agent) ChatWithSessionInput(ctx context.Context, sessionID string, inpu
 
 // ProgressFeedback generates a concise model-authored progress update for an unfinished round.
 func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+	return a.ProgressFeedbackWithPrompt(ctx, userInput, round, observations, "")
+}
+
+// ProgressFeedbackWithPrompt generates a progress update using an optional
+// presentation prompt. Core evidence and safety constraints remain enforced
+// even when the presentation prompt is configured by the runtime owner.
+func (a *Agent) ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error) {
 	turnProvider := a.providerSnapshotForTurn(userInput)
 	if !turnProvider.valid() {
 		return "", fmt.Errorf("provider not initialized")
@@ -1504,40 +1511,7 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 		return "", nil
 	}
 
-	systemPrompt := `You are generating one concise reasoning update for the user during an unfinished task.
-
-Report real progress only. Stay close to the observed evidence.
-
-Write in English.
-
-The update should sound like a human investigator thinking aloud in a compact way.
-It should read like a short natural reasoning paragraph, not like a checklist, template, or repeated report.
-
-If previous user-facing updates are provided, treat them as messages that the user has already seen. Continue naturally from them instead of restarting the narration from scratch.
-Prioritize what changed since the previous update.
-
-What to include when relevant:
-- what you have checked,
-- what that currently suggests,
-- what you are verifying now and why,
-- what is still uncertain,
-- what likely matters next.
-
-Style requirements:
-- use 2 to 4 short connected sentences,
-- use natural transitions, but vary them across updates,
-- make the first sentence anchor to the newest change or signal, not to a generic restart,
-- do not start every update with the same pattern such as "I first checked...",
-- do not repeatedly open with first-person patterns like "I've...", "I have...", or "I'm..." unless there is a strong reason,
-- prefer continuity cues such as "So far,", "At this point,", "That suggests,", "The latest result shows,", or "This narrows it down because..." when they fit,
-- avoid rigid labels like "Verified", "Checking", "Uncertain", "Next",
-- avoid repeating the same rhetorical skeleton from one round to the next,
-- include brief causal links and small explanations, not just status labels,
-- keep it concrete and evidence-driven,
-- do not expose hidden chain-of-thought,
-- do not mention internal event types, implementation details, or tool protocol syntax,
-- do not pretend the task is complete if it is not,
-- do not use rigid headings like "Verified:" or "Checking:" unless the user explicitly asked for a checklist.`
+	systemPrompt := progressFeedbackSystemPrompt(presentationPrompt)
 
 	var userPrompt strings.Builder
 	var previousUpdates []string
@@ -1590,6 +1564,53 @@ Style requirements:
 		return "", err
 	}
 	return strings.TrimSpace(resp.Content), nil
+}
+
+const defaultProgressFeedbackPresentationPrompt = `Write in English.
+
+The update should sound like a human investigator thinking aloud in a compact way.
+It should read like a short natural reasoning paragraph, not like a checklist, template, or repeated report.
+
+If previous user-facing updates are provided, treat them as messages that the user has already seen. Continue naturally from them instead of restarting the narration from scratch.
+Prioritize what changed since the previous update.
+
+What to include when relevant:
+- what you have checked,
+- what that currently suggests,
+- what you are verifying now and why,
+- what is still uncertain,
+- what likely matters next.
+
+Style requirements:
+- use 2 to 4 short connected sentences,
+- use natural transitions, but vary them across updates,
+- make the first sentence anchor to the newest change or signal, not to a generic restart,
+- do not start every update with the same pattern such as "I first checked...",
+- do not repeatedly open with first-person patterns like "I've...", "I have...", or "I'm..." unless there is a strong reason,
+- prefer continuity cues such as "So far,", "At this point,", "That suggests,", "The latest result shows,", or "This narrows it down because..." when they fit,
+- avoid rigid labels like "Verified", "Checking", "Uncertain", "Next",
+- avoid repeating the same rhetorical skeleton from one round to the next,
+- include brief causal links and small explanations, not just status labels,
+- do not use rigid headings like "Verified:" or "Checking:" unless the user explicitly asked for a checklist.`
+
+func progressFeedbackSystemPrompt(presentationPrompt string) string {
+	presentationPrompt = strings.TrimSpace(presentationPrompt)
+	if presentationPrompt == "" {
+		presentationPrompt = defaultProgressFeedbackPresentationPrompt
+	}
+
+	return `You are generating one concise progress update for the user during an unfinished task.
+
+Report real progress only. Stay close to the observed evidence.
+
+Presentation instructions:
+` + presentationPrompt + `
+
+Non-negotiable constraints:
+- keep the update concrete and evidence-driven;
+- do not expose hidden chain-of-thought;
+- do not mention internal event types, implementation details, or tool protocol syntax;
+- do not pretend the task is complete if it is not.`
 }
 
 func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {

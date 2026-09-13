@@ -477,6 +477,7 @@ type MsgGatewayTelegram struct {
 	ProgressAsMessages        bool   `json:"progress_as_messages,omitempty"`         // 中间思考/工具步骤是否单独发消息
 	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
 	ProgressSummaryWithLLM    bool   `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
+	ProgressSummaryPrompt     string `json:"progress_summary_prompt,omitempty"`      // Reasoning Trace 进度摘要的展示提示词（为空使用默认提示词）
 	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
 	DisableAutoReaction       bool   `json:"disable_auto_reaction,omitempty"`        // 是否关闭群聊请求确认表情
 	MaxConcurrentSessions     int    `json:"max_concurrent_sessions,omitempty"`      // Telegram 会话 worker 并发上限
@@ -982,6 +983,7 @@ func DefaultConfig() *Config {
 				ChatTimeoutSeconds:        600,  // 10 分钟
 				ProgressAsMessages:        true, // 默认启用独立步骤消息
 				ProgressAsNaturalLanguage: false,
+				ProgressSummaryPrompt:     "",
 				ShowToolDetailsInResult:   false,
 				DisableAutoReaction:       false,
 				MaxConcurrentSessions:     8,
@@ -2312,6 +2314,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.ProgressAsNaturalLanguage = parseBool(value)
 	case "msg_gateway.telegram.progress_summary_with_llm":
 		m.config.MsgGateway.Telegram.ProgressSummaryWithLLM = parseBool(value)
+	case "msg_gateway.telegram.progress_summary_prompt":
+		m.config.MsgGateway.Telegram.ProgressSummaryPrompt = value
 	case "msg_gateway.telegram.show_tool_details_in_result":
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.telegram.show_tool_chain":

@@ -27,6 +27,25 @@ import (
 	"github.com/yurika0211/luckyagent/internal/tool"
 )
 
+func TestProgressFeedbackSystemPromptUsesConfiguredPresentation(t *testing.T) {
+	const configuredPrompt = "使用简体中文；每次输出一条不超过两句的执行进度。"
+	prompt := progressFeedbackSystemPrompt(configuredPrompt)
+
+	if !strings.Contains(prompt, configuredPrompt) {
+		t.Fatalf("system prompt does not contain configured presentation: %q", prompt)
+	}
+	if !strings.Contains(prompt, "do not expose hidden chain-of-thought") {
+		t.Fatalf("system prompt lost hidden-reasoning safeguard: %q", prompt)
+	}
+}
+
+func TestProgressFeedbackSystemPromptUsesDefaultPresentation(t *testing.T) {
+	prompt := progressFeedbackSystemPrompt("")
+	if !strings.Contains(prompt, "Write in English.") {
+		t.Fatalf("system prompt does not contain default presentation: %q", prompt)
+	}
+}
+
 // --- truncate ---
 
 func TestTruncate(t *testing.T) {

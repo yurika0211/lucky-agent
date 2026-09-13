@@ -306,6 +306,7 @@
       "progress_as_messages": true,
       "progress_as_natural_language": false,
       "progress_summary_with_llm": false,
+      "progress_summary_prompt": "",
       "show_tool_details_in_result": false,
       "disable_auto_reaction": false,
       "max_concurrent_sessions": 8,

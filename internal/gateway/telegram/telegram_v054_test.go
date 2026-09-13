@@ -3305,26 +3305,27 @@ func TestV054AdapterName(t *testing.T) {
 // ============================================================
 
 type mockAgentProvider struct {
-	sessions      *session.Manager
-	configSnap    agentConfigSnapshot
-	soulVal       *soul.Soul
-	toolsVal      *tool.Registry
-	skillsVal     []*tool.SkillInfo
-	cronEngine    *cron.Engine
-	metricsVal    *metrics.Metrics
-	memoryVal     *memory.Store
-	catalogVal    *provider.ModelCatalog
-	ragVal        *rag.RAGManager
-	embedderReg   *embedder.Registry
-	chatFunc      func(ctx context.Context, userInput string) (string, error)
-	chatSessFn    func(ctx context.Context, sessionID, userInput string) (string, error)
-	chatInputFn   func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
-	chatStreamFn  func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
-	chatStreamIn  func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
-	progressFn    func(ctx context.Context, userInput string, round int, observations []string) (string, error)
-	analyzeFn     func(ctx context.Context, attachments []gateway.Attachment) (string, error)
-	switchModelFn func(modelID string) error
-	replyAnchors  map[string]string
+	sessions         *session.Manager
+	configSnap       agentConfigSnapshot
+	soulVal          *soul.Soul
+	toolsVal         *tool.Registry
+	skillsVal        []*tool.SkillInfo
+	cronEngine       *cron.Engine
+	metricsVal       *metrics.Metrics
+	memoryVal        *memory.Store
+	catalogVal       *provider.ModelCatalog
+	ragVal           *rag.RAGManager
+	embedderReg      *embedder.Registry
+	chatFunc         func(ctx context.Context, userInput string) (string, error)
+	chatSessFn       func(ctx context.Context, sessionID, userInput string) (string, error)
+	chatInputFn      func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
+	chatStreamFn     func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	chatStreamIn     func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
+	progressFn       func(ctx context.Context, userInput string, round int, observations []string) (string, error)
+	progressPromptFn func(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error)
+	analyzeFn        func(ctx context.Context, attachments []gateway.Attachment) (string, error)
+	switchModelFn    func(modelID string) error
+	replyAnchors     map[string]string
 }
 
 func (m *mockAgentProvider) Sessions() *session.Manager {
@@ -3410,6 +3411,13 @@ func (m *mockAgentProvider) ProgressFeedback(ctx context.Context, userInput stri
 		return m.progressFn(ctx, userInput, round, observations)
 	}
 	return "mock progress summary", nil
+}
+
+func (m *mockAgentProvider) ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error) {
+	if m.progressPromptFn != nil {
+		return m.progressPromptFn(ctx, userInput, round, observations, presentationPrompt)
+	}
+	return m.ProgressFeedback(ctx, userInput, round, observations)
 }
 
 func (m *mockAgentProvider) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {

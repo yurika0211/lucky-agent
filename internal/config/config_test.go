@@ -1714,8 +1714,11 @@ func TestSetTelegramInteractionOptions(t *testing.T) {
 	if err := mgr.Set("msg_gateway.telegram.max_concurrent_sessions", "3"); err != nil {
 		t.Fatalf("Set max_concurrent_sessions: %v", err)
 	}
+	if err := mgr.Set("msg_gateway.telegram.progress_summary_prompt", "使用简体中文，每次仅两句"); err != nil {
+		t.Fatalf("Set progress_summary_prompt: %v", err)
+	}
 	telegram := mgr.Get().MsgGateway.Telegram
-	if !telegram.DisableAutoReaction || telegram.MaxConcurrentSessions != 3 {
+	if !telegram.DisableAutoReaction || telegram.MaxConcurrentSessions != 3 || telegram.ProgressSummaryPrompt != "使用简体中文，每次仅两句" {
 		t.Fatalf("unexpected Telegram options: %#v", telegram)
 	}
 	if err := mgr.Set("tool_trace.templates.file_read", "检查 {path}"); err != nil {
