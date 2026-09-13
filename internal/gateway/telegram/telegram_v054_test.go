@@ -792,6 +792,103 @@ func TestV054StreamSenderThrottleEdit(t *testing.T) {
 	stream.Finish()
 }
 
+func TestV054StreamSenderFlushesQueuedContent(t *testing.T) {
+	edits := make(chan string, 2)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "editMessageText") {
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			edits <- r.Form.Get("text")
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("newMockBot() error = %v", err)
+	}
+
+	adapter := NewAdapter(DefaultConfig())
+	adapter.bot = bot
+	adapter.running = true
+
+	stream, err := adapter.SendStream(context.Background(), "12345", "")
+	if err != nil {
+		t.Fatalf("SendStream() error = %v", err)
+	}
+	sender := stream.(*telegramStreamSender)
+	sender.mu.Lock()
+	sender.lastEdit = time.Now().Add(-minEditInterval + 20*time.Millisecond)
+	sender.mu.Unlock()
+
+	if err := stream.Append("partial response"); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	select {
+	case got := <-edits:
+		if got != "partial response" {
+			t.Fatalf("queued edit text = %q, want partial response", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected delayed edit before stream completion")
+	}
+
+	if err := stream.Finish(); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+}
+
+func TestV054StreamSenderFinishCancelsQueuedEdit(t *testing.T) {
+	edits := make(chan string, 3)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "editMessageText") {
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			edits <- r.Form.Get("text")
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("newMockBot() error = %v", err)
+	}
+
+	adapter := NewAdapter(DefaultConfig())
+	adapter.bot = bot
+	adapter.running = true
+
+	stream, err := adapter.SendStream(context.Background(), "12345", "")
+	if err != nil {
+		t.Fatalf("SendStream() error = %v", err)
+	}
+	sender := stream.(*telegramStreamSender)
+	sender.mu.Lock()
+	sender.lastEdit = time.Now().Add(-minEditInterval + 30*time.Millisecond)
+	sender.mu.Unlock()
+
+	if err := stream.Append("final response"); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err := stream.Finish(); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+
+	select {
+	case got := <-edits:
+		if !strings.Contains(got, "final response") {
+			t.Fatalf("final edit text = %q, want final response", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected final edit")
+	}
+
+	select {
+	case got := <-edits:
+		t.Fatalf("unexpected delayed edit after Finish(): %q", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestV054StreamSenderMaxEdits(t *testing.T) {
 	adapter, server, err := newAdapterWithMockBot()
 	if err != nil {
