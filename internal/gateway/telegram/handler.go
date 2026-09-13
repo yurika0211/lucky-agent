@@ -2422,10 +2422,14 @@ func (h *Handler) sendFinalAssistantResponse(msg *gateway.Message, response stri
 	if err := h.sendAssistantResponse(sendCtx, msg, response); err != nil {
 		fallback := fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200))
 		if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
-			_ = h.adapter.SendWithReply(sendCtx, msg.Chat.ID, msg.ID, fallback)
+			if fallbackErr := h.adapter.SendWithReply(sendCtx, msg.Chat.ID, msg.ID, fallback); fallbackErr != nil {
+				fmt.Printf("[telegram] final response fallback delivery failed: %v (original: %v)\n", fallbackErr, err)
+			}
 			return
 		}
-		_ = h.adapter.Send(sendCtx, msg.Chat.ID, fallback)
+		if fallbackErr := h.adapter.Send(sendCtx, msg.Chat.ID, fallback); fallbackErr != nil {
+			fmt.Printf("[telegram] final response fallback delivery failed: %v (original: %v)\n", fallbackErr, err)
+		}
 	}
 }
 
@@ -2647,32 +2651,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	)
 
 	if !sentResult {
-		finalOutput := strings.TrimSpace(finalContent.String())
 		switch {
-		case finalOutput != "":
-			if summaryMode {
-				h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress, emitProgressForMsg)
-			}
-			if !memoryTraceSent {
-				h.sendMemoryTraceCards(msg, memoryTraceCards)
-				memoryTraceSent = true
-			}
-			if !toolTraceSent {
-				if card := renderTelegramToolTraceCardWithTemplateDetails(toolTraceSteps, h.effectiveShowToolDetailsInResult(), h.toolTraceTemplates); strings.TrimSpace(card) != "" {
-					h.sendProgressMessageHTML(msg, card)
-					toolTraceSent = true
-				}
-			}
-			if !agentTraceSent {
-				if card := renderTelegramAgentTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
-					h.sendProgressMessageHTML(msg, card)
-					agentTraceSent = true
-				}
-			}
-			if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), true) {
-				finalOutput = prependToolNarratives(toolNarratives, finalOutput)
-			}
-			h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
 			emitProgress(h.telegramTimeoutFeedback(context.DeadlineExceeded))
 		case errors.Is(chatCtx.Err(), context.Canceled):
@@ -2911,52 +2890,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	)
 
 	if !sentResult {
-		finalOutput := finalContent.String()
-		if summaryMode && finalOutput != "" {
-			h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress)
-		}
-		if !memoryTraceSent && finalOutput != "" {
-			h.sendMemoryTraceCards(msg, memoryTraceCards)
-			memoryTraceSent = true
-		}
-		if narrativeMode && !toolTraceSent && finalOutput != "" {
-			if card := renderTelegramToolTraceCardWithTemplateDetails(toolTraceSteps, h.effectiveShowToolDetailsInResult(), h.toolTraceTemplates); strings.TrimSpace(card) != "" {
-				h.sendProgressMessageHTML(msg, card)
-				toolTraceSent = true
-			}
-		}
-		if narrativeMode && !agentTraceSent && finalOutput != "" {
-			if card := renderTelegramAgentTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
-				h.sendProgressMessageHTML(msg, card)
-				agentTraceSent = true
-			}
-		}
-		if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), narrativeMode) && finalOutput != "" {
-			finalOutput = prependToolNarratives(toolNarratives, finalOutput)
-		}
-		if narrativeMode && finalOutput != "" {
-			finalOutput = wrapFinalConclusion(finalOutput)
-		}
 		switch {
-		case finalContent.Len() > 0:
-			textOnly, media, resolveErr := resolveOutboundMediaResponse(finalOutput)
-			if resolveErr != nil {
-				sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(resolveErr.Error(), 200)))
-			} else {
-				textOnly, media = prepareOutboundMediaResponse(textOnly, media)
-				if len(media) > 0 {
-					placeholder := textOnly
-					if strings.TrimSpace(placeholder) == "" {
-						placeholder = summarizeOutboundMedia(media)
-					}
-					sender.SetResult(placeholder)
-					if err := h.sendAssistantMedia(context.Background(), msg, media); err != nil {
-						h.sendProgressMessage(msg, fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200)))
-					}
-				} else {
-					sender.SetResult(textOnly)
-				}
-			}
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
 			sender.SetResult(h.telegramTimeoutFeedback(context.DeadlineExceeded))
 		case errors.Is(chatCtx.Err(), context.Canceled):

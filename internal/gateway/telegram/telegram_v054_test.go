@@ -5220,8 +5220,8 @@ func TestV054HandleChatStreamUnexpectedClose(t *testing.T) {
 	if !sender.finished {
 		t.Fatal("expected stream sender to be finished when event channel closes unexpectedly")
 	}
-	if sender.result != "partial response" {
-		t.Fatalf("expected fallback result from partial content, got: %q", sender.result)
+	if sender.result != "❌ Error: stream ended unexpectedly, please retry" {
+		t.Fatalf("expected incomplete-stream error instead of partial content, got: %q", sender.result)
 	}
 }
 

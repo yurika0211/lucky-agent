@@ -2627,7 +2627,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			"round", round,
 			"error", err,
 		)
-		if a.finalizeStreamInterruption(events, sess, turnInput, state, err, "") {
+		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: err}
@@ -2638,10 +2638,24 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	var reasoning strings.Builder
 	emittedContentBytes := 0
 	streamFinishReason := ""
+	streamTerminal := false
 	// 流式 tool_calls 增量拼接
 	var toolCallsAcc []streamToolCallAcc // 按 index 累积
 
 	for chunk := range ch {
+		if chunk.Err != nil {
+			streamErr := fmt.Errorf("provider stream interrupted: %w", chunk.Err)
+			logger.Warn("agent stream native provider stream interrupted",
+				"session_id", sessionID,
+				"round", round,
+				"error", streamErr,
+			)
+			if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
+				return
+			}
+			events <- ChatEvent{Type: ChatEventError, Err: streamErr}
+			return
+		}
 		if chunk.FinishReason != "" {
 			streamFinishReason = chunk.FinishReason
 		}
@@ -2686,11 +2700,27 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			}
 		}
 		if chunk.Done {
+			streamTerminal = true
 			break
 		}
 	}
-	if err := iterCtx.Err(); err != nil && a.finalizeStreamInterruption(events, sess, turnInput, state, err, content.String()) {
+	if !streamTerminal {
+		streamErr := fmt.Errorf("provider stream interrupted: closed without a terminal event")
+		logger.Warn("agent stream native provider stream interrupted",
+			"session_id", sessionID,
+			"round", round,
+			"error", streamErr,
+		)
+		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
+			return
+		}
+		events <- ChatEvent{Type: ChatEventError, Err: streamErr}
 		return
+	}
+	if err := iterCtx.Err(); err != nil {
+		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, content.String()) {
+			return
+		}
 	}
 
 	response := content.String()
@@ -2966,7 +2996,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			"round", round,
 			"error", err,
 		)
-		if a.finalizeStreamInterruption(events, sess, turnInput, state, err, "") {
+		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: err}
@@ -3179,6 +3209,9 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, t
 func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
+	if strings.TrimSpace(response) == "" {
+		response = emptyFinalResponseMessage
+	}
 	response = utils.SanitizeToolProtocolOutput(response)
 	var logs []toolCallLog
 	if len(citationLogs) > 0 {
@@ -3215,6 +3248,73 @@ func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.S
 		reasoningContent = strings.TrimSpace(state.continuedReasoning.String())
 	}
 	a.finalizeStreamWithReasoning(events, sess, turnInput, response, reasoningContent, state.citationToolCalls)
+}
+
+// finalizeStreamAfterInterruption gives the model one final, tool-free chance
+// to synthesize a useful answer from the completed tool results and any partial
+// output collected before a reasoning/provider failure. User cancellation is
+// terminal and never triggers this recovery request.
+func (a *Agent) finalizeStreamAfterInterruption(
+	ctx context.Context,
+	events chan<- ChatEvent,
+	messages []provider.Message,
+	callOpts provider.CallOptions,
+	sess *session.Session,
+	turnInput UserTurnInput,
+	state *streamConvergenceState,
+	err error,
+	partial string,
+) bool {
+	if state == nil {
+		return a.finalizeStreamInterruption(events, sess, turnInput, nil, err, partial)
+	}
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return a.finalizeStreamInterruption(events, sess, turnInput, state, ctx.Err(), partial)
+	}
+
+	synthesisMessages := append([]provider.Message(nil), messages...)
+	partial = strings.TrimSpace(partial)
+	if partial == "" && state != nil {
+		partial = strings.TrimSpace(state.continuedResponse.String())
+	}
+	if partial != "" {
+		synthesisMessages = append(synthesisMessages, provider.Message{
+			Role:    "assistant",
+			Content: utils.TrimToRunes(partial, 6000),
+		})
+	}
+
+	var prompt strings.Builder
+	prompt.WriteString("The previous reasoning or provider phase was interrupted before a clean final response.\n")
+	prompt.WriteString("Generate the best user-facing final answer now using only the recorded conversation, completed tool results, and partial output above.\n")
+	prompt.WriteString("State clearly what is verified, what failed or remains uncertain, and what the user should do next. Do not claim an action succeeded unless the recorded evidence supports it. Do not call tools.\n")
+	prompt.WriteString("Interruption reason: ")
+	prompt.WriteString(strings.TrimSpace(fmt.Sprint(err)))
+	if observations := interruptionToolObservations(state); len(observations) > 0 {
+		prompt.WriteString("\nRecorded tool observations:\n")
+		for _, observation := range observations {
+			prompt.WriteString("- ")
+			prompt.WriteString(observation)
+			prompt.WriteByte('\n')
+		}
+	}
+	if state != nil && state.hasPendingDelegateTasks() {
+		prompt.WriteString("\nDelegated work is still pending; do not present it as completed.")
+	}
+	synthesisMessages = append(synthesisMessages, provider.Message{Role: "user", Content: prompt.String()})
+
+	synthesisCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, synthErr := a.chatLoopIteration(synthesisCtx, synthesisMessages, callOpts, true, state.provider)
+	if synthErr == nil && resp != nil && len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "" {
+		a.finalizeStreamWithState(events, sess, turnInput, resp.Content, state, resp.ReasoningContent)
+		return true
+	}
+
+	if a.finalizeStreamInterruption(events, sess, turnInput, state, err, partial) {
+		return true
+	}
+	return false
 }
 
 // finalizeStreamInterruption turns expected cancellation and timeout failures

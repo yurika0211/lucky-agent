@@ -1251,6 +1251,41 @@ func (p *timeoutProvider) ChatStream(context.Context, []provider.Message) (<-cha
 }
 func (p *timeoutProvider) Validate() error { return nil }
 
+type unterminatedStreamProvider struct{}
+
+func (p *unterminatedStreamProvider) Name() string { return "unterminated-stream-mock" }
+func (p *unterminatedStreamProvider) Chat(context.Context, []provider.Message) (*provider.Response, error) {
+	return nil, fmt.Errorf("unexpected Chat call")
+}
+func (p *unterminatedStreamProvider) ChatStream(context.Context, []provider.Message) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, 1)
+	ch <- provider.StreamChunk{Content: "partial"}
+	close(ch)
+	return ch, nil
+}
+func (p *unterminatedStreamProvider) Validate() error { return nil }
+
+type recoverableUnterminatedStreamProvider struct {
+	messages *[]provider.Message
+}
+
+func (p *recoverableUnterminatedStreamProvider) Name() string {
+	return "recoverable-unterminated-stream-mock"
+}
+func (p *recoverableUnterminatedStreamProvider) Chat(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+	if p.messages != nil {
+		*p.messages = append([]provider.Message(nil), messages...)
+	}
+	return &provider.Response{Content: "根据已记录的结果，任务未完全完成；请检查中断原因后重试。"}, nil
+}
+func (p *recoverableUnterminatedStreamProvider) ChatStream(context.Context, []provider.Message) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk, 1)
+	ch <- provider.StreamChunk{Content: "前半段结果"}
+	close(ch)
+	return ch, nil
+}
+func (p *recoverableUnterminatedStreamProvider) Validate() error { return nil }
+
 type loopingFunctionProvider struct {
 	callCount int
 	toolName  string
@@ -1515,6 +1550,119 @@ func TestChatWithSessionStreamTimeoutProducesFinalAnswer(t *testing.T) {
 				t.Fatalf("expected timeout final answer saved to session, got %#v", messages)
 			}
 		})
+	}
+}
+
+func TestChatWithSessionStreamRejectsProviderStreamWithoutTerminal(t *testing.T) {
+	sessMgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	sess := sessMgr.New()
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+	if err := cfg.Set("stream_mode", "native"); err != nil {
+		t.Fatalf("Set(stream_mode) error = %v", err)
+	}
+	memStore, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	a := &Agent{
+		provider:   &unterminatedStreamProvider{},
+		sessions:   sessMgr,
+		memory:     memStore,
+		shortTerm:  memory.NewShortTermBuffer(8),
+		tools:      tool.NewRegistry(),
+		gateway:    tool.NewGateway(tool.NewRegistry()),
+		cfg:        cfg,
+		metrics:    metrics.NewMetrics(),
+		contextEst: contextx.NewTokenEstimator(4096),
+		contextWin: contextx.NewContextWindow(contextx.DefaultWindowConfig()),
+	}
+
+	events, err := a.ChatWithSessionStreamInputWithLoopConfig(context.Background(), sess.ID, TextUserTurnInput("continue"), LoopConfig{
+		MaxIterations: 1,
+		Timeout:       time.Second,
+		AutoApprove:   true,
+	})
+	if err != nil {
+		t.Fatalf("ChatWithSessionStreamInputWithLoopConfig() error = %v", err)
+	}
+	var sawError, sawDone bool
+	for event := range events {
+		switch event.Type {
+		case ChatEventError:
+			sawError = true
+		case ChatEventDone:
+			sawDone = true
+		}
+	}
+	if !sawError || sawDone {
+		t.Fatalf("unterminated provider stream must produce error without done: error=%v done=%v", sawError, sawDone)
+	}
+}
+
+func TestChatWithSessionStreamSynthesizesAfterProviderInterruption(t *testing.T) {
+	sessMgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	sess := sessMgr.New()
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+	if err := cfg.Set("stream_mode", "native"); err != nil {
+		t.Fatalf("Set(stream_mode) error = %v", err)
+	}
+	memStore, err := memory.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	var synthesisMessages []provider.Message
+	a := &Agent{
+		provider:   &recoverableUnterminatedStreamProvider{messages: &synthesisMessages},
+		sessions:   sessMgr,
+		memory:     memStore,
+		shortTerm:  memory.NewShortTermBuffer(8),
+		tools:      tool.NewRegistry(),
+		gateway:    tool.NewGateway(tool.NewRegistry()),
+		cfg:        cfg,
+		metrics:    metrics.NewMetrics(),
+		contextEst: contextx.NewTokenEstimator(4096),
+		contextWin: contextx.NewContextWindow(contextx.DefaultWindowConfig()),
+	}
+
+	events, err := a.ChatWithSessionStreamInputWithLoopConfig(context.Background(), sess.ID, TextUserTurnInput("finish the task"), LoopConfig{
+		MaxIterations: 1,
+		Timeout:       time.Second,
+		AutoApprove:   true,
+	})
+	if err != nil {
+		t.Fatalf("ChatWithSessionStreamInputWithLoopConfig() error = %v", err)
+	}
+	var done string
+	for event := range events {
+		if event.Type == ChatEventError {
+			t.Fatalf("recoverable interruption should synthesize a final answer: %v", event.Err)
+		}
+		if event.Type == ChatEventDone {
+			done = event.Content
+		}
+	}
+	if !strings.Contains(done, "未完全完成") {
+		t.Fatalf("expected synthesized final answer, got %q", done)
+	}
+	var synthesisInput strings.Builder
+	for _, message := range synthesisMessages {
+		synthesisInput.WriteString(message.Content)
+		synthesisInput.WriteByte('\n')
+	}
+	if !strings.Contains(synthesisInput.String(), "前半段结果") || !strings.Contains(synthesisInput.String(), "interrupted") {
+		t.Fatalf("synthesis request lost partial output or interruption state: %q", synthesisInput.String())
 	}
 }
 

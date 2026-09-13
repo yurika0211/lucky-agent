@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -336,6 +337,44 @@ func TestCallOpenAIStreamEmitsUsageChunk(t *testing.T) {
 	}
 	if !strings.Contains(capturedBody, `"stream_options":{"include_usage":true}`) {
 		t.Fatalf("expected stream usage option in request body, got %s", capturedBody)
+	}
+}
+
+func TestCallOpenAIStreamReportsUnexpectedEOFWithoutTerminalEvent(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() { openAIHTTPClient = orig })
+
+	openAIHTTPClient = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"\"}]}\n")),
+			Request:    req,
+		}, nil
+	})}
+	cfg := Config{LlmProvider: LlmProvider{BaseURL: "https://api.openai.com/v1", APIKey: "sk-test", Model: "gpt-5.4-mini"}}
+	ch, err := callOpenAIStream(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, CallOptions{})
+	if err != nil {
+		t.Fatalf("callOpenAIStream returned error: %v", err)
+	}
+	var sawContent bool
+	var streamErr error
+	for chunk := range ch {
+		if chunk.Content == "partial" {
+			sawContent = true
+		}
+		if chunk.Err != nil {
+			streamErr = chunk.Err
+		}
+		if chunk.Done {
+			t.Fatal("unexpected terminal chunk after incomplete SSE")
+		}
+	}
+	if !sawContent {
+		t.Fatal("expected partial content before stream failure")
+	}
+	if streamErr == nil || !errors.Is(streamErr, io.ErrUnexpectedEOF) {
+		t.Fatalf("expected unexpected EOF stream error, got %v", streamErr)
 	}
 }
 

@@ -390,6 +390,9 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 		State: StateReason,
 	}
 	finalize := func(response string, reasoningContent string) {
+		if strings.TrimSpace(response) == "" {
+			response = emptyFinalResponseMessage
+		}
 		response = utils.SanitizeToolProtocolOutput(response)
 		response = appendNaturalCitations(response, result.ToolCalls)
 		response = a.appendRunningTaskNotice(response)

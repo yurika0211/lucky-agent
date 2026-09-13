@@ -305,6 +305,11 @@ func (p *AnthropicProvider) ChatStreamWithOptions(ctx context.Context, messages 
 				return
 			}
 		}
+		if err := scanner.Err(); err != nil {
+			ch <- StreamChunk{Err: fmt.Errorf("anthropic stream read: %w", err), Model: p.cfg.LlmProvider.Model}
+			return
+		}
+		ch <- StreamChunk{Err: io.ErrUnexpectedEOF, Model: p.cfg.LlmProvider.Model}
 	}()
 
 	return ch, nil
