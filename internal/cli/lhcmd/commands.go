@@ -23,6 +23,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/gateway/feishu"
 	"github.com/yurika0211/luckyagent/internal/gateway/napcat"
 	"github.com/yurika0211/luckyagent/internal/gateway/openclawweixin"
+	"github.com/yurika0211/luckyagent/internal/gateway/hilight"
 	"github.com/yurika0211/luckyagent/internal/gateway/qqofficial"
 	"github.com/yurika0211/luckyagent/internal/gateway/telegram"
 	"github.com/yurika0211/luckyagent/internal/gateway/weixin"
@@ -338,6 +339,18 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MsgGateway.Feishu.RemoveAt)
 	case "msg_gateway.feishu.group_trigger_mode":
 		fmt.Println(cfg.MsgGateway.Feishu.GroupTriggerMode)
+	case "msg_gateway.hilight.enabled":
+		fmt.Println(cfg.MsgGateway.HiLight.Enabled)
+	case "msg_gateway.hilight.ws_url":
+		fmt.Println(cfg.MsgGateway.HiLight.WSURL)
+	case "msg_gateway.hilight.auth_token":
+		fmt.Println(maskKey(cfg.MsgGateway.HiLight.AuthToken))
+	case "msg_gateway.hilight.account_id":
+		fmt.Println(cfg.MsgGateway.HiLight.AccountID)
+	case "msg_gateway.hilight.dm_policy":
+		fmt.Println(cfg.MsgGateway.HiLight.DMPolicy)
+	case "msg_gateway.hilight.allow_from":
+		fmt.Println(strings.Join(cfg.MsgGateway.HiLight.AllowFrom, ","))
 	default:
 		if v, ok := cfg.Extra[args[0]]; ok {
 			fmt.Println(v)
@@ -596,6 +609,8 @@ type msgGatewayStartOptions struct {
 	WeixinToken        string
 	WeixinAcct         string
 	OpenClawWeixinAcct string
+	HiLightAuthToken   string
+	HiLightWSURL       string
 }
 
 type weixinLoginOptions struct {
@@ -683,6 +698,18 @@ func resolveMsgGatewayStartOptions(cmd *cobra.Command, cfg *config.Config) msgGa
 		opts.WeixinToken = strings.TrimSpace(cfg.MsgGateway.Weixin.Token)
 		opts.WeixinAcct = strings.TrimSpace(cfg.MsgGateway.Weixin.AccountID)
 		opts.OpenClawWeixinAcct = strings.TrimSpace(cfg.MsgGateway.OpenClawWeixin.AccountID)
+		opts.HiLightAuthToken = strings.TrimSpace(cfg.MsgGateway.HiLight.AuthToken)
+		opts.HiLightWSURL = strings.TrimSpace(cfg.MsgGateway.HiLight.WSURL)
+	}
+	if cmd.Flags().Changed("hilight-auth-token") {
+		if v, err := cmd.Flags().GetString("hilight-auth-token"); err == nil {
+			opts.HiLightAuthToken = strings.TrimSpace(v)
+		}
+	}
+	if cmd.Flags().Changed("hilight-ws-url") {
+		if v, err := cmd.Flags().GetString("hilight-ws-url"); err == nil {
+			opts.HiLightWSURL = strings.TrimSpace(v)
+		}
 	}
 
 	return opts
@@ -702,6 +729,12 @@ func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
 	if opts.Platform == "openclawweixin" {
 		if strings.TrimSpace(opts.OpenClawWeixinAcct) == "" {
 			return fmt.Errorf("openclawweixin 需要 msg_gateway.openclawweixin.account_id")
+		}
+		return nil
+	}
+	if opts.Platform == "hilight" {
+		if strings.TrimSpace(opts.HiLightAuthToken) == "" {
+			return fmt.Errorf("hilight 需要 msg_gateway.hilight.auth_token（或 --hilight-auth-token）")
 		}
 		return nil
 	}
@@ -725,7 +758,7 @@ func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
 		if opts.Platform == "" {
 			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
 		}
-		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial, napcat, feishu, weixin, openclawweixin)", opts.Platform)
+		return fmt.Errorf("不支持的平台: %s (支持: telegram, qqofficial, napcat, feishu, weixin, openclawweixin, hilight)", opts.Platform)
 	}
 
 	return nil
@@ -1272,6 +1305,36 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		fmt.Println("OpenClaw Weixin gateway started")
+	case "hilight":
+		hlCfg := cfg.MsgGateway.HiLight
+		if strings.TrimSpace(opts.HiLightAuthToken) != "" {
+			hlCfg.AuthToken = strings.TrimSpace(opts.HiLightAuthToken)
+		}
+		if strings.TrimSpace(opts.HiLightWSURL) != "" {
+			hlCfg.WSURL = strings.TrimSpace(opts.HiLightWSURL)
+		}
+		hlAdapter := hilight.NewAdapter(hilight.Config{
+			Enabled:                hlCfg.Enabled,
+			WSURL:                  hlCfg.WSURL,
+			AuthToken:              hlCfg.AuthToken,
+			AccountID:              hlCfg.AccountID,
+			ReconnectIntervalMS:    hlCfg.ReconnectIntervalMS,
+			MaxReconnectIntervalMS: hlCfg.MaxReconnectIntervalMS,
+			HeartbeatIntervalMS:    hlCfg.HeartbeatIntervalMS,
+			DMPolicy:               hlCfg.DMPolicy,
+			AllowFrom:              append([]string(nil), hlCfg.AllowFrom...),
+		})
+		hlLucky := luckycollector.NewLucky()
+		hlAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			return handlePlainGatewayMessageWithLucky(ctx, "hilight", a, hlAdapter, hlLucky, msg, "hilight gateway error")
+		})
+		if err := gm.Register(hlAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "hilight"); err != nil {
+			return err
+		}
+		fmt.Println("HiLight gateway started")
 	default:
 		return validateMsgGatewayStartOptions(opts)
 	}

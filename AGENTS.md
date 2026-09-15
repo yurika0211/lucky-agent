@@ -94,13 +94,15 @@ lh msg-gateway start --platform napcat
 lh msg-gateway start --platform feishu
 lh msg-gateway start --platform weixin
 lh msg-gateway start --platform openclawweixin
+lh msg-gateway start --platform hilight
 ```
 
 Telegram supports progress-message modes and session commands. NapCat uses
 OneBot v11 reverse WebSocket settings (`listen_addr`, `path`, `access_token`).
 Feishu uses an HTTP event callback and tenant access tokens; its Phase 1 adapter
 supports unencrypted text events. QQ Official and Weixin have their own
-auth/config paths. Verify adapter behavior and tests under the matching
+auth/config paths. HiLight is a WebSocket client bridge (`msg_gateway.hilight.ws_url` +
+`auth_token`) for text DMs. Verify adapter behavior and tests under the matching
 `internal/gateway/<platform>` package before changing platform-specific
 assumptions.
 

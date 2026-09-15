@@ -342,6 +342,17 @@
       "split_multiline_messages": false,
       "poll_timeout_ms": 35000,
       "send_chunk_delay_ms": 350
+    },
+    "hilight": {
+      "enabled": true,
+      "ws_url": "wss://open.guangfan.com/open-apis/device-agent/v1/websocket",
+      "auth_token": "",
+      "account_id": "default",
+      "reconnect_interval_ms": 3000,
+      "max_reconnect_interval_ms": 30000,
+      "heartbeat_interval_ms": 30000,
+      "dm_policy": "open",
+      "allow_from": ["*"]
     }
   },
   "hooks": {

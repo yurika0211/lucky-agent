@@ -374,6 +374,7 @@ type MsgGatewayConfig struct {
 	Feishu         MsgGatewayFeishu         `json:"feishu,omitempty"`
 	Weixin         MsgGatewayWeixin         `json:"weixin,omitempty"`
 	OpenClawWeixin MsgGatewayOpenClawWeixin `json:"openclawweixin,omitempty"`
+	HiLight        MsgGatewayHiLight        `json:"hilight,omitempty"`
 }
 
 // MsgGatewayTelegram Telegram 网关配置
@@ -886,6 +887,16 @@ func DefaultConfig() *Config {
 				PollTimeoutMilliseconds: 35000,
 				SendChunkDelayMS:        350,
 			},
+			HiLight: MsgGatewayHiLight{
+				Enabled:                true,
+				WSURL:                  "wss://open.guangfan.com/open-apis/device-agent/v1/websocket",
+				AccountID:              "default",
+				ReconnectIntervalMS:    3000,
+				MaxReconnectIntervalMS: 30000,
+				HeartbeatIntervalMS:    30000,
+				DMPolicy:               "open",
+				AllowFrom:              []string{"*"},
+			},
 		},
 	}
 }
@@ -1333,6 +1344,28 @@ func normalizeConfig(cfg *Config) {
 	if cfg.MsgGateway.OpenClawWeixin.SendChunkDelayMS <= 0 {
 		cfg.MsgGateway.OpenClawWeixin.SendChunkDelayMS = def.MsgGateway.OpenClawWeixin.SendChunkDelayMS
 	}
+	if strings.TrimSpace(cfg.MsgGateway.HiLight.WSURL) == "" {
+		cfg.MsgGateway.HiLight.WSURL = def.MsgGateway.HiLight.WSURL
+	}
+	if strings.TrimSpace(cfg.MsgGateway.HiLight.AccountID) == "" {
+		cfg.MsgGateway.HiLight.AccountID = def.MsgGateway.HiLight.AccountID
+	}
+	if cfg.MsgGateway.HiLight.ReconnectIntervalMS <= 0 {
+		cfg.MsgGateway.HiLight.ReconnectIntervalMS = def.MsgGateway.HiLight.ReconnectIntervalMS
+	}
+	if cfg.MsgGateway.HiLight.MaxReconnectIntervalMS <= 0 {
+		cfg.MsgGateway.HiLight.MaxReconnectIntervalMS = def.MsgGateway.HiLight.MaxReconnectIntervalMS
+	}
+	if cfg.MsgGateway.HiLight.HeartbeatIntervalMS <= 0 {
+		cfg.MsgGateway.HiLight.HeartbeatIntervalMS = def.MsgGateway.HiLight.HeartbeatIntervalMS
+	}
+	if strings.TrimSpace(cfg.MsgGateway.HiLight.DMPolicy) == "" {
+		cfg.MsgGateway.HiLight.DMPolicy = def.MsgGateway.HiLight.DMPolicy
+	}
+	if cfg.MsgGateway.HiLight.AllowFrom == nil {
+		cfg.MsgGateway.HiLight.AllowFrom = append([]string(nil), def.MsgGateway.HiLight.AllowFrom...)
+	}
+
 	if strings.TrimSpace(cfg.MsgGateway.OpenClawWeixin.DMPolicy) == "" {
 		cfg.MsgGateway.OpenClawWeixin.DMPolicy = def.MsgGateway.OpenClawWeixin.DMPolicy
 	}
@@ -1465,6 +1498,7 @@ func cloneConfig(in *Config) *Config {
 	cp.MsgGateway.Weixin.GroupAllowedUsers = append([]string(nil), in.MsgGateway.Weixin.GroupAllowedUsers...)
 	cp.MsgGateway.OpenClawWeixin.AllowedUsers = append([]string(nil), in.MsgGateway.OpenClawWeixin.AllowedUsers...)
 	cp.MsgGateway.OpenClawWeixin.GroupAllowedUsers = append([]string(nil), in.MsgGateway.OpenClawWeixin.GroupAllowedUsers...)
+	cp.MsgGateway.HiLight.AllowFrom = append([]string(nil), in.MsgGateway.HiLight.AllowFrom...)
 	if in.Autonomy.Worker.AutoApprove != nil {
 		v := *in.Autonomy.Worker.AutoApprove
 		cp.Autonomy.Worker.AutoApprove = &v
@@ -2076,7 +2110,31 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.MsgGateway.OpenClawWeixin.SendChunkDelayMS = n
-	case "msg_gateway.qqofficial.intents":
+	case "msg_gateway.hilight.enabled":
+		m.config.MsgGateway.HiLight.Enabled = parseBool(value)
+	case "msg_gateway.hilight.ws_url":
+		m.config.MsgGateway.HiLight.WSURL = value
+	case "msg_gateway.hilight.auth_token":
+		m.config.MsgGateway.HiLight.AuthToken = value
+	case "msg_gateway.hilight.account_id":
+		m.config.MsgGateway.HiLight.AccountID = value
+	case "msg_gateway.hilight.reconnect_interval_ms":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.HiLight.ReconnectIntervalMS = n
+	case "msg_gateway.hilight.max_reconnect_interval_ms":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.HiLight.MaxReconnectIntervalMS = n
+	case "msg_gateway.hilight.heartbeat_interval_ms":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.HiLight.HeartbeatIntervalMS = n
+	case "msg_gateway.hilight.dm_policy":
+		m.config.MsgGateway.HiLight.DMPolicy = value
+	case "msg_gateway.hilight.allow_from":
+		m.config.MsgGateway.HiLight.AllowFrom = splitCSV(value)
+		case "msg_gateway.qqofficial.intents":
 		m.config.MsgGateway.QQOfficial.Intents = splitCSV(value)
 	case "limits.max_tokens":
 		var n int
@@ -2394,6 +2452,19 @@ type MsgGatewayOpenClawWeixin struct {
 	SplitMultilineMessages  bool     `json:"split_multiline_messages,omitempty"`
 	PollTimeoutMilliseconds int      `json:"poll_timeout_ms,omitempty"`
 	SendChunkDelayMS        int      `json:"send_chunk_delay_ms,omitempty"`
+}
+
+// MsgGatewayHiLight HiLight WebSocket bridge 配置
+type MsgGatewayHiLight struct {
+	Enabled                bool     `json:"enabled,omitempty"`
+	WSURL                  string   `json:"ws_url,omitempty"`
+	AuthToken              string   `json:"auth_token,omitempty"`
+	AccountID              string   `json:"account_id,omitempty"`
+	ReconnectIntervalMS    int      `json:"reconnect_interval_ms,omitempty"`
+	MaxReconnectIntervalMS int      `json:"max_reconnect_interval_ms,omitempty"`
+	HeartbeatIntervalMS    int      `json:"heartbeat_interval_ms,omitempty"`
+	DMPolicy               string   `json:"dm_policy,omitempty"`
+	AllowFrom              []string `json:"allow_from,omitempty"`
 }
 
 // initDefaultHooks 初始化默认的 hooks 脚本

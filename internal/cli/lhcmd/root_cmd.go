@@ -184,7 +184,7 @@ func newRootCmd() *cobra.Command {
 		Short: "启动消息网关",
 		RunE:  runMsgGatewayStart,
 	}
-	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial, napcat, feishu, weixin, openclawweixin)")
+	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, qqofficial, napcat, feishu, weixin, openclawweixin, hilight)")
 	msgGatewayStartCmd.Flags().String("token", "", "Bot token (Telegram)")
 	msgGatewayStartCmd.Flags().String("qq-appid", "", "QQ 官方机器人 AppID")
 	msgGatewayStartCmd.Flags().String("qq-appsecret", "", "QQ 官方机器人 AppSecret")
@@ -197,6 +197,8 @@ func newRootCmd() *cobra.Command {
 	msgGatewayStartCmd.Flags().String("feishu-verification-token", "", "飞书事件订阅 Verification Token")
 	msgGatewayStartCmd.Flags().String("feishu-listen", "", "飞书事件回调监听地址")
 	msgGatewayStartCmd.Flags().String("feishu-path", "", "飞书事件回调路径")
+	msgGatewayStartCmd.Flags().String("hilight-auth-token", "", "HiLight WebSocket Authorization token / API Key")
+	msgGatewayStartCmd.Flags().String("hilight-ws-url", "", "HiLight WebSocket URL")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
 	msgGatewayStopCmd := &cobra.Command{
 		Use:   "stop [platform]",

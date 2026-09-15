@@ -495,3 +495,16 @@ func TestWeixinLoginDriverFlag(t *testing.T) {
 		t.Fatalf("expected driver openclaw, got %q", got)
 	}
 }
+
+func TestValidateMsgGatewayStartOptionsHiLight(t *testing.T) {
+	err := validateMsgGatewayStartOptions(msgGatewayStartOptions{Platform: "hilight"})
+	if err == nil {
+		t.Fatal("expected hilight validation error")
+	}
+	if !strings.Contains(err.Error(), "msg_gateway.hilight.auth_token") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := validateMsgGatewayStartOptions(msgGatewayStartOptions{Platform: "hilight", HiLightAuthToken: "token"}); err != nil {
+		t.Fatalf("expected hilight valid options, got %v", err)
+	}
+}
