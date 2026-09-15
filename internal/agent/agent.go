@@ -1125,6 +1125,17 @@ func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, b
 	}
 
 	providerName := strings.ToLower(strings.TrimSpace(c.Multimodal.Provider))
+	if selection, ok := c.ModelSelection(config.ModelKindVision); ok {
+		cfg.ImageModel = strings.TrimSpace(selection.ID)
+		cfg.APIBase = strings.TrimSpace(selection.APIBase)
+		providerName = strings.ToLower(strings.TrimSpace(selection.Provider))
+		if endpoint, exists := c.Models.Endpoints[config.ModelKindVision]; exists {
+			cfg.APIKey = strings.TrimSpace(endpoint.APIKey)
+		}
+	}
+	if selection, ok := c.ModelSelection(config.ModelKindTranscription); ok {
+		cfg.TranscriptionModel = strings.TrimSpace(selection.ID)
+	}
 	if providerName == "" {
 		providerName = strings.ToLower(strings.TrimSpace(c.Provider))
 	}
@@ -2604,7 +2615,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 			return
 		}
-		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+		_ = a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, fmt.Errorf("max iterations reached"), "")
 		return
 	}
 
@@ -2630,7 +2641,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
-		events <- ChatEvent{Type: ChatEventError, Err: err}
+		a.finalizeStreamWithState(events, sess, turnInput, streamFinalAnswerFallbackMessage(err, state, ""), state)
 		return
 	}
 
@@ -2653,7 +2664,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
 				return
 			}
-			events <- ChatEvent{Type: ChatEventError, Err: streamErr}
+			a.finalizeStreamWithState(events, sess, turnInput, streamFinalAnswerFallbackMessage(streamErr, state, content.String()), state)
 			return
 		}
 		if chunk.FinishReason != "" {
@@ -2714,7 +2725,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
 			return
 		}
-		events <- ChatEvent{Type: ChatEventError, Err: streamErr}
+		a.finalizeStreamWithState(events, sess, turnInput, streamFinalAnswerFallbackMessage(streamErr, state, content.String()), state)
 		return
 	}
 	if err := iterCtx.Err(); err != nil {
@@ -2852,7 +2863,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 					a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 					return
 				}
-				events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+				_ = a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, fmt.Errorf("max iterations reached"), "")
 				return
 			}
 			nextRound := round + 1
@@ -2973,7 +2984,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 			return
 		}
-		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+		_ = a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, fmt.Errorf("max iterations reached"), "")
 		return
 	}
 
@@ -2999,7 +3010,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
-		events <- ChatEvent{Type: ChatEventError, Err: err}
+		a.finalizeStreamWithState(events, sess, turnInput, streamFinalAnswerFallbackMessage(err, state, ""), state)
 		return
 	}
 	applyTextToolCallsToResponse(resp, state.disabledTools)
@@ -3104,7 +3115,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 				a.finalizeStreamWithState(events, sess, turnInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice, state)
 				return
 			}
-			events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+			_ = a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, fmt.Errorf("max iterations reached"), "")
 			return
 		}
 		nextRound := round + 1
@@ -3314,7 +3325,30 @@ func (a *Agent) finalizeStreamAfterInterruption(
 	if a.finalizeStreamInterruption(events, sess, turnInput, state, err, partial) {
 		return true
 	}
-	return false
+	// Every stream termination must emit a final answer event. Consumers such
+	// as Telegram otherwise remain on the reasoning/progress message forever.
+	a.finalizeStreamWithState(events, sess, turnInput, streamFinalAnswerFallbackMessage(err, state, partial), state)
+	return true
+}
+
+func streamFinalAnswerFallbackMessage(err error, state *streamConvergenceState, partial string) string {
+	message := "The agent could not complete the reasoning phase, but this turn has been closed without claiming an unverified result."
+	if err != nil {
+		message += " Reason: " + utils.TrimToRunes(strings.TrimSpace(err.Error()), 240) + "."
+	}
+	partial = strings.TrimSpace(partial)
+	if state != nil {
+		if continuation := strings.TrimSpace(state.continuedResponse.String()); continuation != "" && !strings.Contains(partial, continuation) {
+			if partial != "" {
+				partial += "\n"
+			}
+			partial += continuation
+		}
+	}
+	if partial != "" {
+		message += "\n\nPartial output:\n" + utils.TrimToRunes(partial, 1200)
+	}
+	return message
 }
 
 // finalizeStreamInterruption turns expected cancellation and timeout failures

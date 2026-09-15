@@ -1600,8 +1600,8 @@ func TestChatWithSessionStreamRejectsProviderStreamWithoutTerminal(t *testing.T)
 			sawDone = true
 		}
 	}
-	if !sawError || sawDone {
-		t.Fatalf("unterminated provider stream must produce error without done: error=%v done=%v", sawError, sawDone)
+	if sawError || !sawDone {
+		t.Fatalf("unterminated provider stream must pass through the final-answer gate: error=%v done=%v", sawError, sawDone)
 	}
 }
 
@@ -3308,6 +3308,45 @@ func TestNewRegistersOpenAIMultimodalProviderFromDedicatedConfig(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected openai-media provider to be registered for image modality")
+	}
+}
+
+func TestResolveOpenAIMultimodalConfigUsesVisionEndpoint(t *testing.T) {
+	cfg := &config.Config{
+		Provider: "openai",
+		APIKey:   "chat-key",
+		APIBase:  "https://chat.example/v1",
+		Multimodal: config.MultimodalConfig{
+			Provider:           "openai",
+			APIKey:             "transcription-key",
+			APIBase:            "https://transcription.example/v1",
+			ImageModel:         "legacy-vision",
+			TranscriptionModel: "legacy-transcription",
+		},
+		Models: config.ModelsConfig{
+			Active: map[config.ModelKind]string{
+				config.ModelKindVision:        "vision-next",
+				config.ModelKindTranscription: "transcription-next",
+			},
+			Endpoints: map[config.ModelKind]config.ModelEndpointConfig{
+				config.ModelKindVision: {
+					Provider: "openai",
+					APIKey:   "vision-key",
+					APIBase:  "https://vision.example/v1",
+				},
+			},
+		},
+	}
+
+	got, ok := resolveOpenAIMultimodalConfig(cfg)
+	if !ok {
+		t.Fatal("expected multimodal config")
+	}
+	if got.APIKey != "vision-key" || got.APIBase != "https://vision.example/v1" || got.ImageModel != "vision-next" {
+		t.Fatalf("vision config = %#v", got)
+	}
+	if got.TranscriptionModel != "transcription-next" {
+		t.Fatalf("transcription model = %q", got.TranscriptionModel)
 	}
 }
 

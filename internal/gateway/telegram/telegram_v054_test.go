@@ -5270,6 +5270,7 @@ func TestV054HandleChatStreamNaturalProgressFinalOnly(t *testing.T) {
 	defer server.Close()
 
 	handler.progressAsNaturalLanguage = true
+	handler.agent.(*mockAgentProvider).configSnap.ProgressAsNaturalLanguage = true
 
 	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
 		ch := make(chan agent.ChatEvent, 5)

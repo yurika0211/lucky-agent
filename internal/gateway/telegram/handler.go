@@ -904,14 +904,32 @@ func (h *Handler) effectiveChatStreamTimeout() time.Duration {
 }
 
 func (h *Handler) effectiveProgressAsMessages() bool {
+	if state := h.stateService(); state != nil {
+		cfg := state.Config().Get()
+		if cfg.ConfigFile != "" {
+			return cfg.ProgressAsMessages
+		}
+	}
 	return h.progressAsMessages
 }
 
 func (h *Handler) effectiveProgressAsNaturalLanguage() bool {
+	if state := h.stateService(); state != nil {
+		cfg := state.Config().Get()
+		if cfg.ConfigFile != "" {
+			return cfg.ProgressAsNaturalLanguage
+		}
+	}
 	return h.progressAsNaturalLanguage
 }
 
 func (h *Handler) effectiveProgressSummaryWithLLM() bool {
+	if state := h.stateService(); state != nil {
+		cfg := state.Config().Get()
+		if cfg.ConfigFile != "" {
+			return cfg.ProgressSummaryWithLLM
+		}
+	}
 	return h.progressSummaryWithLLM
 }
 
