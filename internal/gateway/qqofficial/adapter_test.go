@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
@@ -663,6 +664,46 @@ func TestBuildUserTurnInputPreservesAttachments(t *testing.T) {
 	}
 	if normalized.Message.ContentParts[1].Image == nil || normalized.Message.ContentParts[1].Image.FilePath != "/tmp/example.jpg" {
 		t.Fatalf("expected image content part to keep file path, got %#v", normalized.Message.ContentParts[1])
+	}
+}
+
+func TestComposeAttachmentInputDefersAnalysisToContextPlanner(t *testing.T) {
+	var analysisCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		analysisCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output":[{"type":"message","content":[{"type":"output_text","text":"pre-analysis"}]}]}`))
+	}))
+	defer upstream.Close()
+	mgr, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := mgr.Get()
+	for _, kind := range []config.ModelKind{config.ModelKindChat, config.ModelKindVision} {
+		if err := cfg.SetModelSelection(kind, "custom-vision", config.ModelEndpointConfig{
+			Provider: "openai", APIKey: "test-key", APIBase: upstream.URL,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := mgr.Replace(cfg); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := agent.New(mgr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	h := &Handler{agent: runtime}
+	input := h.buildUserTurnInput(context.Background(), "look at this", []gateway.Attachment{{
+		Type: gateway.AttachmentImage, FileURL: "https://example.test/photo.png", FileName: "photo.png",
+	}})
+	if strings.Contains(input.RoutingText, "[Multimodal Analysis]") || !strings.Contains(input.RoutingText, "[Multimedia Attachments]") {
+		t.Fatalf("expected only attachment metadata: %q", input.RoutingText)
+	}
+	if analysisCalls.Load() != 0 {
+		t.Fatalf("gateway called vision endpoint %d times before planning", analysisCalls.Load())
 	}
 }
 

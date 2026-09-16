@@ -1695,7 +1695,9 @@ func telegramTurnAttachments(msg *gateway.Message) []gateway.Attachment {
 		return nil
 	}
 	out := append([]gateway.Attachment(nil), msg.Attachments...)
-	if msg.ReplyTo == nil || len(msg.ReplyTo.Attachments) == 0 {
+	// A new attachment is authoritative for this turn. Inheriting replied
+	// attachments alongside it can merge an old image into the current request.
+	if len(out) > 0 || msg.ReplyTo == nil || len(msg.ReplyTo.Attachments) == 0 {
 		return out
 	}
 	seen := make(map[string]bool, len(out)+len(msg.ReplyTo.Attachments))
@@ -1765,18 +1767,10 @@ func telegramAttachmentSummary(attachments []gateway.Attachment) string {
 	return "[Replied Telegram attachments]\n" + strings.Join(parts, "\n")
 }
 
-func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
+func (h *Handler) composeAttachmentInput(_ context.Context, baseText string, attachments []gateway.Attachment) string {
 	var sections []string
 	if strings.TrimSpace(baseText) != "" {
 		sections = append(sections, strings.TrimSpace(baseText))
-	}
-
-	if chat := h.chatService(); chat != nil {
-		analysis, err := chat.AnalyzeAttachments(ctx, attachments)
-		if err == nil && strings.TrimSpace(analysis) != "" {
-			sections = append(sections, analysis)
-			return strings.Join(sections, "\n\n")
-		}
 	}
 
 	var mediaDesc strings.Builder

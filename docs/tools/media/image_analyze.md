@@ -186,22 +186,51 @@ Image analysis unavailable.
 
 ## 配置
 
-相关配置位于：
+图片附件优先交给本轮聊天模型直接理解：模型目录包含 `vision` 能力，或配置的主聊天模型设置了 `llm_provider.vision=true` 时，原图只随当前用户消息发送一次，不再自动调用独立图片分析器。音频转写和文档提取仍正常执行。
+
+若本轮聊天模型不支持图片，系统才调用独立的 `models.active.vision` 模型生成文字分析供聊天模型使用。显式调用 `image_analyze` 工具始终使用该独立分析器。
+
+相关配置示例（合并到现有配置中）：
 
 ```json
 {
+  "llm_provider": {
+    "vision": true
+  },
+  "models": {
+    "active": {
+      "chat": "grok-4.5",
+      "vision": "grok-4.5"
+    },
+    "endpoints": {
+      "chat": {
+        "provider": "openai",
+        "api_key": "your-chat-key",
+        "api_base": "https://your-compatible-provider.example/v1"
+      },
+      "vision": {
+        "provider": "openai",
+        "api_key": "your-vision-key",
+        "api_base": "https://your-compatible-provider.example/v1"
+      }
+    }
+  },
   "multimodal": {
-    "provider": "openai",
-    "api_key": "",
-    "api_base": "",
-    "image_model": "gpt-5.4-mini",
-    "transcription_model": "whisper-1",
-    "image_provider": ""
+    "image_provider": "openai-media"
   }
 }
 ```
 
+字段含义：
+
+- `llm_provider.vision` 是主聊天模型的能力声明，不是模型 ID；仅在模型和接口实际支持图片时设为 `true`。`false` 或未设置会继续查询模型目录，不强制关闭目录声明的视觉能力。路由到其他模型时按该模型自身的目录能力判断。
+- `models.active.vision` 是独立分析器的模型 ID。可以和 `chat` 相同，也可以不同；保留它不会导致支持原图的聊天模型重复预分析。
+- `models.endpoints.vision` 配置独立分析器连接；旧版 `multimodal.image_model` 等字段仍可兼容读取。仅删除 `models.active.vision` 不能关闭预分析，旧配置或默认值会补全它。
+- `multimodal.image_provider` 选择已注册的独立分析器，例如 `openai-media`；留空使用默认分析器，不表示关闭。
+
 agent 初始化时会始终注册一个 local provider，并在 OpenAI 多模态配置可用时注册 OpenAI media provider。
+
+local provider 只提取图片大小和 MIME 等元数据，不具备语义识图能力。
 
 注意：如果 `processor` 为 nil，工具会返回：
 

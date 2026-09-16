@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/base64"
 	"fmt"
 	"hash/fnv"
+	"net/http"
 	"strings"
 
 	"github.com/yurika0211/luckyagent/internal/gateway"
@@ -310,13 +312,26 @@ func contentPartFromAttachment(att gateway.Attachment) (provider.ContentPart, bo
 	if att.Type != gateway.AttachmentImage {
 		return provider.ContentPart{}, false
 	}
+	img := &provider.ImagePart{
+		URL:      strings.TrimSpace(att.FileURL),
+		FilePath: strings.TrimSpace(att.FilePath),
+		MimeType: strings.TrimSpace(att.MimeType),
+	}
+	// Match the media analyzer's precedence: bytes, then path, then URL.
+	// Inline-only attachments must remain usable when pre-analysis is skipped.
+	if len(att.Data) > 0 {
+		if img.MimeType == "" {
+			img.MimeType = http.DetectContentType(att.Data)
+		}
+		img.URL = "data:" + img.MimeType + ";base64," + base64.StdEncoding.EncodeToString(att.Data)
+		img.FilePath = ""
+	}
+	if img.URL == "" && img.FilePath == "" {
+		return provider.ContentPart{}, false
+	}
 	return provider.ContentPart{
-		Type: "image",
-		Image: &provider.ImagePart{
-			URL:      strings.TrimSpace(att.FileURL),
-			FilePath: strings.TrimSpace(att.FilePath),
-			MimeType: strings.TrimSpace(att.MimeType),
-		},
+		Type:  "image",
+		Image: img,
 	}, true
 }
 

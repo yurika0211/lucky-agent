@@ -143,9 +143,9 @@ buildContextMessagesForInput
 7. 加入 memory messages。
 8. 加入 RAG message。
 9. 加入意图感知的 session history。
-10. 加入附件解析证据。
+10. 加入附件清单与解析证据；支持原图的聊天模型跳过图片预分析，其他模型使用独立视觉分析摘要，音频和文档继续解析。
 11. 临时追加用户文本做窗口裁剪。
-12. 移除临时用户文本，换回原始结构化 user message。
+12. 移除临时用户文本，换回原始结构化 user message；每张原图只在该消息中出现一次。
 
 因此，最终模型看到的不是裸用户输入，而是：
 

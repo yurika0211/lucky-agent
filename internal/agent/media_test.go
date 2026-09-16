@@ -3,9 +3,14 @@ package agent
 import (
 	"archive/zip"
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/yurika0211/luckyagent/internal/config"
@@ -39,6 +44,20 @@ func (namedAttachmentProvider) AnalyzeStream(ctx context.Context, input *multimo
 	return ch, nil
 }
 func (namedAttachmentProvider) Validate() error { return nil }
+
+type recordingAttachmentProvider struct {
+	namedAttachmentProvider
+	inputs []*multimodal.Input
+}
+
+func (*recordingAttachmentProvider) SupportedModalities() []multimodal.Modality {
+	return []multimodal.Modality{multimodal.ModalityImage, multimodal.ModalityAudio, multimodal.ModalityDocument}
+}
+
+func (p *recordingAttachmentProvider) Analyze(ctx context.Context, input *multimodal.Input) (*multimodal.AnalysisResult, error) {
+	p.inputs = append(p.inputs, input)
+	return p.namedAttachmentProvider.Analyze(ctx, input)
+}
 
 func TestAnalyzeAttachmentsUsesMediaProcessor(t *testing.T) {
 	processor := multimodal.NewProcessor()
@@ -101,6 +120,20 @@ func TestAttachmentEvidenceManifestMarksUnavailableAttachment(t *testing.T) {
 	}
 	if !strings.Contains(out, "Do not substitute files from chat history") {
 		t.Fatalf("expected anti-substitution instruction, got %q", out)
+	}
+}
+
+func TestFilterHistoricalMultimodalTurns(t *testing.T) {
+	messages := []provider.Message{
+		{Role: "user", Content: "[Multimodal Analysis]\nImage: old-weather.jpg"},
+		{Role: "assistant", Content: "旧金山天气"},
+		{Role: "user", Content: "继续处理本地项目"},
+		{Role: "assistant", Content: "已处理"},
+	}
+
+	got := filterHistoricalMultimodalTurns(messages)
+	if len(got) != 2 || got[0].Content != "继续处理本地项目" || got[1].Content != "已处理" {
+		t.Fatalf("historical multimodal turn was not isolated: %#v", got)
 	}
 }
 
@@ -208,7 +241,8 @@ func TestAnalyzeAttachmentsUsesConfiguredProvider(t *testing.T) {
 
 func TestContextPlannerDropsImagePartsForNonVisionModel(t *testing.T) {
 	processor := multimodal.NewProcessor()
-	if err := processor.RegisterProvider(namedAttachmentProvider{}, true); err != nil {
+	analyzer := &recordingAttachmentProvider{}
+	if err := processor.RegisterProvider(analyzer, true); err != nil {
 		t.Fatalf("register provider: %v", err)
 	}
 
@@ -234,6 +268,9 @@ func TestContextPlannerDropsImagePartsForNonVisionModel(t *testing.T) {
 	})
 
 	messages := planner.BuildInput(context.Background(), nil, input)
+	if len(analyzer.inputs) != 1 || analyzer.inputs[0].Modality != multimodal.ModalityImage {
+		t.Fatalf("expected one image pre-analysis, got %v", analyzer.inputs)
+	}
 	if !messagesContainText(messages, "attachment provider summary") {
 		t.Fatalf("expected multimodal analysis summary, got %+v", messages)
 	}
@@ -246,7 +283,8 @@ func TestContextPlannerDropsImagePartsForNonVisionModel(t *testing.T) {
 
 func TestContextPlannerKeepsImagePartsForVisionModel(t *testing.T) {
 	processor := multimodal.NewProcessor()
-	if err := processor.RegisterProvider(namedAttachmentProvider{}, true); err != nil {
+	analyzer := &recordingAttachmentProvider{}
+	if err := processor.RegisterProvider(analyzer, true); err != nil {
 		t.Fatalf("register provider: %v", err)
 	}
 
@@ -272,12 +310,147 @@ func TestContextPlannerKeepsImagePartsForVisionModel(t *testing.T) {
 	})
 
 	messages := planner.BuildInput(context.Background(), nil, input)
-	if !messagesContainText(messages, "attachment provider summary") {
-		t.Fatalf("expected multimodal analysis summary, got %+v", messages)
+	if len(analyzer.inputs) != 0 || messagesContainText(messages, "[Multimodal Analysis]") {
+		t.Fatalf("native vision must skip image pre-analysis, calls=%d", len(analyzer.inputs))
 	}
-	if !messagesContainImagePart(messages) {
-		t.Fatalf("expected image content parts for vision model, got %+v", messages)
+	if got := countImageParts(messages); got != 1 {
+		t.Fatalf("expected exactly one image, got %d", got)
 	}
+}
+
+func TestContextPlannerNativeVisionStillAnalyzesOtherAttachments(t *testing.T) {
+	analyzer := &recordingAttachmentProvider{}
+	processor := multimodal.NewProcessor()
+	if err := processor.RegisterProvider(analyzer, true); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{catalog: provider.NewModelCatalog(), activeModel: "gpt-5.4-mini", mediaProcessor: processor}
+	input := MultimodalUserTurnInput("compare the images and the recording", []gateway.Attachment{
+		{Type: gateway.AttachmentImage, FileURL: "https://example.test/first.png", MimeType: "image/png"},
+		{Type: gateway.AttachmentAudio, FileName: "audio.wav", Data: []byte("audio"), MimeType: "audio/wav"},
+		{Type: gateway.AttachmentImage, Data: []byte("second-image"), MimeType: "image/png"},
+		{Type: gateway.AttachmentDocument, FileName: "report.pdf", Data: []byte("%PDF-1.4"), MimeType: "application/pdf"},
+	})
+	messages := newContextPlanner(a, contextBuildOptions{}).BuildInput(context.Background(), nil, input)
+	if len(analyzer.inputs) != 2 || analyzer.inputs[0].Modality != multimodal.ModalityAudio || analyzer.inputs[1].Modality != multimodal.ModalityDocument {
+		t.Fatalf("expected audio and document analysis only, got %v", analyzer.inputs)
+	}
+	if got := countImageParts(messages); got != 2 {
+		t.Fatalf("expected each image once, got %d", got)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "user" || last.Content != input.RoutingText || len(last.ContentParts) != 3 {
+		t.Fatalf("current user caption and images were not retained: %+v", last)
+	}
+}
+
+func TestContextPlannerVisionRoutingUsesConfiguredEndpoints(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		vision     bool
+		routed     bool
+		wantNative bool
+	}{
+		{name: "explicit vision on uncatalogued chat model", vision: true, wantNative: true},
+		{name: "non-vision chat uses dedicated vision"},
+		{name: "chat override does not enable vision on routed model", vision: true, routed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var chatCalls, visionCalls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Model string          `json:"model"`
+					Raw   json.RawMessage `json:"messages"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Error(err)
+					http.Error(w, "bad request", http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/vision/responses":
+					visionCalls.Add(1)
+					if req.Model != "dedicated-vision" {
+						t.Errorf("pre-analysis model = %q", req.Model)
+					}
+					fmt.Fprint(w, `{"output":[{"type":"message","content":[{"type":"output_text","text":"dedicated vision summary"}]}]}`)
+				case "/chat/chat/completions":
+					chatCalls.Add(1)
+					wantModel := "custom-chat"
+					if tc.routed {
+						wantModel = "custom-text-route"
+					}
+					if req.Model != wantModel {
+						t.Errorf("chat model = %q, want %q", req.Model, wantModel)
+					}
+					imageCount := strings.Count(string(req.Raw), `"type":"image_url"`)
+					if (tc.wantNative && imageCount != 1) || (!tc.wantNative && imageCount != 0) {
+						t.Errorf("wire image count = %d, native=%t", imageCount, tc.wantNative)
+					}
+					if !tc.wantNative && !strings.Contains(string(req.Raw), "dedicated vision summary") {
+						t.Error("missing vision summary in chat request")
+					}
+					fmt.Fprint(w, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)
+				default:
+					t.Errorf("unexpected upstream request: %s", r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer upstream.Close()
+			mgr, err := config.NewManagerWithDir(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := mgr.Get()
+			cfg.LlmProvider.Vision = tc.vision
+			for kind, model := range map[config.ModelKind]string{config.ModelKindChat: "custom-chat", config.ModelKindVision: "dedicated-vision"} {
+				if err := cfg.SetModelSelection(kind, model, config.ModelEndpointConfig{
+					Provider: "openai", APIKey: "test-key", APIBase: upstream.URL + "/" + string(kind),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := mgr.Replace(cfg); err != nil {
+				t.Fatal(err)
+			}
+			model := "custom-chat"
+			if tc.routed {
+				model = "custom-text-route"
+			}
+			chat := provider.NewOpenAIProvider(provider.Config{LlmProvider: provider.LlmProvider{
+				Name: "openai", Model: model, APIKey: "test-key", BaseURL: upstream.URL + "/chat",
+			}})
+			a := &Agent{cfg: mgr, catalog: provider.NewModelCatalog(), mediaProcessor: buildMediaRuntime(mgr.Get()).processor}
+			planner := newContextPlannerWithProvider(a, contextBuildOptions{}, providerSnapshot{provider: chat, model: model})
+			input := MultimodalUserTurnInput("describe this", []gateway.Attachment{{
+				Type: gateway.AttachmentImage, Data: []byte("image"), MimeType: "image/png",
+			}})
+			messages := planner.BuildInput(context.Background(), nil, input)
+			if _, err := chat.Chat(context.Background(), messages); err != nil {
+				t.Fatal(err)
+			}
+			wantVisionCalls := int32(1)
+			if tc.wantNative {
+				wantVisionCalls = 0
+			}
+			if chatCalls.Load() != 1 || visionCalls.Load() != wantVisionCalls {
+				t.Fatalf("chat calls=%d, vision calls=%d; want 1, %d", chatCalls.Load(), visionCalls.Load(), wantVisionCalls)
+			}
+		})
+	}
+}
+
+func countImageParts(messages []provider.Message) int {
+	count := 0
+	for _, msg := range messages {
+		for _, part := range msg.ContentParts {
+			if part.Type == "image" {
+				count++
+			}
+		}
+	}
+	return count
 }
 
 func messagesContainText(messages []provider.Message, needle string) bool {

@@ -1918,20 +1918,14 @@ func napcatSenderContextText(text string, sender gateway.User) string {
 	return b.String()
 }
 
-func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
+func (h *Handler) composeAttachmentInput(_ context.Context, baseText string, attachments []gateway.Attachment) string {
 	var sections []string
 	if strings.TrimSpace(baseText) != "" {
 		sections = append(sections, strings.TrimSpace(baseText))
 	}
 
-	if h.agent != nil {
-		analysis, err := h.agent.AnalyzeAttachments(ctx, attachments)
-		if err == nil && strings.TrimSpace(analysis) != "" {
-			sections = append(sections, analysis)
-			return strings.Join(sections, "\n\n")
-		}
-	}
-
+	// The context planner selects native vision or attachment analysis once
+	// the turn's model is known. Gateways only describe and preserve inputs.
 	var mediaDesc strings.Builder
 	mediaDesc.WriteString("[Multimedia Attachments]\n")
 	for i, att := range attachments {

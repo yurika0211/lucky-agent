@@ -1156,7 +1156,8 @@
                 description: '统一管理不同用途的模型；这是模板中的模型配置入口。',
                 fields: [
                   { field: 'models.active.chat', example: 'gpt-5.4-mini', description: '对话和 Agent 主循环使用的模型 ID。填写提供商实际支持的名称。' },
-                  { field: 'models.active.vision', example: 'gpt-5.4-mini', description: '图片理解模型 ID。通常与 chat 模型不同，图片分析未配置密钥时会被跳过。' },
+                  { field: 'models.active.vision', example: 'gpt-5.4-mini', description: '独立图片分析模型 ID，供不支持原图的聊天模型预分析附件，以及显式 image_analyze 工具使用。主聊天模型支持识图时直接接收原图，跳过图片预分析；保留此字段不会重复识图，删除它也不会关闭分析器。' },
+                  { field: 'llm_provider.vision', example: 'false', description: '主聊天模型实际支持图片时可设 true，直接传入原图一次。false 或未设置时按模型目录能力判断；不是强制关闭。路由到其他模型时检查其自身能力。' },
                   { field: 'models.active.embedding', example: 'jina-embeddings-v4', description: '记忆和 RAG 向量化模型 ID。模型更换后，已有向量可能需要重新索引。' },
                   { field: 'models.active.transcription', example: 'whisper-1', description: '音频转文字模型 ID。用于音频附件或语音输入。' },
                   { field: 'models.active.image', example: 'gpt-image-1.5', description: '图片生成模型 ID。具体参数在 image_generation 中配置。' },
@@ -1192,7 +1193,7 @@
                 description: '连接参数已集中到 models.endpoints，这里只保留各能力独有的选项。',
                 fields: [
                   { field: 'embedding.dimension', example: '2048', description: '向量维度，必须与 embedding 模型实际输出一致；更换维度后通常要重建索引。' },
-                  { field: 'multimodal.image_provider', example: '""', description: '指定已注册的图片分析提供商名称；留空时使用默认提供商。' },
+                  { field: 'multimodal.image_provider', example: '""', description: '指定独立图片分析器，例如 openai-media；留空使用默认分析器，不表示关闭。主模型支持原图时不会自动调用图片分析器，音频和文档仍单独处理。' },
                   { field: 'image_generation.auth_mode', example: 'bearer', description: '图片生成鉴权方式，常用 bearer；Gemini 等服务按适配器要求填写。' },
                   { field: 'image_generation.size', example: '1024x1024', description: '生成图片尺寸，是否支持取决于提供商和模型。' },
                   { field: 'image_generation.quality', example: 'auto', description: '图片质量档位，例如 auto；不支持的模型应按提供商要求调整。' },

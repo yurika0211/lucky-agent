@@ -183,7 +183,11 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	// Keep the append-only session history ahead of query-dependent evidence so
 	// provider prefix caches survive changes in memory and RAG retrieval.
 	if p.options.IncludeHistory && sess != nil {
-		messages = append(messages, p.buildHistoryMessages(sess, routingText)...)
+		history := p.buildHistoryMessages(sess, routingText)
+		if len(input.Attachments) > 0 {
+			history = filterHistoricalMultimodalTurns(history)
+		}
+		messages = append(messages, history...)
 	}
 	messages = append(messages, p.buildMemoryMessagesForSession(sess, routingText, input.Scope)...)
 	if p.options.IncludeRAG {
@@ -241,6 +245,47 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	return messages
 }
 
+func filterHistoricalMultimodalTurns(messages []provider.Message) []provider.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	filtered := make([]provider.Message, 0, len(messages))
+	dropFollowingAssistant := false
+	for _, msg := range messages {
+		if msg.Role == "user" && isHistoricalMultimodalMessage(msg) {
+			dropFollowingAssistant = true
+			continue
+		}
+		if dropFollowingAssistant {
+			switch msg.Role {
+			case "assistant", "tool":
+				continue
+			default:
+				dropFollowingAssistant = false
+			}
+		}
+		filtered = append(filtered, msg)
+	}
+	return filtered
+}
+
+func isHistoricalMultimodalMessage(msg provider.Message) bool {
+	if msg.Role != "user" {
+		return false
+	}
+	content := strings.ToLower(strings.TrimSpace(msg.Content))
+	for _, marker := range []string{
+		"[multimodal analysis]",
+		"[multimedia attachments]",
+		"[replied telegram attachments]",
+	} {
+		if strings.Contains(content, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 /**
  * 将附件解析完之后的结果放到上下文当中
  */
@@ -256,20 +301,25 @@ func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input User
 			Content: manifest,
 		})
 	}
-	if p.agent != nil {
-		if summary, err := p.agent.AnalyzeAttachments(ctx, input.Attachments); err == nil && strings.TrimSpace(summary) != "" {
+	// Native vision receives images once, in the final user message. Only
+	// analyze attachments that cannot take that path (including audio/docs).
+	attachmentsToAnalyze := make([]gateway.Attachment, 0, len(input.Attachments))
+	nativeVision := p.supportsImageContentParts()
+	for _, att := range input.Attachments {
+		if nativeVision {
+			if _, ok := contentPartFromAttachment(att); ok {
+				continue
+			}
+		}
+		attachmentsToAnalyze = append(attachmentsToAnalyze, att)
+	}
+	if p.agent != nil && len(attachmentsToAnalyze) > 0 {
+		if summary, err := p.agent.AnalyzeAttachments(ctx, attachmentsToAnalyze); err == nil && strings.TrimSpace(summary) != "" {
 			messages = append(messages, provider.Message{
 				Role:    "system",
 				Content: summary,
 			})
 		}
-	}
-	if len(input.Message.ContentParts) > 0 && p.supportsImageContentParts() {
-		messages = append(messages, provider.Message{
-			Role:         "user",
-			Content:      input.RoutingText,
-			ContentParts: input.Message.ContentParts,
-		})
 	}
 	return messages
 }
@@ -325,10 +375,15 @@ func (p *contextPlanner) supportsImageContentParts() bool {
 		return false
 	}
 
-	// 优先检查配置中的 vision 字段
+	model := strings.TrimSpace(p.turnProvider.model)
+	// The override describes the configured chat model, not every model a
+	// router may select. Routed models use their own catalog capabilities.
 	if p.agent.cfg != nil {
 		cfg := p.agent.cfg.Get()
-		if cfg.LlmProvider.Vision {
+		if model == "" {
+			model = strings.TrimSpace(cfg.Model)
+		}
+		if cfg.LlmProvider.Vision && model == strings.TrimSpace(cfg.Model) {
 			return true
 		}
 	}
@@ -338,10 +393,6 @@ func (p *contextPlanner) supportsImageContentParts() bool {
 		return false
 	}
 
-	model := strings.TrimSpace(p.turnProvider.model)
-	if model == "" && p.agent.cfg != nil {
-		model = strings.TrimSpace(p.agent.cfg.Get().Model)
-	}
 	if model == "" {
 		return false
 	}

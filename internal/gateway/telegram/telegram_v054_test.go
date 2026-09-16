@@ -2871,7 +2871,7 @@ func TestV054HandleMessageWithAttachments(t *testing.T) {
 	_ = handler
 }
 
-func TestV054ComposeAttachmentInputUsesAgentAnalysis(t *testing.T) {
+func TestV054ComposeAttachmentInputDefersAnalysisToContextPlanner(t *testing.T) {
 	handler := &Handler{
 		agent: &mockAgentProvider{
 			analyzeFn: func(ctx context.Context, attachments []gateway.Attachment) (string, error) {
@@ -2888,11 +2888,23 @@ func TestV054ComposeAttachmentInputUsesAgentAnalysis(t *testing.T) {
 		},
 	})
 
-	if !strings.Contains(out, "[Multimodal Analysis]") {
-		t.Fatalf("expected analysis block, got %q", out)
+	if strings.Contains(out, "[Multimodal Analysis]") {
+		t.Fatalf("attachment analysis must not be embedded into the user turn, got %q", out)
 	}
-	if strings.Contains(out, "[Multimedia Attachments]") {
-		t.Fatalf("expected agent analysis to replace metadata fallback, got %q", out)
+	if !strings.Contains(out, "[Multimedia Attachments]") {
+		t.Fatalf("expected attachment metadata fallback, got %q", out)
+	}
+}
+
+func TestTelegramTurnAttachmentsPrefersCurrentAttachments(t *testing.T) {
+	current := gateway.Attachment{Type: gateway.AttachmentImage, FileID: "current"}
+	previous := gateway.Attachment{Type: gateway.AttachmentImage, FileID: "previous"}
+	got := telegramTurnAttachments(&gateway.Message{
+		Attachments: []gateway.Attachment{current},
+		ReplyTo:     &gateway.Message{Attachments: []gateway.Attachment{previous}},
+	})
+	if len(got) != 1 || got[0].FileID != "current" {
+		t.Fatalf("current attachments were mixed with replied attachments: %#v", got)
 	}
 }
 
@@ -4797,7 +4809,7 @@ func TestV054HandleMessageReplyToImagePreservesReplyAttachment(t *testing.T) {
 		"[Replied Telegram attachments]",
 		"image: face.jpg",
 		"记住她的长相",
-		"face visible",
+		"[Multimedia Attachments]",
 	} {
 		if !strings.Contains(gotTurn.routingText, want) {
 			t.Fatalf("expected routing text to include %q, got:\n%s", want, gotTurn.routingText)

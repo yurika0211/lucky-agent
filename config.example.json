@@ -1,4 +1,7 @@
 {
+  "llm_provider": {
+    "vision": false
+  },
   "models": {
     "active": {
       "chat": "gpt-5.4-mini",

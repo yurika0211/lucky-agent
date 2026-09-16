@@ -215,7 +215,7 @@ type LlmProviderConfig struct {
 	Model            string `json:"model,omitempty"`
 	Protocol         string `json:"protocol,omitempty"`          // chat_completions (default) or responses
 	ReasoningSummary string `json:"reasoning_summary,omitempty"` // Responses API reasoning.summary verbosity: "", "auto", "concise", "detailed"
-	Vision           bool   `json:"vision,omitempty"`            // 模型是否支持视觉能力
+	Vision           bool   `json:"vision,omitempty"`            // true 声明主聊天模型支持原图输入；false/未设置时查询模型目录
 }
 
 // CustomModelInfo 自定义模型信息配置
