@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/gateway"
 	"github.com/yurika0211/luckyagent/internal/multimodal"
 	"github.com/yurika0211/luckyagent/internal/tool"
@@ -105,7 +106,13 @@ func (a *Agent) preferredMultimodalProvider(modality multimodal.Modality) string
 	cfg := a.cfg.Get()
 	switch modality {
 	case multimodal.ModalityImage:
-		return strings.TrimSpace(cfg.Multimodal.ImageProvider)
+		name := strings.TrimSpace(cfg.ModelEndpoint(config.ModelKindVision).Provider)
+		switch name {
+		case "openai", "openai-compatible", "openrouter":
+			return "openai-media"
+		default:
+			return name
+		}
 	default:
 		return ""
 	}

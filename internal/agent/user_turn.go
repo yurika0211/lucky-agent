@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/base64"
 	"fmt"
 	"hash/fnv"
+	"net/http"
 	"strings"
 
 	"github.com/yurika0211/luckyagent/internal/gateway"
@@ -310,12 +312,19 @@ func contentPartFromAttachment(att gateway.Attachment) (provider.ContentPart, bo
 	if att.Type != gateway.AttachmentImage {
 		return provider.ContentPart{}, false
 	}
+	url, path, mimeType := strings.TrimSpace(att.FileURL), strings.TrimSpace(att.FilePath), strings.TrimSpace(att.MimeType)
+	if path == "" && len(att.Data) > 0 {
+		if mimeType == "" {
+			mimeType = http.DetectContentType(att.Data)
+		}
+		url = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(att.Data)
+	}
 	return provider.ContentPart{
 		Type: "image",
 		Image: &provider.ImagePart{
-			URL:      strings.TrimSpace(att.FileURL),
-			FilePath: strings.TrimSpace(att.FilePath),
-			MimeType: strings.TrimSpace(att.MimeType),
+			URL:      url,
+			FilePath: path,
+			MimeType: mimeType,
 		},
 	}, true
 }

@@ -195,7 +195,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	}
 	if mediaIntent {
 		if intentTextContainsAny(intentText, "图片", "图像", "截图", "image", "vision", "看图") {
-			addIntentTools(allowed, "image_analyze")
+			addIntentTools(allowed, "image_analyze", "image_read")
 		}
 		if intentTextContainsAny(intentText, "生成图片", "画图", "配图", "image_generate") {
 			addIntentTools(allowed, "image_generate")

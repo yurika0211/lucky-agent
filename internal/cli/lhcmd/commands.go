@@ -148,6 +148,13 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := mgr.Get()
+	if value, handled, err := config.RedactSecrets(cfg).ModelConfigValue(args[0]); handled {
+		if err != nil {
+			return err
+		}
+		fmt.Println(value)
+		return nil
+	}
 	if strings.HasPrefix(args[0], "tool_trace.templates.") {
 		toolName := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(args[0], "tool_trace.templates.")))
 		if value, ok := cfg.ToolTrace.Templates[toolName]; ok {

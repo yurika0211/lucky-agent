@@ -44,7 +44,6 @@ type chatRuntime interface {
 	ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 	ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error)
 	ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error)
-	AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error)
 }
 
 type stateRuntime interface {
@@ -245,10 +244,6 @@ func (a agentProviderAdapter) ProgressFeedback(ctx context.Context, userInput st
 
 func (a agentProviderAdapter) ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error) {
 	return a.inner.ProgressFeedbackWithPrompt(ctx, userInput, round, observations, presentationPrompt)
-}
-
-func (a agentProviderAdapter) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
-	return a.inner.AnalyzeAttachments(ctx, attachments)
 }
 
 func (a agentProviderAdapter) Metrics() *metrics.Metrics {
@@ -1623,7 +1618,7 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 		return agent.TextUserTurnInput(baseText)
 	}
 
-	return agent.MultimodalUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments), attachments)
+	return agent.MultimodalUserTurnInput(baseText, attachments)
 }
 
 func (h *Handler) inputWithMessageScope(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
@@ -1745,38 +1740,6 @@ func telegramAttachmentSummary(attachments []gateway.Attachment) string {
 		return ""
 	}
 	return "[Replied Telegram attachments]\n" + strings.Join(parts, "\n")
-}
-
-func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
-	var sections []string
-	if strings.TrimSpace(baseText) != "" {
-		sections = append(sections, strings.TrimSpace(baseText))
-	}
-
-	if chat := h.chatService(); chat != nil {
-		analysis, err := chat.AnalyzeAttachments(ctx, attachments)
-		if err == nil && strings.TrimSpace(analysis) != "" {
-			sections = append(sections, analysis)
-			return strings.Join(sections, "\n\n")
-		}
-	}
-
-	var mediaDesc strings.Builder
-	mediaDesc.WriteString("[Multimedia Attachments]\n")
-	for i, att := range attachments {
-		switch att.Type {
-		case gateway.AttachmentImage:
-			mediaDesc.WriteString(fmt.Sprintf("Image %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-		case gateway.AttachmentAudio:
-			mediaDesc.WriteString(fmt.Sprintf("Audio %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-		case gateway.AttachmentVideo:
-			mediaDesc.WriteString(fmt.Sprintf("Video %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-		case gateway.AttachmentDocument:
-			mediaDesc.WriteString(fmt.Sprintf("Document %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-		}
-	}
-	sections = append(sections, strings.TrimSpace(mediaDesc.String()))
-	return strings.Join(sections, "\n\n")
 }
 
 // handleCommand dispatches bot commands.

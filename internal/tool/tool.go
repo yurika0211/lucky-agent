@@ -88,6 +88,7 @@ type ToolCallResult struct {
 // to return a screenshot path and frame metadata for the agent to feed back to
 // a vision-capable provider. The type intentionally remains provider-neutral.
 type Observation struct {
+	ImageURL     string
 	Kind         string
 	FrameID      string
 	CapturedAt   time.Time

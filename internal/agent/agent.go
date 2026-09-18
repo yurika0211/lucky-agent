@@ -682,81 +682,11 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		MaxResults: c.WebSearch.MaxResults,
 		Proxy:      c.WebSearch.Proxy,
 	}
-	mediaProcessor := multimodal.NewProcessor()
-	var imageGenerator multimodal.ImageGenerator
-	var speechSynthesizer multimodal.SpeechSynthesizer
-	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
-		multimodal.ModalityText,
-		multimodal.ModalityImage,
-		multimodal.ModalityAudio,
-		multimodal.ModalityVideo,
-		multimodal.ModalityDocument,
-	), true)
-
-	mmCfg, mmOK := resolveOpenAIMultimodalConfig(c)
-	if mmOK {
-		if openaiMedia, mediaErr := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
-			APIKey:             mmCfg.APIKey,
-			APIBase:            mmCfg.APIBase,
-			ResponsesModel:     mmCfg.ImageModel,
-			TranscriptionModel: mmCfg.TranscriptionModel,
-		}); mediaErr == nil {
-			_ = mediaProcessor.RegisterProvider(openaiMedia, true)
-			imageGenerator = openaiMedia
-		}
-	}
-
-	if genCfg, ok := resolveImageGenerationConfig(c); ok {
-		switch genCfg.Provider {
-		case "gemini":
-			if geminiGenerator, err := multimodal.NewGeminiImageProvider(multimodal.GeminiImageConfig{
-				APIKey:   genCfg.APIKey,
-				APIBase:  genCfg.APIBase,
-				AuthMode: genCfg.AuthMode,
-			}); err == nil {
-				imageGenerator = geminiGenerator
-			}
-		case "openai":
-			if openaiGenerator, err := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
-				APIKey:             genCfg.APIKey,
-				APIBase:            genCfg.APIBase,
-				ResponsesModel:     mmCfg.ImageModel,
-				TranscriptionModel: mmCfg.TranscriptionModel,
-			}); err == nil {
-				imageGenerator = openaiGenerator
-			}
-		}
-	}
-
-	if ttsCfg, ok := resolveTTSConfig(c); ok {
-		switch ttsCfg.Provider {
-		case "openai":
-			if ttsProvider, err := multimodal.NewOpenAITTSProvider(multimodal.OpenAITTSConfig{
-				APIKey:   ttsCfg.APIKey,
-				APIBase:  ttsCfg.APIBase,
-				AuthMode: ttsCfg.AuthMode,
-			}); err == nil {
-				speechSynthesizer = ttsProvider
-			}
-		}
-	}
+	media := buildMediaRuntime(c)
+	mediaProcessor, imageGenerator, speechSynthesizer := media.processor, media.imageGenerator, media.speechSynthesizer
 
 	delegateMgr := tool.NewDelegateManager(buildDelegateRuntimeConfig(c))
-	imageGenDefaults := tool.ImageGenerationDefaults{
-		Model:             strings.TrimSpace(c.ImageGeneration.Model),
-		Size:              strings.TrimSpace(c.ImageGeneration.Size),
-		Quality:           strings.TrimSpace(c.ImageGeneration.Quality),
-		Background:        strings.TrimSpace(c.ImageGeneration.Background),
-		OutputFormat:      strings.TrimSpace(c.ImageGeneration.OutputFormat),
-		OutputCompression: c.ImageGeneration.OutputCompression,
-		Count:             c.ImageGeneration.Count,
-	}
-	ttsDefaults := tool.TTSDefaults{
-		Model:  strings.TrimSpace(c.TTS.Model),
-		Voice:  strings.TrimSpace(c.TTS.Voice),
-		Format: strings.TrimSpace(c.TTS.Format),
-		Speed:  c.TTS.Speed,
-	}
+	imageGenDefaults, ttsDefaults := media.imageDefaults, media.ttsDefaults
 	opencliCfg := &tool.OpenCLIConfig{
 		Enabled:            c.OpenCLI.Enabled,
 		Command:            c.OpenCLI.Command,
@@ -768,7 +698,7 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 	filesystemPolicy := tool.FilesystemPolicy{
 		AllowedReadRoots: append([]string(nil), c.Tools.Filesystem.AllowedReadRoots...),
 	}
-	toolServices := tool.NewServices(searchCfg, opencliCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr, filesystemPolicy)
+	toolServices := tool.NewServices(searchCfg, opencliCfg, "", mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr, filesystemPolicy)
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
@@ -1024,7 +954,11 @@ func (a *Agent) ValidateRuntimeConfig(c *config.Config) error {
 	if a == nil {
 		return fmt.Errorf("agent is unavailable")
 	}
-	_, err := buildConfiguredProvider(c, provider.NewRegistry())
+	next, err := config.Normalized(c)
+	if err != nil {
+		return err
+	}
+	_, err = buildConfiguredProvider(next, provider.NewRegistry())
 	return err
 }
 
@@ -1032,6 +966,11 @@ func (a *Agent) ApplyRuntimeConfig(c *config.Config) error {
 	if a == nil {
 		return fmt.Errorf("agent is unavailable")
 	}
+	next, err := config.Normalized(c)
+	if err != nil {
+		return err
+	}
+	c = next
 	registry := provider.NewRegistry()
 	nextProvider, err := buildConfiguredProvider(c, registry)
 	if err != nil {
@@ -1080,13 +1019,6 @@ func (a *Agent) ReloadConfig() (config.ReloadResult, error) {
 	return result, nil
 }
 
-type multimodalRuntimeConfig struct {
-	APIKey             string
-	APIBase            string
-	ImageModel         string
-	TranscriptionModel string
-}
-
 type imageGenerationRuntimeConfig struct {
 	Provider          string
 	APIKey            string
@@ -1112,57 +1044,22 @@ type ttsRuntimeConfig struct {
 	Speed    float64
 }
 
-func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, bool) {
-	if c == nil {
-		return multimodalRuntimeConfig{}, false
-	}
-
-	cfg := multimodalRuntimeConfig{
-		APIKey:             strings.TrimSpace(c.Multimodal.APIKey),
-		APIBase:            strings.TrimSpace(c.Multimodal.APIBase),
-		ImageModel:         strings.TrimSpace(c.Multimodal.ImageModel),
-		TranscriptionModel: strings.TrimSpace(c.Multimodal.TranscriptionModel),
-	}
-
-	providerName := strings.ToLower(strings.TrimSpace(c.Multimodal.Provider))
-	if providerName == "" {
-		providerName = strings.ToLower(strings.TrimSpace(c.Provider))
-	}
-
-	if cfg.APIKey == "" {
-		cfg.APIKey = strings.TrimSpace(c.APIKey)
-	}
-	if cfg.APIBase == "" {
-		cfg.APIBase = strings.TrimSpace(c.APIBase)
-	}
-
-	explicitMultimodalConfig := strings.TrimSpace(c.Multimodal.APIKey) != "" ||
-		strings.TrimSpace(c.Multimodal.APIBase) != "" ||
-		strings.TrimSpace(c.Multimodal.ImageModel) != "" ||
-		strings.TrimSpace(c.Multimodal.TranscriptionModel) != "" ||
-		strings.TrimSpace(c.Multimodal.Provider) != ""
-
-	if providerName == "openai" || explicitMultimodalConfig {
-		if cfg.APIKey != "" {
-			return cfg, true
-		}
-		return multimodalRuntimeConfig{}, false
-	}
-
-	return multimodalRuntimeConfig{}, false
-}
-
 func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfig, bool) {
 	if c == nil {
 		return imageGenerationRuntimeConfig{}, false
 	}
 
+	selection, ok := c.ModelSelection(config.ModelKindImage)
+	if !ok {
+		return imageGenerationRuntimeConfig{}, false
+	}
+	ep := c.ModelEndpoint(config.ModelKindImage)
 	cfg := imageGenerationRuntimeConfig{
-		Provider:          strings.ToLower(strings.TrimSpace(c.ImageGeneration.Provider)),
-		APIKey:            strings.TrimSpace(c.ImageGeneration.APIKey),
-		APIBase:           strings.TrimSpace(c.ImageGeneration.APIBase),
+		Provider:          strings.ToLower(strings.TrimSpace(ep.Provider)),
+		APIKey:            strings.TrimSpace(ep.APIKey),
+		APIBase:           strings.TrimSpace(ep.APIBase),
 		AuthMode:          strings.ToLower(strings.TrimSpace(c.ImageGeneration.AuthMode)),
-		Model:             strings.TrimSpace(c.ImageGeneration.Model),
+		Model:             selection.ID,
 		Size:              strings.TrimSpace(c.ImageGeneration.Size),
 		Quality:           strings.TrimSpace(c.ImageGeneration.Quality),
 		Background:        strings.TrimSpace(c.ImageGeneration.Background),
@@ -1177,36 +1074,11 @@ func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfi
 		cfg.AuthMode = "bearer"
 	}
 
-	if cfg.Provider == "openai" {
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(c.Multimodal.APIKey)
-			if cfg.APIKey == "" {
-				cfg.APIKey = strings.TrimSpace(c.APIKey)
-			}
-		}
-		if cfg.APIBase == "" {
-			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
-			if cfg.APIBase == "" {
-				cfg.APIBase = strings.TrimSpace(c.APIBase)
-			}
-		}
-		if cfg.APIBase == "https://api.openai.com/v1" && strings.TrimSpace(c.Multimodal.APIBase) != "" {
-			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
-		}
-	}
-
-	if cfg.Provider == "gemini" {
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(c.Multimodal.APIKey)
-			if cfg.APIKey == "" {
-				cfg.APIKey = strings.TrimSpace(c.APIKey)
-			}
-		}
-		if cfg.APIBase == "" || cfg.APIBase == "https://api.openai.com/v1" {
-			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
-			if cfg.APIBase == "" {
-				cfg.APIBase = "https://generativelanguage.googleapis.com/v1beta"
-			}
+	if cfg.APIBase == "" {
+		if cfg.Provider == "gemini" {
+			cfg.APIBase = "https://generativelanguage.googleapis.com/v1beta"
+		} else {
+			cfg.APIBase = "https://api.openai.com/v1"
 		}
 	}
 
@@ -1220,12 +1092,17 @@ func resolveTTSConfig(c *config.Config) (ttsRuntimeConfig, bool) {
 	if c == nil {
 		return ttsRuntimeConfig{}, false
 	}
+	selection, ok := c.ModelSelection(config.ModelKindTTS)
+	if !ok {
+		return ttsRuntimeConfig{}, false
+	}
+	ep := c.ModelEndpoint(config.ModelKindTTS)
 	cfg := ttsRuntimeConfig{
-		Provider: strings.ToLower(strings.TrimSpace(c.TTS.Provider)),
-		APIKey:   strings.TrimSpace(c.TTS.APIKey),
-		APIBase:  strings.TrimSpace(c.TTS.APIBase),
+		Provider: strings.ToLower(strings.TrimSpace(ep.Provider)),
+		APIKey:   strings.TrimSpace(ep.APIKey),
+		APIBase:  strings.TrimSpace(ep.APIBase),
 		AuthMode: strings.ToLower(strings.TrimSpace(c.TTS.AuthMode)),
-		Model:    strings.TrimSpace(c.TTS.Model),
+		Model:    selection.ID,
 		Voice:    strings.TrimSpace(c.TTS.Voice),
 		Format:   strings.TrimSpace(c.TTS.Format),
 		Speed:    c.TTS.Speed,
@@ -1237,11 +1114,8 @@ func resolveTTSConfig(c *config.Config) (ttsRuntimeConfig, bool) {
 		cfg.AuthMode = "bearer"
 	}
 	if cfg.Provider == "openai" {
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(c.APIKey)
-		}
 		if cfg.APIBase == "" {
-			cfg.APIBase = strings.TrimSpace(c.APIBase)
+			cfg.APIBase = "https://api.openai.com/v1"
 		}
 	}
 	if cfg.APIKey == "" || cfg.APIBase == "" {
@@ -2513,6 +2387,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 
 		sanitizeLoopConfig(&loopCfg)
 		a.applyIntentToolGating(&loopCfg, routingText)
+		a.applyVisionToolPolicy(&loopCfg, turnProvider)
 		logger.Info("agent stream loop started",
 			"session_id", sessionID,
 			"provider", turnProvider.name(),
@@ -2550,7 +2425,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
 			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
 			memoryGate:             a.buildMemoryToolGate(routingText, input.Scope, loopCfg.DisabledTools),
-			toolExecutionGuard:     newToolExecutionGuard(routingText),
+			toolExecutionGuard:     newTurnToolGuard(routingText, loopCfg.DisabledTools),
 			iterationTimeout:       loopCfg.Timeout,
 			artifactGuard:          newArtifactFinalizationGuard(routingText),
 		}

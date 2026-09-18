@@ -294,6 +294,14 @@ func appendLatestComputerObservation(messages []provider.Message, executed []exe
 	for i := range executed {
 		for j := range executed[i].Observations {
 			obs := executed[i].Observations[j]
+			if obs.Kind == "image" {
+				part := provider.ContentPart{Type: "image", Image: &provider.ImagePart{FilePath: obs.FilePath, URL: obs.ImageURL, MimeType: obs.MimeType}}
+				if part.Image.FilePath == "" && len(obs.ImageData) > 0 {
+					part.Image.URL = "data:" + imageMimeType(obs.MimeType) + ";base64," + base64.StdEncoding.EncodeToString(obs.ImageData)
+				}
+				messages = append(messages, provider.Message{Role: "user", Content: "[Loaded image]", ContentParts: []provider.ContentPart{part}})
+				continue
+			}
 			if strings.TrimSpace(obs.FilePath) == "" && len(obs.ImageData) == 0 {
 				continue
 			}

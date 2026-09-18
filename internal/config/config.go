@@ -1044,6 +1044,9 @@ func parseConfigData(data []byte) (*Config, error) {
 	if err := json.Unmarshal(data, cfg); err != nil {
 		return nil, err
 	}
+	if err := validateModelConfig(cfg); err != nil {
+		return nil, err
+	}
 	normalizeConfig(cfg)
 	return cfg, nil
 }
@@ -1824,6 +1827,9 @@ func (m *Manager) Save() error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
+	if err := validateModelConfig(m.config); err != nil {
+		return err
+	}
 	normalizeConfig(m.config)
 	out := cloneConfig(m.config)
 
@@ -1851,28 +1857,11 @@ func (m *Manager) Get() *Config {
 func (m *Manager) Set(key, value string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if handled, err := m.config.setModelKey(key, value); handled {
+		return err
+	}
 
 	switch key {
-	case "provider":
-		m.config.LlmProvider.Name = value
-		m.config.Provider = value
-	case "api_key":
-		m.config.LlmProvider.APIKey = value
-		m.config.APIKey = value
-	case "api_base":
-		m.config.LlmProvider.BaseURL = value
-		m.config.APIBase = value
-	case "model":
-		m.config.LlmProvider.Model = value
-		m.config.Model = value
-	case "protocol", "llm_provider.protocol":
-		m.config.LlmProvider.Protocol = value
-	case "embedding.model":
-		m.config.Embedding.Model = value
-	case "embedding.api_key":
-		m.config.Embedding.APIKey = value
-	case "embedding.api_base":
-		m.config.Embedding.APIBase = value
 	case "embedding.dimension":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
@@ -1899,28 +1888,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.RAG.MMRLambda = f
 	case "rag.rewrite_followups":
 		m.config.RAG.RewriteFollowUps = parseBool(value)
-	case "multimodal.provider":
-		m.config.Multimodal.Provider = value
-	case "multimodal.api_key":
-		m.config.Multimodal.APIKey = value
-	case "multimodal.api_base":
-		m.config.Multimodal.APIBase = value
-	case "multimodal.image_model":
-		m.config.Multimodal.ImageModel = value
-	case "multimodal.transcription_model":
-		m.config.Multimodal.TranscriptionModel = value
-	case "multimodal.image_provider":
-		m.config.Multimodal.ImageProvider = value
-	case "image_generation.provider":
-		m.config.ImageGeneration.Provider = value
-	case "image_generation.api_key":
-		m.config.ImageGeneration.APIKey = value
-	case "image_generation.api_base":
-		m.config.ImageGeneration.APIBase = value
 	case "image_generation.auth_mode":
 		m.config.ImageGeneration.AuthMode = value
-	case "image_generation.model":
-		m.config.ImageGeneration.Model = value
 	case "image_generation.size":
 		m.config.ImageGeneration.Size = value
 	case "image_generation.quality":
@@ -1937,16 +1906,8 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.ImageGeneration.Count = n
-	case "tts.provider":
-		m.config.TTS.Provider = value
-	case "tts.api_key":
-		m.config.TTS.APIKey = value
-	case "tts.api_base":
-		m.config.TTS.APIBase = value
 	case "tts.auth_mode":
 		m.config.TTS.AuthMode = value
-	case "tts.model":
-		m.config.TTS.Model = value
 	case "tts.voice":
 		m.config.TTS.Voice = value
 	case "tts.format":

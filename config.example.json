@@ -1,5 +1,6 @@
 {
   "models": {
+    "vision_mode": "auto",
     "active": {
       "chat": "gpt-5.4-mini",
       "vision": "gpt-5.4-mini",
@@ -60,9 +61,6 @@
     "use_mmr": false,
     "mmr_lambda": 0.5,
     "rewrite_followups": true
-  },
-  "multimodal": {
-    "image_provider": ""
   },
   "image_generation": {
     "auth_mode": "bearer",

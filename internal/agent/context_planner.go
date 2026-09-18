@@ -257,20 +257,24 @@ func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input User
 		})
 	}
 	if p.agent != nil {
-		if summary, err := p.agent.AnalyzeAttachments(ctx, input.Attachments); err == nil && strings.TrimSpace(summary) != "" {
+		attachments := input.Attachments
+		if p.supportsImageContentParts() {
+			attachments = nil
+			for _, att := range input.Attachments {
+				if att.Type != gateway.AttachmentImage {
+					attachments = append(attachments, att)
+				}
+			}
+		}
+		if summary, err := p.agent.AnalyzeAttachments(ctx, attachments); err == nil && strings.TrimSpace(summary) != "" {
 			messages = append(messages, provider.Message{
 				Role:    "system",
 				Content: summary,
 			})
 		}
 	}
-	if len(input.Message.ContentParts) > 0 && p.supportsImageContentParts() {
-		messages = append(messages, provider.Message{
-			Role:         "user",
-			Content:      input.RoutingText,
-			ContentParts: input.Message.ContentParts,
-		})
-	}
+	// The current user message is appended by BuildInput. Adding its image parts
+	// here would transmit every image twice.
 	return messages
 }
 
@@ -324,12 +328,20 @@ func (p *contextPlanner) supportsImageContentParts() bool {
 	if p == nil || p.agent == nil {
 		return false
 	}
+	if p.turnProvider.primaryVision != nil {
+		return *p.turnProvider.primaryVision
+	}
+	// The current Ollama adapter has no image wire format.
+	if p.turnProvider.name() == "ollama" {
+		return false
+	}
 
-	// 优先检查配置中的 vision 字段
+	// Policy and capability are independent: an external vision model does not
+	// imply that the current chat model can receive images.
 	if p.agent.cfg != nil {
 		cfg := p.agent.cfg.Get()
-		if cfg.LlmProvider.Vision {
-			return true
+		if cfg.Models.VisionMode == "external" {
+			return false
 		}
 	}
 

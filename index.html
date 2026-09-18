@@ -1156,7 +1156,8 @@
                 description: '统一管理不同用途的模型；这是模板中的模型配置入口。',
                 fields: [
                   { field: 'models.active.chat', example: 'gpt-5.4-mini', description: '对话和 Agent 主循环使用的模型 ID。填写提供商实际支持的名称。' },
-                  { field: 'models.active.vision', example: 'gpt-5.4-mini', description: '图片理解模型 ID。通常与 chat 模型不同，图片分析未配置密钥时会被跳过。' },
+                  { field: 'models.vision_mode', example: 'auto', description: 'auto：主模型支持视觉时直接看原图，否则使用补充识图；external：始终使用独立识图模型。两条路径互斥。' },
+                  { field: 'models.active.vision', example: 'gpt-5.4-mini', description: '补充图片理解模型 ID。auto 模式下仅在主模型不支持视觉时使用；缺少可用配置时返回识图错误。' },
                   { field: 'models.active.embedding', example: 'jina-embeddings-v4', description: '记忆和 RAG 向量化模型 ID。模型更换后，已有向量可能需要重新索引。' },
                   { field: 'models.active.transcription', example: 'whisper-1', description: '音频转文字模型 ID。用于音频附件或语音输入。' },
                   { field: 'models.active.image', example: 'gpt-image-1.5', description: '图片生成模型 ID。具体参数在 image_generation 中配置。' },
@@ -1188,11 +1189,11 @@
               },
               {
                 id: 'media',
-                title: 'embedding / multimodal / image_generation / tts · 媒体能力',
+                title: 'embedding / image_generation / tts · 功能参数',
                 description: '连接参数已集中到 models.endpoints，这里只保留各能力独有的选项。',
                 fields: [
                   { field: 'embedding.dimension', example: '2048', description: '向量维度，必须与 embedding 模型实际输出一致；更换维度后通常要重建索引。' },
-                  { field: 'multimodal.image_provider', example: '""', description: '指定已注册的图片分析提供商名称；留空时使用默认提供商。' },
+                  { field: 'custom_models[].capabilities', example: '["chat", "streaming", "tools", "vision"]', description: '自定义模型的能力声明。vision 表示该模型可以直接接收图片；不会仅因配置了补充识图模型而自动开启。' },
                   { field: 'image_generation.auth_mode', example: 'bearer', description: '图片生成鉴权方式，常用 bearer；Gemini 等服务按适配器要求填写。' },
                   { field: 'image_generation.size', example: '1024x1024', description: '生成图片尺寸，是否支持取决于提供商和模型。' },
                   { field: 'image_generation.quality', example: 'auto', description: '图片质量档位，例如 auto；不支持的模型应按提供商要求调整。' },

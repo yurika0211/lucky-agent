@@ -9,6 +9,7 @@ import (
 )
 
 type toolExecutionGuard struct {
+	disabledTools      []string
 	text               string
 	readOnly           bool
 	readOnlyExternal   bool
@@ -73,6 +74,11 @@ func (g *toolExecutionGuard) blockMessage(call provider.ToolCall) (string, bool)
 
 func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 	name := strings.TrimSpace(call.Name)
+	for _, disabled := range g.disabledTools {
+		if name == disabled {
+			return "the tool is disabled for this turn; use the available tools and current image input"
+		}
+	}
 	args := parseToolCallArgs(call.Arguments)
 
 	switch name {

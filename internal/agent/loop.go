@@ -315,6 +315,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 		loopCfg.Source = "cli"
 	}
 	a.applyIntentToolGating(&loopCfg, routingText)
+	a.applyVisionToolPolicy(&loopCfg, turnProvider)
 
 	if startErr := a.StartAutonomy(ctx); startErr != nil && a.autonomy != nil {
 		return nil, fmt.Errorf("start autonomy: %w", startErr)
@@ -425,7 +426,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 	}
 	loopState := newLoopRuntimeState()
 	loopState.provider = turnProvider
-	loopState.toolExecutionGuard = newToolExecutionGuard(routingText)
+	loopState.toolExecutionGuard = newTurnToolGuard(routingText, loopCfg.DisabledTools)
 	loopState.artifactGuard = newArtifactFinalizationGuard(routingText)
 	memoryGate := a.buildMemoryToolGate(routingText, turnInput.Scope, loopCfg.DisabledTools)
 

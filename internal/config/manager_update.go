@@ -12,6 +12,19 @@ func Clone(cfg *Config) *Config {
 	return cloneConfig(cfg)
 }
 
+// Normalized validates and resolves a configuration without mutating the caller.
+func Normalized(cfg *Config) (*Config, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("configuration is nil")
+	}
+	next := cloneConfig(cfg)
+	if err := validateModelConfig(next); err != nil {
+		return nil, err
+	}
+	normalizeConfig(next)
+	return next, nil
+}
+
 // Replace validates through normalization, writes the new configuration, and
 // only then exposes it to readers. It is used by runtime APIs that must avoid
 // a partially-updated in-memory configuration when persistence fails.
@@ -21,6 +34,9 @@ func (m *Manager) Replace(next *Config) error {
 	}
 
 	candidate := cloneConfig(next)
+	if err := validateModelConfig(candidate); err != nil {
+		return err
+	}
 	normalizeConfig(candidate)
 	data, err := json.MarshalIndent(candidate, "", "  ")
 	if err != nil {

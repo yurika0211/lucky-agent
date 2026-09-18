@@ -57,6 +57,7 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	r.Register(CurrentTimeTool())
 	r.Register(CalculateTool())
 	r.Register(ImageAnalyzeTool(s.mediaProcessor, s.defaultImageProvider))
+	r.Register(ImageReadTool())
 	r.Register(ImageGenerateTool(s.imageGenerator, s.imageGenDefaults))
 	r.Register(TextToSpeechTool(s.speechSynthesizer, s.ttsDefaults))
 	r.Register(LogTailTool())

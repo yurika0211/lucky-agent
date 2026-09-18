@@ -654,8 +654,8 @@ func TestBuildUserTurnInputPreservesAttachments(t *testing.T) {
 	if input.RoutingText == "" {
 		t.Fatal("expected non-empty routing text")
 	}
-	if got := input.RoutingText; got == "看一下附件" {
-		t.Fatalf("expected attachment description to be appended, got %q", got)
+	if got := input.RoutingText; got != "看一下附件" {
+		t.Fatalf("gateway must preserve the request and defer analysis to the agent, got %q", got)
 	}
 	normalized := input.Normalize()
 	if len(normalized.Message.ContentParts) != 2 {
