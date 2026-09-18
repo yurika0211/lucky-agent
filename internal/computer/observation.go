@@ -14,14 +14,20 @@ type Rect struct {
 type Target struct {
 	DisplayID string `json:"display_id,omitempty"`
 	Window    string `json:"window,omitempty"`
+	// Region is relative to the selected window/display, before downscaling.
+	Region *Rect `json:"region,omitempty"`
 }
 
 type ObserveRequest struct {
 	Target Target
 	Wait   time.Duration
+	Format string // image (default), tree, or both
 }
 
 // Observation is a persisted visual frame returned by a backend.
+// After Manager processing, Width and Height describe the delivered image and
+// ScaleFactor includes any downscaling. Actions use the delivered image's pixels;
+// Manager maps them back to the original capture before calling the backend.
 // ImageData is accepted by test and in-process backends; normal backends should
 // set FilePath so large image bytes never enter an agent message.
 type Observation struct {
@@ -35,7 +41,20 @@ type Observation struct {
 	DisplayID    string    `json:"display_id,omitempty"`
 	ActiveWindow string    `json:"active_window,omitempty"`
 	WindowBounds Rect      `json:"window_bounds,omitempty"`
-	SHA256       string    `json:"sha256,omitempty"`
-	ImageData    []byte    `json:"-"`
-	CleanupFile  bool      `json:"-"`
+	// CaptureBounds describes the backend frame before region selection/resizing.
+	CaptureBounds Rect               `json:"capture_bounds"`
+	SHA256        string             `json:"sha256,omitempty"`
+	ImageData     []byte             `json:"-"`
+	CleanupFile   bool               `json:"-"`
+	OriginX       int                `json:"origin_x,omitempty"`
+	OriginY       int                `json:"origin_y,omitempty"`
+	WindowID      string             `json:"window_id,omitempty"`
+	Accessibility *AccessibilityTree `json:"accessibility,omitempty"`
+	Stable        bool               `json:"stable,omitempty"`
+
+	// Original capture dimensions, retained by Manager for action mapping when
+	// the delivered screenshot has been downscaled. Zero means no transform.
+	sourceWidth  int
+	sourceHeight int
+	windowScoped bool
 }

@@ -182,6 +182,8 @@ type ComputerUseToolConfig struct {
 	SettleMilliseconds   int      `json:"settle_milliseconds,omitempty"`
 	MaxObservationBytes  int      `json:"max_observation_bytes,omitempty"`
 	MaxScreenshotWidth   int      `json:"max_screenshot_width,omitempty"`
+	MaxBatchActions      int      `json:"max_batch_actions,omitempty"`
+	SettleMode           string   `json:"settle_mode,omitempty"`
 	KeepFrames           int      `json:"keep_frames,omitempty"`
 	FrameTTLSeconds      int      `json:"frame_ttl_seconds,omitempty"`
 	RetainFrames         int      `json:"retain_frames,omitempty"`
@@ -950,6 +952,8 @@ func DefaultConfig() *Config {
 				SettleMilliseconds:   350,
 				MaxObservationBytes:  10 << 20,
 				MaxScreenshotWidth:   0,
+				MaxBatchActions:      5,
+				SettleMode:           "adaptive",
 				KeepFrames:           2,
 				FrameTTLSeconds:      600,
 				RetainFrames:         2,
@@ -1509,6 +1513,12 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Tools.ComputerUse.MaxScreenshotWidth <= 0 {
 		cfg.Tools.ComputerUse.MaxScreenshotWidth = def.Tools.ComputerUse.MaxScreenshotWidth
+	}
+	if cfg.Tools.ComputerUse.MaxBatchActions <= 0 {
+		cfg.Tools.ComputerUse.MaxBatchActions = def.Tools.ComputerUse.MaxBatchActions
+	}
+	if cfg.Tools.ComputerUse.SettleMode == "" {
+		cfg.Tools.ComputerUse.SettleMode = def.Tools.ComputerUse.SettleMode
 	}
 	if cfg.Tools.ComputerUse.KeepFrames <= 0 {
 		cfg.Tools.ComputerUse.KeepFrames = cfg.Tools.ComputerUse.RetainFrames
@@ -2237,6 +2247,17 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Tools.ComputerUse.MaxScreenshotWidth = n
+	case "tools.computer_use.max_batch_actions":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > 10 {
+			return fmt.Errorf("max_batch_actions must be between 1 and 10")
+		}
+		m.config.Tools.ComputerUse.MaxBatchActions = n
+	case "tools.computer_use.settle_mode":
+		if value != "fixed" && value != "adaptive" {
+			return fmt.Errorf("settle_mode must be fixed or adaptive")
+		}
+		m.config.Tools.ComputerUse.SettleMode = value
 	case "tools.computer_use.keep_frames":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

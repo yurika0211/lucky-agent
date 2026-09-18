@@ -341,6 +341,10 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Tools.ComputerUse.MaxObservationBytes)
 	case "tools.computer_use.max_screenshot_width":
 		fmt.Println(cfg.Tools.ComputerUse.MaxScreenshotWidth)
+	case "tools.computer_use.max_batch_actions":
+		fmt.Println(cfg.Tools.ComputerUse.MaxBatchActions)
+	case "tools.computer_use.settle_mode":
+		fmt.Println(cfg.Tools.ComputerUse.SettleMode)
 	case "tools.computer_use.keep_frames", "tools.computer_use.retain_frames":
 		fmt.Println(cfg.Tools.ComputerUse.KeepFrames)
 	case "tools.computer_use.frame_ttl_seconds":

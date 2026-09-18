@@ -1157,7 +1157,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// Computer use is opt-in. Keep the backend and its tools out of the model
 	// tool menu unless the operator explicitly enables the capability.
 	if c.Tools.ComputerUse.Enabled {
-		backend, backendErr := computer.NewBackend(c.Tools.ComputerUse.Backend)
+		backend, backendErr := computer.NewBackend(c.Tools.ComputerUse.Backend, computer.BackendOptions{ObserveOnly: c.Tools.ComputerUse.Mode == "observe"})
 		if backendErr != nil {
 			return nil, fmt.Errorf("init computer backend: %w", backendErr)
 		}
@@ -1181,14 +1181,11 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 		managerCfg.MaxObservationBytes = c.Tools.ComputerUse.MaxObservationBytes
 		managerCfg.MaxScreenshotWidth = c.Tools.ComputerUse.MaxScreenshotWidth
+		managerCfg.MaxBatchActions = c.Tools.ComputerUse.MaxBatchActions
+		managerCfg.SettleMode = c.Tools.ComputerUse.SettleMode
 		managerCfg.AllowedWindows = append([]string(nil), c.Tools.ComputerUse.AllowedWindows...)
 		if managerCfg.Settle < 0 {
 			managerCfg.Settle = 0
-		}
-		if c.Tools.ComputerUse.StepTimeoutSeconds > 0 {
-			// Step timeout is enforced by the Agent request context. Keep this
-			// value in config for the tool layer, which may add a child timeout.
-			_ = c.Tools.ComputerUse.StepTimeoutSeconds
 		}
 		computerManager, managerErr := computer.NewManagerWithConfig(backend, managerCfg)
 		if managerErr != nil {

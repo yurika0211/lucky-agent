@@ -76,6 +76,8 @@ type Param struct {
 	Description string
 	Required    bool
 	Default     any
+	// Schema adds nested JSON Schema fields such as items and properties.
+	Schema map[string]any
 }
 
 type ToolCallResult struct {
@@ -138,21 +140,7 @@ func (t *Tool) ToOpenAIFormat() map[string]any {
 	props := make(map[string]any)
 	var required []string
 	for name, p := range t.Parameters {
-		paramDef := map[string]any{
-			"type":        p.Type,
-			"description": p.Description,
-		}
-
-		// 数组类型需要指定 items
-		if p.Type == "array" {
-			paramDef["items"] = map[string]any{
-				"type": "string",
-			}
-		}
-
-		if p.Default != nil {
-			paramDef["default"] = p.Default
-		}
+		paramDef := paramSchema(p)
 		if p.Required {
 			required = append(required, name)
 		}
@@ -173,6 +161,20 @@ func (t *Tool) ToOpenAIFormat() map[string]any {
 			"parameters":  params,
 		},
 	}
+}
+
+func paramSchema(p Param) map[string]any {
+	result := map[string]any{"type": p.Type, "description": p.Description}
+	if p.Type == "array" {
+		result["items"] = map[string]any{"type": "string"}
+	}
+	if p.Default != nil {
+		result["default"] = p.Default
+	}
+	for key, value := range p.Schema {
+		result[key] = value
+	}
+	return result
 }
 
 // toOpenAIName 将工具名转换为 OpenAI 兼容格式（只保留 a-zA-Z0-9_-）

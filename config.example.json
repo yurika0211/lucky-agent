@@ -284,6 +284,8 @@
       "settle_ms": 350,
       "max_observation_bytes": 10485760,
       "max_screenshot_width": 0,
+      "max_batch_actions": 5,
+      "settle_mode": "adaptive",
       "keep_frames": 2,
       "frame_ttl_seconds": 600,
       "allow_text_input": false,
