@@ -350,6 +350,7 @@ type SimpleLocalInspectionConfig struct {
 
 // AgentLoopConfig Agent Loop 配置
 type AgentLoopConfig struct {
+	Foreground             ForegroundConfig            `json:"foreground,omitempty"`
 	MaxIterations          int                         `json:"max_iterations,omitempty"`
 	TimeoutSeconds         int                         `json:"timeout_seconds,omitempty"`
 	AutoApprove            bool                        `json:"auto_approve,omitempty"`
@@ -433,11 +434,21 @@ type AutonomyHeartbeatConfig struct {
 
 // AutonomyConfig 自主工作套件配置
 type AutonomyConfig struct {
+	Recovery    AutonomyRecoveryConfig  `json:"recovery,omitempty"`
 	Enabled     bool                    `json:"enabled,omitempty"`
 	QueueBuffer int                     `json:"queue_buffer,omitempty"`
 	Worker      AutonomyWorkerConfig    `json:"worker,omitempty"`
 	Pool        AutonomyPoolConfig      `json:"pool,omitempty"`
 	Heartbeat   AutonomyHeartbeatConfig `json:"heartbeat,omitempty"`
+}
+
+type AutonomyRecoveryConfig struct {
+	ResumeOnStart       *bool `json:"resume_on_start,omitempty"`
+	MaxRetries          *int  `json:"max_retries,omitempty"`
+	RetryInitialSeconds int   `json:"retry_initial_seconds,omitempty"`
+	RetryMaxSeconds     int   `json:"retry_max_seconds,omitempty"`
+	MaxSlices           int   `json:"max_slices,omitempty"`
+	MaxTotalSeconds     int   `json:"max_total_seconds,omitempty"`
 }
 
 // ProactiveConfig controls the proactive state estimator and gate. It is
@@ -853,6 +864,7 @@ func DefaultConfig() *Config {
 			MemoryHygieneMaxFindings:         25,
 		},
 		Agent: AgentLoopConfig{
+			Foreground:             DefaultForegroundConfig(),
 			MaxIterations:          10,
 			TimeoutSeconds:         60,
 			AutoApprove:            false,
@@ -895,6 +907,14 @@ func DefaultConfig() *Config {
 			Addr: ":8765",
 		},
 		Autonomy: AutonomyConfig{
+			Recovery: AutonomyRecoveryConfig{
+				ResumeOnStart:       boolPtr(true),
+				MaxRetries:          func() *int { n := 3; return &n }(),
+				RetryInitialSeconds: 5,
+				RetryMaxSeconds:     300,
+				MaxSlices:           48,
+				MaxTotalSeconds:     14400,
+			},
 			Enabled:     false,
 			QueueBuffer: 64,
 			Worker: AutonomyWorkerConfig{
@@ -1323,6 +1343,7 @@ func normalizeConfig(cfg *Config) {
 		cfg.Context.MemoryHygieneMaxFindings = def.Context.MemoryHygieneMaxFindings
 	}
 
+	normalizeForegroundConfig(&cfg.Agent.Foreground)
 	if cfg.Agent.MaxIterations <= 0 {
 		cfg.Agent.MaxIterations = def.Agent.MaxIterations
 	}
@@ -1398,6 +1419,27 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Autonomy.QueueBuffer <= 0 {
 		cfg.Autonomy.QueueBuffer = def.Autonomy.QueueBuffer
+	}
+	if cfg.Autonomy.Recovery.MaxRetries == nil || *cfg.Autonomy.Recovery.MaxRetries < 0 {
+		cfg.Autonomy.Recovery.MaxRetries = def.Autonomy.Recovery.MaxRetries
+	}
+	if cfg.Autonomy.Recovery.ResumeOnStart == nil {
+		cfg.Autonomy.Recovery.ResumeOnStart = def.Autonomy.Recovery.ResumeOnStart
+	}
+	if cfg.Autonomy.Recovery.RetryInitialSeconds <= 0 {
+		cfg.Autonomy.Recovery.RetryInitialSeconds = def.Autonomy.Recovery.RetryInitialSeconds
+	}
+	if cfg.Autonomy.Recovery.RetryMaxSeconds <= 0 {
+		cfg.Autonomy.Recovery.RetryMaxSeconds = def.Autonomy.Recovery.RetryMaxSeconds
+	}
+	if cfg.Autonomy.Recovery.RetryMaxSeconds < cfg.Autonomy.Recovery.RetryInitialSeconds {
+		cfg.Autonomy.Recovery.RetryMaxSeconds = cfg.Autonomy.Recovery.RetryInitialSeconds
+	}
+	if cfg.Autonomy.Recovery.MaxSlices <= 0 {
+		cfg.Autonomy.Recovery.MaxSlices = def.Autonomy.Recovery.MaxSlices
+	}
+	if cfg.Autonomy.Recovery.MaxTotalSeconds <= 0 {
+		cfg.Autonomy.Recovery.MaxTotalSeconds = def.Autonomy.Recovery.MaxTotalSeconds
 	}
 	if cfg.Autonomy.Pool.MaxWorkers <= 0 {
 		cfg.Autonomy.Pool.MaxWorkers = def.Autonomy.Pool.MaxWorkers
@@ -1749,6 +1791,22 @@ func cloneConfig(in *Config) *Config {
 		v := *in.Autonomy.Worker.AutoApprove
 		cp.Autonomy.Worker.AutoApprove = &v
 	}
+	if in.Agent.Foreground.Enabled != nil {
+		v := *in.Agent.Foreground.Enabled
+		cp.Agent.Foreground.Enabled = &v
+	}
+	if in.Agent.Foreground.MaxRetries != nil {
+		v := *in.Agent.Foreground.MaxRetries
+		cp.Agent.Foreground.MaxRetries = &v
+	}
+	if in.Autonomy.Recovery.MaxRetries != nil {
+		v := *in.Autonomy.Recovery.MaxRetries
+		cp.Autonomy.Recovery.MaxRetries = &v
+	}
+	if in.Autonomy.Recovery.ResumeOnStart != nil {
+		v := *in.Autonomy.Recovery.ResumeOnStart
+		cp.Autonomy.Recovery.ResumeOnStart = &v
+	}
 	if in.Autonomy.Worker.DisabledTools != nil {
 		cp.Autonomy.Worker.DisabledTools = append([]string{}, in.Autonomy.Worker.DisabledTools...)
 	}
@@ -1987,6 +2045,25 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Memory.Tidal.MinSamples = n
 	case "memory.tidal.store_path":
 		m.config.Memory.Tidal.StorePath = value
+	case "agent.foreground.enabled":
+		v, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		m.config.Agent.Foreground.Enabled = &v
+	case "agent.foreground.max_retries", "agent.foreground.max_slices", "agent.foreground.max_total_seconds":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || (key != "agent.foreground.max_retries" && n == 0) {
+			return fmt.Errorf("%s requires a positive integer (max_retries also allows zero)", key)
+		}
+		switch key {
+		case "agent.foreground.max_retries":
+			m.config.Agent.Foreground.MaxRetries = &n
+		case "agent.foreground.max_slices":
+			m.config.Agent.Foreground.MaxSlices = n
+		case "agent.foreground.max_total_seconds":
+			m.config.Agent.Foreground.MaxTotalSeconds = n
+		}
 	case "agent.max_iterations":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
@@ -2100,6 +2177,26 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Dashboard.Addr = value
 	case "autonomy.enabled":
 		m.config.Autonomy.Enabled = parseBool(value)
+	case "autonomy.recovery.resume_on_start":
+		v := parseBool(value)
+		m.config.Autonomy.Recovery.ResumeOnStart = &v
+	case "autonomy.recovery.max_retries", "autonomy.recovery.retry_initial_seconds", "autonomy.recovery.retry_max_seconds", "autonomy.recovery.max_slices", "autonomy.recovery.max_total_seconds":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || (n == 0 && key != "autonomy.recovery.max_retries") {
+			return fmt.Errorf("%s requires a positive integer (max_retries also accepts zero)", key)
+		}
+		switch key {
+		case "autonomy.recovery.max_retries":
+			m.config.Autonomy.Recovery.MaxRetries = &n
+		case "autonomy.recovery.retry_initial_seconds":
+			m.config.Autonomy.Recovery.RetryInitialSeconds = n
+		case "autonomy.recovery.retry_max_seconds":
+			m.config.Autonomy.Recovery.RetryMaxSeconds = n
+		case "autonomy.recovery.max_slices":
+			m.config.Autonomy.Recovery.MaxSlices = n
+		case "autonomy.recovery.max_total_seconds":
+			m.config.Autonomy.Recovery.MaxTotalSeconds = n
+		}
 	case "autonomy.queue_buffer":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

@@ -172,6 +172,12 @@
     "memory_hygiene_max_findings": 25
   },
   "agent": {
+    "foreground": {
+      "enabled": true,
+      "max_slices": 48,
+      "max_total_seconds": 3600,
+      "max_retries": 3
+    },
     "max_iterations": 10,
     "timeout_seconds": 60,
     "auto_approve": false,
@@ -222,6 +228,14 @@
   "autonomy": {
     "enabled": false,
     "queue_buffer": 64,
+    "recovery": {
+      "resume_on_start": true,
+      "max_retries": 3,
+      "retry_initial_seconds": 5,
+      "retry_max_seconds": 300,
+      "max_slices": 48,
+      "max_total_seconds": 14400
+    },
     "worker": {
       "max_iterations": 300,
       "timeout_seconds": 300,
