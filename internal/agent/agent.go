@@ -109,15 +109,16 @@ type supportRuntime struct {
 
 // Agent 是 LuckyAgent 的核心 Agent
 type Agent struct {
-	cfg        *config.Manager
-	soul       *soul.Soul
-	tmplMgr    *soul.TemplateManager  // SOUL 模板管理器
-	provider   provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
-	providerMu sync.RWMutex           // protects the default provider/model selection
-	registry   *provider.Registry     // provider 注册表
-	catalog    *provider.ModelCatalog // 模型目录
-	tokenStore *provider.TokenStore   // token 存储
-	memory     *memory.Store
+	foregroundActive sync.Map // session ID -> active caller; removed when the request ends
+	cfg              *config.Manager
+	soul             *soul.Soul
+	tmplMgr          *soul.TemplateManager  // SOUL 模板管理器
+	provider         provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	providerMu       sync.RWMutex           // protects the default provider/model selection
+	registry         *provider.Registry     // provider 注册表
+	catalog          *provider.ModelCatalog // 模型目录
+	tokenStore       *provider.TokenStore   // token 存储
+	memory           *memory.Store
 	// shortTerm is retained only for source compatibility with older in-package
 	// tests/callers. New agents leave it nil; production conversation state is
 	// owned by shortTerms and keyed by session ID.
@@ -737,6 +738,22 @@ func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
 		return cfg
 	}
 	worker := c.Autonomy.Worker
+	recovery := c.Autonomy.Recovery
+	if recovery.MaxRetries != nil {
+		cfg.Pool.RunPolicy.MaxRetries = *recovery.MaxRetries
+	}
+	if recovery.RetryInitialSeconds > 0 {
+		cfg.Pool.RunPolicy.RetryInitial = time.Duration(recovery.RetryInitialSeconds) * time.Second
+	}
+	if recovery.RetryMaxSeconds > 0 {
+		cfg.Pool.RunPolicy.RetryMax = time.Duration(recovery.RetryMaxSeconds) * time.Second
+	}
+	if recovery.MaxSlices > 0 {
+		cfg.Pool.RunPolicy.MaxSlices = recovery.MaxSlices
+	}
+	if recovery.MaxTotalSeconds > 0 {
+		cfg.Pool.RunPolicy.MaxTotalTime = time.Duration(recovery.MaxTotalSeconds) * time.Second
+	}
 	loop := autonomy.DefaultWorkerLoopConfig()
 	if worker.MaxIterations > 0 {
 		loop.MaxIterations = worker.MaxIterations
@@ -1335,6 +1352,15 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// v0.38.0: 将 executor 注入到已注册工具所绑定的 autonomy 实例，避免启动时替换实例。
 	a.autonomy.SetExecutor(&agentExecutorAdapter{agent: a})
 
+	// Already queued work carries the original authorization across restarts.
+	// Operators can disable this separately from automatic worker startup.
+	if c.Autonomy.Recovery.ResumeOnStart == nil || *c.Autonomy.Recovery.ResumeOnStart {
+		if ready, _, _, _ := a.autonomy.Queue().Stats(); ready > 0 {
+			if err := a.StartAutonomyNow(context.Background()); err != nil {
+				logger.Warn("resume queued autonomy tasks failed", "error", err)
+			}
+		}
+	}
 	return a, nil
 }
 
@@ -1506,6 +1532,9 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 
 	result, err := a.runLoopWithProviderSnapshot(ctx, sess, input, loopCfg, turnProvider)
 	if err != nil {
+		if loopCfg.Foreground || ctx.Err() != nil {
+			return "", err
+		}
 		// 如果 RunLoop 失败，回退到简单流式聊天
 		response, chatErr := a.chatStreamSimpleInputWithProvider(ctx, sess, input, turnProvider)
 		if chatErr != nil {
@@ -1519,6 +1548,12 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 	}
 
 	response := result.Response
+	if result.foregroundControl {
+		return response, nil
+	}
+	if result.foregroundInput != nil {
+		input = *result.foregroundInput
+	}
 
 	// 自动记忆（去重 + 智能分类 + 截断）。计数和维护 cadence 由 memory
 	// runtime 持有，Agent 只执行返回的维护动作。
@@ -2246,7 +2281,7 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 		}
 	}
 
-	if (allRepeated && trimmed == "") || s.consecutiveToolOnlyIters >= s.toolOnlyIterationLimit {
+	if allRepeated && (trimmed == "" || s.consecutiveToolOnlyIters >= s.toolOnlyIterationLimit) {
 		return true, repeatedSigs
 	}
 	return false, nil
@@ -2256,10 +2291,17 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 rememberToolCallResult 记录一次工具调用的结果，供循环保护、摘要和最终引用使用。
 */
 func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result string, duration time.Duration) {
+	if s.toolCallRepeatCount == nil {
+		s.toolCallRepeatCount = make(map[string]int)
+	}
 	if s.toolCallLastResult == nil {
 		s.toolCallLastResult = make(map[string]string)
 	}
-	s.toolCallLastResult[s.toolCallSig(name, arguments)] = result
+	sig := s.toolCallSig(name, arguments)
+	if previous, seen := s.toolCallLastResult[sig]; !seen || previous != result {
+		s.toolCallRepeatCount[sig] = 0
+	}
+	s.toolCallLastResult[sig] = result
 	if key := normalizedToolTarget(name, arguments); key != "" {
 		if s.toolURLLastResult == nil {
 			s.toolURLLastResult = make(map[string]string)
@@ -2383,6 +2425,17 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 		defer close(events)
 
 		sanitizeLoopConfig(&loopCfg)
+		if a.useForeground(sess, loopCfg) {
+			loopCfg.emit = func(eventCtx context.Context, event ChatEvent) { sendForegroundEvent(eventCtx, events, event) }
+			result, err := a.runForeground(ctx, sess, input, loopCfg, turnProvider)
+			if err != nil {
+				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventError, Err: err})
+			} else {
+				a.finishForegroundMemory(sess, input, result)
+				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventDone, Content: result.Response})
+			}
+			return
+		}
 		a.applyIntentToolGating(&loopCfg, routingText)
 		a.applyVisionToolPolicy(&loopCfg, turnProvider)
 		logger.Info("agent stream loop started",
@@ -3775,11 +3828,12 @@ func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID
 	// Look up session by ID
 	sess, ok := a.agent.sessions.Get(sessionID)
 	if !ok {
-		// Fallback: create new session
-		sess = a.agent.sessions.NewWithTitle("autonomy-worker")
+		sess = a.agent.sessions.Ensure(sessionID)
 	}
 
 	loopCfg := LoopConfig{
+		Execution:              cfg.Execution,
+		Source:                 "autonomy",
 		MaxIterations:          cfg.MaxIterations,
 		Timeout:                cfg.Timeout,
 		AutoApprove:            cfg.AutoApprove,
@@ -3790,15 +3844,16 @@ func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID
 	}
 
 	result, err := a.agent.RunLoopWithSession(ctx, sess, userInput, loopCfg)
-	if err != nil {
+	if result == nil {
 		return nil, err
 	}
-
 	return &autonomy.LoopResult{
-		Response:   result.Response,
-		TokensUsed: result.TokensUsed,
-		Iterations: result.Iterations,
-	}, nil
+		Response:     result.Response,
+		TokensUsed:   result.TokensUsed,
+		Iterations:   result.Iterations,
+		Verified:     result.Verified,
+		Verification: result.Verification,
+	}, err
 }
 
 /*

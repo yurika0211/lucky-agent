@@ -90,7 +90,7 @@ func TestImageReadFeedsOriginalToPrimaryModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	msgs := appendLatestComputerObservation(nil, []executedToolCall{{Observations: result.Observations}})
+	msgs := appendLatestComputerObservation(nil, []executedToolCall{{ToolCall: provider.ToolCall{Name: "image_read"}, Observations: result.Observations}})
 	if len(msgs) != 1 || len(msgs[0].ContentParts) != 1 || !strings.HasPrefix(msgs[0].ContentParts[0].Image.URL, "data:image/png;base64,") {
 		t.Fatal("missing primary image observation")
 	}

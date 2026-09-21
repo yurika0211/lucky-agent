@@ -237,7 +237,7 @@ func (g *toolExecutionGuard) blockAutonomyActionReason(toolName, action string) 
 		if g.noAutonomyMutation {
 			return "the user requested autonomy inspection without changing workers"
 		}
-	case "update", "queue_update", "complete", "fail", "block", "unblock":
+	case "update", "queue_update", "complete", "fail", "block", "unblock", "resolve":
 		if g.readOnly {
 			return "the user requested autonomy inspection only"
 		}

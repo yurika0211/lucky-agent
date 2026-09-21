@@ -294,7 +294,7 @@ func appendLatestComputerObservation(messages []provider.Message, executed []exe
 	for i := range executed {
 		for j := range executed[i].Observations {
 			obs := executed[i].Observations[j]
-			if obs.Kind == "image" {
+			if executed[i].ToolCall.Name == "image_read" {
 				part := provider.ContentPart{Type: "image", Image: &provider.ImagePart{FilePath: obs.FilePath, URL: obs.ImageURL, MimeType: obs.MimeType}}
 				if part.Image.FilePath == "" && len(obs.ImageData) > 0 {
 					part.Image.URL = "data:" + imageMimeType(obs.MimeType) + ";base64," + base64.StdEncoding.EncodeToString(obs.ImageData)
@@ -504,11 +504,20 @@ func emitChatToolResultEvent(events chan<- ChatEvent, toolName, result string, m
 }
 
 func emitChatObservationEvents(events chan<- ChatEvent, result executedToolCall) {
+	emitObservationEvents(func(event ChatEvent) { events <- event }, result)
+}
+
+func emitObservationEvents(emit func(ChatEvent), result executedToolCall) {
 	for _, obs := range result.Observations {
+		// image_read supplies model input, not a new artifact to send back to
+		// the user. Computer tools use the same image observation payload.
+		if result.ToolCall.Name == "image_read" {
+			continue
+		}
 		if strings.TrimSpace(obs.FrameID) == "" && strings.TrimSpace(obs.FilePath) == "" && len(obs.ImageData) == 0 {
 			continue
 		}
-		events <- ChatEvent{
+		emit(ChatEvent{
 			Type: ChatEventObservation,
 			Name: result.ToolCall.Name,
 			Content: "Computer observation" + func() string {
@@ -523,10 +532,10 @@ func emitChatObservationEvents(events chan<- ChatEvent, result executedToolCall)
 				ScaleFactor: obs.ScaleFactor, DisplayID: obs.DisplayID,
 				ActiveWindow: obs.ActiveWindow,
 			},
-		}
+		})
 	}
 	if approval := approvalEventFromMetadata(result.Metadata, result.ToolCall.Name); approval != nil {
-		events <- ChatEvent{Type: ChatEventApprovalRequired, Name: result.ToolCall.Name, Content: "Approval required", Approval: approval}
+		emit(ChatEvent{Type: ChatEventApprovalRequired, Name: result.ToolCall.Name, Content: "Approval required", Approval: approval})
 	}
 }
 

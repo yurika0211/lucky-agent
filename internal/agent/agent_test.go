@@ -1294,6 +1294,9 @@ type loopingFunctionProvider struct {
 func (p *loopingFunctionProvider) Name() string { return "looping-fc" }
 
 func (p *loopingFunctionProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	if len(messages) > 0 && strings.HasPrefix(messages[0].Content, "Review whether") {
+		return &provider.Response{Content: verifiedAssessment}, nil
+	}
 	return nil, fmt.Errorf("unexpected Chat call")
 }
 
@@ -2834,7 +2837,12 @@ func TestAutonomyWorkerCompletionNotifiesRecentChat(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer a.Close()
-	a.provider = &mockProvider{name: "test-mock"}
+	a.provider = &durableScriptProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if strings.HasPrefix(messages[0].Content, "Review whether") {
+			return &provider.Response{Content: verifiedAssessment}, nil
+		}
+		return &provider.Response{Content: "mock completed response"}, nil
+	}}
 
 	gm := msggateway.NewGatewayManager()
 	gw := &cronNotifyGateway{name: "telegram", running: true}
