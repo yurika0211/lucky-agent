@@ -2,7 +2,9 @@ package autonomy
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +25,7 @@ type AgentExecutor interface {
 
 // LoopConfig carries agent loop limits without importing the agent package.
 type LoopConfig struct {
+	Execution              *Execution
 	MaxIterations          int
 	Timeout                time.Duration
 	AutoApprove            bool
@@ -78,9 +81,11 @@ func normalizeWorkerLoopConfig(cfg LoopConfig) LoopConfig {
 
 // LoopResult mirrors agent.LoopResult to avoid import cycle.
 type LoopResult struct {
-	Response   string
-	TokensUsed int
-	Iterations int
+	Response     string
+	TokensUsed   int
+	Iterations   int
+	Verified     bool
+	Verification string
 }
 
 // ---------------------------------------------------------------------------
@@ -99,11 +104,14 @@ const (
 
 // WorkerResult holds the result of a worker's task execution.
 type WorkerResult struct {
-	TaskID     string
-	Output     string
-	Error      error
-	Duration   time.Duration
-	TokensUsed int
+	TaskID       string
+	Output       string
+	Error        error
+	Duration     time.Duration
+	TokensUsed   int
+	Verified     bool
+	Verification string
+	State        TaskState
 }
 
 // Worker is a lightweight agent instance that can execute tasks independently.
@@ -120,10 +128,13 @@ type Worker struct {
 	mu        sync.RWMutex
 	startedAt time.Time
 	taskCount atomic.Int64
+	queue     *TaskQueue
+	reserved  bool
 }
 
 // WorkerConfig configures a worker.
 type WorkerConfig struct {
+	Queue        *TaskQueue
 	ID           string
 	SystemPrompt string // optional override for worker's system prompt
 	MaxTokens    int    // max tokens per task (0 = use agent default)
@@ -132,13 +143,11 @@ type WorkerConfig struct {
 
 // NewWorker creates a new worker bound to an agent executor.
 func NewWorker(cfg WorkerConfig, executor AgentExecutor) *Worker {
-	sessionID := executor.NewSession(fmt.Sprintf("worker-%s", cfg.ID))
-
 	w := &Worker{
 		ID:         cfg.ID,
 		State:      WorkerIdle,
 		Executor:   executor,
-		SessionID:  sessionID,
+		queue:      cfg.Queue,
 		LoopConfig: normalizeWorkerLoopConfig(cfg.LoopConfig),
 	}
 
@@ -156,7 +165,9 @@ func (w *Worker) Execute(ctx context.Context, task *QueueTask) *WorkerResult {
 	start := time.Now()
 	defer func() {
 		w.mu.Lock()
-		w.State = WorkerIdle
+		if !w.reserved {
+			w.State = WorkerIdle
+		}
 		w.CurrentTask = nil
 		w.mu.Unlock()
 		w.taskCount.Add(1)
@@ -176,7 +187,7 @@ func (w *Worker) Execute(ctx context.Context, task *QueueTask) *WorkerResult {
 
 	w.mu.RLock()
 	executor := w.Executor
-	sessionID := w.SessionID
+	sessionID := task.SessionID
 	w.mu.RUnlock()
 
 	if executor == nil {
@@ -187,6 +198,20 @@ func (w *Worker) Execute(ctx context.Context, task *QueueTask) *WorkerResult {
 		}
 	}
 
+	if w.queue != nil {
+		loopCfg.Execution = NewExecution(w.queue, task)
+	}
+	if sessionID == "" {
+		sessionID = executor.NewSession("task-" + task.ID)
+		if loopCfg.Execution != nil {
+			if err := loopCfg.Execution.BindSession(sessionID); err != nil {
+				return &WorkerResult{TaskID: task.ID, Error: fmt.Errorf("%w: save task session: %v", ErrBlocked, err)}
+			}
+		}
+	}
+	w.mu.Lock()
+	w.SessionID = sessionID
+	w.mu.Unlock()
 	result, err := executor.RunLoopWithSession(ctx, sessionID, prompt, loopCfg)
 
 	duration := time.Since(start)
@@ -196,13 +221,18 @@ func (w *Worker) Execute(ctx context.Context, task *QueueTask) *WorkerResult {
 		Duration: duration,
 	}
 
+	if result != nil {
+		wr.Output, wr.TokensUsed = result.Response, result.TokensUsed
+		wr.Verified, wr.Verification = result.Verified, result.Verification
+	}
 	if err != nil {
 		wr.Error = err
 		return wr
 	}
 
-	wr.Output = result.Response
-	wr.TokensUsed = result.TokensUsed
+	if result == nil {
+		wr.Error = fmt.Errorf("executor returned no result")
+	}
 	return wr
 }
 
@@ -247,6 +277,7 @@ type WorkerInfo struct {
 
 // PoolConfig configures the worker pool.
 type PoolConfig struct {
+	RunPolicy   RunPolicy
 	MaxWorkers  int           // maximum concurrent workers (default: 8)
 	TaskTimeout time.Duration // per-task timeout (default: 300s)
 	QueueBuffer int           // task queue buffer size (default: 64)
@@ -258,6 +289,7 @@ type PoolConfig struct {
 // DefaultPoolConfig returns sensible defaults.
 func DefaultPoolConfig() PoolConfig {
 	return PoolConfig{
+		RunPolicy:   DefaultRunPolicy(),
 		MaxWorkers:  8,
 		TaskTimeout: 300 * time.Second,
 		QueueBuffer: 64,
@@ -278,11 +310,13 @@ type WorkerPool struct {
 	executor AgentExecutor
 	queue    *TaskQueue
 
-	mu      sync.RWMutex
-	workers map[string]*Worker
-	nextID  atomic.Int64
-	running atomic.Bool
-	stopCh  chan struct{}
+	mu       sync.RWMutex
+	workers  map[string]*Worker
+	nextID   atomic.Int64
+	running  atomic.Bool
+	stopCh   chan struct{}
+	wg       sync.WaitGroup
+	stopping bool
 
 	// Results channel — non-blocking, consumers drain at their pace
 	results chan *WorkerResult
@@ -299,6 +333,23 @@ func NewWorkerPool(cfg PoolConfig, executor AgentExecutor, queue *TaskQueue) *Wo
 		cfg.QueueBuffer = 64
 	}
 	cfg.WorkerLoop = normalizeWorkerLoopConfig(cfg.WorkerLoop)
+	if cfg.TaskTimeout <= 0 {
+		cfg.TaskTimeout = 300 * time.Second
+	}
+	if cfg.MaxWorkers <= 0 {
+		cfg.MaxWorkers = 8
+	}
+	if cfg.MinWorkers <= 0 {
+		cfg.MinWorkers = 1
+	}
+	if cfg.MinWorkers > cfg.MaxWorkers {
+		cfg.MinWorkers = cfg.MaxWorkers
+	}
+	if cfg.RunPolicy == (RunPolicy{}) {
+		cfg.RunPolicy = DefaultRunPolicy()
+	}
+	cfg.RunPolicy = normalizeRunPolicy(cfg.RunPolicy)
+	queue.policy = cfg.RunPolicy
 	return &WorkerPool{
 		config:   cfg,
 		executor: executor,
@@ -311,9 +362,19 @@ func NewWorkerPool(cfg PoolConfig, executor AgentExecutor, queue *TaskQueue) *Wo
 
 // Start starts the worker pool.
 func (p *WorkerPool) Start(ctx context.Context) error {
+	p.mu.Lock()
+	if p.stopping {
+		p.mu.Unlock()
+		return fmt.Errorf("worker pool is still stopping")
+	}
 	if !p.running.CompareAndSwap(false, true) {
+		p.mu.Unlock()
 		return fmt.Errorf("worker pool already running")
 	}
+	p.stopCh = make(chan struct{})
+	p.workers = make(map[string]*Worker)
+	p.wg.Add(1)
+	p.mu.Unlock()
 
 	// Spawn initial workers
 	minWorkers := p.config.MinWorkers
@@ -332,39 +393,56 @@ func (p *WorkerPool) Start(ctx context.Context) error {
 
 // Stop gracefully stops the worker pool.
 func (p *WorkerPool) Stop() error {
+	p.mu.Lock()
 	if !p.running.CompareAndSwap(true, false) {
+		p.mu.Unlock()
 		return fmt.Errorf("worker pool not running")
 	}
-
+	p.stopping = true
 	close(p.stopCh)
 
 	// Mark all workers as stopping
-	p.mu.Lock()
 	for _, w := range p.workers {
 		w.mu.Lock()
 		w.State = WorkerStopping
 		w.mu.Unlock()
 	}
 	p.mu.Unlock()
-
-	return nil
+	done := make(chan struct{})
+	go func() {
+		p.wg.Wait()
+		p.mu.Lock()
+		p.stopping = false
+		p.mu.Unlock()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("workers still stopping; a tool has not acknowledged cancellation")
+	}
 }
 
 // spawnWorker creates and registers a new worker.
 func (p *WorkerPool) spawnWorker(ctx context.Context) *Worker {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if len(p.workers) >= p.config.MaxWorkers || p.stopping {
+		return nil
+	}
 
 	id := fmt.Sprintf("worker-%d", p.nextID.Add(1))
 	var worker *Worker
 	if p.executor != nil {
-		worker = NewWorker(WorkerConfig{ID: id, LoopConfig: p.config.WorkerLoop}, p.executor)
+		worker = NewWorker(WorkerConfig{ID: id, LoopConfig: p.config.WorkerLoop, Queue: p.queue}, p.executor)
 	} else {
 		// No executor yet, create placeholder
 		worker = &Worker{
 			ID:         id,
 			State:      WorkerIdle,
 			LoopConfig: p.config.WorkerLoop,
+			queue:      p.queue,
 		}
 	}
 	worker.startedAt = time.Now()
@@ -382,15 +460,15 @@ func (p *WorkerPool) SetExecutor(executor AgentExecutor) {
 	for _, worker := range p.workers {
 		worker.mu.Lock()
 		worker.Executor = executor
-		if executor != nil && worker.SessionID == "" {
-			worker.SessionID = executor.NewSession(fmt.Sprintf("worker-%s", worker.ID))
-		}
 		worker.mu.Unlock()
 	}
 }
 
 // dispatch is the main loop that assigns tasks to idle workers.
 func (p *WorkerPool) dispatch(ctx context.Context) {
+	defer p.wg.Done()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -400,74 +478,103 @@ func (p *WorkerPool) dispatch(ctx context.Context) {
 		default:
 		}
 
-		// Find an idle worker
-		worker := p.findIdleWorker()
-		if worker == nil {
-			// Try to spawn a new one if under limit
+		if p.config.AutoScale && p.findIdleWorker() == nil {
 			p.mu.RLock()
 			count := len(p.workers)
 			p.mu.RUnlock()
-
-			if p.config.AutoScale && count < p.config.MaxWorkers {
-				worker = p.spawnWorker(ctx)
-			} else {
-				// All workers busy, wait a bit
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(200 * time.Millisecond):
-					continue
-				}
+			if count < p.config.MaxWorkers {
+				p.spawnWorker(ctx)
 			}
 		}
-
-		// Skip if worker has no executor
-		worker.mu.RLock()
-		hasExecutor := worker.Executor != nil
-		worker.mu.RUnlock()
-		if !hasExecutor {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(500 * time.Millisecond):
-				continue
-			}
+		if _, _, err := p.dispatchOne(ctx, ""); err != nil {
+			log.Printf("[autonomy] dispatch: %v", err)
 		}
-
-		// Pull a task from the queue
-		taskCh := p.queue.PullChan(ctx, worker.ID)
-		var task *QueueTask
 		select {
 		case <-ctx.Done():
 			return
 		case <-p.stopCh:
 			return
-		case t := <-taskCh:
-			task = t
+		case <-ticker.C:
 		}
+	}
+}
 
-		if task == nil {
+// dispatchOne serializes reservation across the dispatcher, heartbeat and
+// explicit spawn requests. No worker is exposed as idle after a task is claimed.
+func (p *WorkerPool) dispatchOne(ctx context.Context, taskID string) (string, string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.running.Load() || ctx.Err() != nil {
+		return "", "", nil
+	}
+	for _, w := range p.workers {
+		w.mu.Lock()
+		if w.State != WorkerIdle || w.reserved || w.Executor == nil {
+			w.mu.Unlock()
 			continue
 		}
-
-		// Dispatch to worker goroutine
-		go p.executeTask(ctx, worker, task)
+		t, err := p.queue.claim(w.ID, taskID)
+		if err != nil || t == nil {
+			w.mu.Unlock()
+			return "", "", err
+		}
+		w.State, w.reserved = WorkerBusy, true
+		w.mu.Unlock()
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			defer func() {
+				w.mu.Lock()
+				w.reserved = false
+				if p.running.Load() {
+					w.State = WorkerIdle
+				} else {
+					w.State = WorkerStopped
+				}
+				w.mu.Unlock()
+			}()
+			p.executeTask(ctx, w, t)
+		}()
+		return t.ID, w.ID, nil
 	}
+	return "", "", nil
 }
 
 // executeTask runs a task on a worker and handles the result.
 func (p *WorkerPool) executeTask(ctx context.Context, w *Worker, task *QueueTask) {
-	taskCtx, cancel := context.WithTimeout(ctx, p.config.TaskTimeout)
+	timeout := p.config.TaskTimeout
+	if remaining := time.Until(task.FirstStartedAt.Add(p.config.RunPolicy.MaxTotalTime)); !task.FirstStartedAt.IsZero() && remaining < timeout {
+		timeout = remaining
+	}
+	taskCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	p.mu.RLock()
+	stopCh := p.stopCh
+	p.mu.RUnlock()
+	go func() {
+		select {
+		case <-stopCh:
+			cancel()
+		case <-taskCtx.Done():
+		}
+	}()
 
 	result := w.Execute(taskCtx, task)
 
-	// Update queue based on result
-	if result.Error != nil {
-		p.queue.Fail(task.ID, result.Error.Error(), true) // retry on failure
+	if result.Error != nil && !errors.Is(result.Error, ErrYield) {
 		p.failedTasks.Add(1)
-	} else {
-		p.queue.Complete(task.ID, result.Output)
+	}
+	if err := p.queue.finishAttempt(task, result, errors.Is(taskCtx.Err(), context.Canceled)); err != nil {
+		if !errors.Is(err, ErrStaleExecution) {
+			log.Printf("[autonomy] persist result for %s: %v", task.ID, err)
+			result.Error = fmt.Errorf("persist task result: %w", err)
+		}
+	}
+	if current, ok := p.queue.Get(task.ID); ok {
+		result.State = current.State
+		if current.State == TaskBlocked && result.Error == nil {
+			result.Error = errors.New(current.BlockReason)
+		}
 	}
 
 	p.totalTasks.Add(1)
@@ -489,8 +596,9 @@ func (p *WorkerPool) findIdleWorker() *Worker {
 	for _, w := range p.workers {
 		w.mu.RLock()
 		state := w.State
+		reserved := w.reserved
 		w.mu.RUnlock()
-		if state == WorkerIdle {
+		if state == WorkerIdle && !reserved {
 			return w
 		}
 	}
@@ -576,7 +684,9 @@ func (p *WorkerPool) ScaleUp(ctx context.Context, count int) error {
 	}
 
 	for i := 0; i < count; i++ {
-		p.spawnWorker(ctx)
+		if p.spawnWorker(ctx) == nil {
+			break
+		}
 	}
 	return nil
 }

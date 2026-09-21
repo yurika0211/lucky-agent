@@ -1,12 +1,54 @@
 package tool
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/yurika0211/luckyagent/internal/autonomy"
 )
+
+func TestAutonomyOperatorActionsRequireCurrentExplicitInstruction(t *testing.T) {
+	kit := autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), nil)
+	service := NewAutonomyToolService(kit)
+	registry := NewRegistry()
+	service.RegisterTools(registry)
+	task := kit.Queue().Add("publish once", "", autonomy.PriorityNormal, nil)
+	claim := kit.Queue().Pull("worker")
+	run := autonomy.NewExecution(kit.Queue(), claim)
+	if _, err := run.BeginOperation(autonomy.Operation{ID: "step-1-1", Name: "publish", Arguments: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := kit.Queue().Block(task.ID, "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	args := map[string]any{"action": "resolve", "task_id": task.ID, "operation_id": "step-1-1", "resolution": "completed", "result": "Verified external record 123"}
+	instruction, _ := json.Marshal(args)
+	for _, toolName := range []string{"autonomy", "autonomy_queue_update"} {
+		if _, err := registry.CallWithContext(toolName, args, ExecutionContext{Context: context.Background(), Source: "cli", UserRequest: "continue the task"}); err == nil {
+			t.Fatal("model invented reconciliation without an operator instruction")
+		}
+		if _, err := registry.CallWithContext(toolName, args, ExecutionContext{Context: context.Background(), Source: "autonomy", UserRequest: string(instruction)}); err == nil {
+			t.Fatal("worker reconciled its own effect")
+		}
+	}
+	if _, err := registry.CallWithContext("autonomy", args, ExecutionContext{Context: context.Background(), Source: "cli", UserRequest: string(instruction)}); err != nil {
+		t.Fatal(err)
+	}
+	complete := map[string]any{"action": "complete", "task_id": task.ID, "result": "operator verified completed"}
+	if _, err := registry.CallWithContext("autonomy", complete, ExecutionContext{Context: context.Background(), Source: "cli", UserRequest: "what is the status"}); err == nil {
+		t.Fatal("model bypassed completion verification")
+	}
+	completeJSON, _ := json.Marshal(complete)
+	if _, err := registry.CallWithContext("autonomy", complete, ExecutionContext{Context: context.Background(), Source: "cli", UserRequest: string(completeJSON)}); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := kit.Queue().Get(task.ID)
+	if current.State != autonomy.TaskDone || !current.Verified {
+		t.Fatalf("operator result not recorded: %+v", current)
+	}
+}
 
 func TestAutonomyToolServiceRegistersUnifiedVisibleTool(t *testing.T) {
 	kit := autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), nil)
