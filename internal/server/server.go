@@ -197,9 +197,11 @@ func (r *responseRecorder) StatusCode() int {
 }
 
 func (r *responseRecorder) Flush() {
-	if f, ok := r.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+	_ = r.FlushError()
+}
+
+func (r *responseRecorder) FlushError() error {
+	return http.NewResponseController(r.ResponseWriter).Flush()
 }
 
 func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
@@ -603,7 +605,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	loopCfg.AutoApprove = req.AutoApprove
 	loopCfg.Source = "http"
 
-	ctx := r.Context()
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
 
 	// SSE 流式响应
 	flusher, ok := w.(http.Flusher)
@@ -617,6 +620,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	// SSE has its own rolling write deadline; the server's fixed 120s
+	// response deadline must not terminate an otherwise healthy long turn.
+	controller := http.NewResponseController(w)
+	_ = controller.SetWriteDeadline(time.Time{})
 
 	sessionID := req.SessionID
 	if sessionID == "" {
@@ -631,7 +638,45 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for event := range events {
+	// Keep proxies alive and notice a disconnected client even while no model
+	// event is arriving. A failed write cancels the turn and drains its channel.
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	writeFrame := func(frame string) error {
+		_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		if _, err := fmt.Fprint(w, frame); err != nil {
+			return err
+		}
+		if err := controller.Flush(); err != nil {
+			return err
+		}
+		_ = controller.SetWriteDeadline(time.Time{})
+		return nil
+	}
+	defer func() {
+		cancel()
+		go func() {
+			for range events {
+			}
+		}()
+	}()
+chatEvents:
+	for {
+		var event agent.ChatEvent
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			if err := writeFrame(": keepalive\n\n"); err != nil {
+				return
+			}
+			continue
+		case next, ok := <-events:
+			if !ok {
+				break chatEvents
+			}
+			event = next
+		}
 		data, _ := jsonAPI.Marshal(map[string]interface{}{
 			"type":        chatEventTypeString(event.Type),
 			"content":     event.Content,
@@ -644,11 +689,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			"error":       event.Err,
 		})
 
-		fmt.Fprintf(w, "data: %s\n\n", data)
-		flusher.Flush()
+		if err := writeFrame(fmt.Sprintf("data: %s\n\n", data)); err != nil {
+			return
+		}
 
 		if event.Type == agent.ChatEventDone || event.Type == agent.ChatEventError {
-			break
+			break chatEvents
 		}
 	}
 
@@ -657,8 +703,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		"type":     "complete",
 		"duration": duration.String(),
 	})
-	fmt.Fprintf(w, "data: %s\n\n", summary)
-	flusher.Flush()
+	_ = writeFrame(fmt.Sprintf("data: %s\n\n", summary))
 }
 
 // handleChatSync 同步聊天
