@@ -101,6 +101,40 @@ func TestResolveMsgGatewayStartOptionsUsesConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestStopGatewaysWithTimeoutReturnsPromptly(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	finished := make(chan struct{})
+
+	start := time.Now()
+	err := stopGatewaysWithTimeout(func() error {
+		close(started)
+		<-release
+		close(finished)
+		return nil
+	}, 20*time.Millisecond)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected shutdown timeout error")
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("shutdown helper took %s, want a bounded wait", elapsed)
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("stop callback did not start")
+	}
+
+	close(release)
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("stop callback did not finish after release")
+	}
+}
+
 func TestRunConfigGetSupportsMultimodalKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

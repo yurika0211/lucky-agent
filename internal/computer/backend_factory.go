@@ -11,14 +11,17 @@ import (
 // depend on platform-specific implementation details.
 //
 // The first implementation exposed X11 on Linux. Windows now uses native
-// Win32 screen capture and input; Wayland and macOS remain explicit errors.
-func NewBackend(name string) (Backend, error) {
+// Win32 screen capture and input; Wayland uses the desktop portal.
+type BackendOptions struct{ ObserveOnly bool }
+
+func NewBackend(name string, options ...BackendOptions) (Backend, error) {
+	observeOnly := len(options) > 0 && options[0].ObserveOnly
 	name = strings.ToLower(strings.TrimSpace(name))
 	if name == "" || name == "auto" {
 		switch runtime.GOOS {
 		case "linux":
-			if strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != "" && strings.TrimSpace(os.Getenv("DISPLAY")) == "" {
-				return nil, fmt.Errorf("computer: wayland backend is not available yet")
+			if strings.TrimSpace(os.Getenv("WAYLAND_DISPLAY")) != "" || strings.EqualFold(os.Getenv("XDG_SESSION_TYPE"), "wayland") {
+				return NewWaylandBackend(observeOnly)
 			}
 			return NewX11Backend(), nil
 		case "windows":
@@ -37,7 +40,7 @@ func NewBackend(name string) (Backend, error) {
 		}
 		return NewX11Backend(), nil
 	case "wayland":
-		return nil, fmt.Errorf("computer: wayland backend is not available yet")
+		return NewWaylandBackend(observeOnly)
 	case "windows", "win32":
 		return NewWindowsBackend()
 	case "darwin", "macos", "mac":

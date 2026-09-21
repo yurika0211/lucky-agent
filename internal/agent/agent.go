@@ -109,15 +109,16 @@ type supportRuntime struct {
 
 // Agent 是 LuckyAgent 的核心 Agent
 type Agent struct {
-	cfg        *config.Manager
-	soul       *soul.Soul
-	tmplMgr    *soul.TemplateManager  // SOUL 模板管理器
-	provider   provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
-	providerMu sync.RWMutex           // protects the default provider/model selection
-	registry   *provider.Registry     // provider 注册表
-	catalog    *provider.ModelCatalog // 模型目录
-	tokenStore *provider.TokenStore   // token 存储
-	memory     *memory.Store
+	foregroundActive sync.Map // session ID -> active caller; removed when the request ends
+	cfg              *config.Manager
+	soul             *soul.Soul
+	tmplMgr          *soul.TemplateManager  // SOUL 模板管理器
+	provider         provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	providerMu       sync.RWMutex           // protects the default provider/model selection
+	registry         *provider.Registry     // provider 注册表
+	catalog          *provider.ModelCatalog // 模型目录
+	tokenStore       *provider.TokenStore   // token 存储
+	memory           *memory.Store
 	// shortTerm is retained only for source compatibility with older in-package
 	// tests/callers. New agents leave it nil; production conversation state is
 	// owned by shortTerms and keyed by session ID.
@@ -682,81 +683,11 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		MaxResults: c.WebSearch.MaxResults,
 		Proxy:      c.WebSearch.Proxy,
 	}
-	mediaProcessor := multimodal.NewProcessor()
-	var imageGenerator multimodal.ImageGenerator
-	var speechSynthesizer multimodal.SpeechSynthesizer
-	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
-		multimodal.ModalityText,
-		multimodal.ModalityImage,
-		multimodal.ModalityAudio,
-		multimodal.ModalityVideo,
-		multimodal.ModalityDocument,
-	), true)
-
-	mmCfg, mmOK := resolveOpenAIMultimodalConfig(c)
-	if mmOK {
-		if openaiMedia, mediaErr := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
-			APIKey:             mmCfg.APIKey,
-			APIBase:            mmCfg.APIBase,
-			ResponsesModel:     mmCfg.ImageModel,
-			TranscriptionModel: mmCfg.TranscriptionModel,
-		}); mediaErr == nil {
-			_ = mediaProcessor.RegisterProvider(openaiMedia, true)
-			imageGenerator = openaiMedia
-		}
-	}
-
-	if genCfg, ok := resolveImageGenerationConfig(c); ok {
-		switch genCfg.Provider {
-		case "gemini":
-			if geminiGenerator, err := multimodal.NewGeminiImageProvider(multimodal.GeminiImageConfig{
-				APIKey:   genCfg.APIKey,
-				APIBase:  genCfg.APIBase,
-				AuthMode: genCfg.AuthMode,
-			}); err == nil {
-				imageGenerator = geminiGenerator
-			}
-		case "openai":
-			if openaiGenerator, err := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
-				APIKey:             genCfg.APIKey,
-				APIBase:            genCfg.APIBase,
-				ResponsesModel:     mmCfg.ImageModel,
-				TranscriptionModel: mmCfg.TranscriptionModel,
-			}); err == nil {
-				imageGenerator = openaiGenerator
-			}
-		}
-	}
-
-	if ttsCfg, ok := resolveTTSConfig(c); ok {
-		switch ttsCfg.Provider {
-		case "openai":
-			if ttsProvider, err := multimodal.NewOpenAITTSProvider(multimodal.OpenAITTSConfig{
-				APIKey:   ttsCfg.APIKey,
-				APIBase:  ttsCfg.APIBase,
-				AuthMode: ttsCfg.AuthMode,
-			}); err == nil {
-				speechSynthesizer = ttsProvider
-			}
-		}
-	}
+	media := buildMediaRuntime(c)
+	mediaProcessor, imageGenerator, speechSynthesizer := media.processor, media.imageGenerator, media.speechSynthesizer
 
 	delegateMgr := tool.NewDelegateManager(buildDelegateRuntimeConfig(c))
-	imageGenDefaults := tool.ImageGenerationDefaults{
-		Model:             strings.TrimSpace(c.ImageGeneration.Model),
-		Size:              strings.TrimSpace(c.ImageGeneration.Size),
-		Quality:           strings.TrimSpace(c.ImageGeneration.Quality),
-		Background:        strings.TrimSpace(c.ImageGeneration.Background),
-		OutputFormat:      strings.TrimSpace(c.ImageGeneration.OutputFormat),
-		OutputCompression: c.ImageGeneration.OutputCompression,
-		Count:             c.ImageGeneration.Count,
-	}
-	ttsDefaults := tool.TTSDefaults{
-		Model:  strings.TrimSpace(c.TTS.Model),
-		Voice:  strings.TrimSpace(c.TTS.Voice),
-		Format: strings.TrimSpace(c.TTS.Format),
-		Speed:  c.TTS.Speed,
-	}
+	imageGenDefaults, ttsDefaults := media.imageDefaults, media.ttsDefaults
 	opencliCfg := &tool.OpenCLIConfig{
 		Enabled:            c.OpenCLI.Enabled,
 		Command:            c.OpenCLI.Command,
@@ -768,7 +699,7 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 	filesystemPolicy := tool.FilesystemPolicy{
 		AllowedReadRoots: append([]string(nil), c.Tools.Filesystem.AllowedReadRoots...),
 	}
-	toolServices := tool.NewServices(searchCfg, opencliCfg, c.Multimodal.ImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr, filesystemPolicy)
+	toolServices := tool.NewServices(searchCfg, opencliCfg, "", mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr, filesystemPolicy)
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
@@ -807,6 +738,22 @@ func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
 		return cfg
 	}
 	worker := c.Autonomy.Worker
+	recovery := c.Autonomy.Recovery
+	if recovery.MaxRetries != nil {
+		cfg.Pool.RunPolicy.MaxRetries = *recovery.MaxRetries
+	}
+	if recovery.RetryInitialSeconds > 0 {
+		cfg.Pool.RunPolicy.RetryInitial = time.Duration(recovery.RetryInitialSeconds) * time.Second
+	}
+	if recovery.RetryMaxSeconds > 0 {
+		cfg.Pool.RunPolicy.RetryMax = time.Duration(recovery.RetryMaxSeconds) * time.Second
+	}
+	if recovery.MaxSlices > 0 {
+		cfg.Pool.RunPolicy.MaxSlices = recovery.MaxSlices
+	}
+	if recovery.MaxTotalSeconds > 0 {
+		cfg.Pool.RunPolicy.MaxTotalTime = time.Duration(recovery.MaxTotalSeconds) * time.Second
+	}
 	loop := autonomy.DefaultWorkerLoopConfig()
 	if worker.MaxIterations > 0 {
 		loop.MaxIterations = worker.MaxIterations
@@ -1024,7 +971,11 @@ func (a *Agent) ValidateRuntimeConfig(c *config.Config) error {
 	if a == nil {
 		return fmt.Errorf("agent is unavailable")
 	}
-	_, err := buildConfiguredProvider(c, provider.NewRegistry())
+	next, err := config.Normalized(c)
+	if err != nil {
+		return err
+	}
+	_, err = buildConfiguredProvider(next, provider.NewRegistry())
 	return err
 }
 
@@ -1032,6 +983,11 @@ func (a *Agent) ApplyRuntimeConfig(c *config.Config) error {
 	if a == nil {
 		return fmt.Errorf("agent is unavailable")
 	}
+	next, err := config.Normalized(c)
+	if err != nil {
+		return err
+	}
+	c = next
 	registry := provider.NewRegistry()
 	nextProvider, err := buildConfiguredProvider(c, registry)
 	if err != nil {
@@ -1080,13 +1036,6 @@ func (a *Agent) ReloadConfig() (config.ReloadResult, error) {
 	return result, nil
 }
 
-type multimodalRuntimeConfig struct {
-	APIKey             string
-	APIBase            string
-	ImageModel         string
-	TranscriptionModel string
-}
-
 type imageGenerationRuntimeConfig struct {
 	Provider          string
 	APIKey            string
@@ -1112,57 +1061,22 @@ type ttsRuntimeConfig struct {
 	Speed    float64
 }
 
-func resolveOpenAIMultimodalConfig(c *config.Config) (multimodalRuntimeConfig, bool) {
-	if c == nil {
-		return multimodalRuntimeConfig{}, false
-	}
-
-	cfg := multimodalRuntimeConfig{
-		APIKey:             strings.TrimSpace(c.Multimodal.APIKey),
-		APIBase:            strings.TrimSpace(c.Multimodal.APIBase),
-		ImageModel:         strings.TrimSpace(c.Multimodal.ImageModel),
-		TranscriptionModel: strings.TrimSpace(c.Multimodal.TranscriptionModel),
-	}
-
-	providerName := strings.ToLower(strings.TrimSpace(c.Multimodal.Provider))
-	if providerName == "" {
-		providerName = strings.ToLower(strings.TrimSpace(c.Provider))
-	}
-
-	if cfg.APIKey == "" {
-		cfg.APIKey = strings.TrimSpace(c.APIKey)
-	}
-	if cfg.APIBase == "" {
-		cfg.APIBase = strings.TrimSpace(c.APIBase)
-	}
-
-	explicitMultimodalConfig := strings.TrimSpace(c.Multimodal.APIKey) != "" ||
-		strings.TrimSpace(c.Multimodal.APIBase) != "" ||
-		strings.TrimSpace(c.Multimodal.ImageModel) != "" ||
-		strings.TrimSpace(c.Multimodal.TranscriptionModel) != "" ||
-		strings.TrimSpace(c.Multimodal.Provider) != ""
-
-	if providerName == "openai" || explicitMultimodalConfig {
-		if cfg.APIKey != "" {
-			return cfg, true
-		}
-		return multimodalRuntimeConfig{}, false
-	}
-
-	return multimodalRuntimeConfig{}, false
-}
-
 func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfig, bool) {
 	if c == nil {
 		return imageGenerationRuntimeConfig{}, false
 	}
 
+	selection, ok := c.ModelSelection(config.ModelKindImage)
+	if !ok {
+		return imageGenerationRuntimeConfig{}, false
+	}
+	ep := c.ModelEndpoint(config.ModelKindImage)
 	cfg := imageGenerationRuntimeConfig{
-		Provider:          strings.ToLower(strings.TrimSpace(c.ImageGeneration.Provider)),
-		APIKey:            strings.TrimSpace(c.ImageGeneration.APIKey),
-		APIBase:           strings.TrimSpace(c.ImageGeneration.APIBase),
+		Provider:          strings.ToLower(strings.TrimSpace(ep.Provider)),
+		APIKey:            strings.TrimSpace(ep.APIKey),
+		APIBase:           strings.TrimSpace(ep.APIBase),
 		AuthMode:          strings.ToLower(strings.TrimSpace(c.ImageGeneration.AuthMode)),
-		Model:             strings.TrimSpace(c.ImageGeneration.Model),
+		Model:             selection.ID,
 		Size:              strings.TrimSpace(c.ImageGeneration.Size),
 		Quality:           strings.TrimSpace(c.ImageGeneration.Quality),
 		Background:        strings.TrimSpace(c.ImageGeneration.Background),
@@ -1177,36 +1091,11 @@ func resolveImageGenerationConfig(c *config.Config) (imageGenerationRuntimeConfi
 		cfg.AuthMode = "bearer"
 	}
 
-	if cfg.Provider == "openai" {
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(c.Multimodal.APIKey)
-			if cfg.APIKey == "" {
-				cfg.APIKey = strings.TrimSpace(c.APIKey)
-			}
-		}
-		if cfg.APIBase == "" {
-			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
-			if cfg.APIBase == "" {
-				cfg.APIBase = strings.TrimSpace(c.APIBase)
-			}
-		}
-		if cfg.APIBase == "https://api.openai.com/v1" && strings.TrimSpace(c.Multimodal.APIBase) != "" {
-			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
-		}
-	}
-
-	if cfg.Provider == "gemini" {
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(c.Multimodal.APIKey)
-			if cfg.APIKey == "" {
-				cfg.APIKey = strings.TrimSpace(c.APIKey)
-			}
-		}
-		if cfg.APIBase == "" || cfg.APIBase == "https://api.openai.com/v1" {
-			cfg.APIBase = strings.TrimSpace(c.Multimodal.APIBase)
-			if cfg.APIBase == "" {
-				cfg.APIBase = "https://generativelanguage.googleapis.com/v1beta"
-			}
+	if cfg.APIBase == "" {
+		if cfg.Provider == "gemini" {
+			cfg.APIBase = "https://generativelanguage.googleapis.com/v1beta"
+		} else {
+			cfg.APIBase = "https://api.openai.com/v1"
 		}
 	}
 
@@ -1220,12 +1109,17 @@ func resolveTTSConfig(c *config.Config) (ttsRuntimeConfig, bool) {
 	if c == nil {
 		return ttsRuntimeConfig{}, false
 	}
+	selection, ok := c.ModelSelection(config.ModelKindTTS)
+	if !ok {
+		return ttsRuntimeConfig{}, false
+	}
+	ep := c.ModelEndpoint(config.ModelKindTTS)
 	cfg := ttsRuntimeConfig{
-		Provider: strings.ToLower(strings.TrimSpace(c.TTS.Provider)),
-		APIKey:   strings.TrimSpace(c.TTS.APIKey),
-		APIBase:  strings.TrimSpace(c.TTS.APIBase),
+		Provider: strings.ToLower(strings.TrimSpace(ep.Provider)),
+		APIKey:   strings.TrimSpace(ep.APIKey),
+		APIBase:  strings.TrimSpace(ep.APIBase),
 		AuthMode: strings.ToLower(strings.TrimSpace(c.TTS.AuthMode)),
-		Model:    strings.TrimSpace(c.TTS.Model),
+		Model:    selection.ID,
 		Voice:    strings.TrimSpace(c.TTS.Voice),
 		Format:   strings.TrimSpace(c.TTS.Format),
 		Speed:    c.TTS.Speed,
@@ -1237,11 +1131,8 @@ func resolveTTSConfig(c *config.Config) (ttsRuntimeConfig, bool) {
 		cfg.AuthMode = "bearer"
 	}
 	if cfg.Provider == "openai" {
-		if cfg.APIKey == "" {
-			cfg.APIKey = strings.TrimSpace(c.APIKey)
-		}
 		if cfg.APIBase == "" {
-			cfg.APIBase = strings.TrimSpace(c.APIBase)
+			cfg.APIBase = "https://api.openai.com/v1"
 		}
 	}
 	if cfg.APIKey == "" || cfg.APIBase == "" {
@@ -1283,7 +1174,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// Computer use is opt-in. Keep the backend and its tools out of the model
 	// tool menu unless the operator explicitly enables the capability.
 	if c.Tools.ComputerUse.Enabled {
-		backend, backendErr := computer.NewBackend(c.Tools.ComputerUse.Backend)
+		backend, backendErr := computer.NewBackend(c.Tools.ComputerUse.Backend, computer.BackendOptions{ObserveOnly: c.Tools.ComputerUse.Mode == "observe"})
 		if backendErr != nil {
 			return nil, fmt.Errorf("init computer backend: %w", backendErr)
 		}
@@ -1307,14 +1198,11 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 		managerCfg.MaxObservationBytes = c.Tools.ComputerUse.MaxObservationBytes
 		managerCfg.MaxScreenshotWidth = c.Tools.ComputerUse.MaxScreenshotWidth
+		managerCfg.MaxBatchActions = c.Tools.ComputerUse.MaxBatchActions
+		managerCfg.SettleMode = c.Tools.ComputerUse.SettleMode
 		managerCfg.AllowedWindows = append([]string(nil), c.Tools.ComputerUse.AllowedWindows...)
 		if managerCfg.Settle < 0 {
 			managerCfg.Settle = 0
-		}
-		if c.Tools.ComputerUse.StepTimeoutSeconds > 0 {
-			// Step timeout is enforced by the Agent request context. Keep this
-			// value in config for the tool layer, which may add a child timeout.
-			_ = c.Tools.ComputerUse.StepTimeoutSeconds
 		}
 		computerManager, managerErr := computer.NewManagerWithConfig(backend, managerCfg)
 		if managerErr != nil {
@@ -1464,6 +1352,15 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// v0.38.0: 将 executor 注入到已注册工具所绑定的 autonomy 实例，避免启动时替换实例。
 	a.autonomy.SetExecutor(&agentExecutorAdapter{agent: a})
 
+	// Already queued work carries the original authorization across restarts.
+	// Operators can disable this separately from automatic worker startup.
+	if c.Autonomy.Recovery.ResumeOnStart == nil || *c.Autonomy.Recovery.ResumeOnStart {
+		if ready, _, _, _ := a.autonomy.Queue().Stats(); ready > 0 {
+			if err := a.StartAutonomyNow(context.Background()); err != nil {
+				logger.Warn("resume queued autonomy tasks failed", "error", err)
+			}
+		}
+	}
 	return a, nil
 }
 
@@ -1496,6 +1393,13 @@ func (a *Agent) ChatWithSessionInput(ctx context.Context, sessionID string, inpu
 
 // ProgressFeedback generates a concise model-authored progress update for an unfinished round.
 func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+	return a.ProgressFeedbackWithPrompt(ctx, userInput, round, observations, "")
+}
+
+// ProgressFeedbackWithPrompt generates a progress update using an optional
+// presentation prompt. Core evidence and safety constraints remain enforced
+// even when the presentation prompt is configured by the runtime owner.
+func (a *Agent) ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error) {
 	turnProvider := a.providerSnapshotForTurn(userInput)
 	if !turnProvider.valid() {
 		return "", fmt.Errorf("provider not initialized")
@@ -1504,40 +1408,7 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 		return "", nil
 	}
 
-	systemPrompt := `You are generating one concise reasoning update for the user during an unfinished task.
-
-Report real progress only. Stay close to the observed evidence.
-
-Write in English.
-
-The update should sound like a human investigator thinking aloud in a compact way.
-It should read like a short natural reasoning paragraph, not like a checklist, template, or repeated report.
-
-If previous user-facing updates are provided, treat them as messages that the user has already seen. Continue naturally from them instead of restarting the narration from scratch.
-Prioritize what changed since the previous update.
-
-What to include when relevant:
-- what you have checked,
-- what that currently suggests,
-- what you are verifying now and why,
-- what is still uncertain,
-- what likely matters next.
-
-Style requirements:
-- use 2 to 4 short connected sentences,
-- use natural transitions, but vary them across updates,
-- make the first sentence anchor to the newest change or signal, not to a generic restart,
-- do not start every update with the same pattern such as "I first checked...",
-- do not repeatedly open with first-person patterns like "I've...", "I have...", or "I'm..." unless there is a strong reason,
-- prefer continuity cues such as "So far,", "At this point,", "That suggests,", "The latest result shows,", or "This narrows it down because..." when they fit,
-- avoid rigid labels like "Verified", "Checking", "Uncertain", "Next",
-- avoid repeating the same rhetorical skeleton from one round to the next,
-- include brief causal links and small explanations, not just status labels,
-- keep it concrete and evidence-driven,
-- do not expose hidden chain-of-thought,
-- do not mention internal event types, implementation details, or tool protocol syntax,
-- do not pretend the task is complete if it is not,
-- do not use rigid headings like "Verified:" or "Checking:" unless the user explicitly asked for a checklist.`
+	systemPrompt := progressFeedbackSystemPrompt(presentationPrompt)
 
 	var userPrompt strings.Builder
 	var previousUpdates []string
@@ -1592,6 +1463,53 @@ Style requirements:
 	return strings.TrimSpace(resp.Content), nil
 }
 
+const defaultProgressFeedbackPresentationPrompt = `Write in English.
+
+The update should sound like a human investigator thinking aloud in a compact way.
+It should read like a short natural reasoning paragraph, not like a checklist, template, or repeated report.
+
+If previous user-facing updates are provided, treat them as messages that the user has already seen. Continue naturally from them instead of restarting the narration from scratch.
+Prioritize what changed since the previous update.
+
+What to include when relevant:
+- what you have checked,
+- what that currently suggests,
+- what you are verifying now and why,
+- what is still uncertain,
+- what likely matters next.
+
+Style requirements:
+- use 2 to 4 short connected sentences,
+- use natural transitions, but vary them across updates,
+- make the first sentence anchor to the newest change or signal, not to a generic restart,
+- do not start every update with the same pattern such as "I first checked...",
+- do not repeatedly open with first-person patterns like "I've...", "I have...", or "I'm..." unless there is a strong reason,
+- prefer continuity cues such as "So far,", "At this point,", "That suggests,", "The latest result shows,", or "This narrows it down because..." when they fit,
+- avoid rigid labels like "Verified", "Checking", "Uncertain", "Next",
+- avoid repeating the same rhetorical skeleton from one round to the next,
+- include brief causal links and small explanations, not just status labels,
+- do not use rigid headings like "Verified:" or "Checking:" unless the user explicitly asked for a checklist.`
+
+func progressFeedbackSystemPrompt(presentationPrompt string) string {
+	presentationPrompt = strings.TrimSpace(presentationPrompt)
+	if presentationPrompt == "" {
+		presentationPrompt = defaultProgressFeedbackPresentationPrompt
+	}
+
+	return `You are generating one concise progress update for the user during an unfinished task.
+
+Report real progress only. Stay close to the observed evidence.
+
+Presentation instructions:
+` + presentationPrompt + `
+
+Non-negotiable constraints:
+- keep the update concrete and evidence-driven;
+- do not expose hidden chain-of-thought;
+- do not mention internal event types, implementation details, or tool protocol syntax;
+- do not pretend the task is complete if it is not.`
+}
+
 func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session, input UserTurnInput) (string, error) {
 	input = input.Normalize()
 	routingText := input.RoutingText
@@ -1614,6 +1532,9 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 
 	result, err := a.runLoopWithProviderSnapshot(ctx, sess, input, loopCfg, turnProvider)
 	if err != nil {
+		if loopCfg.Foreground || ctx.Err() != nil {
+			return "", err
+		}
 		// 如果 RunLoop 失败，回退到简单流式聊天
 		response, chatErr := a.chatStreamSimpleInputWithProvider(ctx, sess, input, turnProvider)
 		if chatErr != nil {
@@ -1627,6 +1548,12 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 	}
 
 	response := result.Response
+	if result.foregroundControl {
+		return response, nil
+	}
+	if result.foregroundInput != nil {
+		input = *result.foregroundInput
+	}
 
 	// 自动记忆（去重 + 智能分类 + 截断）。计数和维护 cadence 由 memory
 	// runtime 持有，Agent 只执行返回的维护动作。
@@ -2354,7 +2281,7 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 		}
 	}
 
-	if (allRepeated && trimmed == "") || s.consecutiveToolOnlyIters >= s.toolOnlyIterationLimit {
+	if allRepeated && (trimmed == "" || s.consecutiveToolOnlyIters >= s.toolOnlyIterationLimit) {
 		return true, repeatedSigs
 	}
 	return false, nil
@@ -2364,10 +2291,17 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 rememberToolCallResult 记录一次工具调用的结果，供循环保护、摘要和最终引用使用。
 */
 func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result string, duration time.Duration) {
+	if s.toolCallRepeatCount == nil {
+		s.toolCallRepeatCount = make(map[string]int)
+	}
 	if s.toolCallLastResult == nil {
 		s.toolCallLastResult = make(map[string]string)
 	}
-	s.toolCallLastResult[s.toolCallSig(name, arguments)] = result
+	sig := s.toolCallSig(name, arguments)
+	if previous, seen := s.toolCallLastResult[sig]; !seen || previous != result {
+		s.toolCallRepeatCount[sig] = 0
+	}
+	s.toolCallLastResult[sig] = result
 	if key := normalizedToolTarget(name, arguments); key != "" {
 		if s.toolURLLastResult == nil {
 			s.toolURLLastResult = make(map[string]string)
@@ -2491,7 +2425,19 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 		defer close(events)
 
 		sanitizeLoopConfig(&loopCfg)
+		if a.useForeground(sess, loopCfg) {
+			loopCfg.emit = func(eventCtx context.Context, event ChatEvent) { sendForegroundEvent(eventCtx, events, event) }
+			result, err := a.runForeground(ctx, sess, input, loopCfg, turnProvider)
+			if err != nil {
+				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventError, Err: err})
+			} else {
+				a.finishForegroundMemory(sess, input, result)
+				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventDone, Content: result.Response})
+			}
+			return
+		}
 		a.applyIntentToolGating(&loopCfg, routingText)
+		a.applyVisionToolPolicy(&loopCfg, turnProvider)
 		logger.Info("agent stream loop started",
 			"session_id", sessionID,
 			"provider", turnProvider.name(),
@@ -2529,7 +2475,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
 			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
 			memoryGate:             a.buildMemoryToolGate(routingText, input.Scope, loopCfg.DisabledTools),
-			toolExecutionGuard:     newToolExecutionGuard(routingText),
+			toolExecutionGuard:     newTurnToolGuard(routingText, loopCfg.DisabledTools),
 			iterationTimeout:       loopCfg.Timeout,
 			artifactGuard:          newArtifactFinalizationGuard(routingText),
 		}
@@ -2606,7 +2552,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			"round", round,
 			"error", err,
 		)
-		if a.finalizeStreamInterruption(events, sess, turnInput, state, err, "") {
+		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: err}
@@ -2617,10 +2563,24 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	var reasoning strings.Builder
 	emittedContentBytes := 0
 	streamFinishReason := ""
+	streamTerminal := false
 	// 流式 tool_calls 增量拼接
 	var toolCallsAcc []streamToolCallAcc // 按 index 累积
 
 	for chunk := range ch {
+		if chunk.Err != nil {
+			streamErr := fmt.Errorf("provider stream interrupted: %w", chunk.Err)
+			logger.Warn("agent stream native provider stream interrupted",
+				"session_id", sessionID,
+				"round", round,
+				"error", streamErr,
+			)
+			if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
+				return
+			}
+			events <- ChatEvent{Type: ChatEventError, Err: streamErr}
+			return
+		}
 		if chunk.FinishReason != "" {
 			streamFinishReason = chunk.FinishReason
 		}
@@ -2665,11 +2625,27 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			}
 		}
 		if chunk.Done {
+			streamTerminal = true
 			break
 		}
 	}
-	if err := iterCtx.Err(); err != nil && a.finalizeStreamInterruption(events, sess, turnInput, state, err, content.String()) {
+	if !streamTerminal {
+		streamErr := fmt.Errorf("provider stream interrupted: closed without a terminal event")
+		logger.Warn("agent stream native provider stream interrupted",
+			"session_id", sessionID,
+			"round", round,
+			"error", streamErr,
+		)
+		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
+			return
+		}
+		events <- ChatEvent{Type: ChatEventError, Err: streamErr}
 		return
+	}
+	if err := iterCtx.Err(); err != nil {
+		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, content.String()) {
+			return
+		}
 	}
 
 	response := content.String()
@@ -2945,7 +2921,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			"round", round,
 			"error", err,
 		)
-		if a.finalizeStreamInterruption(events, sess, turnInput, state, err, "") {
+		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
 		events <- ChatEvent{Type: ChatEventError, Err: err}
@@ -3158,6 +3134,9 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, t
 func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
+	if strings.TrimSpace(response) == "" {
+		response = emptyFinalResponseMessage
+	}
 	response = utils.SanitizeToolProtocolOutput(response)
 	var logs []toolCallLog
 	if len(citationLogs) > 0 {
@@ -3194,6 +3173,73 @@ func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.S
 		reasoningContent = strings.TrimSpace(state.continuedReasoning.String())
 	}
 	a.finalizeStreamWithReasoning(events, sess, turnInput, response, reasoningContent, state.citationToolCalls)
+}
+
+// finalizeStreamAfterInterruption gives the model one final, tool-free chance
+// to synthesize a useful answer from the completed tool results and any partial
+// output collected before a reasoning/provider failure. User cancellation is
+// terminal and never triggers this recovery request.
+func (a *Agent) finalizeStreamAfterInterruption(
+	ctx context.Context,
+	events chan<- ChatEvent,
+	messages []provider.Message,
+	callOpts provider.CallOptions,
+	sess *session.Session,
+	turnInput UserTurnInput,
+	state *streamConvergenceState,
+	err error,
+	partial string,
+) bool {
+	if state == nil {
+		return a.finalizeStreamInterruption(events, sess, turnInput, nil, err, partial)
+	}
+	if ctx != nil && errors.Is(ctx.Err(), context.Canceled) {
+		return a.finalizeStreamInterruption(events, sess, turnInput, state, ctx.Err(), partial)
+	}
+
+	synthesisMessages := append([]provider.Message(nil), messages...)
+	partial = strings.TrimSpace(partial)
+	if partial == "" && state != nil {
+		partial = strings.TrimSpace(state.continuedResponse.String())
+	}
+	if partial != "" {
+		synthesisMessages = append(synthesisMessages, provider.Message{
+			Role:    "assistant",
+			Content: utils.TrimToRunes(partial, 6000),
+		})
+	}
+
+	var prompt strings.Builder
+	prompt.WriteString("The previous reasoning or provider phase was interrupted before a clean final response.\n")
+	prompt.WriteString("Generate the best user-facing final answer now using only the recorded conversation, completed tool results, and partial output above.\n")
+	prompt.WriteString("State clearly what is verified, what failed or remains uncertain, and what the user should do next. Do not claim an action succeeded unless the recorded evidence supports it. Do not call tools.\n")
+	prompt.WriteString("Interruption reason: ")
+	prompt.WriteString(strings.TrimSpace(fmt.Sprint(err)))
+	if observations := interruptionToolObservations(state); len(observations) > 0 {
+		prompt.WriteString("\nRecorded tool observations:\n")
+		for _, observation := range observations {
+			prompt.WriteString("- ")
+			prompt.WriteString(observation)
+			prompt.WriteByte('\n')
+		}
+	}
+	if state != nil && state.hasPendingDelegateTasks() {
+		prompt.WriteString("\nDelegated work is still pending; do not present it as completed.")
+	}
+	synthesisMessages = append(synthesisMessages, provider.Message{Role: "user", Content: prompt.String()})
+
+	synthesisCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, synthErr := a.chatLoopIteration(synthesisCtx, synthesisMessages, callOpts, true, state.provider)
+	if synthErr == nil && resp != nil && len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "" {
+		a.finalizeStreamWithState(events, sess, turnInput, resp.Content, state, resp.ReasoningContent)
+		return true
+	}
+
+	if a.finalizeStreamInterruption(events, sess, turnInput, state, err, partial) {
+		return true
+	}
+	return false
 }
 
 // finalizeStreamInterruption turns expected cancellation and timeout failures
@@ -3782,11 +3828,12 @@ func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID
 	// Look up session by ID
 	sess, ok := a.agent.sessions.Get(sessionID)
 	if !ok {
-		// Fallback: create new session
-		sess = a.agent.sessions.NewWithTitle("autonomy-worker")
+		sess = a.agent.sessions.Ensure(sessionID)
 	}
 
 	loopCfg := LoopConfig{
+		Execution:              cfg.Execution,
+		Source:                 "autonomy",
 		MaxIterations:          cfg.MaxIterations,
 		Timeout:                cfg.Timeout,
 		AutoApprove:            cfg.AutoApprove,
@@ -3797,15 +3844,16 @@ func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID
 	}
 
 	result, err := a.agent.RunLoopWithSession(ctx, sess, userInput, loopCfg)
-	if err != nil {
+	if result == nil {
 		return nil, err
 	}
-
 	return &autonomy.LoopResult{
-		Response:   result.Response,
-		TokensUsed: result.TokensUsed,
-		Iterations: result.Iterations,
-	}, nil
+		Response:     result.Response,
+		TokensUsed:   result.TokensUsed,
+		Iterations:   result.Iterations,
+		Verified:     result.Verified,
+		Verification: result.Verification,
+	}, err
 }
 
 /*

@@ -12,7 +12,7 @@ type ModelKind = 'chat' | 'vision' | 'embedding' | 'transcription' | 'image' | '
 
 const MODEL_KINDS: Array<{ id: ModelKind; label: string; detail: string }> = [
   { id: 'chat', label: 'Chat', detail: 'Agent reasoning and replies' },
-  { id: 'vision', label: 'Vision', detail: 'Image understanding' },
+  { id: 'vision', label: 'Vision', detail: 'Image understanding when the chat model cannot see images' },
   { id: 'embedding', label: 'Embedding', detail: 'RAG and memory vectors' },
   { id: 'transcription', label: 'Transcription', detail: 'Audio to text' },
   { id: 'image', label: 'Image generation', detail: 'Image creation' },
@@ -22,28 +22,6 @@ const MODEL_KINDS: Array<{ id: ModelKind; label: string; detail: string }> = [
 
 function asObject(value: unknown): Record<string, any> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {};
-}
-
-function legacyModel(config: RuntimeConfig, kind: ModelKind): string {
-  if (kind === 'chat') return String(asObject(config.llm_provider).model || '');
-  if (kind === 'vision') return String(asObject(config.multimodal).image_model || '');
-  if (kind === 'embedding') return String(asObject(config.embedding).model || '');
-  if (kind === 'transcription') return String(asObject(config.multimodal).transcription_model || '');
-  if (kind === 'image') return String(asObject(config.image_generation).model || '');
-  if (kind === 'tts') return String(asObject(config.tts).model || '');
-  return '';
-}
-
-function legacyEndpoint(config: RuntimeConfig, kind: ModelKind): Record<string, any> {
-  if (kind === 'chat') {
-    const llm = asObject(config.llm_provider);
-    return { provider: llm.name || '', api_base: llm.base_url || '', protocol: llm.protocol || '', api_key: llm.api_key || '' };
-  }
-  if (kind === 'embedding') return asObject(config.embedding);
-  if (kind === 'vision' || kind === 'transcription') return asObject(config.multimodal);
-  if (kind === 'image') return asObject(config.image_generation);
-  if (kind === 'tts') return asObject(config.tts);
-  return {};
 }
 
 function cloneConfig(config: RuntimeConfig): RuntimeConfig {
@@ -127,8 +105,8 @@ export function Settings({ fetchRuntime, pushActivity }: SettingsProps) {
   async function saveConfig(event?: FormEvent) {
     event?.preventDefault();
     setError('');
-    const chatModel = String(models.chat || legacyModel(config, 'chat')).trim();
-    const chatProvider = String(asObject(endpoints.chat).provider || legacyEndpoint(config, 'chat').provider || '').trim();
+    const chatModel = String(models.chat || '').trim();
+    const chatProvider = String(asObject(endpoints.chat).provider || '').trim();
     if (!chatModel || !chatProvider) {
       setError('Chat model and provider are required before saving.');
       return;
@@ -203,7 +181,7 @@ export function Settings({ fetchRuntime, pushActivity }: SettingsProps) {
     );
   }
 
-  const configuredCount = MODEL_KINDS.filter(({ id }) => String(models[id] ?? legacyModel(config, id)).trim()).length;
+  const configuredCount = MODEL_KINDS.filter(({ id }) => String(models[id] || '').trim()).length;
 
   return (
     <form className="settings-panel" onSubmit={saveConfig}>
@@ -240,14 +218,22 @@ export function Settings({ fetchRuntime, pushActivity }: SettingsProps) {
           <span className="section-count">{configuredCount} of {MODEL_KINDS.length} configured</span>
         </div>
 
+        <label className="field" htmlFor="vision-mode">
+          <span>Image understanding</span>
+          <select id="vision-mode" value={String(asObject(config.models).vision_mode || 'auto')}
+            onChange={(event) => updateNested('models', 'vision_mode', event.target.value)}>
+            <option value="auto">Automatic — use the chat model when it supports images</option>
+            <option value="external">Always use the separate vision model</option>
+          </select>
+        </label>
+        <p className="settings-desc">Automatic mode sends each image directly to a vision-capable chat model. Otherwise, the separate vision model supplies a text description.</p>
         <div className="model-grid">
           {MODEL_KINDS.map(({ id, label, detail }) => {
             const endpoint = asObject(endpoints[id]);
-            const fallback = legacyEndpoint(config, id);
-            const modelID = String(models[id] ?? legacyModel(config, id));
-            const provider = String(endpoint.provider ?? fallback.provider ?? '');
-            const base = String(endpoint.api_base ?? fallback.api_base ?? '');
-            const protocol = String(endpoint.protocol ?? fallback.protocol ?? '');
+            const modelID = String(models[id] || '');
+            const provider = String(endpoint.provider || '');
+            const base = String(endpoint.api_base || '');
+            const protocol = String(endpoint.protocol || '');
             const isSet = Boolean(modelID.trim());
             return (
               <section className={`model-card ${isSet ? '' : 'unset'}`} key={id} aria-labelledby={`model-head-${id}`}>

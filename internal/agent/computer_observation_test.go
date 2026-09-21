@@ -15,8 +15,8 @@ func TestAppendLatestComputerObservationKeepsOnlyNewestFrame(t *testing.T) {
 	executed := []executedToolCall{{
 		ToolCall: provider.ToolCall{Name: "computer_act"},
 		Observations: []tool.Observation{
-			{FrameID: "frame-1", FilePath: "/tmp/frame-1.png", MimeType: "image/png"},
-			{FrameID: "frame-2", FilePath: "/tmp/frame-2.png", MimeType: "image/png"},
+			{Kind: "image", FrameID: "frame-1", FilePath: "/tmp/frame-1.png", MimeType: "image/png"},
+			{Kind: "image", FrameID: "frame-2", FilePath: "/tmp/frame-2.png", MimeType: "image/png"},
 		},
 	}}
 
@@ -46,5 +46,32 @@ func TestRemoveTransientComputerObservationsPreservesUserImages(t *testing.T) {
 	got := removeTransientComputerObservations(messages)
 	if len(got) != 1 || got[0].Content != "uploaded image" {
 		t.Fatalf("unexpected retained messages: %#v", got)
+	}
+}
+
+func TestImageReadDoesNotEmitComputerObservation(t *testing.T) {
+	for _, name := range []string{"image_read", "computer_observe", "computer_act"} {
+		t.Run(name, func(t *testing.T) {
+			events := make(chan ChatEvent, 1)
+			emitChatObservationEvents(events, executedToolCall{
+				ToolCall: provider.ToolCall{Name: name},
+				Observations: []tool.Observation{{
+					Kind: "image", FilePath: "/tmp/input.png", MimeType: "image/png",
+				}},
+			})
+			if name == "image_read" {
+				if len(events) != 0 {
+					t.Fatal("reading an image must not send it back as a computer screenshot")
+				}
+				return
+			}
+			if len(events) != 1 {
+				t.Fatal("computer screenshots must still be emitted")
+			}
+			event := <-events
+			if event.Type != ChatEventObservation || event.Observation.FilePath != "/tmp/input.png" {
+				t.Fatalf("unexpected computer event: %+v", event)
+			}
+		})
 	}
 }

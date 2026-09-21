@@ -792,6 +792,103 @@ func TestV054StreamSenderThrottleEdit(t *testing.T) {
 	stream.Finish()
 }
 
+func TestV054StreamSenderFlushesQueuedContent(t *testing.T) {
+	edits := make(chan string, 2)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "editMessageText") {
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			edits <- r.Form.Get("text")
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("newMockBot() error = %v", err)
+	}
+
+	adapter := NewAdapter(DefaultConfig())
+	adapter.bot = bot
+	adapter.running = true
+
+	stream, err := adapter.SendStream(context.Background(), "12345", "")
+	if err != nil {
+		t.Fatalf("SendStream() error = %v", err)
+	}
+	sender := stream.(*telegramStreamSender)
+	sender.mu.Lock()
+	sender.lastEdit = time.Now().Add(-minEditInterval + 20*time.Millisecond)
+	sender.mu.Unlock()
+
+	if err := stream.Append("partial response"); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	select {
+	case got := <-edits:
+		if got != "partial response" {
+			t.Fatalf("queued edit text = %q, want partial response", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected delayed edit before stream completion")
+	}
+
+	if err := stream.Finish(); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+}
+
+func TestV054StreamSenderFinishCancelsQueuedEdit(t *testing.T) {
+	edits := make(chan string, 3)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "editMessageText") {
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm() error = %v", err)
+			}
+			edits <- r.Form.Get("text")
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("newMockBot() error = %v", err)
+	}
+
+	adapter := NewAdapter(DefaultConfig())
+	adapter.bot = bot
+	adapter.running = true
+
+	stream, err := adapter.SendStream(context.Background(), "12345", "")
+	if err != nil {
+		t.Fatalf("SendStream() error = %v", err)
+	}
+	sender := stream.(*telegramStreamSender)
+	sender.mu.Lock()
+	sender.lastEdit = time.Now().Add(-minEditInterval + 30*time.Millisecond)
+	sender.mu.Unlock()
+
+	if err := stream.Append("final response"); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err := stream.Finish(); err != nil {
+		t.Fatalf("Finish() error = %v", err)
+	}
+
+	select {
+	case got := <-edits:
+		if !strings.Contains(got, "final response") {
+			t.Fatalf("final edit text = %q, want final response", got)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("expected final edit")
+	}
+
+	select {
+	case got := <-edits:
+		t.Fatalf("unexpected delayed edit after Finish(): %q", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
 func TestV054StreamSenderMaxEdits(t *testing.T) {
 	adapter, server, err := newAdapterWithMockBot()
 	if err != nil {
@@ -2774,16 +2871,17 @@ func TestV054HandleMessageWithAttachments(t *testing.T) {
 	_ = handler
 }
 
-func TestV054ComposeAttachmentInputUsesAgentAnalysis(t *testing.T) {
+func TestV054BuildAttachmentInputDefersAnalysis(t *testing.T) {
 	handler := &Handler{
 		agent: &mockAgentProvider{
 			analyzeFn: func(ctx context.Context, attachments []gateway.Attachment) (string, error) {
-				return "[Multimodal Analysis]\nImage 1:\n- summary: chart screenshot", nil
+				t.Fatal("gateway must not run image analysis")
+				return "", nil
 			},
 		},
 	}
 
-	out := handler.composeAttachmentInput(context.Background(), "check this", []gateway.Attachment{
+	input := handler.buildUserTurnInput(context.Background(), "check this", []gateway.Attachment{
 		{
 			Type:     gateway.AttachmentImage,
 			FileName: "photo.jpg",
@@ -2791,11 +2889,8 @@ func TestV054ComposeAttachmentInputUsesAgentAnalysis(t *testing.T) {
 		},
 	})
 
-	if !strings.Contains(out, "[Multimodal Analysis]") {
-		t.Fatalf("expected analysis block, got %q", out)
-	}
-	if strings.Contains(out, "[Multimedia Attachments]") {
-		t.Fatalf("expected agent analysis to replace metadata fallback, got %q", out)
+	if input.RoutingText != "check this" || len(input.Attachments) != 1 {
+		t.Fatalf("expected original text and attachment, got %+v", input)
 	}
 }
 
@@ -3208,26 +3303,27 @@ func TestV054AdapterName(t *testing.T) {
 // ============================================================
 
 type mockAgentProvider struct {
-	sessions      *session.Manager
-	configSnap    agentConfigSnapshot
-	soulVal       *soul.Soul
-	toolsVal      *tool.Registry
-	skillsVal     []*tool.SkillInfo
-	cronEngine    *cron.Engine
-	metricsVal    *metrics.Metrics
-	memoryVal     *memory.Store
-	catalogVal    *provider.ModelCatalog
-	ragVal        *rag.RAGManager
-	embedderReg   *embedder.Registry
-	chatFunc      func(ctx context.Context, userInput string) (string, error)
-	chatSessFn    func(ctx context.Context, sessionID, userInput string) (string, error)
-	chatInputFn   func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
-	chatStreamFn  func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
-	chatStreamIn  func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
-	progressFn    func(ctx context.Context, userInput string, round int, observations []string) (string, error)
-	analyzeFn     func(ctx context.Context, attachments []gateway.Attachment) (string, error)
-	switchModelFn func(modelID string) error
-	replyAnchors  map[string]string
+	sessions         *session.Manager
+	configSnap       agentConfigSnapshot
+	soulVal          *soul.Soul
+	toolsVal         *tool.Registry
+	skillsVal        []*tool.SkillInfo
+	cronEngine       *cron.Engine
+	metricsVal       *metrics.Metrics
+	memoryVal        *memory.Store
+	catalogVal       *provider.ModelCatalog
+	ragVal           *rag.RAGManager
+	embedderReg      *embedder.Registry
+	chatFunc         func(ctx context.Context, userInput string) (string, error)
+	chatSessFn       func(ctx context.Context, sessionID, userInput string) (string, error)
+	chatInputFn      func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
+	chatStreamFn     func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	chatStreamIn     func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
+	progressFn       func(ctx context.Context, userInput string, round int, observations []string) (string, error)
+	progressPromptFn func(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error)
+	analyzeFn        func(ctx context.Context, attachments []gateway.Attachment) (string, error)
+	switchModelFn    func(modelID string) error
+	replyAnchors     map[string]string
 }
 
 func (m *mockAgentProvider) Sessions() *session.Manager {
@@ -3313,6 +3409,13 @@ func (m *mockAgentProvider) ProgressFeedback(ctx context.Context, userInput stri
 		return m.progressFn(ctx, userInput, round, observations)
 	}
 	return "mock progress summary", nil
+}
+
+func (m *mockAgentProvider) ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error) {
+	if m.progressPromptFn != nil {
+		return m.progressPromptFn(ctx, userInput, round, observations, presentationPrompt)
+	}
+	return m.ProgressFeedback(ctx, userInput, round, observations)
 }
 
 func (m *mockAgentProvider) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
@@ -4630,13 +4733,8 @@ func TestV054HandleMessageReplyToImagePreservesReplyAttachment(t *testing.T) {
 	currentSess := sessions.NewWithTitle("current chat")
 	handler.setSessionID("12345", currentSess.ID)
 	handler.agent.(*mockAgentProvider).analyzeFn = func(ctx context.Context, attachments []gateway.Attachment) (string, error) {
-		if len(attachments) != 1 {
-			t.Fatalf("expected one attachment for analysis, got %+v", attachments)
-		}
-		if attachments[0].FileName != "face.jpg" {
-			t.Fatalf("unexpected attachment for analysis: %+v", attachments[0])
-		}
-		return "[Multimodal Analysis]\nImage: face.jpg\n- extracted: face visible", nil
+		t.Error("gateway must not analyze images before the agent selects its vision path")
+		return "", nil
 	}
 
 	type capturedTurn struct {
@@ -4692,7 +4790,6 @@ func TestV054HandleMessageReplyToImagePreservesReplyAttachment(t *testing.T) {
 		"[Replied Telegram attachments]",
 		"image: face.jpg",
 		"记住她的长相",
-		"face visible",
 	} {
 		if !strings.Contains(gotTurn.routingText, want) {
 			t.Fatalf("expected routing text to include %q, got:\n%s", want, gotTurn.routingText)
@@ -5115,8 +5212,8 @@ func TestV054HandleChatStreamUnexpectedClose(t *testing.T) {
 	if !sender.finished {
 		t.Fatal("expected stream sender to be finished when event channel closes unexpectedly")
 	}
-	if sender.result != "partial response" {
-		t.Fatalf("expected fallback result from partial content, got: %q", sender.result)
+	if sender.result != "❌ Error: stream ended unexpectedly, please retry" {
+		t.Fatalf("expected incomplete-stream error instead of partial content, got: %q", sender.result)
 	}
 }
 

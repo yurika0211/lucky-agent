@@ -272,8 +272,8 @@ func TestContextPlannerKeepsImagePartsForVisionModel(t *testing.T) {
 	})
 
 	messages := planner.BuildInput(context.Background(), nil, input)
-	if !messagesContainText(messages, "attachment provider summary") {
-		t.Fatalf("expected multimodal analysis summary, got %+v", messages)
+	if messagesContainText(messages, "attachment provider summary") {
+		t.Fatal("primary vision must not invoke external image analysis")
 	}
 	if !messagesContainImagePart(messages) {
 		t.Fatalf("expected image content parts for vision model, got %+v", messages)

@@ -120,15 +120,27 @@ func (b *WindowsBackend) Capture(ctx context.Context, target Target) (Observatio
 	}
 	activeWindow, bounds := windowsForegroundWindow()
 	return Observation{
-		ImageData:    imageData,
-		MimeType:     "image/png",
-		Width:        width,
-		Height:       height,
-		ScaleFactor:  1,
-		DisplayID:    "virtual",
-		ActiveWindow: activeWindow,
-		WindowBounds: bounds,
+		ImageData:     imageData,
+		MimeType:      "image/png",
+		Width:         width,
+		Height:        height,
+		ScaleFactor:   1,
+		DisplayID:     "virtual",
+		ActiveWindow:  activeWindow,
+		WindowBounds:  bounds,
+		CaptureBounds: Rect{X: x, Y: y, Width: width, Height: height},
 	}, nil
+}
+
+func (b *WindowsBackend) ValidateObservation(ctx context.Context, obs Observation, _ Action) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	x, y, width, height := windowsVirtualScreenBounds()
+	if obs.CaptureBounds != (Rect{X: x, Y: y, Width: width, Height: height}) {
+		return fmt.Errorf("%w: virtual desktop geometry changed", ErrStaleFrame)
+	}
+	return nil
 }
 
 func (b *WindowsBackend) Perform(ctx context.Context, action Action) error {

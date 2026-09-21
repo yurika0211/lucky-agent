@@ -60,9 +60,10 @@ type ModelEndpointConfig struct {
 // ModelsConfig is the unified model selection section. Legacy fields are kept
 // in sync so existing configurations and integrations continue to work.
 type ModelsConfig struct {
-	Active    map[ModelKind]string              `json:"active,omitempty"`
-	Endpoints map[ModelKind]ModelEndpointConfig `json:"endpoints,omitempty"`
-	Profiles  map[string]map[ModelKind]string   `json:"profiles,omitempty"`
+	VisionMode string                            `json:"vision_mode,omitempty"` // auto (primary when capable) or external
+	Active     map[ModelKind]string              `json:"active,omitempty"`
+	Endpoints  map[ModelKind]ModelEndpointConfig `json:"endpoints,omitempty"`
+	Profiles   map[string]map[ModelKind]string   `json:"profiles,omitempty"`
 }
 
 // ModelSelection is a resolved model reference without exposing credentials.
@@ -78,6 +79,10 @@ type ModelSelection struct {
 }
 
 func normalizeModels(cfg *Config) {
+	if cfg.Models.VisionMode == "" {
+		cfg.Models.VisionMode = "auto"
+	}
+	migrateVisionCapability(cfg)
 	if cfg.Models.Active == nil {
 		cfg.Models.Active = make(map[ModelKind]string, len(modelKinds))
 	}
@@ -90,14 +95,30 @@ func normalizeModels(cfg *Config) {
 
 	for _, kind := range modelKinds {
 		legacy := legacyModelSelection(cfg, kind)
-		id := strings.TrimSpace(cfg.Models.Active[kind])
-		if id == "" {
-			id = legacy.ID
-			cfg.Models.Active[kind] = id
+		if _, exists := cfg.Models.Active[kind]; !exists {
+			cfg.Models.Active[kind] = legacy.ID
 		}
-		endpoint := mergeModelEndpoint(legacyEndpoint(cfg, kind), cfg.Models.Endpoints[kind])
-		cfg.Models.Endpoints[kind] = endpoint
+		if _, exists := cfg.Models.Endpoints[kind]; !exists {
+			endpoint := legacyEndpoint(cfg, kind)
+			if kind != ModelKindChat && kind != ModelKindReranker {
+				chat := cfg.Models.Endpoints[ModelKindChat]
+				if endpoint.APIBase == "" {
+					endpoint.APIBase = chat.APIBase
+				}
+				if endpoint.APIKey == "" && strings.TrimRight(endpoint.APIBase, "/") == strings.TrimRight(chat.APIBase, "/") {
+					endpoint.APIKey = chat.APIKey
+				}
+			}
+			if kind == ModelKindVision && cfg.Multimodal.ImageProvider != "" {
+				endpoint.Provider = cfg.Multimodal.ImageProvider
+				if endpoint.Provider == "openai-media" {
+					endpoint.Provider = "openai"
+				}
+			}
+			cfg.Models.Endpoints[kind] = endpoint
+		}
 	}
+	cfg.Multimodal.ImageProvider = ""
 
 	for name, profile := range cfg.Models.Profiles {
 		cleanName := strings.TrimSpace(name)
@@ -218,15 +239,6 @@ func syncLegacyModels(cfg *Config) {
 			cfg.Embedding.APIBase = endpoint.APIBase
 		case ModelKindTranscription:
 			cfg.Multimodal.TranscriptionModel = id
-			if endpoint.Provider != "" {
-				cfg.Multimodal.Provider = endpoint.Provider
-			}
-			if endpoint.APIKey != "" {
-				cfg.Multimodal.APIKey = endpoint.APIKey
-			}
-			if endpoint.APIBase != "" {
-				cfg.Multimodal.APIBase = endpoint.APIBase
-			}
 		case ModelKindImage:
 			cfg.ImageGeneration.Model = id
 			cfg.ImageGeneration.Provider = endpoint.Provider
@@ -251,12 +263,12 @@ func (c *Config) ModelSelection(kind ModelKind) (ModelSelection, bool) {
 	}
 	selection := legacyModelSelection(c, kind)
 	if c.Models.Active != nil {
-		if id := strings.TrimSpace(c.Models.Active[kind]); id != "" {
-			selection.ID = id
+		if id, exists := c.Models.Active[kind]; exists {
+			selection.ID = strings.TrimSpace(id)
 		}
 	}
 	if c.Models.Endpoints != nil {
-		endpoint := mergeModelEndpoint(legacyEndpoint(c, kind), c.Models.Endpoints[kind])
+		endpoint := c.ModelEndpoint(kind)
 		selection.Provider = endpoint.Provider
 		selection.APIBase = endpoint.APIBase
 		selection.Protocol = endpoint.Protocol
@@ -287,8 +299,45 @@ func (c *Config) SetModelSelection(kind ModelKind, modelID string, endpoint Mode
 		c.Models.Endpoints = make(map[ModelKind]ModelEndpointConfig)
 	}
 	c.Models.Active[kind] = modelID
-	c.Models.Endpoints[kind] = mergeModelEndpoint(legacyEndpoint(c, kind), endpoint)
+	c.Models.Endpoints[kind] = mergeModelEndpoint(c.ModelEndpoint(kind), endpoint)
 	syncLegacyModels(c)
+	return nil
+}
+
+// ModelEndpoint resolves a purpose independently. An explicit endpoint, including
+// empty credentials, must never inherit another purpose's legacy credentials.
+func (c *Config) ModelEndpoint(kind ModelKind) ModelEndpointConfig {
+	if endpoint, ok := c.Models.Endpoints[kind]; ok {
+		endpoint.ExtraHeaders = cloneStringMap(endpoint.ExtraHeaders)
+		return endpoint
+	}
+	return legacyEndpoint(c, kind)
+}
+
+func migrateVisionCapability(c *Config) {
+	if !c.LlmProvider.Vision {
+		return
+	}
+	id := strings.TrimSpace(c.LlmProvider.Model)
+	c.LlmProvider.Vision = false
+	for i := range c.CustomModels {
+		if c.CustomModels[i].ID == id {
+			// An explicit model capability declaration takes precedence.
+			return
+		}
+	}
+	if id != "" {
+		c.CustomModels = append(c.CustomModels, CustomModelInfo{ID: id, Provider: c.LlmProvider.Name,
+			Capabilities: []string{"chat", "streaming", "tools", "vision"}})
+	}
+}
+
+func validateModelConfig(c *Config) error {
+	switch c.Models.VisionMode {
+	case "", "auto", "external":
+	default:
+		return fmt.Errorf("models.vision_mode must be auto or external")
+	}
 	return nil
 }
 

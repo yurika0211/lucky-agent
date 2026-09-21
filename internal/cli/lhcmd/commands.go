@@ -40,6 +40,8 @@ var (
 	yolo      bool
 )
 
+const msgGatewayShutdownTimeout = 2 * time.Second
+
 func runInit(cmd *cobra.Command, args []string) error {
 	mgr, err := config.NewManager()
 	if err != nil {
@@ -146,6 +148,13 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := mgr.Get()
+	if value, handled, err := config.RedactSecrets(cfg).ModelConfigValue(args[0]); handled {
+		if err != nil {
+			return err
+		}
+		fmt.Println(value)
+		return nil
+	}
 	if strings.HasPrefix(args[0], "tool_trace.templates.") {
 		toolName := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(args[0], "tool_trace.templates.")))
 		if value, ok := cfg.ToolTrace.Templates[toolName]; ok {
@@ -332,6 +341,10 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Tools.ComputerUse.MaxObservationBytes)
 	case "tools.computer_use.max_screenshot_width":
 		fmt.Println(cfg.Tools.ComputerUse.MaxScreenshotWidth)
+	case "tools.computer_use.max_batch_actions":
+		fmt.Println(cfg.Tools.ComputerUse.MaxBatchActions)
+	case "tools.computer_use.settle_mode":
+		fmt.Println(cfg.Tools.ComputerUse.SettleMode)
 	case "tools.computer_use.keep_frames", "tools.computer_use.retain_frames":
 		fmt.Println(cfg.Tools.ComputerUse.KeepFrames)
 	case "tools.computer_use.frame_ttl_seconds":
@@ -348,6 +361,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MsgGateway.Telegram.Proxy)
 	case "msg_gateway.telegram.progress_summary_with_llm":
 		fmt.Println(cfg.MsgGateway.Telegram.ProgressSummaryWithLLM)
+	case "msg_gateway.telegram.progress_summary_prompt":
+		fmt.Println(cfg.MsgGateway.Telegram.ProgressSummaryPrompt)
 	case "msg_gateway.telegram.show_tool_details_in_result", "msg_gateway.telegram.show_tool_chain":
 		fmt.Println(cfg.MsgGateway.Telegram.ShowToolDetailsInResult)
 	case "msg_gateway.telegram.disable_auto_reaction":
@@ -1193,7 +1208,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		_ = gm.StopAll()
+		if err := stopGatewaysWithTimeout(gm.StopAll, msgGatewayShutdownTimeout); err != nil {
+			fmt.Fprintln(os.Stderr, "warning:", err)
+		}
 		return nil
 	}
 
@@ -1399,9 +1416,38 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
-	_ = gm.StopAll()
+	if err := stopGatewaysWithTimeout(gm.StopAll, msgGatewayShutdownTimeout); err != nil {
+		fmt.Fprintln(os.Stderr, "warning:", err)
+	}
 	syncTelegramState(false, false)
 	return nil
+}
+
+// stopGatewaysWithTimeout bounds process shutdown after SIGINT or SIGTERM.
+// Gateway adapters should stop promptly after their contexts are canceled, but
+// a broken proxy or an uncooperative upstream must not keep the CLI PID alive
+// indefinitely. Returning from the command ends the process and its remaining
+// goroutines, while normal adapter restarts still use GatewayManager.StopAll
+// directly and retain its full graceful-wait behavior.
+func stopGatewaysWithTimeout(stop func() error, timeout time.Duration) error {
+	if stop == nil {
+		return nil
+	}
+	if timeout <= 0 {
+		timeout = msgGatewayShutdownTimeout
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- stop()
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(timeout):
+		return fmt.Errorf("message gateway shutdown exceeded %s; exiting process", timeout)
+	}
 }
 
 func handlePlainGatewayMessageWithLucky(ctx context.Context, platform string, runtime *agent.Agent, gw gateway.Gateway, lucky *luckycollector.Lucky, msg *gateway.Message, errorPrefix string) error {

@@ -582,7 +582,10 @@ func callOpenAIResponsesStream(ctx context.Context, cfg Config, messages []Messa
 		}
 		if err := scanner.Err(); err != nil {
 			capture.writeError("scan_sse", err)
+			ch <- StreamChunk{Err: fmt.Errorf("openai responses stream read: %w", err), Model: cfg.LlmProvider.Model}
+			return
 		}
+		ch <- StreamChunk{Err: io.ErrUnexpectedEOF, Model: cfg.LlmProvider.Model}
 	}()
 
 	return ch, nil

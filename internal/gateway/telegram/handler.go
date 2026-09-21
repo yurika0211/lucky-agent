@@ -43,7 +43,7 @@ type chatRuntime interface {
 	ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
 	ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 	ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error)
-	AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error)
+	ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error)
 }
 
 type stateRuntime interface {
@@ -140,6 +140,7 @@ type agentConfigSnapshot struct {
 	ProgressAsMessages        bool
 	ProgressAsNaturalLanguage bool
 	ProgressSummaryWithLLM    bool
+	ProgressSummaryPrompt     string
 	ShowToolDetailsInResult   bool
 	DisableAutoReaction       bool
 	MaxConcurrentSessions     int
@@ -241,8 +242,8 @@ func (a agentProviderAdapter) ProgressFeedback(ctx context.Context, userInput st
 	return a.inner.ProgressFeedback(ctx, userInput, round, observations)
 }
 
-func (a agentProviderAdapter) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
-	return a.inner.AnalyzeAttachments(ctx, attachments)
+func (a agentProviderAdapter) ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error) {
+	return a.inner.ProgressFeedbackWithPrompt(ctx, userInput, round, observations, presentationPrompt)
 }
 
 func (a agentProviderAdapter) Metrics() *metrics.Metrics {
@@ -352,6 +353,7 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 		ProgressAsMessages:        cfg.MsgGateway.Telegram.ProgressAsMessages,
 		ProgressAsNaturalLanguage: cfg.MsgGateway.Telegram.ProgressAsNaturalLanguage,
 		ProgressSummaryWithLLM:    cfg.MsgGateway.Telegram.ProgressSummaryWithLLM,
+		ProgressSummaryPrompt:     cfg.MsgGateway.Telegram.ProgressSummaryPrompt,
 		ShowToolDetailsInResult:   cfg.MsgGateway.Telegram.ShowToolDetailsInResult,
 		DisableAutoReaction:       cfg.MsgGateway.Telegram.DisableAutoReaction,
 		MaxConcurrentSessions:     cfg.MsgGateway.Telegram.MaxConcurrentSessions,
@@ -439,6 +441,8 @@ type Handler struct {
 	progressAsNaturalLanguage bool
 	// 每轮未完成时是否发送一条由 LLM 生成的总结性反馈
 	progressSummaryWithLLM bool
+	// Reasoning Trace 进度摘要的展示提示词；为空使用 Agent 内置默认值
+	progressSummaryPrompt string
 	// 最终回答前是否附上自然语言工具摘要
 	showToolDetailsInResult bool
 	// 是否关闭群聊请求确认表情
@@ -512,6 +516,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		progressAsMessages:        resolveProgressAsMessages(state),
 		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(state),
 		progressSummaryWithLLM:    resolveProgressSummaryWithLLM(state),
+		progressSummaryPrompt:     resolveProgressSummaryPrompt(state),
 		showToolDetailsInResult:   resolveShowToolDetailsInResult(state),
 		disableAutoReaction:       resolveDisableAutoReaction(state),
 		toolTraceTemplates:        resolveToolTraceTemplates(state),
@@ -674,6 +679,13 @@ func resolveProgressSummaryWithLLM(state stateRuntime) bool {
 	}
 	cfg := state.Config().Get()
 	return cfg.ProgressSummaryWithLLM
+}
+
+func resolveProgressSummaryPrompt(state stateRuntime) string {
+	if state == nil {
+		return ""
+	}
+	return strings.TrimSpace(state.Config().Get().ProgressSummaryPrompt)
 }
 
 func resolveShowToolDetailsInResult(state stateRuntime) bool {
@@ -896,6 +908,13 @@ func (h *Handler) effectiveProgressAsNaturalLanguage() bool {
 
 func (h *Handler) effectiveProgressSummaryWithLLM() bool {
 	return h.progressSummaryWithLLM
+}
+
+func (h *Handler) effectiveProgressSummaryPrompt() string {
+	if state := h.stateService(); state != nil {
+		return strings.TrimSpace(state.Config().Get().ProgressSummaryPrompt)
+	}
+	return strings.TrimSpace(h.progressSummaryPrompt)
 }
 
 func (h *Handler) effectiveShowToolDetailsInResult() bool {
@@ -1599,7 +1618,7 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 		return agent.TextUserTurnInput(baseText)
 	}
 
-	return agent.MultimodalUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments), attachments)
+	return agent.MultimodalUserTurnInput(baseText, attachments)
 }
 
 func (h *Handler) inputWithMessageScope(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
@@ -1721,38 +1740,6 @@ func telegramAttachmentSummary(attachments []gateway.Attachment) string {
 		return ""
 	}
 	return "[Replied Telegram attachments]\n" + strings.Join(parts, "\n")
-}
-
-func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
-	var sections []string
-	if strings.TrimSpace(baseText) != "" {
-		sections = append(sections, strings.TrimSpace(baseText))
-	}
-
-	if chat := h.chatService(); chat != nil {
-		analysis, err := chat.AnalyzeAttachments(ctx, attachments)
-		if err == nil && strings.TrimSpace(analysis) != "" {
-			sections = append(sections, analysis)
-			return strings.Join(sections, "\n\n")
-		}
-	}
-
-	var mediaDesc strings.Builder
-	mediaDesc.WriteString("[Multimedia Attachments]\n")
-	for i, att := range attachments {
-		switch att.Type {
-		case gateway.AttachmentImage:
-			mediaDesc.WriteString(fmt.Sprintf("Image %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-		case gateway.AttachmentAudio:
-			mediaDesc.WriteString(fmt.Sprintf("Audio %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-		case gateway.AttachmentVideo:
-			mediaDesc.WriteString(fmt.Sprintf("Video %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-		case gateway.AttachmentDocument:
-			mediaDesc.WriteString(fmt.Sprintf("Document %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-		}
-	}
-	sections = append(sections, strings.TrimSpace(mediaDesc.String()))
-	return strings.Join(sections, "\n\n")
 }
 
 // handleCommand dispatches bot commands.
@@ -2105,7 +2092,7 @@ func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gatewa
 		progressObservations = append([]string{"Previous user-facing update: " + prev}, progressObservations...)
 	}
 
-	summary, err := chat.ProgressFeedback(summaryCtx, userInput, round, progressObservations)
+	summary, err := chat.ProgressFeedbackWithPrompt(summaryCtx, userInput, round, progressObservations, h.effectiveProgressSummaryPrompt())
 	if err != nil {
 		return ""
 	}
@@ -2398,10 +2385,14 @@ func (h *Handler) sendFinalAssistantResponse(msg *gateway.Message, response stri
 	if err := h.sendAssistantResponse(sendCtx, msg, response); err != nil {
 		fallback := fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200))
 		if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
-			_ = h.adapter.SendWithReply(sendCtx, msg.Chat.ID, msg.ID, fallback)
+			if fallbackErr := h.adapter.SendWithReply(sendCtx, msg.Chat.ID, msg.ID, fallback); fallbackErr != nil {
+				fmt.Printf("[telegram] final response fallback delivery failed: %v (original: %v)\n", fallbackErr, err)
+			}
 			return
 		}
-		_ = h.adapter.Send(sendCtx, msg.Chat.ID, fallback)
+		if fallbackErr := h.adapter.Send(sendCtx, msg.Chat.ID, fallback); fallbackErr != nil {
+			fmt.Printf("[telegram] final response fallback delivery failed: %v (original: %v)\n", fallbackErr, err)
+		}
 	}
 }
 
@@ -2623,32 +2614,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	)
 
 	if !sentResult {
-		finalOutput := strings.TrimSpace(finalContent.String())
 		switch {
-		case finalOutput != "":
-			if summaryMode {
-				h.flushRoundProgressWithEmitter(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress, emitProgressForMsg)
-			}
-			if !memoryTraceSent {
-				h.sendMemoryTraceCards(msg, memoryTraceCards)
-				memoryTraceSent = true
-			}
-			if !toolTraceSent {
-				if card := renderTelegramToolTraceCardWithTemplateDetails(toolTraceSteps, h.effectiveShowToolDetailsInResult(), h.toolTraceTemplates); strings.TrimSpace(card) != "" {
-					h.sendProgressMessageHTML(msg, card)
-					toolTraceSent = true
-				}
-			}
-			if !agentTraceSent {
-				if card := renderTelegramAgentTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
-					h.sendProgressMessageHTML(msg, card)
-					agentTraceSent = true
-				}
-			}
-			if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), true) {
-				finalOutput = prependToolNarratives(toolNarratives, finalOutput)
-			}
-			h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
 			emitProgress(h.telegramTimeoutFeedback(context.DeadlineExceeded))
 		case errors.Is(chatCtx.Err(), context.Canceled):
@@ -2887,52 +2853,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	)
 
 	if !sentResult {
-		finalOutput := finalContent.String()
-		if summaryMode && finalOutput != "" {
-			h.flushRoundProgress(chatCtx, msg, routingText, currentRound, roundObservations, &progressHistory, &lastProgress)
-		}
-		if !memoryTraceSent && finalOutput != "" {
-			h.sendMemoryTraceCards(msg, memoryTraceCards)
-			memoryTraceSent = true
-		}
-		if narrativeMode && !toolTraceSent && finalOutput != "" {
-			if card := renderTelegramToolTraceCardWithTemplateDetails(toolTraceSteps, h.effectiveShowToolDetailsInResult(), h.toolTraceTemplates); strings.TrimSpace(card) != "" {
-				h.sendProgressMessageHTML(msg, card)
-				toolTraceSent = true
-			}
-		}
-		if narrativeMode && !agentTraceSent && finalOutput != "" {
-			if card := renderTelegramAgentTraceCard(toolTraceSteps); strings.TrimSpace(card) != "" {
-				h.sendProgressMessageHTML(msg, card)
-				agentTraceSent = true
-			}
-		}
-		if shouldPrependToolNarratives(h.effectiveShowToolDetailsInResult(), narrativeMode) && finalOutput != "" {
-			finalOutput = prependToolNarratives(toolNarratives, finalOutput)
-		}
-		if narrativeMode && finalOutput != "" {
-			finalOutput = wrapFinalConclusion(finalOutput)
-		}
 		switch {
-		case finalContent.Len() > 0:
-			textOnly, media, resolveErr := resolveOutboundMediaResponse(finalOutput)
-			if resolveErr != nil {
-				sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(resolveErr.Error(), 200)))
-			} else {
-				textOnly, media = prepareOutboundMediaResponse(textOnly, media)
-				if len(media) > 0 {
-					placeholder := textOnly
-					if strings.TrimSpace(placeholder) == "" {
-						placeholder = summarizeOutboundMedia(media)
-					}
-					sender.SetResult(placeholder)
-					if err := h.sendAssistantMedia(context.Background(), msg, media); err != nil {
-						h.sendProgressMessage(msg, fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200)))
-					}
-				} else {
-					sender.SetResult(textOnly)
-				}
-			}
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
 			sender.SetResult(h.telegramTimeoutFeedback(context.DeadlineExceeded))
 		case errors.Is(chatCtx.Err(), context.Canceled):

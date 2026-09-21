@@ -30,6 +30,7 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig, ope
 	r.Register(CurrentTimeTool())
 	r.Register(CalculateTool())
 	r.Register(ImageAnalyzeTool(processor, ""))
+	r.Register(ImageReadTool())
 	r.Register(ImageGenerateTool(nil, ImageGenerationDefaults{}))
 	r.Register(TextToSpeechTool(nil, TTSDefaults{}))
 	r.Register(LogTailTool())

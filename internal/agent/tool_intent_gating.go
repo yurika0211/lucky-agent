@@ -195,7 +195,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	}
 	if mediaIntent {
 		if intentTextContainsAny(intentText, "图片", "图像", "截图", "image", "vision", "看图") {
-			addIntentTools(allowed, "image_analyze")
+			addIntentTools(allowed, "image_analyze", "image_read")
 		}
 		if intentTextContainsAny(intentText, "生成图片", "画图", "配图", "image_generate") {
 			addIntentTools(allowed, "image_generate")
@@ -390,6 +390,7 @@ func hasDelegateIntent(text string) bool {
 func hasComputerUseIntent(text string) bool {
 	return intentTextContainsAny(text,
 		"computer use", "computer-use", "computer_use", "computer_observe", "computer_act",
+		"at-spi", "控件树", "无障碍控件",
 		"desktop", "桌面", "电脑屏幕", "当前屏幕", "屏幕截图", "截取屏幕",
 		"鼠标", "键盘", "点击", "双击", "拖拽", "滚动", "输入文字",
 		"按键", "打开窗口", "关闭窗口", "切换窗口", "操作界面", "图形界面", "gui",

@@ -48,6 +48,7 @@ type StreamChunk struct {
 	Content          string
 	ReasoningContent string
 	Done             bool
+	Err              error // upstream stream failure; channel close is not completion
 	FinishReason     string
 	Model            string
 	Usage            *UsageDetails

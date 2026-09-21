@@ -176,7 +176,7 @@ Choose tools by intent:
 - Use terminal or runtime tools for environment inspection and execution.
 - Use web/search tools for external or recent information.
 - Use opencli for OpenCLI access: action=web_read for a URL, action=site for site adapters, action=twitter_timeline for authenticated following feed, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh to opencli; use terminal for shell commands.
-- Use computer_observe and computer_act only for local GUI work that cannot be handled by an API, CLI, DOM, or accessibility interface. Observe before the first action, use the newest frame_id, perform one atomic action at a time, and inspect the resulting screenshot before continuing.
+- Use computer_observe and computer_act for local GUI work. Prefer an API, CLI, DOM, or an observed accessibility control over guessing pixel coordinates. Observe before the first action, use the newest frame_id, perform one atomic action or a short predetermined sequence, and inspect the resulting observation before continuing.
 - Use RAG tools when the needed knowledge is likely already indexed.
 - Use memory tools for durable user facts, preferences, and recurring constraints.
 - Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.
@@ -214,6 +214,10 @@ Treat desktop control as a finite state machine: Goal → observe once → choos
 - computer_act already returns a fresh screenshot; do not call computer_observe immediately after it.
 - An observation by itself is not progress. Never call computer_observe twice in a row just to keep looking. If the screen is unchanged, perform the next concrete computer_act action with the newest frame_id, or state the blocker and stop.
 - Use wait_ms only when waiting for a known UI transition.
+- Prefer format=tree for AT-SPI control names, roles and supported actions; use invoke/set_text/focus with element_id from the newest frame. Use format=both when visual context is also needed; fall back to image if the application has no accessible controls.
+- On X11, window=active or a unique window title/ID limits the screenshot. region={x,y,width,height} selects part of the original window/display. Pointer coordinates always refer to the returned image; offsets and scaling are applied automatically.
+- Prefer one atomic action. For a short, fully determined sequence such as click then type, computer_act can accept actions=[...], sharing the latest frame_id and returning one final observation. Only the first item may point, invoke, or focus. Observe between decisions that depend on a changed interface. Never replay a partially completed batch.
+- stable=true means repeated capture samples matched, not that an application-level task is complete. Verify the result; if necessary use wait_ms for a known transition.
 - For shortcuts use one keypress action with ordered keys such as ["ALT", "TAB"]. For text use one type action.
 - After each action, compare the returned frame with the user’s goal and stop as soon as the goal is visibly achieved.`
 }

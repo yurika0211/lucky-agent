@@ -26,12 +26,15 @@ type ManagerConfig struct {
 	MaxObservationBytes int
 	MaxScreenshotWidth  int
 	AllowedWindows      []string
+	MaxBatchActions     int
+	SettleMode          string
 }
 
 func DefaultManagerConfig() ManagerConfig {
 	return ManagerConfig{
 		FrameTTL: 10 * time.Minute, KeepFrames: 2, Settle: 350 * time.Millisecond,
 		MaxSteps: 20, MaxObservationBytes: 10 << 20, MaxScreenshotWidth: 0,
+		MaxBatchActions: 5, SettleMode: "adaptive",
 	}
 }
 
@@ -55,6 +58,8 @@ type sessionState struct {
 	sequence      uint64
 	steps         int
 	closed        bool
+	request       ObserveRequest
+	revision      uint64
 }
 
 // Manager serializes desktop control globally and statefully tracks each session.
@@ -62,7 +67,8 @@ type Manager struct {
 	backend   Backend
 	store     *FrameStore
 	config    ManagerConfig
-	desktopMu sync.Mutex
+	desktopMu chan struct{}
+	revision  uint64 // guarded by desktopMu; invalidates frames after any session acts
 	mu        sync.Mutex
 	sessions  map[string]*sessionState
 	closed    map[string]bool
@@ -82,12 +88,24 @@ func NewManager(backend Backend, options ...ManagerOption) (*Manager, error) {
 		cfg.StorageDir = filepath.Join(os.TempDir(), "luckyagent-computer")
 	}
 	cfg.AllowedWindows = normalizeAllowedWindows(cfg.AllowedWindows)
+	if cfg.MaxBatchActions <= 0 {
+		cfg.MaxBatchActions = 5
+	}
+	if cfg.MaxBatchActions > 10 {
+		return nil, errors.New("computer: max_batch_actions must be at most 10")
+	}
+	if cfg.SettleMode == "" {
+		cfg.SettleMode = "adaptive"
+	}
+	if cfg.SettleMode != "fixed" && cfg.SettleMode != "adaptive" {
+		return nil, errors.New("computer: settle_mode must be fixed or adaptive")
+	}
 	store, err := NewFrameStore(cfg.StorageDir, cfg.KeepFrames, cfg.FrameTTL)
 	if err != nil {
 		return nil, err
 	}
 	store.maxBytes = cfg.MaxObservationBytes
-	return &Manager{backend: backend, store: store, config: cfg, sessions: make(map[string]*sessionState), closed: make(map[string]bool)}, nil
+	return &Manager{backend: backend, store: store, config: cfg, desktopMu: make(chan struct{}, 1), sessions: make(map[string]*sessionState), closed: make(map[string]bool)}, nil
 }
 
 func NewManagerWithConfig(backend Backend, cfg ManagerConfig) (*Manager, error) {
@@ -114,6 +132,19 @@ func (m *Manager) getSession(id string) (*sessionState, error) {
 }
 
 func (m *Manager) Observe(ctx context.Context, sessionID string, req ObserveRequest) (Observation, error) {
+	if req.Format == "" {
+		req.Format = "image"
+	}
+	if req.Format != "image" && req.Format != "tree" && req.Format != "both" {
+		return Observation{}, errors.New("computer: format must be image, tree, or both")
+	}
+	if req.Target.Region != nil {
+		region := *req.Target.Region
+		req.Target.Region = &region
+		if req.Format == "tree" {
+			return Observation{}, errors.New("computer: region requires image or both format")
+		}
+	}
 	s, err := m.getSession(sessionID)
 	if err != nil {
 		return Observation{}, err
@@ -128,10 +159,23 @@ func (m *Manager) Observe(ctx context.Context, sessionID string, req ObserveRequ
 			return Observation{}, err
 		}
 	}
-	return m.captureLocked(ctx, sessionID, s, req.Target)
+	if err := m.lockDesktop(ctx); err != nil {
+		return Observation{}, err
+	}
+	defer m.unlockDesktop()
+	return m.captureUnlocked(ctx, sessionID, s, req, false)
 }
 
 func (m *Manager) Step(ctx context.Context, sessionID string, action Action) (Observation, error) {
+	return m.StepBatch(ctx, sessionID, []Action{action})
+}
+
+// StepBatch executes a short, predetermined macro under one desktop lease and
+// returns one final observation. All policies are checked before the first input.
+func (m *Manager) StepBatch(ctx context.Context, sessionID string, actions []Action) (Observation, error) {
+	if len(actions) == 0 || len(actions) > m.config.MaxBatchActions {
+		return Observation{}, fmt.Errorf("computer: batch requires 1..%d actions", m.config.MaxBatchActions)
+	}
 	s, err := m.getSession(sessionID)
 	if err != nil {
 		return Observation{}, err
@@ -141,54 +185,163 @@ func (m *Manager) Step(ctx context.Context, sessionID string, action Action) (Ob
 	if s.closed {
 		return Observation{}, fmt.Errorf("computer: session %q is closed", sessionID)
 	}
-	if err := action.Validate(); err != nil {
-		return Observation{}, err
-	}
 	if s.latestFrameID == "" {
 		return Observation{}, errors.New("computer: observe before acting")
 	}
-	if action.FrameID == "" || action.FrameID != s.latestFrameID {
-		return Observation{}, fmt.Errorf("%w: expected %s, got %s; observe the current screen before acting", ErrStaleFrame, s.latestFrameID, action.FrameID)
+	if m.config.FrameTTL > 0 && time.Since(s.latest.CapturedAt) >= m.config.FrameTTL {
+		return Observation{}, fmt.Errorf("%w: observation expired; observe again", ErrStaleFrame)
 	}
-	if err := validateActionBounds(action, s.latest); err != nil {
-		return Observation{}, err
+	for i, action := range actions {
+		if err := action.Validate(); err != nil {
+			return Observation{}, err
+		}
+		if s.request.Format == "tree" && action.Kind != ActionInvoke && action.Kind != ActionSetText && action.Kind != ActionFocus {
+			return Observation{}, errors.New("computer: tree-only observations support invoke, set_text, and focus; observe an image before keyboard or pointer actions")
+		}
+		if action.FrameID == "" || action.FrameID != s.latestFrameID {
+			return Observation{}, fmt.Errorf("%w: expected %s, got %s; observe the current screen before acting", ErrStaleFrame, s.latestFrameID, action.FrameID)
+		}
+		if action.DisplayID != "" && action.DisplayID != s.latest.DisplayID {
+			return Observation{}, errors.New("computer: action display differs from observed display")
+		}
+		if i > 0 && (pointerAction(action.Kind) || action.Kind == ActionInvoke || action.Kind == ActionFocus) {
+			return Observation{}, errors.New("computer: only the first batch action may point, invoke, or focus; observe again before choosing another target")
+		}
+		if pointerAction(action.Kind) && (s.latest.Width <= 0 || s.latest.Height <= 0) {
+			return Observation{}, errors.New("computer: pointer actions require an image observation")
+		}
+		if err := validateActionBounds(action, s.latest); err != nil {
+			return Observation{}, err
+		}
+		if err := validateElement(action, s.latest.Accessibility); err != nil {
+			return Observation{}, err
+		}
 	}
 	if err := validateAllowedWindow(s.latest.ActiveWindow, m.config.AllowedWindows); err != nil {
 		return Observation{}, err
 	}
-	if m.config.MaxSteps > 0 && s.steps >= m.config.MaxSteps {
+	if m.config.MaxSteps > 0 && len(actions) > m.config.MaxSteps-s.steps {
 		return Observation{}, ErrStepLimit
 	}
-	m.desktopMu.Lock()
-	defer m.desktopMu.Unlock()
-	if err := m.backend.Perform(ctx, action); err != nil {
-		return Observation{}, fmt.Errorf("computer: perform %s: %w", action.Kind, err)
+	if err := m.lockDesktop(ctx); err != nil {
+		return Observation{}, err
 	}
-	s.steps++
-	if m.config.Settle > 0 {
-		if err := waitContext(ctx, m.config.Settle); err != nil {
-			return Observation{}, err
+	defer m.unlockDesktop()
+	if s.revision != m.revision {
+		return Observation{}, fmt.Errorf("%w: another session changed the desktop; observe again", ErrStaleFrame)
+	}
+	for i, action := range actions {
+		if err := ctx.Err(); err != nil {
+			return Observation{}, &BatchError{Completed: i, Err: err}
+		}
+		if validator, ok := m.backend.(observationValidator); ok {
+			if err := validator.ValidateObservation(ctx, s.latest, action); err != nil {
+				return Observation{}, &BatchError{Completed: i, Err: err}
+			}
+		}
+		// Even a failed backend call may have injected part of an action.
+		s.latestFrameID = ""
+		m.revision++
+		s.steps++
+		action = desktopAction(action, s.latest)
+		action.DisplayID = s.latest.DisplayID
+		if err := m.backend.Perform(ctx, action); err != nil {
+			return Observation{}, &BatchError{Completed: i, Err: err}
 		}
 	}
-	return m.captureUnlocked(ctx, sessionID, s, Target{DisplayID: action.DisplayID})
+	return m.captureUnlocked(ctx, sessionID, s, s.request, true)
 }
 
-func (m *Manager) captureLocked(ctx context.Context, sessionID string, s *sessionState, target Target) (Observation, error) {
-	m.desktopMu.Lock()
-	defer m.desktopMu.Unlock()
-	return m.captureUnlocked(ctx, sessionID, s, target)
+type BatchError struct {
+	Completed int
+	Err       error
 }
 
-func (m *Manager) captureUnlocked(ctx context.Context, sessionID string, s *sessionState, target Target) (Observation, error) {
-	obs, err := m.backend.Capture(ctx, target)
+func (e *BatchError) Error() string {
+	return fmt.Sprintf("computer: action sequence stopped after %d completed actions: %v; the failing action may be partial; observe before continuing, do not replay completed actions", e.Completed, e.Err)
+}
+func (e *BatchError) Unwrap() error { return e.Err }
+
+func pointerAction(kind ActionKind) bool {
+	return kind == ActionClick || kind == ActionDoubleClick || kind == ActionMove || kind == ActionDrag
+}
+
+func validateElement(action Action, tree *AccessibilityTree) error {
+	if action.Kind != ActionInvoke && action.Kind != ActionSetText && action.Kind != ActionFocus {
+		return nil
+	}
+	if tree != nil {
+		for _, node := range tree.Nodes {
+			if node.ID == action.ElementID {
+				if !node.Enabled {
+					return errors.New("computer: accessibility element is disabled")
+				}
+				if action.Kind == ActionSetText && !node.Editable {
+					return errors.New("computer: accessibility element is not editable")
+				}
+				return nil
+			}
+		}
+	}
+	return errors.New("computer: element_id is not in the latest accessibility observation")
+}
+
+func (m *Manager) lockDesktop(ctx context.Context) error {
+	select {
+	case m.desktopMu <- struct{}{}:
+		if err := ctx.Err(); err != nil {
+			m.unlockDesktop()
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+func (m *Manager) unlockDesktop() { <-m.desktopMu }
+
+func (m *Manager) captureUnlocked(ctx context.Context, sessionID string, s *sessionState, req ObserveRequest, settle bool) (Observation, error) {
+	var obs Observation
+	var err error
+	if req.Format != "tree" {
+		obs, err = m.captureSettled(ctx, req.Target, settle)
+	} else if settle && m.config.Settle > 0 {
+		err = waitContext(ctx, m.config.Settle)
+	}
 	if err != nil {
 		return Observation{}, fmt.Errorf("computer: capture: %w", err)
 	}
-	if m.config.MaxScreenshotWidth > 0 && obs.Width > m.config.MaxScreenshotWidth {
-		if obs.CleanupFile && obs.FilePath != "" {
-			_ = os.Remove(obs.FilePath)
+	sourcePath, cleanupSource := obs.FilePath, obs.CleanupFile
+	savedPath := ""
+	defer func() {
+		if cleanupSource && sourcePath != "" && sourcePath != savedPath {
+			_ = os.Remove(sourcePath)
 		}
-		return Observation{}, fmt.Errorf("computer: screenshot width %d exceeds configured maximum %d", obs.Width, m.config.MaxScreenshotWidth)
+	}()
+	if req.Format == "tree" || req.Format == "both" {
+		backend, ok := m.backend.(accessibilityBackend)
+		if !ok {
+			return Observation{}, errors.New("computer: accessibility is unavailable on this backend")
+		}
+		tree, treeErr := backend.Accessibility(ctx, req.Target)
+		if treeErr != nil {
+			return Observation{}, treeErr
+		}
+		obs.Accessibility = &tree
+		if obs.ActiveWindow == "" {
+			obs.ActiveWindow = tree.Window
+		}
+	}
+	if obs.CaptureBounds.Width == 0 && obs.Width > 0 {
+		obs.CaptureBounds = Rect{X: obs.OriginX, Y: obs.OriginY, Width: obs.Width, Height: obs.Height}
+	}
+	obs, err = cropScreenshot(ctx, obs, req.Target.Region)
+	if err != nil {
+		return Observation{}, err
+	}
+	obs, err = fitScreenshot(ctx, obs, m.config.MaxScreenshotWidth, m.config.MaxObservationBytes)
+	if err != nil {
+		return Observation{}, err
 	}
 	s.sequence++
 	obs.FrameID = fmt.Sprintf("frame-%d", s.sequence)
@@ -198,20 +351,20 @@ func (m *Manager) captureUnlocked(ctx context.Context, sessionID string, s *sess
 	if obs.ScaleFactor <= 0 {
 		obs.ScaleFactor = 1
 	}
-	sourcePath := obs.FilePath
-	cleanupSource := obs.CleanupFile
-	obs, err = m.store.Save(sessionID, s.sequence, obs)
-	if err != nil {
-		if cleanupSource && sourcePath != "" {
-			_ = os.Remove(sourcePath)
+	if req.Format != "tree" {
+		obs, err = m.store.Save(sessionID, s.sequence, obs)
+		if err != nil {
+			return Observation{}, err
 		}
-		return Observation{}, err
 	}
-	if cleanupSource && sourcePath != "" && sourcePath != obs.FilePath {
-		_ = os.Remove(sourcePath)
-	}
+	savedPath = obs.FilePath
 	s.latestFrameID = obs.FrameID
 	s.latest = obs
+	s.revision = m.revision
+	s.request = req
+	if req.Target.Window != "" && obs.WindowID != "" {
+		s.request.Target.Window = obs.WindowID
+	}
 	return obs, nil
 }
 

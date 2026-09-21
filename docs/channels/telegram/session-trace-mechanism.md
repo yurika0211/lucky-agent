@@ -222,7 +222,16 @@ agent 会发出类似 `Thinking... (round 1)`、`Thinking... (round N)` 的内�
 - `progress_as_messages`：中间进度是否作为独立 Telegram 消息发送。
 - `progress_as_natural_language`：中间步骤是否转换为自然语言进度；与 `progress_as_messages` 同时启用时进入 narrative stream。
 - `progress_summary_with_llm`：每轮未完成时是否调用 LLM 生成进度摘要；实际主要在 narrative stream 中生效。
+- `progress_summary_prompt`：可选的进度摘要展示提示词。为空时使用内置英文简短调查式风格；设置后可改为中文、执行日志或其他展示格式，但仍只允许基于真实工具观察生成，不会输出隐藏推理或内部协议。
 - `show_tool_details_in_result`：是否在最终回答前追加自然语言工具摘要。
+
+例如，将 Trace 改成简短中文执行播报：
+
+```bash
+lh config set msg_gateway.telegram.progress_summary_prompt '使用简体中文。每次只写 1-2 句：已完成的检查、当前结论和下一步。不要使用标题、emoji、第一人称或假设性结论。'
+```
+
+该字段在每次生成 Trace 时读取；启用配置监视的长期运行网关会在配置刷新后用于后续轮次，已开始的摘要请求不受影响。
 
 配置组合对 trace 的影响：
 

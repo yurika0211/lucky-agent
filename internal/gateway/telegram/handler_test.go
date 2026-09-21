@@ -347,8 +347,8 @@ func TestBuildUserTurnInputRoutesImagesThroughAttachmentAnalysisPath(t *testing.
 	require.Empty(t, input.Message.ContentParts)
 	require.Len(t, input.Attachments, 1)
 	assert.Contains(t, input.RoutingText, "看这张图")
-	assert.Contains(t, input.RoutingText, "[Multimedia Attachments]")
-	assert.Contains(t, input.RoutingText, "example.jpg")
+	assert.Equal(t, "看这张图", input.RoutingText)
+	assert.Equal(t, "example.jpg", input.Attachments[0].FileName)
 }
 
 func TestGenerateRoundProgressFeedbackIncludesPreviousUserFacingUpdate(t *testing.T) {
@@ -375,6 +375,36 @@ func TestGenerateRoundProgressFeedbackIncludesPreviousUserFacingUpdate(t *testin
 	assert.Equal(t, "At this point, the retry is narrowing things down.", progress)
 	require.Len(t, gotObservations, 3)
 	assert.Equal(t, "Previous user-facing update: I've retried the image generation step.", gotObservations[0])
+}
+
+func TestGenerateRoundProgressFeedbackPassesConfiguredPrompt(t *testing.T) {
+	const configuredPrompt = "使用简体中文，每次只写一句执行进度。"
+	var gotPrompt string
+	runtime := &mockAgentProvider{
+		configSnap: agentConfigSnapshot{ProgressSummaryPrompt: configuredPrompt},
+		progressPromptFn: func(_ context.Context, _ string, _ int, _ []string, presentationPrompt string) (string, error) {
+			gotPrompt = presentationPrompt
+			return "已完成初步检查，正在继续验证。", nil
+		},
+	}
+	h := &Handler{
+		state:                 runtime,
+		chat:                  runtime,
+		progressSummaryPrompt: "stale prompt",
+	}
+
+	progress := h.generateRoundProgressFeedback(
+		context.Background(),
+		nil,
+		"检查部署状态",
+		1,
+		[]string{"Tool call: inspect deployment logs"},
+		nil,
+		"",
+	)
+
+	assert.Equal(t, "已完成初步检查，正在继续验证。", progress)
+	assert.Equal(t, configuredPrompt, gotPrompt)
 }
 
 func TestSmoothProgressSummaryAddsContinuityCueForRepeatedFirstPersonStart(t *testing.T) {

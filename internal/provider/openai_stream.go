@@ -722,9 +722,13 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 	var reasoning strings.Builder
 	var toolCalls []ToolCall
 	var usage *UsageDetails
+	sawTerminal := false
 	toolCallAcc := make(map[int]*deltaToolCall)
 
 	for chunk := range ch {
+		if chunk.Err != nil {
+			return nil, chunk.Err
+		}
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
 		}
@@ -763,8 +767,12 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 			}
 		}
 		if chunk.Done {
+			sawTerminal = true
 			break
 		}
+	}
+	if !sawTerminal {
+		return nil, io.ErrUnexpectedEOF
 	}
 
 	// 组装 tool calls
@@ -1004,7 +1012,10 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		}
 		if scanErr := scanner.Err(); scanErr != nil {
 			capture.writeError("scan_sse", scanErr)
+			ch <- StreamChunk{Err: fmt.Errorf("openai stream read: %w", scanErr), Model: cfg.LlmProvider.Model}
+			return
 		}
+		ch <- StreamChunk{Err: io.ErrUnexpectedEOF, Model: cfg.LlmProvider.Model}
 	}()
 
 	return ch, nil

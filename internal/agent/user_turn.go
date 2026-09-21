@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"encoding/base64"
 	"fmt"
 	"hash/fnv"
+	"net/http"
 	"strings"
 
 	"github.com/yurika0211/luckyagent/internal/gateway"
@@ -13,10 +15,13 @@ import (
  * UserTurnInput 将路由文本与结构化用户消息载荷分开
  */
 type UserTurnInput struct {
-	Message     provider.Message
-	RoutingText string
-	Attachments []gateway.Attachment
-	Scope       TurnScope
+	// OriginalText stays literal when gateways add sender or reply context.
+	// Runtime control commands must match the user text, not that wrapper.
+	OriginalText string
+	Message      provider.Message
+	RoutingText  string
+	Attachments  []gateway.Attachment
+	Scope        TurnScope
 }
 
 // TurnScope identifies the messaging scope for a user turn. It is intentionally
@@ -36,7 +41,8 @@ type TurnScope struct {
 func TextUserTurnInput(text string) UserTurnInput {
 	text = strings.TrimSpace(text)
 	return UserTurnInput{
-		RoutingText: text,
+		OriginalText: text,
+		RoutingText:  text,
 		Message: provider.Message{
 			Role:    "user",
 			Content: text,
@@ -52,9 +58,10 @@ func MultimodalUserTurnInput(text string, attachments []gateway.Attachment) User
 		Content: text,
 	}
 	return UserTurnInput{
-		Message:     msg,
-		RoutingText: text,
-		Attachments: append([]gateway.Attachment(nil), attachments...),
+		OriginalText: text,
+		Message:      msg,
+		RoutingText:  text,
+		Attachments:  append([]gateway.Attachment(nil), attachments...),
 	}
 }
 
@@ -68,6 +75,12 @@ func (in UserTurnInput) WithScope(scope TurnScope) UserTurnInput {
  * Normalize 填充 agent loop 和 provider 所需的最小字段
  */
 func (in UserTurnInput) Normalize() UserTurnInput {
+	if in.OriginalText == "" {
+		in.OriginalText = strings.TrimSpace(in.RoutingText)
+		if in.OriginalText == "" {
+			in.OriginalText = strings.TrimSpace(in.Message.Content)
+		}
+	}
 	msg := in.Message
 	if strings.TrimSpace(msg.Role) == "" {
 		msg.Role = "user"
@@ -105,10 +118,11 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 	msg.ContentParts = parts
 
 	return UserTurnInput{
-		Message:     msg,
-		RoutingText: routingText,
-		Attachments: append([]gateway.Attachment(nil), in.Attachments...),
-		Scope:       in.Scope.Normalize(),
+		OriginalText: in.OriginalText,
+		Message:      msg,
+		RoutingText:  routingText,
+		Attachments:  append([]gateway.Attachment(nil), in.Attachments...),
+		Scope:        in.Scope.Normalize(),
 	}
 }
 
@@ -310,12 +324,19 @@ func contentPartFromAttachment(att gateway.Attachment) (provider.ContentPart, bo
 	if att.Type != gateway.AttachmentImage {
 		return provider.ContentPart{}, false
 	}
+	url, path, mimeType := strings.TrimSpace(att.FileURL), strings.TrimSpace(att.FilePath), strings.TrimSpace(att.MimeType)
+	if path == "" && len(att.Data) > 0 {
+		if mimeType == "" {
+			mimeType = http.DetectContentType(att.Data)
+		}
+		url = "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(att.Data)
+	}
 	return provider.ContentPart{
 		Type: "image",
 		Image: &provider.ImagePart{
-			URL:      strings.TrimSpace(att.FileURL),
-			FilePath: strings.TrimSpace(att.FilePath),
-			MimeType: strings.TrimSpace(att.MimeType),
+			URL:      url,
+			FilePath: path,
+			MimeType: mimeType,
 		},
 	}, true
 }

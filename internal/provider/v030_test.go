@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,11 +15,13 @@ type mockProvider struct {
 	chatErr     error
 	streamErr   error
 	validateErr error
+	chatCalls   int
 }
 
 func (m *mockProvider) Name() string { return m.name }
 
 func (m *mockProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
+	m.chatCalls++
 	if m.chatErr != nil {
 		return nil, m.chatErr
 	}
@@ -106,6 +109,73 @@ func TestFallbackChainChatFallback(t *testing.T) {
 	}
 	if resp.Model != "mock2" {
 		t.Errorf("expected fallback to mock2, got %s", resp.Model)
+	}
+}
+
+func TestFallbackChainRetriesPrimaryOnNextRequest(t *testing.T) {
+	registry := NewRegistry()
+	primary := &mockProvider{name: "mock1", chatErr: fmt.Errorf("connection refused")}
+	fallback := &mockProvider{name: "mock2"}
+	registry.RegisterFactory("mock1", func(cfg Config) Provider { return primary })
+	registry.RegisterFactory("mock2", func(cfg Config) Provider { return fallback })
+
+	chain, _ := NewFallbackChain([]FallbackConfig{
+		{Name: "mock1", APIKey: "test", Model: "primary"},
+		{Name: "mock2", APIKey: "test", Model: "fallback"},
+	}, registry)
+
+	resp, err := chain.Chat(context.Background(), []Message{{Role: "user", Content: "first"}})
+	if err != nil || resp.Model != "mock2" {
+		t.Fatalf("expected first request to use fallback, response=%v err=%v", resp, err)
+	}
+	if got := chain.ActiveIndex(); got != 1 {
+		t.Fatalf("expected fallback to be active after success, got %d", got)
+	}
+
+	primary.chatErr = nil
+	resp, err = chain.Chat(context.Background(), []Message{{Role: "user", Content: "second"}})
+	if err != nil || resp.Model != "mock1" {
+		t.Fatalf("expected next request to probe recovered primary, response=%v err=%v", resp, err)
+	}
+	if got := chain.ActiveIndex(); got != 0 {
+		t.Fatalf("expected recovered primary to become active, got %d", got)
+	}
+	if primary.chatCalls != 2 || fallback.chatCalls != 1 {
+		t.Fatalf("unexpected call counts: primary=%d fallback=%d", primary.chatCalls, fallback.chatCalls)
+	}
+}
+
+func TestFallbackChainRetriesPrimaryAfterCooldown(t *testing.T) {
+	registry := NewRegistry()
+	primary := &mockProvider{name: "mock1", chatErr: fmt.Errorf("connection refused")}
+	fallback := &mockProvider{name: "mock2"}
+	registry.RegisterFactory("mock1", func(cfg Config) Provider { return primary })
+	registry.RegisterFactory("mock2", func(cfg Config) Provider { return fallback })
+
+	chain, _ := NewFallbackChain([]FallbackConfig{
+		{Name: "mock1", APIKey: "test", Model: "primary"},
+		{Name: "mock2", APIKey: "test", Model: "fallback"},
+	}, registry)
+	chain.maxFails = 1
+	chain.cooldown = time.Hour
+
+	if _, err := chain.Chat(context.Background(), []Message{{Role: "user", Content: "first"}}); err != nil {
+		t.Fatalf("first request: %v", err)
+	}
+	primary.chatErr = nil
+	if _, err := chain.Chat(context.Background(), []Message{{Role: "user", Content: "during cooldown"}}); err != nil {
+		t.Fatalf("request during cooldown: %v", err)
+	}
+	if primary.chatCalls != 1 {
+		t.Fatalf("primary should be skipped during cooldown, calls=%d", primary.chatCalls)
+	}
+
+	chain.mu.Lock()
+	chain.cooldownAt[0] = time.Now().Add(-time.Second)
+	chain.mu.Unlock()
+	resp, err := chain.Chat(context.Background(), []Message{{Role: "user", Content: "after cooldown"}})
+	if err != nil || resp.Model != "mock1" {
+		t.Fatalf("expected primary after cooldown, response=%v err=%v", resp, err)
 	}
 }
 
@@ -281,6 +351,40 @@ func TestFallbackChainStreamNoFallbackOnRequestError(t *testing.T) {
 	}
 }
 
+func TestFallbackChainDisablesModelNotFoundFallback(t *testing.T) {
+	registry := NewRegistry()
+	primary := &mockProvider{name: "mock1", chatErr: fmt.Errorf("connection refused")}
+	fallback := &mockProvider{name: "mock2", chatErr: fmt.Errorf(`API error 404: {"error":{"type":"model_not_found"}}`)}
+	registry.RegisterFactory("mock1", func(cfg Config) Provider { return primary })
+	registry.RegisterFactory("mock2", func(cfg Config) Provider { return fallback })
+
+	chain, _ := NewFallbackChain([]FallbackConfig{
+		{Name: "mock1", APIKey: "test", Model: "primary"},
+		{Name: "mock2", APIKey: "test", Model: "missing"},
+	}, registry)
+	chain.maxFails = 1
+
+	_, err := chain.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}})
+	if err == nil || !strings.Contains(err.Error(), "model_not_found") {
+		t.Fatalf("expected preserved model_not_found error, got %v", err)
+	}
+	if !chain.disabled[1] {
+		t.Fatal("expected model-not-found fallback to be disabled")
+	}
+
+	primary.chatErr = nil
+	chain.mu.Lock()
+	chain.cooldownAt[0] = time.Now().Add(-time.Second)
+	chain.mu.Unlock()
+	resp, err := chain.Chat(context.Background(), []Message{{Role: "user", Content: "again"}})
+	if err != nil || resp.Model != "mock1" {
+		t.Fatalf("expected recovered primary without retrying disabled fallback, response=%v err=%v", resp, err)
+	}
+	if fallback.chatCalls != 1 {
+		t.Fatalf("disabled fallback should not be called again, calls=%d", fallback.chatCalls)
+	}
+}
+
 func TestFallbackChainResetCooldown(t *testing.T) {
 	registry := NewRegistry()
 	registry.RegisterFactory("mock1", func(cfg Config) Provider {
@@ -298,6 +402,7 @@ func TestFallbackChainResetCooldown(t *testing.T) {
 	// 手动设置冷却
 	chain.mu.Lock()
 	chain.failCounts[0] = 3
+	chain.disabled[0] = true
 	chain.cooldownAt[0] = time.Now().Add(10 * time.Minute)
 	chain.mu.Unlock()
 
@@ -309,6 +414,9 @@ func TestFallbackChainResetCooldown(t *testing.T) {
 
 	if !chain.isAvailable(0) {
 		t.Error("should be available after reset")
+	}
+	if chain.disabled[0] {
+		t.Error("provider should be re-enabled after reset")
 	}
 }
 

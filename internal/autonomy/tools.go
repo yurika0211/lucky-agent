@@ -57,28 +57,33 @@ func (td *ToolDefinitions) HandleQueueAdd(args map[string]any) (string, error) {
 	if key, _ := args["idempotency_key"].(string); strings.TrimSpace(key) != "" {
 		metadata["idempotency_key"] = strings.TrimSpace(key)
 	}
-	task, err := td.kit.AddTaskWithMetadata(title, description, priority, tags, metadata)
+	criteria, err := ParseAcceptanceCriteria(args["acceptance_criteria"])
+	if err != nil {
+		return "", err
+	}
+	task, deduped, err := td.kit.Queue().AddWithAcceptance(title, description, priority, tags, metadata, criteria)
 	if err != nil {
 		return "", err
 	}
 	ready, inProgress, blocked, done := td.kit.Queue().Stats()
 
 	result, _ := json.Marshal(map[string]any{
-		"ok":                true,
-		"action":            "add",
-		"task_id":           task.ID,
-		"title":             task.Title,
-		"priority":          task.Priority.String(),
-		"state":             task.State,
-		"tags":              task.Tags,
-		"metadata":          task.Metadata,
-		"deduped":           false,
-		"queue_ready":       ready,
-		"queue_in_progress": inProgress,
-		"queue_blocked":     blocked,
-		"queue_done":        done,
-		"worker_count":      safeWorkerCount(td.kit),
-		"message":           fmt.Sprintf("Task '%s' added to queue with %s priority", title, priority),
+		"ok":                  true,
+		"action":              "add",
+		"task_id":             task.ID,
+		"title":               task.Title,
+		"priority":            task.Priority.String(),
+		"state":               task.State,
+		"tags":                task.Tags,
+		"metadata":            task.Metadata,
+		"deduped":             deduped,
+		"acceptance_criteria": task.AcceptanceCriteria,
+		"queue_ready":         ready,
+		"queue_in_progress":   inProgress,
+		"queue_blocked":       blocked,
+		"queue_done":          done,
+		"worker_count":        safeWorkerCount(td.kit),
+		"message":             fmt.Sprintf("Task '%s' added to queue with %s priority", title, priority),
 	})
 
 	return string(result), nil
@@ -102,12 +107,22 @@ func (td *ToolDefinitions) HandleQueueList(args map[string]any) (string, error) 
 	var items []map[string]any
 	for _, t := range tasks {
 		item := map[string]any{
-			"id":          t.ID,
-			"title":       t.Title,
-			"priority":    t.Priority.String(),
-			"state":       t.State,
-			"assigned_to": t.AssignedTo,
-			"tags":        t.Tags,
+			"id":                    t.ID,
+			"title":                 t.Title,
+			"priority":              t.Priority.String(),
+			"state":                 t.State,
+			"assigned_to":           t.AssignedTo,
+			"tags":                  t.Tags,
+			"session_id":            t.SessionID,
+			"attempts":              t.Attempts,
+			"retries":               t.Retries,
+			"continuations":         t.Continuations,
+			"next_run_at":           t.NextRunAt,
+			"checkpoint_at":         t.CheckpointAt,
+			"verified":              t.Verified,
+			"verification":          t.Verification,
+			"acceptance_criteria":   t.AcceptanceCriteria,
+			"unresolved_operations": unresolvedOperations(t),
 		}
 		if t.Result != "" {
 			item["result_preview"] = truncateToolText(t.Result, 1200)
@@ -165,14 +180,21 @@ func (td *ToolDefinitions) HandleReport(args map[string]any) (string, error) {
 	items := make([]map[string]any, 0, len(tasks))
 	for _, t := range tasks {
 		item := map[string]any{
-			"id":          t.ID,
-			"title":       t.Title,
-			"description": t.Description,
-			"priority":    t.Priority.String(),
-			"state":       t.State,
-			"assigned_to": t.AssignedTo,
-			"tags":        t.Tags,
-			"created_at":  t.CreatedAt,
+			"id":                    t.ID,
+			"title":                 t.Title,
+			"description":           t.Description,
+			"priority":              t.Priority.String(),
+			"state":                 t.State,
+			"assigned_to":           t.AssignedTo,
+			"tags":                  t.Tags,
+			"created_at":            t.CreatedAt,
+			"verified":              t.Verified,
+			"verification":          t.Verification,
+			"attempts":              t.Attempts,
+			"retries":               t.Retries,
+			"continuations":         t.Continuations,
+			"checkpoint_at":         t.CheckpointAt,
+			"unresolved_operations": unresolvedOperations(t),
 		}
 		if !t.StartedAt.IsZero() {
 			item["started_at"] = t.StartedAt
@@ -213,13 +235,19 @@ func (td *ToolDefinitions) HandleQueueUpdate(args map[string]any) (string, error
 
 	action, _ := args["action"].(string)
 	if action == "" {
-		return "", fmt.Errorf("action is required (complete, fail, block, unblock)")
+		return "", fmt.Errorf("action is required (complete, fail, block, unblock, resolve)")
 	}
 
 	var err error
 	var msg string
 
 	switch action {
+	case "resolve":
+		operationID, _ := args["operation_id"].(string)
+		resolution, _ := args["resolution"].(string)
+		output, _ := args["result"].(string)
+		err = td.kit.Queue().ResolveOperation(taskID, operationID, resolution, output)
+		msg = "Operation reconciled; use unblock after checking all unresolved operations"
 	case "complete":
 		result, _ := args["result"].(string)
 		err = td.kit.Queue().Complete(taskID, result)
@@ -244,7 +272,7 @@ func (td *ToolDefinitions) HandleQueueUpdate(args map[string]any) (string, error
 		err = td.kit.Queue().Unblock(taskID)
 		msg = fmt.Sprintf("Task %s unblocked and back in ready queue", taskID)
 	default:
-		return "", fmt.Errorf("unknown action: %s (use: complete, fail, block, unblock)", action)
+		return "", fmt.Errorf("unknown action: %s (use: complete, fail, block, unblock, resolve)", action)
 	}
 
 	if err != nil {
@@ -278,31 +306,65 @@ func (td *ToolDefinitions) HandleWorkerSpawn(args map[string]any) (string, error
 		return "", fmt.Errorf("task %s is not ready (state: %s)", taskID, task.State)
 	}
 
-	// Find an idle worker
-	worker := td.kit.Pool().findIdleWorker()
-	if worker == nil {
-		return "", fmt.Errorf("no idle workers available")
+	dispatched, workerID, err := td.kit.Pool().dispatchOne(context.Background(), taskID)
+	if err != nil {
+		return "", err
 	}
-
-	// Pull the task for this worker
-	pulled := td.kit.Queue().Pull(worker.ID)
-	if pulled == nil || pulled.ID != taskID {
-		return "", fmt.Errorf("failed to pull task %s", taskID)
+	if dispatched == "" {
+		return "", fmt.Errorf("task not eligible, runtime stopped, or no idle worker available")
 	}
-
-	// Execute asynchronously
-	go td.kit.Pool().executeTask(context.Background(), worker, pulled)
 
 	result, _ := json.Marshal(map[string]any{
 		"ok":        true,
 		"action":    "spawn",
 		"task_id":   taskID,
-		"worker_id": worker.ID,
+		"worker_id": workerID,
 		"status":    "dispatched",
-		"message":   fmt.Sprintf("Task '%s' dispatched to worker %s", task.Title, worker.ID),
+		"message":   fmt.Sprintf("Task '%s' dispatched to worker %s", task.Title, workerID),
 	})
 
 	return string(result), nil
+}
+
+func ParseAcceptanceCriteria(raw any) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	var items []string
+	switch v := raw.(type) {
+	case []string:
+		items = append(items, v...)
+	case []any:
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("acceptance_criteria must contain strings")
+			}
+			items = append(items, s)
+		}
+	default:
+		return nil, fmt.Errorf("acceptance_criteria must be an array of strings")
+	}
+	for i := range items {
+		items[i] = strings.TrimSpace(items[i])
+		if items[i] == "" {
+			return nil, fmt.Errorf("acceptance criterion cannot be empty")
+		}
+	}
+	if len(items) > 32 {
+		return nil, fmt.Errorf("at most 32 acceptance criteria are supported")
+	}
+	return items, nil
+}
+
+func unresolvedOperations(t *QueueTask) []Operation {
+	var out []Operation
+	for _, op := range t.Operations {
+		if op.State == "started" {
+			out = append(out, op)
+		}
+	}
+	return out
 }
 
 // HandleWorkerList lists active workers.

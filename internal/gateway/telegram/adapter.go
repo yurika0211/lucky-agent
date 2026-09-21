@@ -100,13 +100,16 @@ func (a *Adapter) Start(ctx context.Context) error {
 		return fmt.Errorf("telegram: bot token is required")
 	}
 
-	client, err := a.newHTTPClient()
+	pollCtx, cancel := context.WithCancel(ctx)
+	client, err := a.newHTTPClientWithContext(pollCtx)
 	if err != nil {
+		cancel()
 		return err
 	}
 
 	bot, err := tgbotapi.NewBotAPIWithClient(a.cfg.Token, tgbotapi.APIEndpoint, client)
 	if err != nil {
+		cancel()
 		return fmt.Errorf("telegram: create bot: %w", err)
 	}
 
@@ -117,7 +120,6 @@ func (a *Adapter) Start(ctx context.Context) error {
 	}
 
 	// Create cancellable context for the polling loop
-	pollCtx, cancel := context.WithCancel(ctx)
 	a.cancel = cancel
 	a.running = true
 
@@ -176,6 +178,43 @@ func (a *Adapter) newHTTPClient() (*http.Client, error) {
 	}
 
 	return &http.Client{Transport: transport}, nil
+}
+
+// newHTTPClientWithContext binds Telegram API requests to the adapter
+// lifecycle while preserving per-request cancellation and deadlines.
+func (a *Adapter) newHTTPClientWithContext(ctx context.Context) (*http.Client, error) {
+	client, err := a.newHTTPClient()
+	if err != nil {
+		return nil, err
+	}
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = &lifecycleRoundTripper{ctx: ctx, base: base}
+	return client, nil
+}
+
+type lifecycleRoundTripper struct {
+	ctx  context.Context
+	base http.RoundTripper
+}
+
+func (t *lifecycleRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if t == nil || t.base == nil {
+		return nil, fmt.Errorf("telegram: HTTP transport is not initialized")
+	}
+	if t.ctx == nil {
+		return t.base.RoundTrip(req)
+	}
+
+	requestCtx, cancel := context.WithCancel(req.Context())
+	stop := context.AfterFunc(t.ctx, cancel)
+	defer func() {
+		stop()
+		cancel()
+	}()
+	return t.base.RoundTrip(req.Clone(requestCtx))
 }
 
 func parseReplyToMessageID(replyToMsgID string) (int, error) {
@@ -685,12 +724,14 @@ type telegramStreamSender struct {
 	replyToID int
 	threadID  int
 
-	mu        sync.Mutex
-	content   string // 已生成的正文内容
-	thinking  string // 当前思考/工具调用标签
-	editCount int
-	lastEdit  time.Time
-	finished  bool
+	mu         sync.Mutex
+	content    string // 已生成的正文内容
+	thinking   string // 当前思考/工具调用标签
+	editCount  int
+	lastEdit   time.Time
+	finished   bool
+	flushTimer *time.Timer
+	flushGen   uint64
 }
 
 // minEditInterval 是两次消息编辑之间的最小间隔（避免触发 Telegram 限流）
@@ -772,6 +813,7 @@ func (s *telegramStreamSender) SetHTMLCard(content string) error {
 	if content == "" {
 		return nil
 	}
+	s.cancelScheduledEditLocked()
 	s.content = content
 	s.thinking = ""
 	return s.editMessageHTML(content)
@@ -784,6 +826,7 @@ func (s *telegramStreamSender) Finish() error {
 	if s.finished {
 		return nil
 	}
+	s.cancelScheduledEditLocked()
 	s.finished = true
 	s.thinking = ""
 
@@ -817,12 +860,55 @@ func (s *telegramStreamSender) throttledEdit() error {
 	}
 
 	// 距离上次编辑太近，跳过
-	if time.Since(s.lastEdit) < minEditInterval {
+	if sinceLastEdit := time.Since(s.lastEdit); sinceLastEdit < minEditInterval {
+		s.scheduleEditLocked(minEditInterval - sinceLastEdit)
 		return nil
 	}
 
+	s.cancelScheduledEditLocked()
 	display := s.renderContent()
 	return s.editMessage(display)
+}
+
+// scheduleEditLocked coalesces rapid provider chunks into one Telegram edit.
+// The caller must hold s.mu.
+func (s *telegramStreamSender) scheduleEditLocked(delay time.Duration) {
+	if s.finished || s.editCount >= maxEdits || s.flushTimer != nil {
+		return
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	s.flushGen++
+	flushGen := s.flushGen
+	s.flushTimer = time.AfterFunc(delay, func() {
+		s.flushScheduledEdit(flushGen)
+	})
+}
+
+// cancelScheduledEditLocked prevents a stale delayed edit from overwriting a
+// final response or an HTML progress card. The caller must hold s.mu.
+func (s *telegramStreamSender) cancelScheduledEditLocked() {
+	if s.flushTimer == nil {
+		return
+	}
+	s.flushTimer.Stop()
+	s.flushTimer = nil
+	s.flushGen++
+}
+
+func (s *telegramStreamSender) flushScheduledEdit(flushGen uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if flushGen != s.flushGen {
+		return
+	}
+	s.flushTimer = nil
+	if s.finished || s.editCount >= maxEdits {
+		return
+	}
+	_ = s.editMessage(s.renderContent())
 }
 
 // renderContent 渲染当前消息内容：思考标签 + 正文

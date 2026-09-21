@@ -9,34 +9,38 @@ import (
 )
 
 type mediaRuntime struct {
-	processor            *multimodal.Processor
-	imageGenerator       multimodal.ImageGenerator
-	imageDefaults        tool.ImageGenerationDefaults
-	speechSynthesizer    multimodal.SpeechSynthesizer
-	ttsDefaults          tool.TTSDefaults
-	defaultImageProvider string
+	processor         *multimodal.Processor
+	imageGenerator    multimodal.ImageGenerator
+	imageDefaults     tool.ImageGenerationDefaults
+	speechSynthesizer multimodal.SpeechSynthesizer
+	ttsDefaults       tool.TTSDefaults
 }
 
 func buildMediaRuntime(c *config.Config) mediaRuntime {
 	runtime := mediaRuntime{processor: multimodal.NewProcessor()}
 	_ = runtime.processor.RegisterProvider(multimodal.NewLocalProvider(
 		multimodal.ModalityText,
-		multimodal.ModalityImage,
-		multimodal.ModalityAudio,
 		multimodal.ModalityVideo,
-		multimodal.ModalityDocument,
 	), true)
 
-	mmCfg, mmOK := resolveOpenAIMultimodalConfig(c)
-	if mmOK {
-		if openaiMedia, err := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
-			APIKey:             mmCfg.APIKey,
-			APIBase:            mmCfg.APIBase,
-			ResponsesModel:     mmCfg.ImageModel,
-			TranscriptionModel: mmCfg.TranscriptionModel,
+	for _, kind := range []config.ModelKind{config.ModelKindVision, config.ModelKindTranscription} {
+		selection, ok := c.ModelSelection(kind)
+		if !ok {
+			continue
+		}
+		ep := c.ModelEndpoint(kind)
+		modalities := []multimodal.Modality{multimodal.ModalityImage, multimodal.ModalityDocument}
+		if kind == config.ModelKindTranscription {
+			modalities = []multimodal.Modality{multimodal.ModalityAudio}
+		}
+		if ep.Provider == "local" {
+			_ = runtime.processor.RegisterProvider(multimodal.NewLocalProvider(modalities...), true, modalities...)
+			continue
+		}
+		if media, err := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
+			APIKey: ep.APIKey, APIBase: ep.APIBase, ResponsesModel: selection.ID, TranscriptionModel: selection.ID,
 		}); err == nil {
-			_ = runtime.processor.RegisterProvider(openaiMedia, true)
-			runtime.imageGenerator = openaiMedia
+			_ = runtime.processor.RegisterProvider(media, true, modalities...)
 		}
 	}
 
@@ -50,10 +54,8 @@ func buildMediaRuntime(c *config.Config) mediaRuntime {
 			}
 		case "openai":
 			if generator, err := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
-				APIKey:             imageCfg.APIKey,
-				APIBase:            imageCfg.APIBase,
-				ResponsesModel:     mmCfg.ImageModel,
-				TranscriptionModel: mmCfg.TranscriptionModel,
+				APIKey:  imageCfg.APIKey,
+				APIBase: imageCfg.APIBase,
 			}); err == nil {
 				runtime.imageGenerator = generator
 			}
@@ -81,7 +83,6 @@ func buildMediaRuntime(c *config.Config) mediaRuntime {
 		Model: strings.TrimSpace(c.TTS.Model), Voice: strings.TrimSpace(c.TTS.Voice),
 		Format: strings.TrimSpace(c.TTS.Format), Speed: c.TTS.Speed,
 	}
-	runtime.defaultImageProvider = c.Multimodal.ImageProvider
 	return runtime
 }
 
@@ -94,6 +95,6 @@ func (a *Agent) reloadMediaRuntime(c *config.Config) {
 	a.mediaProcessor = next.processor
 	a.mediaMu.Unlock()
 	if a.toolServices != nil {
-		a.toolServices.ReloadMediaTools(a.tools, next.defaultImageProvider, next.processor, next.imageGenerator, next.imageDefaults, next.speechSynthesizer, next.ttsDefaults)
+		a.toolServices.ReloadMediaTools(a.tools, "", next.processor, next.imageGenerator, next.imageDefaults, next.speechSynthesizer, next.ttsDefaults)
 	}
 }
