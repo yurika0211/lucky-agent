@@ -8,6 +8,7 @@
     "dev": "node scripts/dev.mjs",
     "start": "electron .",
     "start:dist": "LH_ELECTRON_LOAD=dist electron .",
+    "install:linux": "bash ../../scripts/install-desktop-entry.sh",
     "typecheck": "node -e \"require('fs').accessSync('main.cjs'); console.log('desktop shell ok')\""
   },
   "devDependencies": {

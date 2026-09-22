@@ -15,7 +15,8 @@
     "typecheck": "npm run typecheck --workspace GUI && npm run typecheck --workspace TUI",
     "dev:desktop": "npm run dev --workspace @luckyagent/desktop",
     "start:desktop": "npm run start --workspace @luckyagent/desktop",
-    "typecheck:desktop": "npm run typecheck --workspace @luckyagent/desktop"
+    "typecheck:desktop": "npm run typecheck --workspace @luckyagent/desktop",
+    "install:desktop": "bash ../scripts/install-desktop-entry.sh"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

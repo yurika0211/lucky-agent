@@ -86,6 +86,17 @@ jobs:
           set -euo pipefail
           npm ci
           npm run build
+          # desktop workspace must provide a platform Electron runtime for packaging
+          if [[ ! -d node_modules/electron/dist ]]; then
+            echo "Electron runtime missing after npm ci (UI/node_modules/electron/dist)" >&2
+            exit 1
+          fi
+          if [[ ! -x node_modules/electron/dist/electron \
+             && ! -x node_modules/electron/dist/Electron.app/Contents/MacOS/Electron ]]; then
+            echo "Electron binary missing under node_modules/electron/dist" >&2
+            ls -la node_modules/electron/dist || true
+            exit 1
+          fi
 
       - name: Build bundled GUI and TUI
         if: runner.os == 'Windows'
@@ -94,6 +105,9 @@ jobs:
         run: |
           npm ci
           npm run build
+          if (-not (Test-Path "node_modules\electron\dist\electron.exe")) {
+            throw "Electron runtime missing after npm ci (UI/node_modules/electron/dist/electron.exe)"
+          }
 
       - name: Install Inno Setup
         if: runner.os == 'Windows'
@@ -140,11 +154,16 @@ jobs:
           node_root="$(cd "$node_bin/.." && pwd)"
           stage="dist/release-root"
           bash scripts/prepare-release-bundle.sh "$stage" "dist/${{ matrix.binary_name }}" "$node_root"
+          test -x "$stage/luckyagent-desktop"
+          test -d "$stage/runtime/electron"
+          test -f "$stage/desktop/main.cjs"
           tar -czf "${{ matrix.archive_name }}" -C "$stage" .
           if [[ "${{ matrix.goos }}" == "linux" ]]; then
             bash scripts/build-linux-deb.sh "${{ github.ref_name }}" "${{ matrix.goarch }}" "$stage" dist
+            ls dist/*.deb >/dev/null
           else
             bash scripts/build-macos-installer.sh "${{ github.ref_name }}" "${{ matrix.goarch }}" "$stage" dist
+            ls dist/*.pkg >/dev/null
           fi
 
       - name: Package release archive
@@ -155,6 +174,15 @@ jobs:
         run: |
           $nodeRoot = Split-Path -Parent (Get-Command node).Source
           ./scripts/build-windows-installer.ps1 -Version $env:VERSION -NodeRuntimeRoot $nodeRoot
+          if (-not (Test-Path "dist\windows-installer\runtime\electron\electron.exe")) {
+            throw "Windows installer stage is missing Electron runtime"
+          }
+          if (-not (Test-Path "dist\windows-installer\desktop\main.cjs")) {
+            throw "Windows installer stage is missing desktop shell"
+          }
+          if (-not (Get-ChildItem "dist\LuckyAgent-Setup-*.exe")) {
+            throw "Windows setup exe was not produced"
+          }
           Compress-Archive -Path "dist/windows-installer/*" -DestinationPath "${{ matrix.archive_name }}" -Force
 
       - name: Upload artifact
