@@ -1670,6 +1670,10 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 }
 
 func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error {
+	if !h.restartAllowed(msg) {
+		return h.reply(ctx, msg, "无权限执行重启，仅白名单用户可用。")
+	}
+
 	h.mu.Lock()
 	if h.restarting {
 		h.mu.Unlock()
@@ -1678,7 +1682,7 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 	h.restarting = true
 	h.mu.Unlock()
 
-	_ = h.reply(ctx, msg, "正在重启 "+h.display()+"...")
+	_ = h.reply(ctx, msg, "正在重启 "+h.display()+"...\n（仅重连网关，不重启进程）")
 
 	go func(chatID string, replyTo *gateway.Message) {
 		defer func() {
@@ -1687,22 +1691,21 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 			h.mu.Unlock()
 		}()
 
-		h.cancelChatTask(chatID)
-
-		if err := h.adapter.Stop(); err != nil {
-			fmt.Printf("[%s] restart stop failed: %v\n", h.logPrefixValue(), err)
-		}
-		time.Sleep(1200 * time.Millisecond)
-
-		if err := h.adapter.Start(context.Background()); err != nil {
-			fmt.Printf("[%s] restart start failed: %v\n", h.logPrefixValue(), err)
+		cancelled := h.cancelAllChatTasks()
+		result, err := gateway.RestartGateway(context.Background(), h.adapter, gateway.RestartOptions{
+			SettleDelay:  300 * time.Millisecond,
+			ReadyTimeout: 15 * time.Second,
+			PollInterval: 100 * time.Millisecond,
+		})
+		if err != nil {
+			fmt.Printf("[%s] restart failed: %v\n", h.logPrefixValue(), err)
 			if replyTo != nil {
-				_ = h.reply(context.Background(), replyTo, fmt.Sprintf("%s重启失败：%v", h.display(), err))
+				_ = h.reply(context.Background(), replyTo, fmt.Sprintf("%s重启失败：%v\n已取消任务：%d", h.display(), err, cancelled))
 			}
 			return
 		}
 		if replyTo != nil {
-			_ = h.reply(context.Background(), replyTo, h.display()+"已重连并恢复接收消息。")
+			_ = h.reply(context.Background(), replyTo, fmt.Sprintf("%s已重连并恢复接收消息。\n耗时：%s · 已取消任务：%d", h.display(), result.Duration.Round(time.Millisecond), cancelled))
 		}
 	}(msg.Chat.ID, msg)
 
@@ -1853,6 +1856,39 @@ func (h *Handler) cancelChatTask(chatID string) bool {
 		return false
 	}
 	task.cancel()
+	return true
+}
+
+// cancelAllChatTasks cancels every in-flight chat task and drops queued work.
+func (h *Handler) cancelAllChatTasks() int {
+	h.mu.Lock()
+	tasks := h.tasks
+	h.tasks = make(map[string]*chatTask)
+	h.queues = make(map[string]*chatQueue)
+	h.mu.Unlock()
+
+	cancelled := 0
+	for _, task := range tasks {
+		if task == nil || task.cancel == nil {
+			continue
+		}
+		task.cancel()
+		cancelled++
+	}
+	return cancelled
+}
+
+func (h *Handler) restartAllowed(msg *gateway.Message) bool {
+	if msg == nil {
+		return true
+	}
+	// When AllowedUsers is configured on the concrete adapter, restrict /restart.
+	if adapter, ok := h.adapter.(*Adapter); ok {
+		if len(adapter.cfg.AllowedUsers) == 0 {
+			return true // no allowlist → allow (backward compatible)
+		}
+		return adapter.cfg.IsUserAllowed(msg.Sender.ID)
+	}
 	return true
 }
 

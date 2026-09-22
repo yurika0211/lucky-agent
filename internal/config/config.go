@@ -484,20 +484,22 @@ type MsgGatewayConfig struct {
 
 // MsgGatewayTelegram Telegram 网关配置
 type MsgGatewayTelegram struct {
-	Token                     string `json:"token,omitempty"`
-	Proxy                     string `json:"proxy,omitempty"`                        // Telegram API proxy URL (http/https/socks5)
-	ChatTimeoutSeconds        int    `json:"chat_timeout_seconds,omitempty"`         // Telegram 对话总超时（秒）
-	ProgressAsMessages        bool   `json:"progress_as_messages,omitempty"`         // 中间思考/工具步骤是否单独发消息
-	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
-	ProgressSummaryWithLLM    bool   `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
-	ProgressSummaryPrompt     string `json:"progress_summary_prompt,omitempty"`      // Reasoning Trace 进度摘要的展示提示词（为空使用默认提示词）
-	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
-	DisableAutoReaction       bool   `json:"disable_auto_reaction,omitempty"`        // 是否关闭群聊请求确认表情
-	MaxConcurrentSessions     int    `json:"max_concurrent_sessions,omitempty"`      // Telegram 会话 worker 并发上限
-	MemoryTrace               bool   `json:"memory_trace,omitempty"`                 // 是否发送 Memory Trace 卡片
-	MemoryTraceLevel          string `json:"memory_trace_level,omitempty"`           // summary 或 full
-	MemoryTraceMaxResults     int    `json:"memory_trace_max_results,omitempty"`     // Memory Trace 最多展示的结果数
-	MemoryTraceMaxHops        int    `json:"memory_trace_max_hops,omitempty"`        // Memory Trace 最多展示的图路径数
+	Token                     string   `json:"token,omitempty"`
+	Proxy                     string   `json:"proxy,omitempty"`                        // Telegram API proxy URL (http/https/socks5)
+	AllowedChats              []string `json:"allowed_chats,omitempty"`                // Chat ID 白名单（空=全部允许）
+	AdminIDs                  []string `json:"admin_ids,omitempty"`                    // 管理员用户 ID；非空时限制 /restart 等管理命令
+	ChatTimeoutSeconds        int      `json:"chat_timeout_seconds,omitempty"`         // Telegram 对话总超时（秒）
+	ProgressAsMessages        bool     `json:"progress_as_messages,omitempty"`         // 中间思考/工具步骤是否单独发消息
+	ProgressAsNaturalLanguage bool     `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
+	ProgressSummaryWithLLM    bool     `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
+	ProgressSummaryPrompt     string   `json:"progress_summary_prompt,omitempty"`      // Reasoning Trace 进度摘要的展示提示词（为空使用默认提示词）
+	ShowToolDetailsInResult   bool     `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
+	DisableAutoReaction       bool     `json:"disable_auto_reaction,omitempty"`        // 是否关闭群聊请求确认表情
+	MaxConcurrentSessions     int      `json:"max_concurrent_sessions,omitempty"`      // Telegram 会话 worker 并发上限
+	MemoryTrace               bool     `json:"memory_trace,omitempty"`                 // 是否发送 Memory Trace 卡片
+	MemoryTraceLevel          string   `json:"memory_trace_level,omitempty"`           // summary 或 full
+	MemoryTraceMaxResults     int      `json:"memory_trace_max_results,omitempty"`     // Memory Trace 最多展示的结果数
+	MemoryTraceMaxHops        int      `json:"memory_trace_max_hops,omitempty"`        // Memory Trace 最多展示的图路径数
 }
 
 // MsgGatewayQQOfficial QQ 官方机器人配置
@@ -1774,6 +1776,8 @@ func cloneConfig(in *Config) *Config {
 	cp.Tools.Filesystem.AllowedReadRoots = append([]string(nil), in.Tools.Filesystem.AllowedReadRoots...)
 	cp.Tools.ComputerUse.AllowedSources = append([]string(nil), in.Tools.ComputerUse.AllowedSources...)
 	cp.Tools.ComputerUse.AllowedWindows = append([]string(nil), in.Tools.ComputerUse.AllowedWindows...)
+	cp.MsgGateway.Telegram.AllowedChats = append([]string(nil), in.MsgGateway.Telegram.AllowedChats...)
+	cp.MsgGateway.Telegram.AdminIDs = append([]string(nil), in.MsgGateway.Telegram.AdminIDs...)
 	cp.MsgGateway.QQOfficial.AllowedChats = append([]string(nil), in.MsgGateway.QQOfficial.AllowedChats...)
 	cp.MsgGateway.QQOfficial.AllowedUsers = append([]string(nil), in.MsgGateway.QQOfficial.AllowedUsers...)
 	cp.MsgGateway.QQOfficial.Intents = append([]string(nil), in.MsgGateway.QQOfficial.Intents...)
@@ -2383,6 +2387,10 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.Token = value
 	case "msg_gateway.telegram.proxy":
 		m.config.MsgGateway.Telegram.Proxy = value
+	case "msg_gateway.telegram.allowed_chats":
+		m.config.MsgGateway.Telegram.AllowedChats = splitCSV(value)
+	case "msg_gateway.telegram.admin_ids":
+		m.config.MsgGateway.Telegram.AdminIDs = splitCSV(value)
 	case "msg_gateway.telegram.chat_timeout_seconds":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

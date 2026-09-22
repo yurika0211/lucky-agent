@@ -100,6 +100,13 @@ func (a *Adapter) Start(ctx context.Context) error {
 		return fmt.Errorf("telegram: bot token is required")
 	}
 
+	a.mu.Lock()
+	if a.running {
+		a.mu.Unlock()
+		return nil
+	}
+	a.mu.Unlock()
+
 	pollCtx, cancel := context.WithCancel(ctx)
 	client, err := a.newHTTPClientWithContext(pollCtx)
 	if err != nil {
@@ -113,15 +120,22 @@ func (a *Adapter) Start(ctx context.Context) error {
 		return fmt.Errorf("telegram: create bot: %w", err)
 	}
 
+	a.mu.Lock()
+	// Re-check after slow network setup to avoid double pollers.
+	if a.running {
+		a.mu.Unlock()
+		cancel()
+		return nil
+	}
 	a.bot = bot
 	a.botUsername = bot.Self.UserName
+	a.cancel = cancel
+	a.running = true
+	a.mu.Unlock()
+
 	if err := a.registerBotCommands(); err != nil {
 		fmt.Printf("[telegram] warning: failed to register bot commands: %v\n", err)
 	}
-
-	// Create cancellable context for the polling loop
-	a.cancel = cancel
-	a.running = true
 
 	// Start polling in background
 	a.wg.Add(1)
@@ -282,10 +296,15 @@ func splitTelegramCaption(caption string) (inline string, overflow string) {
 
 // Stop gracefully shuts down the adapter.
 func (a *Adapter) Stop() error {
-	if a.cancel != nil {
-		a.cancel()
-	}
+	a.mu.Lock()
+	cancel := a.cancel
+	a.cancel = nil
 	a.running = false
+	a.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
 	// Wait for the polling goroutine to fully exit before returning, so a
 	// subsequent Start() cannot create a second concurrent poller (which
 	// previously caused duplicate-process behavior after /restart).
@@ -301,8 +320,8 @@ func (a *Adapter) Send(ctx context.Context, chatID string, message string) error
 
 // SendWithReceipt sends a message and returns the first Telegram message ID.
 func (a *Adapter) SendWithReceipt(ctx context.Context, chatID string, message string) (gateway.SentMessage, error) {
-	if !a.running || a.bot == nil {
-		return gateway.SentMessage{}, fmt.Errorf("telegram: adapter not running")
+	if a.bot == nil {
+		return gateway.SentMessage{}, fmt.Errorf("telegram: bot is not initialized")
 	}
 
 	message = sanitizeOutgoingText(message)
@@ -335,8 +354,8 @@ func (a *Adapter) SendHTML(ctx context.Context, chatID string, message string) e
 }
 
 func (a *Adapter) SendHTMLWithReceipt(ctx context.Context, chatID string, message string) (gateway.SentMessage, error) {
-	if !a.running || a.bot == nil {
-		return gateway.SentMessage{}, fmt.Errorf("telegram: adapter not running")
+	if a.bot == nil {
+		return gateway.SentMessage{}, fmt.Errorf("telegram: bot is not initialized")
 	}
 
 	message = strings.TrimSpace(message)
@@ -365,8 +384,8 @@ func (a *Adapter) SendHTMLWithReceipt(ctx context.Context, chatID string, messag
 }
 
 func (a *Adapter) EditHTML(ctx context.Context, chatID, messageID, message string, markup *tgbotapi.InlineKeyboardMarkup) error {
-	if !a.running || a.bot == nil {
-		return fmt.Errorf("telegram: adapter not running")
+	if a.bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
 	}
 	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
@@ -386,8 +405,8 @@ func (a *Adapter) EditHTML(ctx context.Context, chatID, messageID, message strin
 }
 
 func (a *Adapter) AnswerCallback(callbackID, text string) error {
-	if !a.running || a.bot == nil {
-		return fmt.Errorf("telegram: adapter not running")
+	if a.bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
 	}
 	_, err := a.bot.Request(tgbotapi.NewCallback(callbackID, text))
 	return err
@@ -401,8 +420,8 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 
 // SendWithReplyReceipt sends a reply and returns the first Telegram message ID.
 func (a *Adapter) SendWithReplyReceipt(ctx context.Context, chatID string, replyToMsgID string, message string) (gateway.SentMessage, error) {
-	if !a.running || a.bot == nil {
-		return gateway.SentMessage{}, fmt.Errorf("telegram: adapter not running")
+	if a.bot == nil {
+		return gateway.SentMessage{}, fmt.Errorf("telegram: bot is not initialized")
 	}
 
 	message = sanitizeOutgoingText(message)
@@ -435,8 +454,8 @@ func (a *Adapter) SendWithReplyReceipt(ctx context.Context, chatID string, reply
 
 // SendWithReplyHTML sends a pre-rendered Telegram HTML message as a reply.
 func (a *Adapter) SendWithReplyHTML(ctx context.Context, chatID string, replyToMsgID string, message string) error {
-	if !a.running || a.bot == nil {
-		return fmt.Errorf("telegram: adapter not running")
+	if a.bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
 	}
 
 	message = strings.TrimSpace(message)
@@ -469,8 +488,8 @@ func (a *Adapter) SendWithReplyHTML(ctx context.Context, chatID string, replyToM
 // caption doesn't fit Telegram's inline caption limit, the full caption is
 // sent as a separate follow-up text message instead of being truncated.
 func (a *Adapter) SendPhoto(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
-	if !a.running || a.bot == nil {
-		return fmt.Errorf("telegram: adapter not running")
+	if a.bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
 	}
 
 	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
@@ -515,8 +534,8 @@ func (a *Adapter) SendPhoto(ctx context.Context, chatID string, replyToMsgID str
 // caption is sent as a separate follow-up text message instead of being
 // truncated.
 func (a *Adapter) SendDocument(ctx context.Context, chatID string, replyToMsgID string, source string, caption string) error {
-	if !a.running || a.bot == nil {
-		return fmt.Errorf("telegram: adapter not running")
+	if a.bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
 	}
 
 	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
@@ -558,6 +577,8 @@ func (a *Adapter) SendDocument(ctx context.Context, chatID string, replyToMsgID 
 
 // IsRunning returns whether the adapter is currently connected.
 func (a *Adapter) IsRunning() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
 	return a.running
 }
 

@@ -1219,6 +1219,8 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		tgAdapter := telegram.NewAdapter(telegram.Config{
 			Token:               opts.Token,
 			Proxy:               cfg.MsgGateway.Telegram.Proxy,
+			AllowedChats:        append([]string(nil), cfg.MsgGateway.Telegram.AllowedChats...),
+			AdminIDs:            append([]string(nil), cfg.MsgGateway.Telegram.AdminIDs...),
 			DisableAutoReaction: cfg.MsgGateway.Telegram.DisableAutoReaction,
 		})
 		handler := telegram.NewHandler(tgAdapter, a)

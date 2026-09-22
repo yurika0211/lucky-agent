@@ -806,7 +806,10 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			return
 		case "restart":
 			s.sendJSON(w, http.StatusOK, ChatResponse{
-				Response: "🔄 Restarting...\n\n⚠️ Auto-restart not implemented. Please restart manually.",
+				Response: "🔄 /restart 在 HTTP Chat API 中不可用。\n\n" +
+					"• 消息网关（Telegram/QQ）：请在对应聊天里发送 /restart（重连网关，不重启进程）\n" +
+					"• 完整进程重启：请手动重启 lh serve / msg-gateway / systemd 服务\n" +
+					"• 若只改了可热更新配置，通常无需重启",
 			})
 			return
 		default:
