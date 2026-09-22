@@ -1385,7 +1385,7 @@ export function App() {
             <button
               className="send-button"
               type="button"
-              onClick={connected ? sendMessage : connect}
+              onClick={connected ? sendMessage : () => connect()}
               disabled={connected && (uploading || (!composer.trim() && attachments.length === 0))}
               title={connected ? (uploading ? 'Waiting for uploads' : 'Send (Enter)') : 'Connect'}
             >
@@ -1602,7 +1602,7 @@ export function App() {
               <div className="popover-actions">
                 <button className="ghost" type="button" onClick={() => void loadSessionHistory()}>Load history</button>
                 <button className="ghost" type="button" onClick={() => void createSession()}>New session</button>
-                <button className="primary" type="button" onClick={connected ? () => disconnect() : connect}>
+                <button className="primary" type="button" onClick={connected ? () => disconnect() : () => connect()}>
                   {connected ? 'Disconnect' : 'Connect'}
                 </button>
               </div>
@@ -1773,7 +1773,7 @@ export function App() {
               {!connected ? (
                 <div className="composer-notice">
                   <span>Not connected to the runtime.</span>
-                  <button className="text-button" type="button" onClick={connect}>Connect now</button>
+                  <button className="text-button" type="button" onClick={() => connect()}>Connect now</button>
                 </div>
               ) : null}
               {composerBox}
