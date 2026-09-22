@@ -64,7 +64,7 @@ func qqCommandSpecs() []qqCommandSpec {
 		{Command: "new", Usage: "/new", Description: "开启新会话", Group: qqCommandGroupSession},
 		{Command: "stop", Usage: "/stop", Description: "停止当前任务", Group: qqCommandGroupSession},
 		{Command: "status", Usage: "/status", Description: "查看 bot 状态", Group: qqCommandGroupSession},
-		{Command: "restart", Usage: "/restart", Description: "重启当前网关", Group: qqCommandGroupSession},
+		{Command: "restart", Usage: "/restart", Description: "重连当前网关（非进程重启）", Group: qqCommandGroupSession},
 	}
 }
 

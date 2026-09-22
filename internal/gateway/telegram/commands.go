@@ -68,7 +68,7 @@ func telegramCommandSpecs() []telegramCommandSpec {
 		{Command: "new", Usage: "/new", Description: "Start a new session", Group: commandGroupSession},
 		{Command: "stop", Usage: "/stop", Description: "Stop the current task", Group: commandGroupSession},
 		{Command: "status", Usage: "/status", Description: "Show bot status", Group: commandGroupSession},
-		{Command: "restart", Usage: "/restart", Description: "Restart bot gateway", Group: commandGroupSession},
+		{Command: "restart", Usage: "/restart", Description: "Reconnect bot gateway (not full process)", Group: commandGroupSession},
 	}
 }
 

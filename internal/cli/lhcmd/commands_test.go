@@ -576,3 +576,57 @@ func TestWeixinLoginDriverFlag(t *testing.T) {
 		t.Fatalf("expected driver openclaw, got %q", got)
 	}
 }
+
+func TestRunInitPreservesExistingConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	configDir := filepath.Join(home, ".luckyagent")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	cfgName := "config" + ".json"
+	cfgPath := filepath.Join(configDir, cfgName)
+	original := []byte(`{"provider":"openai","api_key":"sk-keep-me","model":"kept-model"}`)
+	if err := os.WriteFile(cfgPath, original, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	out, err := captureStdout(t, func() error {
+		return runInit(&cobra.Command{}, nil)
+	})
+	if err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	if !strings.Contains(out, "保留现有配置") {
+		t.Fatalf("expected preserve message, got %q", out)
+	}
+	got, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("config was overwritten:\n got=%s\nwant=%s", got, original)
+	}
+}
+
+func TestRunInitCreatesConfigWhenMissing(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	out, err := captureStdout(t, func() error {
+		return runInit(&cobra.Command{}, nil)
+	})
+	if err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	if !strings.Contains(out, "初始化完成") {
+		t.Fatalf("expected init complete message, got %q", out)
+	}
+	cfgPath := filepath.Join(home, ".luckyagent", "config"+".json")
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("expected config file after init: %v", err)
+	}
+}

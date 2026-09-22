@@ -1436,6 +1436,43 @@ func (h *Handler) cancelChatTask(chatID string) bool {
 	return true
 }
 
+// cancelAllChatTasks cancels every in-flight chat task and drops queued work.
+// Used by /restart so a gateway bounce does not leave orphaned goroutines.
+func (h *Handler) cancelAllChatTasks() int {
+	h.mu.Lock()
+	tasks := h.tasks
+	h.tasks = make(map[string]*chatTask)
+	h.queues = make(map[string]*chatQueue)
+	h.mu.Unlock()
+
+	cancelled := 0
+	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
+		task.cancel()
+		cancelled++
+	}
+	return cancelled
+}
+
+func (h *Handler) restartAdminGate(ctx context.Context, msg *gateway.Message) error {
+	if msg == nil {
+		return nil
+	}
+	// Prefer adapter-local AdminIDs when the concrete Telegram adapter is used.
+	if adapter, ok := h.adapter.(*Adapter); ok {
+		if len(adapter.cfg.AdminIDs) == 0 {
+			return nil // no admin list configured → allow (backward compatible)
+		}
+		if adapter.cfg.IsAdmin(msg.Sender.ID) {
+			return nil
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, "⛔ /restart 仅管理员可用")
+	}
+	return nil
+}
+
 func (h *Handler) queueStatus(chatID string) (running bool, queued int) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -4579,10 +4616,13 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	return h.adapter.Send(ctx, chatID, sb.String())
 }
 
-// handleRestart 重启 bot
+// handleRestart 重启当前 Telegram 网关连接（不重启进程）。
 func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
-	scope := telegramConversationScope(msg)
+
+	if err := h.restartAdminGate(ctx, msg); err != nil {
+		return err
+	}
 
 	h.mu.Lock()
 	if h.restarting {
@@ -4593,7 +4633,7 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 	h.mu.Unlock()
 
 	// 先通知，再执行重连
-	_ = h.adapter.Send(ctx, chatID, "🔄 Restarting bot gateway...")
+	_ = h.adapter.Send(ctx, chatID, "🔄 Restarting bot gateway...\n（仅重连网关，不重启进程）")
 
 	go func() {
 		defer func() {
@@ -4602,19 +4642,18 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 			h.mu.Unlock()
 		}()
 
-		// 停止当前 chat 的任务，避免重启期间残留 goroutine
-		h.cancelChatTask(scope)
-
-		if err := h.adapter.Stop(); err != nil {
-			fmt.Printf("[telegram] restart stop failed: %v\n", err)
-		}
-		time.Sleep(1200 * time.Millisecond)
-
-		if err := h.adapter.Start(context.Background()); err != nil {
-			fmt.Printf("[telegram] restart start failed: %v\n", err)
+		cancelled := h.cancelAllChatTasks()
+		result, err := gateway.RestartGateway(context.Background(), h.adapter, gateway.RestartOptions{
+			SettleDelay:  300 * time.Millisecond,
+			ReadyTimeout: 15 * time.Second,
+			PollInterval: 100 * time.Millisecond,
+		})
+		if err != nil {
+			fmt.Printf("[telegram] restart failed: %v\n", err)
+			_ = h.adapter.Send(context.Background(), chatID, fmt.Sprintf("❌ Bot 网关重启失败：%v\n已取消任务：%d", err, cancelled))
 			return
 		}
-		_ = h.adapter.Send(context.Background(), chatID, "✅ Bot 已重连并恢复轮询")
+		_ = h.adapter.Send(context.Background(), chatID, fmt.Sprintf("✅ Bot 已重连并恢复轮询\n耗时：%s · 已取消任务：%d", result.Duration.Round(time.Millisecond), cancelled))
 	}()
 
 	return nil
