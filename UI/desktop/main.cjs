@@ -25,76 +25,84 @@ function injectRoundedChrome() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const radius = WINDOW_RADIUS;
   const css = `
-    /* Electron shell: soft rounded outer frame */
+    /* Soft rounded shell without a fake title strip */
     html, body {
       background: transparent !important;
       border-radius: ${radius}px !important;
       overflow: hidden !important;
     }
-    body {
-      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
-    }
-    /* Keep app content clipped to the rounded shell */
-    #root, .app-shell, .app-root, #app {
+    #root, .app {
       border-radius: ${radius}px !important;
       overflow: hidden !important;
+      min-height: 100vh;
+      background: var(--bg);
     }
-    /* Floating custom titlebar (frameless window) */
-    #lh-electron-titlebar {
-      position: fixed;
-      top: 0;
-      left: 0;
-      right: 0;
-      height: 36px;
-      z-index: 2147483646;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 10px 0 14px;
-      pointer-events: none;
-      background: linear-gradient(
-        to bottom,
-        rgba(15, 18, 12, 0.55),
-        rgba(15, 18, 12, 0.18) 70%,
-        rgba(15, 18, 12, 0)
-      );
+    body.lh-electron {
+      box-shadow: none !important;
+    }
+
+    /* Use the real GUI chrome as the drag surface */
+    body.lh-electron .sidebar-head,
+    body.lh-electron .topbar {
       -webkit-app-region: drag;
       app-region: drag;
-      user-select: none;
-      color: rgba(255, 255, 255, 0.86);
-      font: 600 12px/1 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      letter-spacing: 0.02em;
     }
-    #lh-electron-titlebar .lh-title {
-      pointer-events: none;
-      opacity: 0.9;
-    }
-    #lh-electron-titlebar .lh-window-controls {
-      display: flex;
-      gap: 6px;
-      pointer-events: auto;
+
+    /* Keep interactive controls clickable */
+    body.lh-electron .sidebar-head button,
+    body.lh-electron .sidebar-head a,
+    body.lh-electron .sidebar-head input,
+    body.lh-electron .topbar button,
+    body.lh-electron .topbar a,
+    body.lh-electron .topbar input,
+    body.lh-electron .topbar select,
+    body.lh-electron .nav,
+    body.lh-electron .nav-item,
+    body.lh-electron .new-chat,
+    body.lh-electron .sidebar-search,
+    body.lh-electron .chat-list,
+    body.lh-electron .lh-window-controls,
+    body.lh-electron .lh-window-controls * {
       -webkit-app-region: no-drag;
       app-region: no-drag;
     }
-    #lh-electron-titlebar button {
-      width: 12px;
-      height: 12px;
+
+    /* Native-feeling window controls tucked into the topbar */
+    body.lh-electron .lh-window-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: 4px;
+      padding: 4px 6px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--hover-strong) 70%, transparent);
+    }
+    body.lh-electron .lh-window-controls button {
+      width: 11px;
+      height: 11px;
       border: 0;
       border-radius: 999px;
       padding: 0;
       cursor: pointer;
-      opacity: 0.92;
+      opacity: 0.78;
+      transition: opacity 120ms ease, transform 120ms ease, filter 120ms ease;
     }
-    #lh-electron-titlebar button:hover { filter: brightness(1.08); }
-    #lh-electron-titlebar .lh-btn-close { background: #ff5f57; }
-    #lh-electron-titlebar .lh-btn-min { background: #febc2e; }
-    #lh-electron-titlebar .lh-btn-max { background: #28c840; }
-    /* Give the top of the GUI a little room so content isn't under traffic lights */
-    body.lh-electron {
-      padding-top: 0 !important;
+    body.lh-electron .lh-window-controls button:hover {
+      opacity: 1;
+      transform: scale(1.06);
+      filter: brightness(1.04);
     }
-    body.lh-electron #root {
-      min-height: 100vh;
+    body.lh-electron .lh-btn-close { background: #d96863; }
+    body.lh-electron .lh-btn-min { background: #c9a24b; }
+    body.lh-electron .lh-btn-max { background: #6aa35d; }
+
+    /* Slightly quieter top chrome in desktop mode */
+    body.lh-electron .topbar {
+      height: 52px;
+      padding-right: 10px;
+    }
+    body.lh-electron .sidebar {
+      padding-top: 10px;
     }
   `;
 
@@ -103,26 +111,56 @@ function injectRoundedChrome() {
       try {
         document.documentElement.classList.add('lh-electron');
         document.body.classList.add('lh-electron');
-        if (document.getElementById('lh-electron-titlebar')) return;
-        const bar = document.createElement('div');
-        bar.id = 'lh-electron-titlebar';
-        bar.innerHTML = \`
-          <div class="lh-title">LuckyAgent</div>
-          <div class="lh-window-controls">
-            <button class="lh-btn-close" title="Close" aria-label="Close"></button>
-            <button class="lh-btn-min" title="Minimize" aria-label="Minimize"></button>
-            <button class="lh-btn-max" title="Maximize" aria-label="Maximize"></button>
-          </div>
-        \`;
-        // Traffic-light order feels more natural on the right for Windows/Linux custom chrome.
-        // Keep close/min/max accessible without OS frame.
-        const [closeBtn, minBtn, maxBtn] = bar.querySelectorAll('button');
-        closeBtn.addEventListener('click', () => window.luckyDesktop?.windowControl('close'));
-        minBtn.addEventListener('click', () => window.luckyDesktop?.windowControl('minimize'));
-        maxBtn.addEventListener('click', () => window.luckyDesktop?.windowControl('maximize'));
-        document.documentElement.appendChild(bar);
+
+        // Remove the old deliberate black title strip if a previous build injected it.
+        document.getElementById('lh-electron-titlebar')?.remove();
+
+        const mountControls = () => {
+          if (document.querySelector('.lh-window-controls')) return true;
+          const host =
+            document.querySelector('.topbar-right') ||
+            document.querySelector('.topbar') ||
+            document.querySelector('.sidebar-head');
+          if (!host) return false;
+
+          const controls = document.createElement('div');
+          controls.className = 'lh-window-controls';
+          controls.setAttribute('role', 'group');
+          controls.setAttribute('aria-label', 'Window controls');
+          controls.innerHTML = \`
+            <button class="lh-btn-close" type="button" title="Close" aria-label="Close"></button>
+            <button class="lh-btn-min" type="button" title="Minimize" aria-label="Minimize"></button>
+            <button class="lh-btn-max" type="button" title="Maximize" aria-label="Maximize"></button>
+          \`;
+          const [closeBtn, minBtn, maxBtn] = controls.querySelectorAll('button');
+          closeBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            window.luckyDesktop?.windowControl('close');
+          });
+          minBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            window.luckyDesktop?.windowControl('minimize');
+          });
+          maxBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            window.luckyDesktop?.windowControl('maximize');
+          });
+
+          // Prefer the real topbar action cluster so it feels like part of the nav.
+          if (host.classList.contains('topbar-right')) host.appendChild(controls);
+          else host.prepend(controls);
+          return true;
+        };
+
+        if (!mountControls()) {
+          const obs = new MutationObserver(() => {
+            if (mountControls()) obs.disconnect();
+          });
+          obs.observe(document.documentElement, { childList: true, subtree: true });
+          setTimeout(() => obs.disconnect(), 8000);
+        }
       } catch (err) {
-        console.warn('[desktop] failed to inject titlebar', err);
+        console.warn('[desktop] failed to inject natural chrome', err);
       }
     })();
   `;
