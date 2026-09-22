@@ -50,6 +50,19 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if err := mgr.InitHome(); err != nil {
 		return err
 	}
+
+	// Installers and Configuration Center call `lh init` on every start.
+	// Never clobber an existing user config with DefaultConfig().
+	cfgPath := mgr.ConfigFile()
+	if _, err := os.Stat(cfgPath); err == nil {
+		fmt.Println("LuckyAgent 主目录已就绪（保留现有配置）")
+		fmt.Printf("主目录: %s\n", mgr.HomeDir())
+		fmt.Printf("配置: %s\n", cfgPath)
+		return nil
+	} else if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("stat config: %w", err)
+	}
+
 	if err := mgr.Save(); err != nil {
 		return err
 	}

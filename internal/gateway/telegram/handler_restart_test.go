@@ -132,7 +132,7 @@ func TestHandleRestartSuccess(t *testing.T) {
 	})
 	assert.Error(t, taskCtx.Err())
 	assert.True(t, sender.IsRunning())
-	assert.False(t, h.restarting)
+	assert.False(t, restartingLocked(h))
 	assert.GreaterOrEqual(t, sender.stopN, 1)
 	assert.GreaterOrEqual(t, sender.startN, 1)
 }
@@ -175,7 +175,7 @@ func TestHandleRestartFailureNotifiesUser(t *testing.T) {
 		}
 		return strings.Contains(msgs[len(msgs)-1], "重启失败")
 	})
-	assert.False(t, h.restarting)
+	assert.False(t, restartingLocked(h))
 }
 
 func TestHandleRestartInProgress(t *testing.T) {
@@ -196,7 +196,13 @@ func TestHandleRestartInProgress(t *testing.T) {
 	msgs := sender.snapshot()
 	require.NotEmpty(t, msgs)
 	assert.Contains(t, msgs[len(msgs)-1], "正在重启中")
-	waitFor(t, 2*time.Second, func() bool { return !h.restarting })
+	waitFor(t, 2*time.Second, func() bool { return !restartingLocked(h) })
+}
+
+func restartingLocked(h *Handler) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.restarting
 }
 
 func waitFor(t *testing.T, timeout time.Duration, cond func() bool) {

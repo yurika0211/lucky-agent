@@ -94,7 +94,7 @@ func TestHandleRestartQQSuccess(t *testing.T) {
 	for time.Now().Before(deadline) {
 		msgs := sender.snapshot()
 		if len(msgs) >= 2 && strings.Contains(msgs[len(msgs)-1], "已重连") {
-			assert.False(t, h.restarting)
+			assert.False(t, restartingLocked(h))
 			assert.GreaterOrEqual(t, sender.stopN, 1)
 			assert.GreaterOrEqual(t, sender.startN, 1)
 			return
@@ -114,7 +114,7 @@ func TestHandleRestartQQFailure(t *testing.T) {
 	for time.Now().Before(deadline) {
 		msgs := sender.snapshot()
 		if len(msgs) >= 2 && strings.Contains(msgs[len(msgs)-1], "重启失败") {
-			assert.False(t, h.restarting)
+			assert.False(t, restartingLocked(h))
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -127,4 +127,10 @@ func TestRestartAllowedUsesAdapterAllowlist(t *testing.T) {
 	h := NewHandler(adapter, nil)
 	assert.True(t, h.restartAllowed(&gateway.Message{Sender: gateway.User{ID: "u-ok"}}))
 	assert.False(t, h.restartAllowed(&gateway.Message{Sender: gateway.User{ID: "u-no"}}))
+}
+
+func restartingLocked(h *Handler) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.restarting
 }
