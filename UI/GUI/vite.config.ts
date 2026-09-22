@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react-swc';
 import { resolve } from 'node:path';
 
 export default defineConfig({
+  // Relative base keeps packaged Electron file:// loads working.
+  // Web/Go static hosting also tolerates './' asset paths.
+  base: process.env.LH_GUI_BASE || './',
   plugins: [react()],
   server: {
     port: 5173,

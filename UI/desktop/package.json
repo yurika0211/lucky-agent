@@ -1,0 +1,16 @@
+{
+  "name": "@luckyagent/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "LuckyAgent desktop shell (Electron) around the existing React GUI",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "start:dist": "LH_ELECTRON_LOAD=dist electron .",
+    "typecheck": "node -e \"require('fs').accessSync('main.cjs'); console.log('desktop shell ok')\""
+  },
+  "devDependencies": {
+    "electron": "^37.2.6"
+  }
+}
