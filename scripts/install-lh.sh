@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
 set -eu
 
-repo="${LH_REPO:-yurika0211/luckyagent}"
+repo="${LH_REPO:-yurika0211/lucky-agent}"
 repo_ref="${LH_REPO_REF:-}"
 version="${1:-latest}"
 prefix="${2:-${LH_INSTALL_PREFIX:-$HOME/.local}}"

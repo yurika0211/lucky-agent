@@ -1,7 +1,7 @@
 param(
   [string]$Version = "latest",
   [string]$Prefix = (Join-Path $env:LOCALAPPDATA "LuckyAgent"),
-  [string]$Repo = "yurika0211/luckyagent",
+  [string]$Repo = "yurika0211/lucky-agent",
   [string]$RepoRef = ""
 )
 
