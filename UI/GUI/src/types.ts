@@ -50,11 +50,19 @@ export type RuntimeSession = {
   updated_at?: string;
 };
 
+export type HistoryToolCall = {
+  id?: string;
+  name?: string;
+  arguments?: string;
+};
+
 export type ProviderMessage = {
   role?: string;
   content?: string;
+  reasoning_content?: string;
   name?: string;
   tool_call_id?: string;
+  tool_calls?: HistoryToolCall[];
 };
 
 export type SessionHistory = RuntimeSession & {

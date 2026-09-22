@@ -43,12 +43,59 @@ func (h *AgentHandler) HandleMessage(client *Client, msg *Message) {
 	switch msg.Type {
 	case TypeChat:
 		h.handleChat(client, msg)
+	case TypeCancel:
+		h.handleCancel(client, msg)
 	case TypeStreamAck:
 		// 流式确认，暂不处理
 		logger.Debug("stream ack received", "client_id", client.ID, "msg_id", msg.ID)
 	default:
 		logger.Warn("unknown message type", "type", msg.Type, "client_id", client.ID)
 	}
+}
+
+// handleCancel 取消指定 session 的进行中请求。客户端 Stop 必须走这条路径，
+// 只关 WebSocket 不会停止已经跑起来的 agent turn。
+func (h *AgentHandler) handleCancel(client *Client, msg *Message) {
+	var data CancelData
+	if len(msg.Data) > 0 {
+		if err := msg.ParseData(&data); err != nil {
+			errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{
+				Code:    "INVALID_DATA",
+				Message: fmt.Sprintf("invalid cancel data: %v", err),
+			})
+			client.TrySend(errMsg)
+			return
+		}
+	}
+	sessionID := strings.TrimSpace(data.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(msg.SessionID)
+	}
+	if sessionID == "" && client != nil {
+		sessionID = client.SessionID
+	}
+	if sessionID == "" {
+		errMsg, _ := NewMessage(TypeError, "", ErrorData{
+			Code:    "INVALID_DATA",
+			Message: "cancel requires a session id",
+		})
+		if client != nil {
+			client.TrySend(errMsg)
+		}
+		return
+	}
+	h.CancelSession(sessionID)
+	status, _ := NewMessage(TypeStatus, sessionID, StatusData{
+		State:   "idle",
+		Message: "cancelled",
+	})
+	if msg != nil {
+		status.ParentID = msg.ID
+	}
+	if client != nil {
+		client.TrySend(status)
+	}
+	logger.Info("session cancelled", "session", sessionID)
 }
 
 // handleChat 处理聊天消息

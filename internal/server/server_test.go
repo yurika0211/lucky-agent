@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1400,5 +1402,39 @@ func TestHandleRAGStatsMethodNotAllowed(t *testing.T) {
 
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestServerStartBindFailureDoesNotReportRunning(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	a := createTestAgent(t)
+	s := New(a, ServerConfig{Addr: ln.Addr().String(), EnableCORS: true, RateLimit: 60})
+
+	err = s.Start()
+	if err == nil {
+		t.Fatal("expected bind failure when the address is already in use")
+	}
+	if !strings.Contains(err.Error(), "address already in use") && !strings.Contains(err.Error(), "bind") {
+		t.Fatalf("expected a bind error, got %v", err)
+	}
+	if s.IsRunning() {
+		t.Fatal("server must not be marked running when listen fails")
+	}
+}
+
+func TestPublicServerURL(t *testing.T) {
+	if got := publicServerURL("127.0.0.1:9090"); got != "http://127.0.0.1:9090" {
+		t.Fatalf("loopback url = %q", got)
+	}
+	if got := publicServerURL(":9090"); got != "http://localhost:9090" {
+		t.Fatalf("wildcard url = %q", got)
+	}
+	if got := publicServerURL("127.0.0.1:9090"); strings.Contains(got, "localhost127") {
+		t.Fatalf("malformed concat leaked: %q", got)
 	}
 }

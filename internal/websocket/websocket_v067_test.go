@@ -275,3 +275,33 @@ func collectMessages(ch chan *Message, expected int) []*Message {
 		}
 	}
 }
+
+func TestHandleCancelStopsPendingSession(t *testing.T) {
+	handler := NewAgentHandler(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	handler.pending["gui-session"] = cancel
+
+	client := &Client{ID: "c1", SessionID: "gui-session", Send: make(chan *Message, 4)}
+	msg, err := NewMessage(TypeCancel, "gui-session", CancelData{SessionID: "gui-session"})
+	if err != nil {
+		t.Fatalf("new cancel message: %v", err)
+	}
+	handler.HandleMessage(client, msg)
+
+	select {
+	case <-ctx.Done():
+	default:
+		t.Fatal("cancel message should cancel the pending session")
+	}
+	if handler.PendingCount() != 0 {
+		t.Fatalf("pending count = %d, want 0", handler.PendingCount())
+	}
+	select {
+	case sent := <-client.Send:
+		if sent.Type != TypeStatus {
+			t.Fatalf("ack type = %s, want status", sent.Type)
+		}
+	default:
+		t.Fatal("expected a cancelled status ack")
+	}
+}
