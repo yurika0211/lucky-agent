@@ -33,6 +33,10 @@ func (a *Agent) executeToolMaybeDedupDetailed(
 }
 
 func (a *Agent) executeToolWithSessionDetailed(name, arguments string, autoApprove bool, sess *session.Session, sourceOpt ...string) (out detailedToolExecutionResult, err error) {
+	return a.executeToolWithSessionDetailedContext(context.Background(), name, arguments, autoApprove, sess, sourceOpt...)
+}
+
+func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name, arguments string, autoApprove bool, sess *session.Session, sourceOpt ...string) (out detailedToolExecutionResult, err error) {
 	source := "cli"
 	if len(sourceOpt) > 0 && stringsTrimSpace(sourceOpt[0]) != "" {
 		source = stringsTrimSpace(sourceOpt[0])
@@ -67,7 +71,7 @@ func (a *Agent) executeToolWithSessionDetailed(name, arguments string, autoAppro
 		userRequest = stringsTrimSpace(sourceOpt[1])
 	}
 	exec := tool.ExecutionContext{
-		Context: context.Background(), SessionID: sessionID,
+		Context: ctx, SessionID: sessionID,
 		// The CLI/TUI loop is the local trusted entry point. Remote servers
 		// should set an explicit allowed_sources policy before enabling control.
 		Source: source, UserID: "", UserRequest: userRequest, AutoApprove: autoApprove,

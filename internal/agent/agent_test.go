@@ -1294,6 +1294,9 @@ type loopingFunctionProvider struct {
 func (p *loopingFunctionProvider) Name() string { return "looping-fc" }
 
 func (p *loopingFunctionProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	if len(messages) > 0 && strings.HasPrefix(messages[0].Content, "Review whether") {
+		return &provider.Response{Content: verifiedAssessment}, nil
+	}
 	return nil, fmt.Errorf("unexpected Chat call")
 }
 
@@ -2834,7 +2837,12 @@ func TestAutonomyWorkerCompletionNotifiesRecentChat(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer a.Close()
-	a.provider = &mockProvider{name: "test-mock"}
+	a.provider = &durableScriptProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if strings.HasPrefix(messages[0].Content, "Review whether") {
+			return &provider.Response{Content: verifiedAssessment}, nil
+		}
+		return &provider.Response{Content: "mock completed response"}, nil
+	}}
 
 	gm := msggateway.NewGatewayManager()
 	gw := &cronNotifyGateway{name: "telegram", running: true}
@@ -3055,19 +3063,18 @@ func TestAgentChatMethodsExist(t *testing.T) {
 	// Replace provider with error mock to avoid real API calls
 	a.provider = &errorProvider{}
 
-	// Test that Chat methods exist and handle errors gracefully
 	ctx := context.Background()
 
-	// Chat should return error without proper provider setup
+	// Chat should surface the provider error synchronously.
 	_, err = a.Chat(ctx, "test")
 	if err == nil {
-		t.Log("Chat() should return error without proper setup")
+		t.Fatal("Chat() should return error when provider fails")
 	}
 
-	// ChatWithSession should return error
+	// Missing session should fail before provider work starts.
 	_, err = a.ChatWithSession(ctx, "session1", "test")
 	if err == nil {
-		t.Log("ChatWithSession() should return error without proper setup")
+		t.Fatal("ChatWithSession() should return error for missing session")
 	}
 }
 
@@ -3087,16 +3094,29 @@ func TestAgentStreamMethodsExist(t *testing.T) {
 	a.provider = &errorProvider{}
 	ctx := context.Background()
 
-	// ChatStream should return error without proper provider setup
-	_, err = a.ChatStream(ctx, "test")
-	if err == nil {
-		t.Log("ChatStream() should return error without proper setup")
+	// ChatStream starts successfully, then reports provider failure on the channel.
+	// Drain the channel before Close/TempDir cleanup to avoid leftover writers.
+	ch, err := a.ChatStream(ctx, "test")
+	if err != nil {
+		t.Fatalf("ChatStream() setup error = %v", err)
+	}
+	sawDone := false
+	for chunk := range ch {
+		if chunk.Done {
+			sawDone = true
+			if chunk.FinishReason != "error" {
+				t.Fatalf("ChatStream() FinishReason = %q, want error", chunk.FinishReason)
+			}
+		}
+	}
+	if !sawDone {
+		t.Fatal("ChatStream() should emit a terminal error chunk")
 	}
 
-	// ChatWithSessionStream should return error
+	// Missing session should fail before the stream goroutine starts.
 	_, err = a.ChatWithSessionStream(ctx, "session1", "test")
 	if err == nil {
-		t.Log("ChatWithSessionStream() should return error without proper setup")
+		t.Fatal("ChatWithSessionStream() should return error for missing session")
 	}
 }
 

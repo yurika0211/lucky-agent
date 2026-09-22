@@ -58,6 +58,9 @@ func (a *Agent) consumeAutonomyResults(ctx context.Context, results <-chan *auto
 }
 
 func (a *Agent) notifyAutonomyWorkerResult(ctx context.Context, result *autonomy.WorkerResult) {
+	if result != nil && result.State == autonomy.TaskReady {
+		return
+	}
 	message := a.formatAutonomyWorkerNotification(result)
 	if strings.TrimSpace(message) == "" {
 		return
@@ -86,7 +89,9 @@ func (a *Agent) formatAutonomyWorkerNotification(result *autonomy.WorkerResult) 
 	}
 
 	var b strings.Builder
-	if result.Error != nil {
+	if result.State == autonomy.TaskBlocked {
+		b.WriteString("后台 worker 任务已阻塞，需要核对")
+	} else if result.Error != nil {
 		b.WriteString("后台 worker 任务失败")
 	} else {
 		b.WriteString("后台 worker 任务完成")

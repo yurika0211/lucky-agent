@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/contextx"
 	"github.com/yurika0211/luckyagent/internal/gateway"
 	"github.com/yurika0211/luckyagent/internal/logger"
@@ -321,6 +322,8 @@ func (p *contextPlanner) buildAttachmentMessages(ctx context.Context, input User
 			})
 		}
 	}
+	// The current user message is appended by BuildInput. Adding its image parts
+	// here would transmit every image twice.
 	return messages
 }
 
@@ -374,16 +377,31 @@ func (p *contextPlanner) supportsImageContentParts() bool {
 	if p == nil || p.agent == nil {
 		return false
 	}
+	if p.turnProvider.primaryVision != nil {
+		return *p.turnProvider.primaryVision
+	}
+	// The current Ollama adapter has no image wire format.
+	if p.turnProvider.name() == "ollama" {
+		return false
+	}
 
 	model := strings.TrimSpace(p.turnProvider.model)
+	// External mode always sends images to the configured vision provider.
+	if p.agent.cfg != nil && p.agent.cfg.Get().Models.VisionMode == "external" {
+		return false
+	}
 	// The override describes the configured chat model, not every model a
 	// router may select. Routed models use their own catalog capabilities.
 	if p.agent.cfg != nil {
 		cfg := p.agent.cfg.Get()
-		if model == "" {
-			model = strings.TrimSpace(cfg.Model)
+		configuredModel := strings.TrimSpace(cfg.Model)
+		if selection, ok := cfg.ModelSelection(config.ModelKindChat); ok {
+			configuredModel = strings.TrimSpace(selection.ID)
 		}
-		if cfg.LlmProvider.Vision && model == strings.TrimSpace(cfg.Model) {
+		if model == "" {
+			model = configuredModel
+		}
+		if cfg.LlmProvider.Vision && model == configuredModel {
 			return true
 		}
 	}

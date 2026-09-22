@@ -13,6 +13,8 @@ type Capabilities struct {
 	Keypress      bool
 	Scroll        bool
 	MultiDisplay  bool
+	WindowCapture bool
+	Accessibility bool
 	ScaleFactor   float64
 	BackendDetail string
 }

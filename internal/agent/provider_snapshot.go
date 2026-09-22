@@ -15,9 +15,10 @@ import (
 // depend on scheduling.  A snapshot keeps the provider and the metadata that
 // describes it together for the whole turn.
 type providerSnapshot struct {
-	provider provider.Provider
-	model    string
-	apiBase  string
+	primaryVision *bool
+	provider      provider.Provider
+	model         string
+	apiBase       string
 }
 
 func (s providerSnapshot) valid() bool {
@@ -35,7 +36,13 @@ func (s providerSnapshot) name() string {
 // and, when enabled, resolves a routed provider without mutating Agent.  The
 // returned value must be passed down the loop/stream call chain and treated as
 // immutable.
-func (a *Agent) providerSnapshotForTurn(userInput string) providerSnapshot {
+func (a *Agent) providerSnapshotForTurn(userInput string) (snapshot providerSnapshot) {
+	defer func() {
+		if a != nil {
+			primary := newContextPlannerWithProvider(a, defaultContextBuildOptions(), snapshot).supportsImageContentParts()
+			snapshot.primaryVision = &primary
+		}
+	}()
 	if a == nil {
 		return providerSnapshot{}
 	}

@@ -655,8 +655,8 @@ func TestBuildUserTurnInputPreservesAttachments(t *testing.T) {
 	if input.RoutingText == "" {
 		t.Fatal("expected non-empty routing text")
 	}
-	if got := input.RoutingText; got == "看一下附件" {
-		t.Fatalf("expected attachment description to be appended, got %q", got)
+	if got := input.RoutingText; got != "看一下附件" {
+		t.Fatalf("gateway must preserve the request and defer analysis to the agent, got %q", got)
 	}
 	normalized := input.Normalize()
 	if len(normalized.Message.ContentParts) != 2 {
@@ -667,7 +667,7 @@ func TestBuildUserTurnInputPreservesAttachments(t *testing.T) {
 	}
 }
 
-func TestComposeAttachmentInputDefersAnalysisToContextPlanner(t *testing.T) {
+func TestBuildUserTurnInputDefersAnalysisToContextPlanner(t *testing.T) {
 	var analysisCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		analysisCalls.Add(1)
@@ -699,8 +699,8 @@ func TestComposeAttachmentInputDefersAnalysisToContextPlanner(t *testing.T) {
 	input := h.buildUserTurnInput(context.Background(), "look at this", []gateway.Attachment{{
 		Type: gateway.AttachmentImage, FileURL: "https://example.test/photo.png", FileName: "photo.png",
 	}})
-	if strings.Contains(input.RoutingText, "[Multimodal Analysis]") || !strings.Contains(input.RoutingText, "[Multimedia Attachments]") {
-		t.Fatalf("expected only attachment metadata: %q", input.RoutingText)
+	if input.RoutingText != "look at this" || len(input.Attachments) != 1 {
+		t.Fatalf("expected original text and structured attachment: %+v", input)
 	}
 	if analysisCalls.Load() != 0 {
 		t.Fatalf("gateway called vision endpoint %d times before planning", analysisCalls.Load())

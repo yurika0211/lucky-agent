@@ -137,6 +137,7 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, meta
 				ApplyAgentLoopConfig(&runCfg, cfg.Agent)
 			}
 			runCfg.AutoApprove = true
+			runCfg.Foreground = false
 			runCfg.DisabledTools = append(runCfg.DisabledTools, cronAgentDisabledTools...)
 
 			sessionID := strings.TrimSpace(metadata["session_id"])

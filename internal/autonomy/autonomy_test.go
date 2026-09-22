@@ -68,8 +68,6 @@ func TestTaskQueueComplete(t *testing.T) {
 	q := NewTaskQueue(16)
 
 	task := q.Add("Test", "", PriorityNormal, nil)
-	q.Pull("w1")
-
 	if err := q.Complete(task.ID, "done!"); err != nil {
 		t.Fatal(err)
 	}
@@ -362,7 +360,6 @@ func TestToolQueueUpdate(t *testing.T) {
 	td := NewToolDefinitions(kit)
 
 	task := q.Add("Test", "", PriorityNormal, nil)
-	q.Pull("w1")
 
 	// Complete
 	_, err := td.HandleQueueUpdate(map[string]any{
@@ -475,7 +472,6 @@ func TestTaskQueueCleanDone(t *testing.T) {
 	q := NewTaskQueue(16)
 
 	task := q.Add("Old task", "", PriorityNormal, nil)
-	q.Pull("w1")
 	q.Complete(task.ID, "done")
 
 	// Task was just completed, shouldn't be cleaned yet
@@ -979,9 +975,11 @@ func (m *mockAgentExecutor) RunLoopWithSession(ctx context.Context, sessionID st
 	m.lastCfg = cfg
 	m.mu.Unlock()
 	return &LoopResult{
-		Response:   "mock response",
-		TokensUsed: 100,
-		Iterations: 1,
+		Response:     "mock response",
+		Verified:     true,
+		Verification: "mock acceptance check",
+		TokensUsed:   100,
+		Iterations:   1,
 	}, nil
 }
 

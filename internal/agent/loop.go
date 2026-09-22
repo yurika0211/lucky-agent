@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yurika0211/luckyagent/internal/autonomy"
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/provider"
@@ -106,15 +107,19 @@ func formatToolCallsForLog(calls []provider.ToolCall) string {
 LoopConfig 定义一次 Agent Loop 执行的关键参数。
 */
 type LoopConfig struct {
-	MaxIterations          int           // 最大循环次数
-	Timeout                time.Duration // 单次循环超时
-	AutoApprove            bool          // 自动批准工具调用 (--yolo)
-	RepeatToolCallLimit    int           // 相同工具签名重复上限
-	ToolOnlyIterationLimit int           // 连续纯工具轮次上限
-	DuplicateFetchLimit    int           // 同一 URL 抓取上限
-	DisabledTools          []string      // 本轮对模型隐藏的工具名
-	Ephemeral              bool          // 临时后台执行，不写会话外持久化上下文
-	Source                 string        // 调用入口，例如 cli、tui、http、telegram
+	Foreground             bool // continue and checkpoint in the caller's request
+	emit                   func(context.Context, ChatEvent)
+	eventContext           context.Context
+	Execution              *autonomy.Execution // durable background task claim
+	MaxIterations          int                 // 最大循环次数
+	Timeout                time.Duration       // 单次循环超时
+	AutoApprove            bool                // 自动批准工具调用 (--yolo)
+	RepeatToolCallLimit    int                 // 相同工具签名重复上限
+	ToolOnlyIterationLimit int                 // 连续纯工具轮次上限
+	DuplicateFetchLimit    int                 // 同一 URL 抓取上限
+	DisabledTools          []string            // 本轮对模型隐藏的工具名
+	Ephemeral              bool                // 临时后台执行，不写会话外持久化上下文
+	Source                 string              // 调用入口，例如 cli、tui、http、telegram
 }
 
 // DefaultLoopConfig 返回默认 Loop 配置
@@ -243,6 +248,7 @@ func toolCallSignature(name, arguments string) string {
 ApplyAgentLoopConfig 将配置文件中的 AgentLoopConfig 应用到运行时 LoopConfig。
 */
 func ApplyAgentLoopConfig(loopCfg *LoopConfig, cfg config.AgentLoopConfig) {
+	loopCfg.Foreground = cfg.Foreground.Enabled == nil || *cfg.Foreground.Enabled
 	if cfg.MaxIterations > 0 {
 		loopCfg.MaxIterations = cfg.MaxIterations
 	}
@@ -266,11 +272,15 @@ func ApplyAgentLoopConfig(loopCfg *LoopConfig, cfg config.AgentLoopConfig) {
 LoopResult 描述一次 Agent Loop 执行完成后的结果摘要。
 */
 type LoopResult struct {
-	Response   string        // 最终回复
-	Iterations int           // 实际循环次数
-	ToolCalls  []toolCallLog // 工具调用记录
-	State      LoopState     // 结束状态
-	TokensUsed int           // 总 token 消耗
+	foregroundInput   *UserTurnInput
+	foregroundControl bool
+	Verified          bool
+	Verification      string
+	Response          string        // 最终回复
+	Iterations        int           // 实际循环次数
+	ToolCalls         []toolCallLog // 工具调用记录
+	State             LoopState     // 结束状态
+	TokensUsed        int           // 总 token 消耗
 }
 
 /*
@@ -314,7 +324,16 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 	if strings.TrimSpace(loopCfg.Source) == "" {
 		loopCfg.Source = "cli"
 	}
+	if loopCfg.Execution != nil {
+		a.applyIntentToolGating(&loopCfg, routingText)
+		a.applyVisionToolPolicy(&loopCfg, turnProvider)
+		return a.runDurableLoop(ctx, sess, turnInput, loopCfg, turnProvider)
+	}
+	if a.useForeground(sess, loopCfg) {
+		return a.runForeground(ctx, sess, turnInput, loopCfg, turnProvider)
+	}
 	a.applyIntentToolGating(&loopCfg, routingText)
+	a.applyVisionToolPolicy(&loopCfg, turnProvider)
 
 	if startErr := a.StartAutonomy(ctx); startErr != nil && a.autonomy != nil {
 		return nil, fmt.Errorf("start autonomy: %w", startErr)
@@ -425,7 +444,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 	}
 	loopState := newLoopRuntimeState()
 	loopState.provider = turnProvider
-	loopState.toolExecutionGuard = newToolExecutionGuard(routingText)
+	loopState.toolExecutionGuard = newTurnToolGuard(routingText, loopCfg.DisabledTools)
 	loopState.artifactGuard = newArtifactFinalizationGuard(routingText)
 	memoryGate := a.buildMemoryToolGate(routingText, turnInput.Scope, loopCfg.DisabledTools)
 
@@ -774,7 +793,7 @@ func (a *Agent) processToolCallBatch(
 			allRepeated = false
 		}
 	}
-	if (allRepeated && strings.TrimSpace(resp.Content) == "") || loopState.consecutiveToolOnlyIters >= loopCfg.ToolOnlyIterationLimit {
+	if allRepeated && (strings.TrimSpace(resp.Content) == "" || loopState.consecutiveToolOnlyIters >= loopCfg.ToolOnlyIterationLimit) {
 		if !loopState.forceSearchSynthesis && loopState.successfulSearchEvidence > 0 {
 			loopState.forceSearchSynthesis = true
 			messages = append(messages, provider.Message{
@@ -850,7 +869,11 @@ func (a *Agent) processToolCallBatch(
 			ToolCallID: execResult.ToolCall.ID,
 			Name:       execResult.ToolCall.Name,
 		}
-		loopState.toolCallLastResult[toolCallSignature(tcLog.Name, tcLog.Arguments)] = tcLog.Result
+		sig := toolCallSignature(tcLog.Name, tcLog.Arguments)
+		if previous, seen := loopState.toolCallLastResult[sig]; !seen || previous != tcLog.Result {
+			loopState.toolCallRepeatCount[sig] = 0
+		}
+		loopState.toolCallLastResult[sig] = tcLog.Result
 		if key := normalizedToolTarget(tcLog.Name, tcLog.Arguments); key != "" {
 			loopState.toolURLLastResult[key] = tcLog.Result
 		}

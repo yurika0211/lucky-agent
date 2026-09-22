@@ -181,6 +181,7 @@ func (a *Agent) executeHeartbeatTasks(ctx context.Context, tasks string) (string
 		ApplyAgentLoopConfig(&loopCfg, a.cfg.Get().Agent)
 	}
 	loopCfg.AutoApprove = true
+	loopCfg.Foreground = false
 
 	result, err := a.RunLoopWithSession(ctx, sess, tasks, loopCfg)
 	if err != nil {

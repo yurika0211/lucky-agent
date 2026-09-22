@@ -195,22 +195,16 @@ func (h *HeartbeatEngine) beat(ctx context.Context) *HeartbeatEvent {
 			tasksToPull := min(ready, availableSlots, h.config.MaxTasksPerBeat)
 
 			for i := 0; i < tasksToPull; i++ {
-				task := h.queue.Pull(fmt.Sprintf("heartbeat-%d", i))
-				if task == nil {
+				taskID, workerID, err := h.pool.dispatchOne(ctx, "")
+				if err != nil {
+					event.Actions = append(event.Actions, "Dispatch failed: "+err.Error())
+					break
+				}
+				if taskID == "" {
 					break
 				}
 				event.TasksPulled++
-
-				// Find an idle worker and execute
-				worker := h.pool.findIdleWorker()
-				if worker == nil {
-					// No worker available, put task back
-					h.queue.Fail(task.ID, "no idle worker", true)
-					break
-				}
-
-				go h.pool.executeTask(ctx, worker, task)
-				event.Actions = append(event.Actions, fmt.Sprintf("Dispatched task %s to %s", task.ID, worker.ID))
+				event.Actions = append(event.Actions, fmt.Sprintf("Dispatched task %s to %s", taskID, workerID))
 			}
 		}
 
@@ -358,6 +352,9 @@ func (ak *AutonomyKit) Start(ctx context.Context) error {
 
 	if ak.started {
 		return fmt.Errorf("autonomy kit already started")
+	}
+	if err := ak.queue.PersistenceError(); err != nil {
+		return fmt.Errorf("autonomy queue recovery failed: %w", err)
 	}
 
 	if err := ak.pool.Start(ctx); err != nil {

@@ -26,8 +26,64 @@ lh cfg s autonomy.heartbeat.active_end 22
 - `autonomy.queue_buffer`：任务队列缓冲区大小。
 - `autonomy.pool.*`：最大 worker 数、结果缓冲区、是否自动扩容和最小 worker 数。
 - `autonomy.heartbeat.*`：`passive`/`proactive` 模式、轮询间隔、活动时间窗口和每次最多处理的任务数。
+- `autonomy.recovery.*`：重启恢复、错误重试、跨预算续跑及全任务预算。
 
 这些配置在 Agent 创建时装配到 `AutonomyKit`，修改后需要重启 Agent 进程。
+
+## 长任务执行与恢复
+
+后台任务现在按有界片段执行。`autonomy.worker.timeout_seconds` 默认 300 秒，`max_iterations` 默认 300，均限制一个片段。片段预算用尽会保存检查点，自动重新调度同一个任务；不会从原始提示重新开始。
+
+| 配置 | 默认值 | 含义 |
+| --- | --- | --- |
+| `autonomy.recovery.resume_on_start` | `true` | 启动时恢复已入队任务；这与 `autonomy.enabled` 控制的普通自动启动分开。设为 false 可在启动后先检查队列。 |
+| `autonomy.recovery.max_retries` | `3` | 执行错误最多自动重试 3 次；0 禁止自动重试。预算续跑不计为失败重试。 |
+| `autonomy.recovery.retry_initial_seconds` | `5` | 首次失败重试等待时间。 |
+| `autonomy.recovery.retry_max_seconds` | `300` | 指数退避上限。 |
+| `autonomy.recovery.max_slices` | `48` | 含失败尝试在内的执行片段上限。 |
+| `autonomy.recovery.max_total_seconds` | `14400` | 从首次执行开始的总墙钟期限，包含退避及停机时间。 |
+
+任务拥有独立的 session，worker 不在不同任务之间共享聊天历史。检查点和工具执行日志写入 `~/.luckyagent/runtime/autonomy_queue.json`。写入失败时停止推进；检查点采用同步写入和原子替换。一个队列文件应由一个运行时进程持有，不支持多个独立进程同时写入。
+
+每次模型调用前控制上下文大小；必要时生成包含已完成工作、路径、决策和待办的进度摘要。完整对话和工具日志保留在检查点中。候选答案还要经过独立的无工具验收请求：只有完成原始任务及验收条件，且有证据支持，才会变为 `done`。验收可要求继续工作或标记 `blocked`。模型验收仍是语义判断，重要业务条件应写成可由测试、查询或产物检查证明的验收条件。
+
+重启后，已完成工具调用复用持久化结果；未开始的调用继续执行。**已经开始但没有可靠结果的工具调用不会自动重复**，任务进入 `blocked`。这覆盖崩溃和可识别的工具取消/超时。外部系统和本地检查点无法共同提交事务，因此系统不承诺任意外部操作 exactly-once。第三方工具还须配合取消信号；不响应取消的工具可能延迟停止。
+
+### 入队和检查
+
+```json
+{
+  "action": "add",
+  "title": "完成项目改动",
+  "description": "完成指定改动，执行相关测试并给出结果",
+  "acceptance_criteria": ["指定功能已实现", "相关测试通过，并记录实际命令和结果"],
+  "idempotency_key": "project-change-001"
+}
+```
+
+`action=list` 展示 `session_id`、`attempts`、`retries`、`continuations`、`next_run_at`、`checkpoint_at`、`verified`、`verification` 和 `unresolved_operations`。`action=report` 返回最终结果与验收说明。正常续跑和等待重试不会发送“任务完成”通知。
+
+### 核对不确定的外部操作
+
+先用 `action=list,state=blocked` 查看 `unresolved_operations`。人工核对目标系统后，直接将以下 JSON 作为当前用户消息发送（或通过受信任的内部工具接口调用）。模型调用的核对字段必须与当前用户消息完全一致；后台 worker 不能自行核对自己的未决操作：
+
+```json
+{"action":"resolve","task_id":"tq-1","operation_id":"step-2-1","resolution":"completed","result":"已核对：消息发送成功，目标系统 message_id=123"}
+```
+
+如果已经确认可以安全重做：
+
+```json
+{"action":"resolve","task_id":"tq-1","operation_id":"step-2-1","resolution":"retry"}
+```
+
+核对完所有未决操作，再调用：
+
+```json
+{"action":"unblock","task_id":"tq-1"}
+```
+
+`unblock` 保留进度，显式授予一组新的有界执行预算。不允许直接解除仍有未决操作的任务。人工 `complete` 也要求当前用户消息包含完全匹配的 JSON（action、task_id、result），且不能覆盖正在运行或存在未决操作的任务。详见 [设计方案](../../long-task-reliability.md)。
 
 ## 工具定义
 
@@ -64,6 +120,8 @@ lh cfg s autonomy.heartbeat.active_end 22
 | `action` | 操作名。 |
 | `title` | `add` 时的任务标题。 |
 | `description` | `add` 时的任务详情。 |
+| `acceptance_criteria` | `add` 时的字符串数组，指定可验证的完成条件。 |
+| `operation_id` / `resolution` | `resolve` 时核对未决工具操作；resolution 为 completed 或 retry。 |
 | `priority` | `add` 时的优先级：`low`、`normal`、`high`、`critical`。 |
 | `tags` | `add` 时的标签。 |
 | `dry_run` | `add`、`spawn`、`heartbeat`、`scale_up`、`scale_down`、`set_workers` 时只预览，不改变 runtime。 |
@@ -90,6 +148,7 @@ lh cfg s autonomy.heartbeat.active_end 22
 | `report`、`outputs`、`results` | `HandleReport` |
 | `update`、`queue_update` | `HandleQueueUpdate` |
 | `complete`、`fail`、`block`、`unblock` | `HandleQueueUpdate` |
+| `resolve` | 核对未决工具操作；保留任务 blocked 状态，等待显式 unblock。 |
 | `workers`、`worker_list` | `HandleWorkerList` |
 | `spawn`、`worker_spawn`、`run` | `HandleWorkerSpawn` |
 | `heartbeat`、`trigger`、`heartbeat_trigger` | `HandleHeartbeatTrigger` |

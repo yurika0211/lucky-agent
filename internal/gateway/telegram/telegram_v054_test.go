@@ -2871,16 +2871,17 @@ func TestV054HandleMessageWithAttachments(t *testing.T) {
 	_ = handler
 }
 
-func TestV054ComposeAttachmentInputDefersAnalysisToContextPlanner(t *testing.T) {
+func TestV054BuildAttachmentInputDefersAnalysis(t *testing.T) {
 	handler := &Handler{
 		agent: &mockAgentProvider{
 			analyzeFn: func(ctx context.Context, attachments []gateway.Attachment) (string, error) {
-				return "[Multimodal Analysis]\nImage 1:\n- summary: chart screenshot", nil
+				t.Fatal("gateway must not run image analysis")
+				return "", nil
 			},
 		},
 	}
 
-	out := handler.composeAttachmentInput(context.Background(), "check this", []gateway.Attachment{
+	input := handler.buildUserTurnInput(context.Background(), "check this", []gateway.Attachment{
 		{
 			Type:     gateway.AttachmentImage,
 			FileName: "photo.jpg",
@@ -2888,11 +2889,8 @@ func TestV054ComposeAttachmentInputDefersAnalysisToContextPlanner(t *testing.T) 
 		},
 	})
 
-	if strings.Contains(out, "[Multimodal Analysis]") {
-		t.Fatalf("attachment analysis must not be embedded into the user turn, got %q", out)
-	}
-	if !strings.Contains(out, "[Multimedia Attachments]") {
-		t.Fatalf("expected attachment metadata fallback, got %q", out)
+	if input.RoutingText != "check this" || len(input.Attachments) != 1 {
+		t.Fatalf("expected original text and attachment, got %+v", input)
 	}
 }
 
@@ -4747,13 +4745,8 @@ func TestV054HandleMessageReplyToImagePreservesReplyAttachment(t *testing.T) {
 	currentSess := sessions.NewWithTitle("current chat")
 	handler.setSessionID("12345", currentSess.ID)
 	handler.agent.(*mockAgentProvider).analyzeFn = func(ctx context.Context, attachments []gateway.Attachment) (string, error) {
-		if len(attachments) != 1 {
-			t.Fatalf("expected one attachment for analysis, got %+v", attachments)
-		}
-		if attachments[0].FileName != "face.jpg" {
-			t.Fatalf("unexpected attachment for analysis: %+v", attachments[0])
-		}
-		return "[Multimodal Analysis]\nImage: face.jpg\n- extracted: face visible", nil
+		t.Error("gateway must not analyze images before the agent selects its vision path")
+		return "", nil
 	}
 
 	type capturedTurn struct {
@@ -4809,7 +4802,6 @@ func TestV054HandleMessageReplyToImagePreservesReplyAttachment(t *testing.T) {
 		"[Replied Telegram attachments]",
 		"image: face.jpg",
 		"记住她的长相",
-		"[Multimedia Attachments]",
 	} {
 		if !strings.Contains(gotTurn.routingText, want) {
 			t.Fatalf("expected routing text to include %q, got:\n%s", want, gotTurn.routingText)

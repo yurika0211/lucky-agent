@@ -422,7 +422,7 @@ func TestContextPlannerVisionRoutingUsesConfiguredEndpoints(t *testing.T) {
 				Name: "openai", Model: model, APIKey: "test-key", BaseURL: upstream.URL + "/chat",
 			}})
 			a := &Agent{cfg: mgr, catalog: provider.NewModelCatalog(), mediaProcessor: buildMediaRuntime(mgr.Get()).processor}
-			planner := newContextPlannerWithProvider(a, contextBuildOptions{}, providerSnapshot{provider: chat, model: model})
+			planner := newContextPlannerWithProvider(a, contextBuildOptions{}, providerSnapshot{provider: chat, model: model, primaryVision: &tc.wantNative})
 			input := MultimodalUserTurnInput("describe this", []gateway.Attachment{{
 				Type: gateway.AttachmentImage, Data: []byte("image"), MimeType: "image/png",
 			}})

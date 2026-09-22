@@ -64,6 +64,7 @@ type CompactTrace struct {
 // Session 代表一次对话会话
 type Session struct {
 	mu        sync.RWMutex
+	saveMu    sync.Mutex
 	ID        string
 	Title     string
 	Messages  []provider.Message
@@ -99,6 +100,18 @@ func (s *Session) SetCwd(cwd string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ShellContext.Cwd = cwd
+	s.UpdatedAt = time.Now()
+}
+
+// RestoreShellContext restores a durable task's working directory and
+// environment after replaying an already completed terminal operation.
+func (s *Session) RestoreShellContext(sc ShellContext) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ShellContext = ShellContext{Cwd: sc.Cwd, Env: make(map[string]string, len(sc.Env))}
+	for key, value := range sc.Env {
+		s.ShellContext.Env[key] = value
+	}
 	s.UpdatedAt = time.Now()
 }
 
@@ -454,6 +467,8 @@ func (s *Session) messageCountLocked() int {
 
 // Save 保存会话到磁盘 (Markdown + JSON code fence)
 func (s *Session) Save() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	if err := os.MkdirAll(s.dir, 0700); err != nil {
 		return fmt.Errorf("create session dir: %w", err)
 	}
@@ -496,7 +511,7 @@ func (s *Session) Save() error {
 	b.WriteString("\n```\n")
 
 	path := filepath.Join(dir, id+".md")
-	return os.WriteFile(path, []byte(b.String()), 0600)
+	return utils.WriteFileAtomic(path, []byte(b.String()), 0600)
 }
 
 // sessionData 是内部序列化格式

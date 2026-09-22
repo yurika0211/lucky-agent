@@ -27,6 +27,7 @@ type FallbackChain struct {
 	mu         sync.RWMutex
 	active     int // 当前活跃的 provider 索引
 	failCounts []int
+	disabled   []bool        // 配置类永久错误后禁用，直到显式重置或重建链
 	maxFails   int           // 连续失败多少次后降级
 	cooldown   time.Duration // 降级冷却时间
 	cooldownAt []time.Time   // 每个 provider 的冷却截止时间
@@ -41,6 +42,7 @@ func NewFallbackChain(configs []FallbackConfig, registry *Registry) (*FallbackCh
 
 	chain := make([]Provider, 0, len(configs))
 	failCounts := make([]int, len(configs))
+	disabled := make([]bool, len(configs))
 	cooldownAt := make([]time.Time, len(configs))
 
 	for _, fc := range configs {
@@ -68,6 +70,7 @@ func NewFallbackChain(configs []FallbackConfig, registry *Registry) (*FallbackCh
 	return &FallbackChain{
 		chain:      chain,
 		failCounts: failCounts,
+		disabled:   disabled,
 		cooldownAt: cooldownAt,
 		maxFails:   3,
 		cooldown:   5 * time.Minute,
@@ -133,6 +136,7 @@ func (fc *FallbackChain) Chat(ctx context.Context, messages []Message) (*Respons
 		return nil, fmt.Errorf("all providers in fallback chain are unavailable")
 	}
 
+	var lastErr error
 	for i := startIdx; i < len(fc.chain); i++ {
 		if !fc.isAvailable(i) {
 			continue
@@ -140,10 +144,10 @@ func (fc *FallbackChain) Chat(ctx context.Context, messages []Message) (*Respons
 
 		resp, err := fc.chain[i].Chat(ctx, messages)
 		if err != nil {
-			if !shouldFallbackOnError(err) {
+			lastErr = err
+			if !fc.shouldTryNextProvider(i, err) {
 				return nil, err
 			}
-			fc.recordFailure(i, err)
 			log.Printf("[fallback] provider %s failed: %v, trying next", fc.chain[i].Name(), err)
 			continue
 		}
@@ -153,7 +157,7 @@ func (fc *FallbackChain) Chat(ctx context.Context, messages []Message) (*Respons
 		return resp, nil
 	}
 
-	return nil, fmt.Errorf("all %d providers failed in fallback chain", len(fc.chain))
+	return nil, fallbackChainError(len(fc.chain), lastErr)
 }
 
 // ChatStream 流式发送消息，自动降级
@@ -163,6 +167,7 @@ func (fc *FallbackChain) ChatStream(ctx context.Context, messages []Message) (<-
 		return nil, fmt.Errorf("all providers in fallback chain are unavailable")
 	}
 
+	var lastErr error
 	for i := startIdx; i < len(fc.chain); i++ {
 		if !fc.isAvailable(i) {
 			continue
@@ -170,10 +175,10 @@ func (fc *FallbackChain) ChatStream(ctx context.Context, messages []Message) (<-
 
 		ch, err := fc.chain[i].ChatStream(ctx, messages)
 		if err != nil {
-			if !shouldFallbackOnError(err) {
+			lastErr = err
+			if !fc.shouldTryNextProvider(i, err) {
 				return nil, err
 			}
-			fc.recordFailure(i, err)
 			log.Printf("[fallback] provider %s stream failed: %v, trying next", fc.chain[i].Name(), err)
 			continue
 		}
@@ -182,7 +187,47 @@ func (fc *FallbackChain) ChatStream(ctx context.Context, messages []Message) (<-
 		return ch, nil
 	}
 
-	return nil, fmt.Errorf("all %d providers failed in fallback chain", len(fc.chain))
+	return nil, fallbackChainError(len(fc.chain), lastErr)
+}
+
+func fallbackChainError(chainLen int, lastErr error) error {
+	if lastErr != nil {
+		return fmt.Errorf("all %d providers failed in fallback chain: %w", chainLen, lastErr)
+	}
+	return fmt.Errorf("all %d providers failed in fallback chain", chainLen)
+}
+
+// shouldDisableProviderOnError identifies configuration failures that will not
+// recover by retrying the same provider instance.
+func shouldDisableProviderOnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "model_not_found") || strings.Contains(msg, "model not found") {
+		return true
+	}
+	for _, marker := range []string{
+		"api error 404",
+		"unexpected status 404",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (fc *FallbackChain) shouldTryNextProvider(idx int, err error) bool {
+	if shouldDisableProviderOnError(err) {
+		fc.disableProvider(idx, err)
+		return true
+	}
+	if !shouldFallbackOnError(err) {
+		return false
+	}
+	fc.recordFailure(idx, err)
+	return true
 }
 
 func shouldFallbackOnError(err error) bool {
@@ -234,12 +279,8 @@ func (fc *FallbackChain) nextAvailable() int {
 	fc.mu.RLock()
 	defer fc.mu.RUnlock()
 
-	// 先尝试当前 active
-	if fc.isAvailableLocked(fc.active) {
-		return fc.active
-	}
-
-	// 从头找
+	// 每个新请求都从最高优先级开始。处于冷却或因配置错误被禁用的
+	// 节点会被跳过；冷却结束后主节点会自然获得一次恢复探测。
 	for i := 0; i < len(fc.chain); i++ {
 		if fc.isAvailableLocked(i) {
 			return i
@@ -260,11 +301,45 @@ func (fc *FallbackChain) isAvailableLocked(idx int) bool {
 	if idx < 0 || idx >= len(fc.chain) {
 		return false
 	}
+	if fc.disabled[idx] {
+		return false
+	}
 	// 冷却期内不可用
 	if !fc.cooldownAt[idx].IsZero() && time.Now().Before(fc.cooldownAt[idx]) {
 		return false
 	}
 	return true
+}
+
+// disableProvider marks a provider unavailable for the lifetime of this
+// chain. Configuration reloads rebuild the chain; reset methods also allow an
+// explicit in-process recovery.
+func (fc *FallbackChain) disableProvider(idx int, err error) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if idx < 0 || idx >= len(fc.chain) {
+		return
+	}
+
+	fc.disabled[idx] = true
+	log.Printf("[fallback] provider %s disabled after permanent error: %v", fc.chain[idx].Name(), err)
+	if idx != fc.active {
+		return
+	}
+
+	for i := 0; i < len(fc.chain); i++ {
+		if !fc.isAvailableLocked(i) {
+			continue
+		}
+		oldName := fc.chain[idx].Name()
+		fc.active = i
+		newName := fc.chain[i].Name()
+		log.Printf("[fallback] switching from %s to %s", oldName, newName)
+		if fc.onSwitch != nil {
+			go fc.onSwitch(oldName, newName)
+		}
+		return
+	}
 }
 
 // recordFailure 记录失败
@@ -335,6 +410,7 @@ func (fc *FallbackChain) ResetCooldown(idx int) {
 	defer fc.mu.Unlock()
 	if idx >= 0 && idx < len(fc.chain) {
 		fc.failCounts[idx] = 0
+		fc.disabled[idx] = false
 		fc.cooldownAt[idx] = time.Time{}
 	}
 }
@@ -345,6 +421,7 @@ func (fc *FallbackChain) ResetAllCooldowns() {
 	defer fc.mu.Unlock()
 	for i := range fc.chain {
 		fc.failCounts[i] = 0
+		fc.disabled[i] = false
 		fc.cooldownAt[i] = time.Time{}
 	}
 	fc.active = 0
@@ -363,6 +440,7 @@ func (fc *FallbackChain) ChatWithOptions(ctx context.Context, messages []Message
 		return nil, fmt.Errorf("all providers in fallback chain are unavailable")
 	}
 
+	var lastErr error
 	for i := startIdx; i < len(fc.chain); i++ {
 		if !fc.isAvailable(i) {
 			continue
@@ -372,10 +450,10 @@ func (fc *FallbackChain) ChatWithOptions(ctx context.Context, messages []Message
 		if fcProvider, ok := p.(FunctionCallingProvider); ok && len(opts.Tools) > 0 {
 			resp, err := fcProvider.ChatWithOptions(ctx, messages, opts)
 			if err != nil {
-				if !shouldFallbackOnError(err) {
+				lastErr = err
+				if !fc.shouldTryNextProvider(i, err) {
 					return nil, err
 				}
-				fc.recordFailure(i, err)
 				log.Printf("[fallback] provider %s ChatWithOptions failed: %v, trying next", p.Name(), err)
 				continue
 			}
@@ -386,10 +464,10 @@ func (fc *FallbackChain) ChatWithOptions(ctx context.Context, messages []Message
 		// Provider 不支持 function calling，回退到普通 Chat
 		resp, err := p.Chat(ctx, messages)
 		if err != nil {
-			if !shouldFallbackOnError(err) {
+			lastErr = err
+			if !fc.shouldTryNextProvider(i, err) {
 				return nil, err
 			}
-			fc.recordFailure(i, err)
 			log.Printf("[fallback] provider %s Chat failed: %v, trying next", p.Name(), err)
 			continue
 		}
@@ -397,7 +475,7 @@ func (fc *FallbackChain) ChatWithOptions(ctx context.Context, messages []Message
 		return resp, nil
 	}
 
-	return nil, fmt.Errorf("all %d providers failed in fallback chain", len(fc.chain))
+	return nil, fallbackChainError(len(fc.chain), lastErr)
 }
 
 // ChatStreamWithOptions 流式发送消息（支持 function calling），自动降级
@@ -407,6 +485,7 @@ func (fc *FallbackChain) ChatStreamWithOptions(ctx context.Context, messages []M
 		return nil, fmt.Errorf("all providers in fallback chain are unavailable")
 	}
 
+	var lastErr error
 	for i := startIdx; i < len(fc.chain); i++ {
 		if !fc.isAvailable(i) {
 			continue
@@ -416,10 +495,10 @@ func (fc *FallbackChain) ChatStreamWithOptions(ctx context.Context, messages []M
 		if fcProvider, ok := p.(FunctionCallingProvider); ok && len(opts.Tools) > 0 {
 			ch, err := fcProvider.ChatStreamWithOptions(ctx, messages, opts)
 			if err != nil {
-				if !shouldFallbackOnError(err) {
+				lastErr = err
+				if !fc.shouldTryNextProvider(i, err) {
 					return nil, err
 				}
-				fc.recordFailure(i, err)
 				log.Printf("[fallback] provider %s ChatStreamWithOptions failed: %v, trying next", p.Name(), err)
 				continue
 			}
@@ -430,10 +509,10 @@ func (fc *FallbackChain) ChatStreamWithOptions(ctx context.Context, messages []M
 		// Provider 不支持 function calling，回退到普通 ChatStream
 		ch, err := p.ChatStream(ctx, messages)
 		if err != nil {
-			if !shouldFallbackOnError(err) {
+			lastErr = err
+			if !fc.shouldTryNextProvider(i, err) {
 				return nil, err
 			}
-			fc.recordFailure(i, err)
 			log.Printf("[fallback] provider %s ChatStream failed: %v, trying next", p.Name(), err)
 			continue
 		}
@@ -441,5 +520,5 @@ func (fc *FallbackChain) ChatStreamWithOptions(ctx context.Context, messages []M
 		return ch, nil
 	}
 
-	return nil, fmt.Errorf("all %d providers failed in fallback chain", len(fc.chain))
+	return nil, fallbackChainError(len(fc.chain), lastErr)
 }

@@ -3,6 +3,7 @@
     "vision": false
   },
   "models": {
+    "vision_mode": "auto",
     "active": {
       "chat": "gpt-5.4-mini",
       "vision": "gpt-5.4-mini",
@@ -63,9 +64,6 @@
     "use_mmr": false,
     "mmr_lambda": 0.5,
     "rewrite_followups": true
-  },
-  "multimodal": {
-    "image_provider": ""
   },
   "image_generation": {
     "auth_mode": "bearer",
@@ -177,6 +175,12 @@
     "memory_hygiene_max_findings": 25
   },
   "agent": {
+    "foreground": {
+      "enabled": true,
+      "max_slices": 48,
+      "max_total_seconds": 3600,
+      "max_retries": 3
+    },
     "max_iterations": 10,
     "timeout_seconds": 60,
     "auto_approve": false,
@@ -227,6 +231,14 @@
   "autonomy": {
     "enabled": false,
     "queue_buffer": 64,
+    "recovery": {
+      "resume_on_start": true,
+      "max_retries": 3,
+      "retry_initial_seconds": 5,
+      "retry_max_seconds": 300,
+      "max_slices": 48,
+      "max_total_seconds": 14400
+    },
     "worker": {
       "max_iterations": 300,
       "timeout_seconds": 300,
@@ -289,6 +301,8 @@
       "settle_ms": 350,
       "max_observation_bytes": 10485760,
       "max_screenshot_width": 0,
+      "max_batch_actions": 5,
+      "settle_mode": "adaptive",
       "keep_frames": 2,
       "frame_ttl_seconds": 600,
       "allow_text_input": false,

@@ -1874,7 +1874,7 @@ func (h *Handler) buildUserTurnInput(ctx context.Context, baseText string, attac
 	if len(attachments) == 0 {
 		return agent.TextUserTurnInput(baseText)
 	}
-	return agent.MultimodalUserTurnInput(h.composeAttachmentInput(ctx, baseText, attachments), attachments)
+	return agent.MultimodalUserTurnInput(baseText, attachments)
 }
 
 func (h *Handler) inputWithMessageScope(input agent.UserTurnInput, msg *gateway.Message) agent.UserTurnInput {
@@ -1916,31 +1916,6 @@ func napcatSenderContextText(text string, sender gateway.User) string {
 		b.WriteString(text)
 	}
 	return b.String()
-}
-
-func (h *Handler) composeAttachmentInput(_ context.Context, baseText string, attachments []gateway.Attachment) string {
-	var sections []string
-	if strings.TrimSpace(baseText) != "" {
-		sections = append(sections, strings.TrimSpace(baseText))
-	}
-
-	// The context planner selects native vision or attachment analysis once
-	// the turn's model is known. Gateways only describe and preserve inputs.
-	var mediaDesc strings.Builder
-	mediaDesc.WriteString("[Multimedia Attachments]\n")
-	for i, att := range attachments {
-		label := string(att.Type)
-		if strings.TrimSpace(label) == "" {
-			label = "attachment"
-		}
-		name := strings.TrimSpace(att.FileName)
-		if name == "" {
-			name = "unnamed"
-		}
-		mediaDesc.WriteString(fmt.Sprintf("%s %d: %s (mime: %s)\n", strings.Title(label), i+1, name, att.MimeType))
-	}
-	sections = append(sections, strings.TrimSpace(mediaDesc.String()))
-	return strings.Join(sections, "\n\n")
 }
 
 func (h *Handler) openChatEventStream(ctx context.Context, chatID string, input agent.UserTurnInput, sessionID string) (<-chan agent.ChatEvent, error) {

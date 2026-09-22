@@ -49,24 +49,34 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 		Source:      "builtin",
 		Permission:  PermApprove,
 		Parameters: map[string]Param{
-			"action":          {Type: "string", Description: "Action: status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers", Required: true},
-			"title":           {Type: "string", Description: "Task title for action=add", Required: false},
-			"description":     {Type: "string", Description: "Task details for action=add", Required: false},
-			"priority":        {Type: "string", Description: "Task priority for action=add: low, normal, high, critical", Required: false, Default: "normal"},
-			"tags":            {Type: "array", Description: "Tags for action=add", Required: false},
-			"dry_run":         {Type: "boolean", Description: "Preview add/spawn/scale/set_workers/heartbeat without mutating runtime state", Required: false, Default: false},
-			"start_if_needed": {Type: "boolean", Description: "Allow write actions to start the autonomy runtime when it is stopped", Required: false, Default: true},
-			"idempotency_key": {Type: "string", Description: "Optional key for action=add duplicate detection", Required: false},
-			"state":           {Type: "string", Description: "Filter for action=list: ready, in_progress, blocked, done", Required: false},
-			"task_id":         {Type: "string", Description: "Task ID for update, complete, fail, block, unblock, or spawn", Required: false},
-			"count":           {Type: "number", Description: "Worker count for scale_up, scale_down, or set_workers", Required: false},
-			"limit":           {Type: "number", Description: "Maximum tasks to return for action=report", Required: false},
-			"result":          {Type: "string", Description: "Completion result for action=complete", Required: false},
-			"error":           {Type: "string", Description: "Error message for action=fail", Required: false},
-			"reason":          {Type: "string", Description: "Block reason for action=block", Required: false},
-			"retry":           {Type: "boolean", Description: "Whether action=fail should retry the task", Required: false},
+			"action":              {Type: "string", Description: "Action: status, add, list, report, update, complete, fail, block, unblock, resolve, workers, spawn, heartbeat, scale_up, scale_down, set_workers", Required: true},
+			"title":               {Type: "string", Description: "Task title for action=add", Required: false},
+			"description":         {Type: "string", Description: "Task details for action=add", Required: false},
+			"acceptance_criteria": {Type: "array", Description: "Concrete completion criteria checked by an independent review before marking a background task done", Required: false},
+			"operation_id":        {Type: "string", Description: "Ambiguous operation ID for action=resolve; requires explicit operator reconciliation", Required: false},
+			"resolution":          {Type: "string", Description: "For action=resolve: completed (supply observed result), or retry (operator confirmed it is safe to repeat)", Required: false},
+			"priority":            {Type: "string", Description: "Task priority for action=add: low, normal, high, critical", Required: false, Default: "normal"},
+			"tags":                {Type: "array", Description: "Tags for action=add", Required: false},
+			"dry_run":             {Type: "boolean", Description: "Preview add/spawn/scale/set_workers/heartbeat without mutating runtime state", Required: false, Default: false},
+			"start_if_needed":     {Type: "boolean", Description: "Allow write actions to start the autonomy runtime when it is stopped", Required: false, Default: true},
+			"idempotency_key":     {Type: "string", Description: "Optional key for action=add duplicate detection", Required: false},
+			"state":               {Type: "string", Description: "Filter for action=list: ready, in_progress, blocked, done", Required: false},
+			"task_id":             {Type: "string", Description: "Task ID for update, complete, fail, block, unblock, or spawn", Required: false},
+			"count":               {Type: "number", Description: "Worker count for scale_up, scale_down, or set_workers", Required: false},
+			"limit":               {Type: "number", Description: "Maximum tasks to return for action=report", Required: false},
+			"result":              {Type: "string", Description: "Completion result for action=complete", Required: false},
+			"error":               {Type: "string", Description: "Error message for action=fail", Required: false},
+			"reason":              {Type: "string", Description: "Block reason for action=block", Required: false},
+			"retry":               {Type: "boolean", Description: "Whether action=fail should retry the task", Required: false},
 		},
 		Handler: s.HandleAutonomy,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			if err := authorizeAutonomyOperatorAction(exec, args); err != nil {
+				return ToolCallResult{}, err
+			}
+			out, err := s.HandleAutonomy(args)
+			return ToolCallResult{Output: out}, err
+		},
 	})
 	r.Register(&Tool{
 		Name:            "autonomy_queue_add",
@@ -76,13 +86,14 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 		Permission:      PermAuto,
 		HiddenFromModel: true,
 		Parameters: map[string]Param{
-			"title":           {Type: "string", Description: "Task title", Required: true},
-			"description":     {Type: "string", Description: "Detailed task description", Required: false},
-			"priority":        {Type: "string", Description: "Priority: low, normal, high, critical", Required: false, Default: "normal"},
-			"tags":            {Type: "array", Description: "Tags for categorization", Required: false},
-			"dry_run":         {Type: "boolean", Description: "Preview the queue add without adding or starting runtime", Required: false, Default: false},
-			"start_if_needed": {Type: "boolean", Description: "Allow this call to start the autonomy runtime when it is stopped", Required: false, Default: true},
-			"idempotency_key": {Type: "string", Description: "Optional key for duplicate detection", Required: false},
+			"title":               {Type: "string", Description: "Task title", Required: true},
+			"description":         {Type: "string", Description: "Detailed task description", Required: false},
+			"acceptance_criteria": {Type: "array", Description: "Concrete completion criteria", Required: false},
+			"priority":            {Type: "string", Description: "Priority: low, normal, high, critical", Required: false, Default: "normal"},
+			"tags":                {Type: "array", Description: "Tags for categorization", Required: false},
+			"dry_run":             {Type: "boolean", Description: "Preview the queue add without adding or starting runtime", Required: false, Default: false},
+			"start_if_needed":     {Type: "boolean", Description: "Allow this call to start the autonomy runtime when it is stopped", Required: false, Default: true},
+			"idempotency_key":     {Type: "string", Description: "Optional key for duplicate detection", Required: false},
 		},
 		Handler: s.HandleQueueAdd,
 	})
@@ -106,14 +117,23 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 		Permission:      PermAuto,
 		HiddenFromModel: true,
 		Parameters: map[string]Param{
-			"task_id": {Type: "string", Description: "Task ID to update", Required: true},
-			"action":  {Type: "string", Description: "Action: complete, fail, block, unblock", Required: true},
-			"result":  {Type: "string", Description: "Result text (for complete action)", Required: false},
-			"error":   {Type: "string", Description: "Error message (for fail action)", Required: false},
-			"reason":  {Type: "string", Description: "Block reason (for block action)", Required: false},
-			"retry":   {Type: "boolean", Description: "Whether to retry on failure (default true)", Required: false},
+			"task_id":      {Type: "string", Description: "Task ID to update", Required: true},
+			"action":       {Type: "string", Description: "Action: complete, fail, block, unblock, resolve", Required: true},
+			"operation_id": {Type: "string", Description: "Operation to reconcile", Required: false},
+			"resolution":   {Type: "string", Description: "completed or retry; requires operator reconciliation", Required: false},
+			"result":       {Type: "string", Description: "Result text (for complete action)", Required: false},
+			"error":        {Type: "string", Description: "Error message (for fail action)", Required: false},
+			"reason":       {Type: "string", Description: "Block reason (for block action)", Required: false},
+			"retry":        {Type: "boolean", Description: "Whether to retry on failure (default true)", Required: false},
 		},
 		Handler: s.HandleQueueUpdate,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			if err := authorizeAutonomyOperatorAction(exec, args); err != nil {
+				return ToolCallResult{}, err
+			}
+			out, err := s.HandleQueueUpdate(args)
+			return ToolCallResult{Output: out}, err
+		},
 	})
 	r.Register(&Tool{
 		Name:            "autonomy_worker_spawn",
@@ -164,6 +184,48 @@ func (s *AutonomyToolService) RegisterTools(r *Registry) {
 	})
 }
 
+// Model-generated reconciliation cannot establish the outcome of an external
+// operation. Require an exact operator instruction in the current user turn.
+// Direct service/registry callers without a Source are trusted operator APIs.
+func authorizeAutonomyOperatorAction(exec ExecutionContext, args map[string]any) error {
+	action, _ := args["action"].(string)
+	action = strings.ToLower(strings.TrimSpace(action))
+	if (action != "resolve" && action != "complete") || exec.Source == "" {
+		return nil
+	}
+	if exec.Source == "autonomy" {
+		return fmt.Errorf("background workers cannot reconcile operations or manually complete tasks")
+	}
+	text := strings.TrimSpace(exec.UserRequest)
+	if strings.HasPrefix(text, "```json") {
+		text = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(text, "```json"), "```"))
+	}
+	var instruction map[string]any
+	if json.Unmarshal([]byte(text), &instruction) == nil {
+		matches := true
+		keys := []string{"action", "task_id"}
+		if action == "resolve" {
+			keys = append(keys, "operation_id", "resolution")
+		}
+		for _, key := range keys {
+			expected, ok := instruction[key].(string)
+			actual, actualOK := args[key].(string)
+			if !ok || !actualOK || expected != actual || strings.TrimSpace(actual) == "" {
+				matches = false
+			}
+		}
+		if instruction["resolution"] == "completed" || action == "complete" {
+			expected, _ := instruction["result"].(string)
+			actual, _ := args["result"].(string)
+			matches = matches && strings.TrimSpace(expected) != "" && expected == actual
+		}
+		if matches {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s requires the operator's current message to contain the exact action JSON including task_id and observed result (plus operation_id/resolution for resolve); inspect the external operation before retrying or completing", action)
+}
+
 // HandleAutonomy exposes a single model-visible autonomy control surface while
 // keeping the lower-level autonomy_* tools available for internal callers.
 func (s *AutonomyToolService) HandleAutonomy(args map[string]any) (string, error) {
@@ -192,7 +254,7 @@ func (s *AutonomyToolService) HandleAutonomy(args map[string]any) (string, error
 		out, callErr = s.HandleReport(args)
 	case "update":
 		out, callErr = s.HandleQueueUpdate(args)
-	case "complete", "fail", "block", "unblock":
+	case "complete", "fail", "block", "unblock", "resolve":
 		next := cloneToolArgs(args)
 		next["action"] = canonical
 		out, callErr = s.HandleQueueUpdate(next)
@@ -459,6 +521,8 @@ func canonicalAutonomyAction(action string) (string, error) {
 		return "block", nil
 	case "unblock":
 		return "unblock", nil
+	case "resolve":
+		return "resolve", nil
 	case "workers", "worker_list":
 		return "workers", nil
 	case "spawn", "worker_spawn", "run":
@@ -472,7 +536,7 @@ func canonicalAutonomyAction(action string) (string, error) {
 	case "set_workers", "workers_set":
 		return "set_workers", nil
 	default:
-		return "", fmt.Errorf("invalid autonomy action %q (use status, add, list, report, update, complete, fail, block, unblock, workers, spawn, heartbeat, scale_up, scale_down, set_workers)", action)
+		return "", fmt.Errorf("invalid autonomy action %q (use status, add, list, report, update, complete, fail, block, unblock, resolve, workers, spawn, heartbeat, scale_up, scale_down, set_workers)", action)
 	}
 }
 
@@ -496,6 +560,10 @@ func (s *AutonomyToolService) queueAddDryRun(args map[string]any, runtimeStarted
 		return "", fmt.Errorf("title is required")
 	}
 	description, _ := args["description"].(string)
+	criteria, err := autonomy.ParseAcceptanceCriteria(args["acceptance_criteria"])
+	if err != nil {
+		return "", err
+	}
 	priorityStr := "normal"
 	if p, ok := args["priority"].(string); ok && strings.TrimSpace(p) != "" {
 		priorityStr = strings.TrimSpace(p)
@@ -510,10 +578,11 @@ func (s *AutonomyToolService) queueAddDryRun(args map[string]any, runtimeStarted
 		"runtime_started_before":  runtimeStartedBefore,
 		"runtime_started_by_tool": false,
 		"task": map[string]any{
-			"title":       title,
-			"description": description,
-			"priority":    autonomy.ParseTaskPriority(priorityStr).String(),
-			"tags":        tags,
+			"title":               title,
+			"description":         description,
+			"acceptance_criteria": criteria,
+			"priority":            autonomy.ParseTaskPriority(priorityStr).String(),
+			"tags":                tags,
 		},
 		"idempotency_key":   strings.TrimSpace(fmt.Sprint(args["idempotency_key"])),
 		"queue_ready":       ready,

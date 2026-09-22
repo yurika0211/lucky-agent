@@ -182,6 +182,8 @@ type ComputerUseToolConfig struct {
 	SettleMilliseconds   int      `json:"settle_milliseconds,omitempty"`
 	MaxObservationBytes  int      `json:"max_observation_bytes,omitempty"`
 	MaxScreenshotWidth   int      `json:"max_screenshot_width,omitempty"`
+	MaxBatchActions      int      `json:"max_batch_actions,omitempty"`
+	SettleMode           string   `json:"settle_mode,omitempty"`
 	KeepFrames           int      `json:"keep_frames,omitempty"`
 	FrameTTLSeconds      int      `json:"frame_ttl_seconds,omitempty"`
 	RetainFrames         int      `json:"retain_frames,omitempty"`
@@ -348,6 +350,7 @@ type SimpleLocalInspectionConfig struct {
 
 // AgentLoopConfig Agent Loop 配置
 type AgentLoopConfig struct {
+	Foreground             ForegroundConfig            `json:"foreground,omitempty"`
 	MaxIterations          int                         `json:"max_iterations,omitempty"`
 	TimeoutSeconds         int                         `json:"timeout_seconds,omitempty"`
 	AutoApprove            bool                        `json:"auto_approve,omitempty"`
@@ -431,11 +434,21 @@ type AutonomyHeartbeatConfig struct {
 
 // AutonomyConfig 自主工作套件配置
 type AutonomyConfig struct {
+	Recovery    AutonomyRecoveryConfig  `json:"recovery,omitempty"`
 	Enabled     bool                    `json:"enabled,omitempty"`
 	QueueBuffer int                     `json:"queue_buffer,omitempty"`
 	Worker      AutonomyWorkerConfig    `json:"worker,omitempty"`
 	Pool        AutonomyPoolConfig      `json:"pool,omitempty"`
 	Heartbeat   AutonomyHeartbeatConfig `json:"heartbeat,omitempty"`
+}
+
+type AutonomyRecoveryConfig struct {
+	ResumeOnStart       *bool `json:"resume_on_start,omitempty"`
+	MaxRetries          *int  `json:"max_retries,omitempty"`
+	RetryInitialSeconds int   `json:"retry_initial_seconds,omitempty"`
+	RetryMaxSeconds     int   `json:"retry_max_seconds,omitempty"`
+	MaxSlices           int   `json:"max_slices,omitempty"`
+	MaxTotalSeconds     int   `json:"max_total_seconds,omitempty"`
 }
 
 // ProactiveConfig controls the proactive state estimator and gate. It is
@@ -851,6 +864,7 @@ func DefaultConfig() *Config {
 			MemoryHygieneMaxFindings:         25,
 		},
 		Agent: AgentLoopConfig{
+			Foreground:             DefaultForegroundConfig(),
 			MaxIterations:          10,
 			TimeoutSeconds:         60,
 			AutoApprove:            false,
@@ -893,6 +907,14 @@ func DefaultConfig() *Config {
 			Addr: ":8765",
 		},
 		Autonomy: AutonomyConfig{
+			Recovery: AutonomyRecoveryConfig{
+				ResumeOnStart:       boolPtr(true),
+				MaxRetries:          func() *int { n := 3; return &n }(),
+				RetryInitialSeconds: 5,
+				RetryMaxSeconds:     300,
+				MaxSlices:           48,
+				MaxTotalSeconds:     14400,
+			},
 			Enabled:     false,
 			QueueBuffer: 64,
 			Worker: AutonomyWorkerConfig{
@@ -950,6 +972,8 @@ func DefaultConfig() *Config {
 				SettleMilliseconds:   350,
 				MaxObservationBytes:  10 << 20,
 				MaxScreenshotWidth:   0,
+				MaxBatchActions:      5,
+				SettleMode:           "adaptive",
 				KeepFrames:           2,
 				FrameTTLSeconds:      600,
 				RetainFrames:         2,
@@ -1042,6 +1066,9 @@ func parseConfigData(data []byte) (*Config, error) {
 		return cfg, nil
 	}
 	if err := json.Unmarshal(data, cfg); err != nil {
+		return nil, err
+	}
+	if err := validateModelConfig(cfg); err != nil {
 		return nil, err
 	}
 	normalizeConfig(cfg)
@@ -1316,6 +1343,7 @@ func normalizeConfig(cfg *Config) {
 		cfg.Context.MemoryHygieneMaxFindings = def.Context.MemoryHygieneMaxFindings
 	}
 
+	normalizeForegroundConfig(&cfg.Agent.Foreground)
 	if cfg.Agent.MaxIterations <= 0 {
 		cfg.Agent.MaxIterations = def.Agent.MaxIterations
 	}
@@ -1391,6 +1419,27 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Autonomy.QueueBuffer <= 0 {
 		cfg.Autonomy.QueueBuffer = def.Autonomy.QueueBuffer
+	}
+	if cfg.Autonomy.Recovery.MaxRetries == nil || *cfg.Autonomy.Recovery.MaxRetries < 0 {
+		cfg.Autonomy.Recovery.MaxRetries = def.Autonomy.Recovery.MaxRetries
+	}
+	if cfg.Autonomy.Recovery.ResumeOnStart == nil {
+		cfg.Autonomy.Recovery.ResumeOnStart = def.Autonomy.Recovery.ResumeOnStart
+	}
+	if cfg.Autonomy.Recovery.RetryInitialSeconds <= 0 {
+		cfg.Autonomy.Recovery.RetryInitialSeconds = def.Autonomy.Recovery.RetryInitialSeconds
+	}
+	if cfg.Autonomy.Recovery.RetryMaxSeconds <= 0 {
+		cfg.Autonomy.Recovery.RetryMaxSeconds = def.Autonomy.Recovery.RetryMaxSeconds
+	}
+	if cfg.Autonomy.Recovery.RetryMaxSeconds < cfg.Autonomy.Recovery.RetryInitialSeconds {
+		cfg.Autonomy.Recovery.RetryMaxSeconds = cfg.Autonomy.Recovery.RetryInitialSeconds
+	}
+	if cfg.Autonomy.Recovery.MaxSlices <= 0 {
+		cfg.Autonomy.Recovery.MaxSlices = def.Autonomy.Recovery.MaxSlices
+	}
+	if cfg.Autonomy.Recovery.MaxTotalSeconds <= 0 {
+		cfg.Autonomy.Recovery.MaxTotalSeconds = def.Autonomy.Recovery.MaxTotalSeconds
 	}
 	if cfg.Autonomy.Pool.MaxWorkers <= 0 {
 		cfg.Autonomy.Pool.MaxWorkers = def.Autonomy.Pool.MaxWorkers
@@ -1506,6 +1555,12 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Tools.ComputerUse.MaxScreenshotWidth <= 0 {
 		cfg.Tools.ComputerUse.MaxScreenshotWidth = def.Tools.ComputerUse.MaxScreenshotWidth
+	}
+	if cfg.Tools.ComputerUse.MaxBatchActions <= 0 {
+		cfg.Tools.ComputerUse.MaxBatchActions = def.Tools.ComputerUse.MaxBatchActions
+	}
+	if cfg.Tools.ComputerUse.SettleMode == "" {
+		cfg.Tools.ComputerUse.SettleMode = def.Tools.ComputerUse.SettleMode
 	}
 	if cfg.Tools.ComputerUse.KeepFrames <= 0 {
 		cfg.Tools.ComputerUse.KeepFrames = cfg.Tools.ComputerUse.RetainFrames
@@ -1736,6 +1791,22 @@ func cloneConfig(in *Config) *Config {
 		v := *in.Autonomy.Worker.AutoApprove
 		cp.Autonomy.Worker.AutoApprove = &v
 	}
+	if in.Agent.Foreground.Enabled != nil {
+		v := *in.Agent.Foreground.Enabled
+		cp.Agent.Foreground.Enabled = &v
+	}
+	if in.Agent.Foreground.MaxRetries != nil {
+		v := *in.Agent.Foreground.MaxRetries
+		cp.Agent.Foreground.MaxRetries = &v
+	}
+	if in.Autonomy.Recovery.MaxRetries != nil {
+		v := *in.Autonomy.Recovery.MaxRetries
+		cp.Autonomy.Recovery.MaxRetries = &v
+	}
+	if in.Autonomy.Recovery.ResumeOnStart != nil {
+		v := *in.Autonomy.Recovery.ResumeOnStart
+		cp.Autonomy.Recovery.ResumeOnStart = &v
+	}
 	if in.Autonomy.Worker.DisabledTools != nil {
 		cp.Autonomy.Worker.DisabledTools = append([]string{}, in.Autonomy.Worker.DisabledTools...)
 	}
@@ -1824,6 +1895,9 @@ func (m *Manager) Save() error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
+	if err := validateModelConfig(m.config); err != nil {
+		return err
+	}
 	normalizeConfig(m.config)
 	out := cloneConfig(m.config)
 
@@ -1851,28 +1925,11 @@ func (m *Manager) Get() *Config {
 func (m *Manager) Set(key, value string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if handled, err := m.config.setModelKey(key, value); handled {
+		return err
+	}
 
 	switch key {
-	case "provider":
-		m.config.LlmProvider.Name = value
-		m.config.Provider = value
-	case "api_key":
-		m.config.LlmProvider.APIKey = value
-		m.config.APIKey = value
-	case "api_base":
-		m.config.LlmProvider.BaseURL = value
-		m.config.APIBase = value
-	case "model":
-		m.config.LlmProvider.Model = value
-		m.config.Model = value
-	case "protocol", "llm_provider.protocol":
-		m.config.LlmProvider.Protocol = value
-	case "embedding.model":
-		m.config.Embedding.Model = value
-	case "embedding.api_key":
-		m.config.Embedding.APIKey = value
-	case "embedding.api_base":
-		m.config.Embedding.APIBase = value
 	case "embedding.dimension":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
@@ -1899,28 +1956,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.RAG.MMRLambda = f
 	case "rag.rewrite_followups":
 		m.config.RAG.RewriteFollowUps = parseBool(value)
-	case "multimodal.provider":
-		m.config.Multimodal.Provider = value
-	case "multimodal.api_key":
-		m.config.Multimodal.APIKey = value
-	case "multimodal.api_base":
-		m.config.Multimodal.APIBase = value
-	case "multimodal.image_model":
-		m.config.Multimodal.ImageModel = value
-	case "multimodal.transcription_model":
-		m.config.Multimodal.TranscriptionModel = value
-	case "multimodal.image_provider":
-		m.config.Multimodal.ImageProvider = value
-	case "image_generation.provider":
-		m.config.ImageGeneration.Provider = value
-	case "image_generation.api_key":
-		m.config.ImageGeneration.APIKey = value
-	case "image_generation.api_base":
-		m.config.ImageGeneration.APIBase = value
 	case "image_generation.auth_mode":
 		m.config.ImageGeneration.AuthMode = value
-	case "image_generation.model":
-		m.config.ImageGeneration.Model = value
 	case "image_generation.size":
 		m.config.ImageGeneration.Size = value
 	case "image_generation.quality":
@@ -1937,16 +1974,8 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.ImageGeneration.Count = n
-	case "tts.provider":
-		m.config.TTS.Provider = value
-	case "tts.api_key":
-		m.config.TTS.APIKey = value
-	case "tts.api_base":
-		m.config.TTS.APIBase = value
 	case "tts.auth_mode":
 		m.config.TTS.AuthMode = value
-	case "tts.model":
-		m.config.TTS.Model = value
 	case "tts.voice":
 		m.config.TTS.Voice = value
 	case "tts.format":
@@ -2016,6 +2045,25 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Memory.Tidal.MinSamples = n
 	case "memory.tidal.store_path":
 		m.config.Memory.Tidal.StorePath = value
+	case "agent.foreground.enabled":
+		v, err := strconv.ParseBool(value)
+		if err != nil {
+			return err
+		}
+		m.config.Agent.Foreground.Enabled = &v
+	case "agent.foreground.max_retries", "agent.foreground.max_slices", "agent.foreground.max_total_seconds":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || (key != "agent.foreground.max_retries" && n == 0) {
+			return fmt.Errorf("%s requires a positive integer (max_retries also allows zero)", key)
+		}
+		switch key {
+		case "agent.foreground.max_retries":
+			m.config.Agent.Foreground.MaxRetries = &n
+		case "agent.foreground.max_slices":
+			m.config.Agent.Foreground.MaxSlices = n
+		case "agent.foreground.max_total_seconds":
+			m.config.Agent.Foreground.MaxTotalSeconds = n
+		}
 	case "agent.max_iterations":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
@@ -2129,6 +2177,26 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Dashboard.Addr = value
 	case "autonomy.enabled":
 		m.config.Autonomy.Enabled = parseBool(value)
+	case "autonomy.recovery.resume_on_start":
+		v := parseBool(value)
+		m.config.Autonomy.Recovery.ResumeOnStart = &v
+	case "autonomy.recovery.max_retries", "autonomy.recovery.retry_initial_seconds", "autonomy.recovery.retry_max_seconds", "autonomy.recovery.max_slices", "autonomy.recovery.max_total_seconds":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 || (n == 0 && key != "autonomy.recovery.max_retries") {
+			return fmt.Errorf("%s requires a positive integer (max_retries also accepts zero)", key)
+		}
+		switch key {
+		case "autonomy.recovery.max_retries":
+			m.config.Autonomy.Recovery.MaxRetries = &n
+		case "autonomy.recovery.retry_initial_seconds":
+			m.config.Autonomy.Recovery.RetryInitialSeconds = n
+		case "autonomy.recovery.retry_max_seconds":
+			m.config.Autonomy.Recovery.RetryMaxSeconds = n
+		case "autonomy.recovery.max_slices":
+			m.config.Autonomy.Recovery.MaxSlices = n
+		case "autonomy.recovery.max_total_seconds":
+			m.config.Autonomy.Recovery.MaxTotalSeconds = n
+		}
 	case "autonomy.queue_buffer":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
@@ -2276,6 +2344,17 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Tools.ComputerUse.MaxScreenshotWidth = n
+	case "tools.computer_use.max_batch_actions":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 1 || n > 10 {
+			return fmt.Errorf("max_batch_actions must be between 1 and 10")
+		}
+		m.config.Tools.ComputerUse.MaxBatchActions = n
+	case "tools.computer_use.settle_mode":
+		if value != "fixed" && value != "adaptive" {
+			return fmt.Errorf("settle_mode must be fixed or adaptive")
+		}
+		m.config.Tools.ComputerUse.SettleMode = value
 	case "tools.computer_use.keep_frames":
 		var n int
 		fmt.Sscanf(value, "%d", &n)
