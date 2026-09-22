@@ -150,6 +150,14 @@ fi
 "$bin_dir/lh" init >/dev/null 2>&1 || true
 install_desktop_entry
 
+if [ -x "$app_dir/runtime/electron/electron" ] && command -v ldd >/dev/null 2>&1; then
+  missing=$(ldd "$app_dir/runtime/electron/electron" 2>/dev/null | awk '/not found/ {print $1}' | sort -u | tr '\n' ' ')
+  if [ -n "${missing:-}" ]; then
+    echo "Warning: desktop runtime is missing shared libraries: $missing" >&2
+    echo "Install system packages before running luckyagent-desktop (Debian/Ubuntu: libnspr4 libnss3)." >&2
+  fi
+fi
+
 echo "LuckyAgent installed to $app_dir"
 if [ -x "$bin_dir/luckyagent-desktop" ]; then
   echo "Commands: lh, luckyagent-desktop, luckyagent-gui, luckyagent-tui"

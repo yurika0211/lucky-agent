@@ -28,8 +28,9 @@ Section: utils
 Priority: optional
 Architecture: $arch
 Maintainer: LuckyAgent
+Depends: libnspr4, libnss3
 Description: LuckyAgent CLI, dashboard, and terminal UI
- Bundled Node runtime, GUI assets, and TUI are included.
+ Bundled Node runtime, GUI assets, TUI, and optional Electron desktop shell.
 EOF
 
 cat > "$root_dir/usr/bin/lh" <<'EOF'
