@@ -633,7 +633,10 @@ func (a *Adapter) sendTypingOnce(chatID int64) {
 // ReactToMessage 给消息添加 emoji reaction（👍 等）
 // 使用 Telegram Bot API setMessageReaction（v5.5.1 未封装，复用 bot HTTP client 调用）
 func (a *Adapter) ReactToMessage(chatID string, messageID string, emoji string) {
-	if a.ensureReady() != nil {
+	// Reactions are best-effort acknowledgements and fire during inbound
+	// polling, including tests and restart windows that inject a bot without
+	// flipping the long-poll running flag. Require a client, not IsRunning.
+	if a == nil || a.bot == nil {
 		return
 	}
 	emoji = strings.TrimSpace(emoji)
