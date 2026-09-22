@@ -11,6 +11,16 @@ This package is intentionally minimal:
 - expose a small `window.luckyDesktop` bridge
 - do **not** rewrite GUI business logic
 
+## Auto runtime
+
+On launch, the desktop shell:
+
+1. Starts `lh serve` on `LH_API_BASE` (default `http://127.0.0.1:9090`) if it is not already healthy
+2. Serves the packaged GUI through a local UI gateway (default `http://127.0.0.1:8765`) so `/lh-api` and `/api/*` work
+3. Lets the GUI probe health and auto-connect the WebSocket session
+
+Disable auto-start with `LH_ELECTRON_AUTOSTART=0`.
+
 ## Status
 
 Working local desktop shell:

@@ -241,6 +241,175 @@ function shouldLoadDist() {
   return fs.existsSync(guiDistIndex());
 }
 
+
+/** @type {import('node:http').Server | null} */
+let desktopGateway = null;
+/** @type {string} */
+let desktopGatewayURL = '';
+
+function apiBaseURL() {
+  return process.env.LH_API_BASE || DEFAULT_API_BASE;
+}
+
+function proxyToAPI(req, res, apiPath) {
+  const target = new URL(apiPath, apiBaseURL().endsWith('/') ? apiBaseURL() : `${apiBaseURL()}/`);
+  const headers = { ...req.headers, host: target.host };
+  delete headers['content-length'];
+  const upstream = http.request(
+    {
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || (target.protocol === 'https:' ? 443 : 80),
+      path: `${target.pathname}${target.search}`,
+      method: req.method,
+      headers,
+    },
+    (up) => {
+      res.writeHead(up.statusCode || 502, up.headers);
+      up.pipe(res);
+    },
+  );
+  upstream.on('error', (err) => {
+    res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ error: 'desktop_api_proxy_failed', message: String(err) }));
+  });
+  req.pipe(upstream);
+}
+
+function contentTypeFor(filePath) {
+  switch (path.extname(filePath).toLowerCase()) {
+    case '.html':
+      return 'text/html; charset=utf-8';
+    case '.js':
+      return 'text/javascript; charset=utf-8';
+    case '.css':
+      return 'text/css; charset=utf-8';
+    case '.json':
+      return 'application/json; charset=utf-8';
+    case '.svg':
+      return 'image/svg+xml';
+    case '.png':
+      return 'image/png';
+    case '.jpg':
+    case '.jpeg':
+      return 'image/jpeg';
+    case '.ico':
+      return 'image/x-icon';
+    case '.webp':
+      return 'image/webp';
+    case '.woff':
+      return 'font/woff';
+    case '.woff2':
+      return 'font/woff2';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function sendFile(res, filePath) {
+  try {
+    const data = fs.readFileSync(filePath);
+    res.writeHead(200, { 'content-type': contentTypeFor(filePath), 'cache-control': 'no-cache' });
+    res.end(data);
+  } catch {
+    res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end('Not found');
+  }
+}
+
+async function startDesktopGateway() {
+  if (desktopGateway) return desktopGatewayURL;
+  const distIndex = guiDistIndex();
+  const distRoot = path.dirname(distIndex);
+  if (!fs.existsSync(distIndex)) {
+    throw new Error(`GUI dist not found: ${distIndex}`);
+  }
+
+  const preferred = Number(process.env.LH_DESKTOP_UI_PORT || 8765);
+  const hosts = ['127.0.0.1'];
+
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    if (url.pathname === '/api/health') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: true, mode: 'desktop-gateway' }));
+      return;
+    }
+    if (url.pathname === '/api/status') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          running: true,
+          addr: `127.0.0.1:${server.address()?.port || preferred}`,
+          api_addr: apiBaseURL(),
+          version: 'desktop',
+        }),
+      );
+      return;
+    }
+    if (url.pathname === '/api/data') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(
+        JSON.stringify({
+          api_addr: apiBaseURL(),
+          provider: '',
+          model: '',
+        }),
+      );
+      return;
+    }
+    if (url.pathname === '/lh-api' || url.pathname.startsWith('/lh-api/')) {
+      const apiPath = url.pathname.replace(/^\/lh-api/, '/api') + url.search;
+      proxyToAPI(req, res, apiPath);
+      return;
+    }
+
+    let rel = decodeURIComponent(url.pathname);
+    if (rel === '/' || rel === '') rel = '/index.html';
+    const candidate = path.normalize(path.join(distRoot, rel));
+    if (!candidate.startsWith(distRoot)) {
+      res.writeHead(403).end('forbidden');
+      return;
+    }
+    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      sendFile(res, candidate);
+      return;
+    }
+    // SPA fallback
+    sendFile(res, distIndex);
+  });
+
+  await new Promise((resolve, reject) => {
+    const tryListen = (port, hostIdx) => {
+      const host = hosts[hostIdx];
+      const onError = (err) => {
+        server.off('listening', onListening);
+        if (err && err.code === 'EADDRINUSE' && port < preferred + 40) {
+          tryListen(port + 1, hostIdx);
+          return;
+        }
+        reject(err);
+      };
+      const onListening = () => {
+        server.off('error', onError);
+        resolve();
+      };
+      server.once('error', onError);
+      server.once('listening', onListening);
+      server.listen(port, host);
+    };
+    tryListen(preferred, 0);
+  });
+
+  desktopGateway = server;
+  const addr = server.address();
+  const port = typeof addr === 'object' && addr ? addr.port : preferred;
+  desktopGatewayURL = `http://127.0.0.1:${port}`;
+  console.log(`[desktop] UI gateway on ${desktopGatewayURL} → API ${apiBaseURL()}`);
+  return desktopGatewayURL;
+}
+
+
 function injectRoundedChrome() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const radius = WINDOW_RADIUS;
@@ -465,7 +634,14 @@ function createWindow() {
       app.quit();
       return;
     }
-    void mainWindow.loadFile(index);
+    // Prefer a local UI gateway so relative /lh-api and /api/* work just like
+    // browser dashboard mode, and the GUI can auto-connect without manual setup.
+    startDesktopGateway()
+      .then((url) => mainWindow.loadURL(url))
+      .catch((err) => {
+        console.warn('[desktop] UI gateway failed, falling back to loadFile', err);
+        void mainWindow.loadFile(index);
+      });
   } else {
     void mainWindow.loadURL(DEFAULT_DEV_URL);
   }
@@ -585,4 +761,11 @@ if (!gotSingleInstanceLock) {
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('before-quit', () => {
+  if (desktopGateway) {
+    try { desktopGateway.close(); } catch { /* ignore */ }
+    desktopGateway = null;
+  }
 });

@@ -344,6 +344,41 @@ function normalizeApiBase(value: string): string {
   }
 }
 
+
+function desktopBridge(): LuckyDesktopBridge | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return window.luckyDesktop;
+}
+
+function preferredApiBase(): string {
+  const stored = readStored(API_BASE_STORAGE_KEY);
+  if (stored) return stored;
+  const desktop = desktopBridge();
+  if (desktop?.apiBase) return normalizeApiBase(desktop.apiBase) || desktop.apiBase;
+  return DEFAULT_API_BASE;
+}
+
+async function probeApiHealth(base: string): Promise<boolean> {
+  const target = normalizeApiBase(base) || base;
+  if (!target) return false;
+  const direct = `${target.replace(/\/+$/, '')}/api/v1/health/live`;
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 1500);
+    const response = await fetch(direct, { signal: controller.signal });
+    window.clearTimeout(timer);
+    if (response.ok) return true;
+  } catch {
+    // Fall through to the dashboard proxy path used by browser GUI mode.
+  }
+  try {
+    const response = await fetch(`/lh-api/v1/health/live`);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
 function nowLabel(): string {
   return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
@@ -474,9 +509,10 @@ export function App() {
     return current === 'dark' ? 'dark' : 'light';
   });
   const [view, setView] = useState<WorkspaceView>('chat');
-  const [apiBase, setApiBase] = useState(() => readStored(API_BASE_STORAGE_KEY) || DEFAULT_API_BASE);
+  const [apiBase, setApiBase] = useState(() => preferredApiBase());
   const [session, setSession] = useState(() => readStored(SESSION_STORAGE_KEY) || DEFAULT_SESSION);
   const apiBaseTouchedRef = useRef(Boolean(readStored(API_BASE_STORAGE_KEY)));
+  const userDisconnectedRef = useRef(false);
   const socketSessionRef = useRef('');
   const [status, setStatus] = useState<DashboardStatus>({});
   const [data, setData] = useState<DashboardData>({});
@@ -908,6 +944,7 @@ export function App() {
 
   function connect(sessionID = session) {
     const target = sessionID.trim() || DEFAULT_SESSION;
+    userDisconnectedRef.current = false;
     let wsUrl: URL;
     try {
       wsUrl = new URL(effectiveBase);
@@ -971,7 +1008,10 @@ export function App() {
     setSocketState('idle');
     assistantDraftRef.current = '';
     assistantBubbleRef.current = null;
-    if (log) pushActivity('socket', 'Disconnected', session);
+    if (log) {
+      userDisconnectedRef.current = true;
+      pushActivity('socket', 'Disconnected', session);
+    }
   }
 
   function reconnect(sessionID: string) {
@@ -1255,10 +1295,50 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
+    const desktop = desktopBridge();
+    if (desktop?.apiBase && !apiBaseTouchedRef.current) {
+      const preferred = normalizeApiBase(desktop.apiBase) || desktop.apiBase;
+      if (preferred && preferred !== apiBase) setApiBase(preferred);
+    }
+
     void loadDashboard();
     void loadSessions('');
     void loadCommands();
+
+    let cancelled = false;
+    const startedAt = Date.now();
+    const budgetMs = desktop?.isElectron ? 25000 : 10000;
+
+    const tick = async () => {
+      if (cancelled || userDisconnectedRef.current) return;
+      const socket = wsRef.current;
+      if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+      const healthy = await probeApiHealth(effectiveBase);
+      if (cancelled || userDisconnectedRef.current) return;
+      if (healthy) {
+        connect(session);
+        return;
+      }
+      if (Date.now() - startedAt >= budgetMs) {
+        if (desktop?.isElectron) {
+          pushActivity(
+            'status',
+            'Runtime not ready',
+            `Desktop tried to start the local API at ${effectiveBase}, but it is not healthy yet. Click Connect when ready.`,
+          );
+        }
+        return;
+      }
+      window.setTimeout(() => {
+        void tick();
+      }, 400);
+    };
+    void tick();
+
     return () => {
+      cancelled = true;
       if (wsRef.current) wsRef.current.close();
       if (streamFrameRef.current !== null) window.cancelAnimationFrame(streamFrameRef.current);
     };
@@ -1602,6 +1682,11 @@ export function App() {
               <div className="popover-actions">
                 <button className="ghost" type="button" onClick={() => void loadSessionHistory()}>Load history</button>
                 <button className="ghost" type="button" onClick={() => void createSession()}>New session</button>
+                {desktopBridge()?.isElectron ? (
+                  <p className="settings-desc" style={{ marginTop: 0 }}>
+                    Desktop starts `lh serve` locally and auto-connects when healthy.
+                  </p>
+                ) : null}
                 <button className="primary" type="button" onClick={connected ? () => disconnect() : () => connect()}>
                   {connected ? 'Disconnect' : 'Connect'}
                 </button>
@@ -1633,7 +1718,7 @@ export function App() {
                 <div className="hero">
                   <div className="hero-mark"><LogoMark /></div>
                   <h2>{greeting()}</h2>
-                  <p>Connect to the runtime, or open a previous chat from the sidebar.</p>
+                  <p>{desktopBridge()?.isElectron ? 'Desktop is bringing up the local API and will connect automatically. You can also open a previous chat from the sidebar.' : 'Connect to the runtime, or open a previous chat from the sidebar.'}</p>
                   <div className="hero-suggestions">
                     {SUGGESTIONS.map((item) => (
                       <button
@@ -1772,8 +1857,8 @@ export function App() {
             <div className="composer-dock">
               {!connected ? (
                 <div className="composer-notice">
-                  <span>Not connected to the runtime.</span>
-                  <button className="text-button" type="button" onClick={() => connect()}>Connect now</button>
+                  <span>{desktopBridge()?.isElectron ? 'Starting / connecting to the local runtime…' : 'Not connected to the runtime.'}</span>
+                  <button className="text-button" type="button" onClick={() => connect()}>{desktopBridge()?.isElectron ? 'Retry connect' : 'Connect now'}</button>
                 </div>
               ) : null}
               {composerBox}
