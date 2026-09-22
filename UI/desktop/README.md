@@ -6,6 +6,7 @@ This package is intentionally minimal:
 
 - load Vite dev server in development
 - load `UI/GUI/dist` in production-like mode
+- rounded frameless window (transparent shell + CSS radius + custom titlebar)
 - expose a small `window.luckyDesktop` bridge
 - do **not** rewrite GUI business logic
 
