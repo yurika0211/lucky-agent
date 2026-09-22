@@ -53,6 +53,8 @@ type Pending = {
 
 const DEFAULT_API_BASE = 'http://127.0.0.1:9090';
 const DEFAULT_SESSION = 'dashboard-main';
+const API_BASE_STORAGE_KEY = 'lh-gui-api-base';
+const SESSION_STORAGE_KEY = 'lh-gui-session';
 const MAX_MESSAGES = 500;
 const MAX_ACTIVITY = 48;
 const HISTORY_PAGE = 60;
@@ -301,6 +303,24 @@ function LogoMark() {
 
 /* ------------------------------------------------------------- helpers */
 
+function readStored(key: string): string {
+  try {
+    return localStorage.getItem(key)?.trim() || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeStored(key: string, value: string) {
+  try {
+    const next = value.trim();
+    if (next) localStorage.setItem(key, next);
+    else localStorage.removeItem(key);
+  } catch {
+    // Private mode or a blocked storage API should not break the chat.
+  }
+}
+
 function normalizeApiBase(value: string): string {
   const raw = value.trim();
   if (!raw) return '';
@@ -376,11 +396,55 @@ function normalizeBubbleRole(role?: string): Bubble['role'] {
   return 'system';
 }
 
+function clipHistoryText(value: string, limit = 1200): string {
+  const text = value.trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}…`;
+}
+
 function historyToBubbles(history?: ProviderMessage[]): Bubble[] {
   const bubbles: Bubble[] = [];
   for (const msg of history || []) {
     const role = normalizeBubbleRole(msg.role);
     const body = String(msg.content || '').trim();
+    const calls = msg.tool_calls || [];
+    if (role === 'assistant' && calls.length) {
+      calls.forEach((call, index) => {
+        const name = call.name || 'tool';
+        const args = clipHistoryText(String(call.arguments || ''));
+        bubbles.push({
+          id: makeId(`history-tool-${call.id || index}`),
+          role: 'tool_call',
+          title: name,
+          body: '',
+          meta: 'history',
+          stepId: call.id,
+          tool: {
+            name,
+            args: args || undefined,
+            done: true,
+          },
+        });
+      });
+    }
+    if (role === 'tool') {
+      const output = clipHistoryText(body || '(empty tool result)');
+      bubbles.push({
+        id: makeId('history-tool-result'),
+        role: 'tool_call',
+        title: msg.name || 'tool',
+        body: '',
+        meta: 'history',
+        stepId: msg.tool_call_id,
+        tool: {
+          name: msg.name || 'tool',
+          output,
+          done: true,
+        },
+      });
+      continue;
+    }
+    if (!body && !calls.length) continue;
     if (!body) continue;
     bubbles.push({
       id: makeId(`history-${role}`),
@@ -410,8 +474,10 @@ export function App() {
     return current === 'dark' ? 'dark' : 'light';
   });
   const [view, setView] = useState<WorkspaceView>('chat');
-  const [apiBase, setApiBase] = useState(DEFAULT_API_BASE);
-  const [session, setSession] = useState(DEFAULT_SESSION);
+  const [apiBase, setApiBase] = useState(() => readStored(API_BASE_STORAGE_KEY) || DEFAULT_API_BASE);
+  const [session, setSession] = useState(() => readStored(SESSION_STORAGE_KEY) || DEFAULT_SESSION);
+  const apiBaseTouchedRef = useRef(Boolean(readStored(API_BASE_STORAGE_KEY)));
+  const socketSessionRef = useRef('');
   const [status, setStatus] = useState<DashboardStatus>({});
   const [data, setData] = useState<DashboardData>({});
   const [connected, setConnected] = useState(false);
@@ -455,6 +521,10 @@ export function App() {
   const commandDismissedRef = useRef(false);
 
   const effectiveBase = useMemo(() => normalizeApiBase(apiBase) || DEFAULT_API_BASE, [apiBase]);
+  useEffect(() => {
+    const next = session.trim();
+    if (next) localStorage.setItem(SESSION_STORAGE_KEY, next);
+  }, [session]);
   const busy = socketState === 'running';
   const uploading = attachments.some((item) => item.status === 'uploading');
 
@@ -587,7 +657,9 @@ export function App() {
       setData(nextData);
       setRawLog(JSON.stringify({ status: nextStatus, data: nextData }, null, 2));
       const preferred = normalizeApiBase(String(nextData.api_addr || nextStatus.addr || ''));
-      if (preferred) setApiBase(preferred);
+      // A saved or typed API base wins. Dashboard discovery only fills the
+      // default, otherwise Refresh snaps a custom port back to :9090.
+      if (preferred && !apiBaseTouchedRef.current) setApiBase(preferred);
       if (nextData.sessions_recent?.length) {
         setSessions((prev) => {
           const byID = new Map<string, RuntimeSession>();
@@ -632,10 +704,14 @@ export function App() {
       if (!response.ok) throw new Error(`session ${response.status}`);
       const payload = (await response.json()) as SessionHistory;
       const page = payload.messages || [];
+      const switching = target !== session.trim() || (socketSessionRef.current !== '' && socketSessionRef.current !== target);
       setSession(target);
       setView('chat');
       messageCapRef.current = MAX_MESSAGES;
       setMessages(historyToBubbles(page));
+      if (switching && (wsRef.current || socketSessionRef.current)) {
+        reconnect(target);
+      }
       setHistoryLoaded(page.length);
       setHistoryHasMore(Boolean(payload.has_more));
       assistantDraftRef.current = '';
@@ -695,7 +771,6 @@ export function App() {
       if (!response.ok) throw new Error(`create session ${response.status}`);
       const next = (await response.json()) as RuntimeSession;
       if (!next.id) throw new Error('runtime did not return a session id');
-      disconnect(false);
       setSession(next.id);
       setView('chat');
       messageCapRef.current = MAX_MESSAGES;
@@ -704,6 +779,7 @@ export function App() {
       setHistoryHasMore(false);
       setActivity([]);
       pushActivity('socket', 'New session', next.id);
+      reconnect(next.id);
       await loadSessions('');
     } catch (error) {
       pushActivity('error', 'New session failed', String(error));
@@ -830,7 +906,8 @@ export function App() {
     });
   }
 
-  function connect() {
+  function connect(sessionID = session) {
+    const target = sessionID.trim() || DEFAULT_SESSION;
     let wsUrl: URL;
     try {
       wsUrl = new URL(effectiveBase);
@@ -841,19 +918,21 @@ export function App() {
     }
     wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
     wsUrl.pathname = '/api/v1/ws';
-    wsUrl.search = new URLSearchParams({ session: session.trim() || DEFAULT_SESSION }).toString();
+    wsUrl.search = new URLSearchParams({ session: target }).toString();
 
     if (wsRef.current) wsRef.current.close();
 
     setSocketState('connecting');
     const socket = new WebSocket(wsUrl.toString());
     wsRef.current = socket;
+    socketSessionRef.current = target;
 
     socket.addEventListener('open', () => {
+      if (wsRef.current !== socket) return;
       setConnected(true);
       setSocketState('connected');
-      pushActivity('socket', 'Connected', wsUrl.toString());
-      pushFeed('connected');
+      pushActivity('socket', 'Connected', `${target} · ${wsUrl.toString()}`);
+      pushFeed(`connected ${target}`);
     });
 
     socket.addEventListener('close', () => {
@@ -886,6 +965,7 @@ export function App() {
       wsRef.current.close();
       wsRef.current = null;
     }
+    socketSessionRef.current = '';
     cancelStreamFlush();
     setConnected(false);
     setSocketState('idle');
@@ -894,9 +974,29 @@ export function App() {
     if (log) pushActivity('socket', 'Disconnected', session);
   }
 
+  function reconnect(sessionID: string) {
+    const target = sessionID.trim() || DEFAULT_SESSION;
+    if (wsRef.current) wsRef.current.close();
+    wsRef.current = null;
+    socketSessionRef.current = '';
+    connect(target);
+  }
+
   function stopRun() {
+    const target = socketSessionRef.current || session.trim() || DEFAULT_SESSION;
+    const socket = wsRef.current;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({
+        type: 'cancel',
+        session_id: target,
+        data: { session_id: target },
+      }));
+      pushActivity('socket', 'Cancel requested', `Asked the runtime to stop the run on ${target}.`);
+      pushFeed('cancel requested');
+      return;
+    }
     disconnect(false);
-    pushActivity('socket', 'Stopped locally', 'Closed the current WebSocket connection.');
+    pushActivity('socket', 'Stopped locally', 'No open socket to cancel; closed the local connection.');
     pushFeed('stopped');
   }
 
@@ -1200,11 +1300,11 @@ export function App() {
     ['Tools', String(data.tools_total ?? data.tools_enabled ?? status.tools_builtin_total ?? 0)],
     ['Timeouts (24h)', String(data.timeout_events_24h ?? 0)],
     ['API', effectiveBase],
-    ['Socket', socketState],
+    ['Socket', socketSessionRef.current ? `${socketState} · ${socketSessionRef.current}` : socketState],
   ];
 
   const connectionLabel = connected
-    ? busy ? 'Working' : 'Connected'
+    ? busy ? `Working · ${socketSessionRef.current || session}` : `Connected · ${socketSessionRef.current || session}`
     : socketState === 'connecting' ? 'Connecting' : socketState === 'error' ? 'Error' : 'Offline';
   const connectionTone = connected ? 'ok' : socketState === 'error' ? 'err' : 'idle';
 
@@ -1285,7 +1385,7 @@ export function App() {
             <button
               className="send-button"
               type="button"
-              onClick={connected ? sendMessage : connect}
+              onClick={connected ? sendMessage : () => connect()}
               disabled={connected && (uploading || (!composer.trim() && attachments.length === 0))}
               title={connected ? (uploading ? 'Waiting for uploads' : 'Send (Enter)') : 'Connect'}
             >
@@ -1485,7 +1585,15 @@ export function App() {
               </div>
               <label className="field">
                 <span>API base</span>
-                <input value={apiBase} onChange={(event) => setApiBase(event.target.value)} spellCheck={false} />
+                <input
+                  value={apiBase}
+                  onChange={(event) => {
+                    apiBaseTouchedRef.current = true;
+                    setApiBase(event.target.value);
+                    writeStored(API_BASE_STORAGE_KEY, event.target.value);
+                  }}
+                  spellCheck={false}
+                />
               </label>
               <label className="field">
                 <span>Session id</span>
@@ -1494,7 +1602,7 @@ export function App() {
               <div className="popover-actions">
                 <button className="ghost" type="button" onClick={() => void loadSessionHistory()}>Load history</button>
                 <button className="ghost" type="button" onClick={() => void createSession()}>New session</button>
-                <button className="primary" type="button" onClick={connected ? () => disconnect() : connect}>
+                <button className="primary" type="button" onClick={connected ? () => disconnect() : () => connect()}>
                   {connected ? 'Disconnect' : 'Connect'}
                 </button>
               </div>
@@ -1595,7 +1703,7 @@ export function App() {
 
                     if (msg.role === 'tool_call') {
                       const tool = msg.tool;
-                      const state = !tool?.done ? 'running' : tool.success === false ? 'failed' : 'ok';
+                      const state = !tool?.done ? 'running' : tool.success === false ? 'failed' : tool.success === true ? 'ok' : 'done';
                       return (
                         <details className={`turn step tool-step ${state}`} key={msg.id}>
                           <summary>
@@ -1665,7 +1773,7 @@ export function App() {
               {!connected ? (
                 <div className="composer-notice">
                   <span>Not connected to the runtime.</span>
-                  <button className="text-button" type="button" onClick={connect}>Connect now</button>
+                  <button className="text-button" type="button" onClick={() => connect()}>Connect now</button>
                 </div>
               ) : null}
               {composerBox}

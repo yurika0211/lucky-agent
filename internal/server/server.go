@@ -409,33 +409,64 @@ func (s *Server) Start() error {
 	// 放在最外层，覆盖鉴权/限流/CORS 失败等所有请求路径。
 	handler = s.loggingMiddleware(handler)
 
+	ln, err := net.Listen("tcp", s.config.Addr)
+	if err != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("listen %s: %w", s.config.Addr, err)
+	}
+	boundAddr := ln.Addr().String()
+
 	s.server = &http.Server{
-		Addr:         s.config.Addr,
+		Addr:         boundAddr,
 		Handler:      handler,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 120 * time.Second, // SSE 需要较长超时
 		IdleTimeout:  120 * time.Second,
 	}
-
+	s.config.Addr = boundAddr
 	s.running = true
 	s.mu.Unlock()
 
 	go func() {
-		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := s.server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			logger.Error("api server crashed", "error", err)
 			fmt.Printf("API server error: %v\n", err)
+			s.mu.Lock()
+			s.running = false
+			s.mu.Unlock()
 		}
 	}()
 
+	displayAddr := publicServerURL(boundAddr)
 	logger.Info("api server started",
-		"addr", s.config.Addr,
+		"addr", boundAddr,
 		"cors_enabled", s.config.EnableCORS,
 		"api_keys", len(s.config.APIKeys),
 		"rate_limit", s.config.RateLimit,
 	)
-	fmt.Printf("🚀 LuckyAgent API Server running at http://localhost%s\n", s.config.Addr)
+	fmt.Printf("🚀 LuckyAgent API Server running at %s\n", displayAddr)
 	fmt.Printf("   API: /api/v1/chat | /api/v1/health/live | /api/v1/stats\n")
 	return nil
+}
+
+// publicServerURL turns a bound listener address into a URL a person can open.
+// Wildcard binds stay on localhost instead of printing "localhost127.0.0.1:9090".
+func publicServerURL(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		if strings.HasPrefix(addr, ":") {
+			return "http://localhost" + addr
+		}
+		return "http://" + addr
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "[::]":
+		host = "localhost"
+	}
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		host = "[" + host + "]"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 // Stop 停止 API Server

@@ -15,6 +15,7 @@ type MessageType string
 const (
 	// 客户端 → 服务端
 	TypeChat      MessageType = "chat"       // 聊天消息
+	TypeCancel    MessageType = "cancel"     // 取消进行中的 agent run
 	TypeStreamAck MessageType = "stream_ack" // 流式确认
 	TypePing      MessageType = "ping"       // 心跳 ping
 	TypeReconnect MessageType = "reconnect"  // 断线重连
@@ -47,6 +48,11 @@ type ChatData struct {
 	MaxIter     int                  `json:"max_iterations,omitempty"`
 	ProfileID   string               `json:"profile_id,omitempty"`
 	Attachments []gateway.Attachment `json:"attachments,omitempty"`
+}
+
+// CancelData 取消进行中的 agent run。空 session_id 表示当前连接绑定的 session。
+type CancelData struct {
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // StreamChunkData 流式输出块数据

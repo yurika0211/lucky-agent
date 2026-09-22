@@ -86,6 +86,12 @@ type MessageHandler interface {
 	HandleMessage(client *Client, msg *Message)
 }
 
+// SessionCanceller stops an in-flight agent run for a session.
+// Implemented by AgentHandler. Optional: hubs used in tests may omit it.
+type SessionCanceller interface {
+	CancelSession(sessionID string)
+}
+
 // HubConfig controls websocket timings and buffer sizes.
 type HubConfig struct {
 	WriteWait       time.Duration
@@ -191,18 +197,28 @@ func (h *Hub) Run() {
 			logger.Info("client connected", "client_id", client.ID, "session", client.SessionID)
 
 		case client := <-h.unregister:
+			sessionID := client.SessionID
+			lastClient := false
 			h.mu.Lock()
 			if _, ok := h.clients[client.ID]; ok {
 				delete(h.clients, client.ID)
-				if sess, ok := h.sessions[client.SessionID]; ok {
+				if sess, ok := h.sessions[sessionID]; ok {
 					delete(sess, client.ID)
 					if len(sess) == 0 {
-						delete(h.sessions, client.SessionID)
+						delete(h.sessions, sessionID)
+						lastClient = true
 					}
 				}
 				client.Close()
 			}
 			h.mu.Unlock()
+			// The last tab for this session is gone. Stop the run so a closed
+			// GUI socket cannot leave tools and token spend going.
+			if lastClient {
+				if canceller, ok := h.handler.(SessionCanceller); ok {
+					canceller.CancelSession(sessionID)
+				}
+			}
 
 			h.stats.mu.Lock()
 			h.stats.ActiveConns--
