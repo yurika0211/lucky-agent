@@ -1,9 +1,10 @@
 # LuckyAgent UI
 
-This workspace contains two independent TypeScript apps:
+This workspace contains three apps:
 
 - `GUI`: Vite + React dashboard
 - `TUI`: Ink-based terminal UI
+- `desktop`: Electron shell around GUI (scaffold)
 
 ## Install
 
@@ -39,6 +40,15 @@ If you hit an `ink` / `yoga-layout` module format error, use the ESM entry:
 ```bash
 npm run start --workspace TUI -- --api-base http://127.0.0.1:9090 --session dashboard-main
 ```
+
+
+## Desktop (Electron scaffold)
+
+```bash
+npm run dev:desktop
+```
+
+See `desktop/README.md` for load modes and next steps.
 
 ## Root helpers
 

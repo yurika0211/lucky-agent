@@ -56,5 +56,14 @@ open http://127.0.0.1:8765 >/dev/null 2>&1 &
 EOF
 chmod 0755 "$root_dir/usr/local/bin/luckyagent-gui"
 
+if [[ -x "$root_dir/usr/local/lib/luckyagent/luckyagent-desktop" ]]; then
+  cat > "$root_dir/usr/local/bin/luckyagent-desktop" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+exec /usr/local/lib/luckyagent/luckyagent-desktop "$@"
+EOF
+  chmod 0755 "$root_dir/usr/local/bin/luckyagent-desktop"
+fi
+
 mkdir -p "$output_dir"
 pkgbuild --root "$root_dir" --identifier com.luckyagent.app --version "${version#v}" "$output_dir/LuckyAgent-${version#v}-macos-${arch}.pkg"

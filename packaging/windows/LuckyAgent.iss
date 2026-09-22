@@ -20,11 +20,16 @@ WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 PrivilegesRequired=lowest
-UninstallDisplayIcon={app}\lh.exe
+UninstallDisplayIcon={app}\LuckyAgent.ico
+SetupIconFile=LuckyAgent.ico
 ChangesEnvironment=yes
 
 [Files]
 Source: "{#SourceRoot}\lh.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\LuckyAgent-Desktop.cmd"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\desktop\*"; DestDir: "{app}\desktop"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceRoot}\runtime\electron\*"; DestDir: "{app}\runtime\electron"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "LuckyAgent.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\ConfigurationCenter.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\Install-Portable.ps1"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\LuckyAgent-TUI.cmd"; DestDir: "{app}"; Flags: ignoreversion
@@ -35,17 +40,19 @@ Source: "{#SourceRoot}\runtime\node\*"; DestDir: "{app}\runtime\node"; Flags: ig
 
 [Icons]
 Name: "{group}\LuckyAgent Configuration Center"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\ConfigurationCenter.ps1"""; WorkingDir: "{app}"
-Name: "{group}\LuckyAgent GUI"; Filename: "{app}\LuckyAgent-GUI.cmd"; WorkingDir: "{app}"
-Name: "{group}\LuckyAgent TUI"; Filename: "{app}\LuckyAgent-TUI.cmd"; WorkingDir: "{app}"
+Name: "{group}\LuckyAgent Desktop"; Filename: "{app}\LuckyAgent-Desktop.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\LuckyAgent.ico"
+Name: "{group}\LuckyAgent GUI"; Filename: "{app}\LuckyAgent-GUI.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\LuckyAgent.ico"
+Name: "{group}\LuckyAgent TUI"; Filename: "{app}\LuckyAgent-TUI.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\LuckyAgent.ico"
 Name: "{group}\Stop LuckyAgent"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\ConfigurationCenter.ps1"" -Action Stop"; WorkingDir: "{app}"
-Name: "{autodesktop}\LuckyAgent Configuration Center"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\ConfigurationCenter.ps1"""; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autodesktop}\LuckyAgent"; Filename: "{app}\LuckyAgent-Desktop.cmd"; WorkingDir: "{app}"; IconFilename: "{app}\LuckyAgent.ico"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
 
 [Run]
 Filename: "{app}\lh.exe"; Parameters: "init"; WorkingDir: "{app}"; Flags: runhidden waituntilterminated
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\ConfigurationCenter.ps1"""; WorkingDir: "{app}"; Description: "Launch LuckyAgent Configuration Center"; Flags: postinstall nowait skipifsilent
+Filename: "{app}\LuckyAgent-Desktop.cmd"; WorkingDir: "{app}"; Description: "Launch LuckyAgent Desktop"; Flags: postinstall nowait skipifsilent
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\ConfigurationCenter.ps1"""; WorkingDir: "{app}"; Description: "Launch LuckyAgent Configuration Center"; Flags: postinstall nowait skipifsilent unchecked
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"

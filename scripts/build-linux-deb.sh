@@ -74,5 +74,32 @@ fi
 EOF
 chmod 0755 "$root_dir/usr/bin/luckyagent-gui"
 
+
+if [[ -x "$root_dir/opt/luckyagent/luckyagent-desktop" ]]; then
+  mkdir -p "$root_dir/usr/share/applications" "$root_dir/usr/share/icons/hicolor/512x512/apps"
+  cat > "$root_dir/usr/bin/luckyagent-desktop" <<'EOF'
+#!/usr/bin/env sh
+exec /opt/luckyagent/luckyagent-desktop "$@"
+EOF
+  chmod 0755 "$root_dir/usr/bin/luckyagent-desktop"
+  if [[ -f "$root_dir/opt/luckyagent/desktop/assets/icon.png" ]]; then
+    cp -f "$root_dir/opt/luckyagent/desktop/assets/icon.png" "$root_dir/usr/share/icons/hicolor/512x512/apps/luckyagent.png"
+  fi
+  cat > "$root_dir/usr/share/applications/luckyagent.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=LuckyAgent
+GenericName=AI Agent
+Comment=LuckyAgent desktop shell
+Exec=/usr/bin/luckyagent-desktop
+Icon=luckyagent
+Terminal=false
+Categories=Development;Utility;
+StartupWMClass=LuckyAgent
+StartupNotify=true
+EOF
+fi
+
 mkdir -p "$output_dir"
 dpkg-deb --build "$root_dir" "$output_dir/luckyagent_${version#v}_${arch}.deb"

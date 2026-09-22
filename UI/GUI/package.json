@@ -2,9 +2,9 @@
   "name": "@luckyagent/gui",
   "private": true,
   "scripts": {
-    "dev": "node scripts/ensure-server.mjs && vite",
-    "build": "vite build",
-    "preview": "node scripts/ensure-server.mjs && vite preview",
+    "dev": "node scripts/ensure-server.mjs && node ../node_modules/vite/bin/vite.js",
+    "build": "node ../node_modules/vite/bin/vite.js build",
+    "preview": "node scripts/ensure-server.mjs && node ../node_modules/vite/bin/vite.js preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
