@@ -480,9 +480,15 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 		)
 
 		// Reason: 调用 LLM（带 function calling 支持）
-		loopCtx, cancel := context.WithTimeout(ctx, loopCfg.Timeout)
-		resp, err := a.chatLoopIteration(loopCtx, messages, callOpts, loopState.forceSearchSynthesis, loopState.provider)
-		cancel()
+		resp, err, _ := a.chatLoopIterationWithSoftRetry(
+			ctx,
+			loopCfg.Timeout,
+			messages,
+			callOpts,
+			loopState.forceSearchSynthesis,
+			loopState.provider,
+			nil,
+		)
 
 		if err != nil {
 			return result, fmt.Errorf("loop iteration %d: %w", i+1, err)

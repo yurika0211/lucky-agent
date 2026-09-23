@@ -2199,14 +2199,14 @@ func isTerminalDelegateTaskStatus(status string) bool {
 	}
 }
 
-func streamIterationContext(parent context.Context, state *streamConvergenceState) (context.Context, context.CancelFunc) {
+func streamIterationContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if parent == nil {
 		parent = context.Background()
 	}
-	if state == nil || state.iterationTimeout <= 0 {
+	if timeout <= 0 {
 		return context.WithCancel(parent)
 	}
-	return context.WithTimeout(parent, state.iterationTimeout)
+	return context.WithTimeout(parent, timeout)
 }
 
 /*
@@ -2509,6 +2509,14 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 streamNative 使用 provider 原生流式接口执行一轮或多轮对话。
 */
 func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, turnInput UserTurnInput, round int, remaining int, state *streamConvergenceState) {
+	timeout := time.Duration(0)
+	if state != nil {
+		timeout = state.iterationTimeout
+	}
+	a.streamNativeAttempt(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state, timeout, true)
+}
+
+func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, turnInput UserTurnInput, round int, remaining int, state *streamConvergenceState, iterationTimeout time.Duration, allowSoftRetry bool) {
 	if state == nil {
 		state = &streamConvergenceState{}
 	}
@@ -2543,8 +2551,21 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		"tool_choice", fmt.Sprint(effectiveCallOpts.ToolChoice),
 		"force_search_synthesis", state.forceSearchSynthesis,
 	)
-	iterCtx, cancel := streamIterationContext(ctx, state)
+	iterCtx, cancel := streamIterationContext(ctx, iterationTimeout)
 	defer cancel()
+	retryOnce := func(err error, safeToRetry bool) bool {
+		if !allowSoftRetry || !safeToRetry {
+			return false
+		}
+		retryTimeout, retry := agentIterationSoftRetryTimeout(ctx, err, iterationTimeout)
+		if !retry {
+			return false
+		}
+		cancel()
+		sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventThinking, Content: "本轮模型请求超时，正在短时重试一次。", Round: round})
+		a.streamNativeAttempt(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state, retryTimeout, false)
+		return true
+	}
 	ch, err := a.streamLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis, state.provider)
 	if err != nil {
 		logger.Warn("agent stream native iteration failed",
@@ -2552,6 +2573,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			"round", round,
 			"error", err,
 		)
+		if retryOnce(err, true) {
+			return
+		}
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
@@ -2575,6 +2599,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				"round", round,
 				"error", streamErr,
 			)
+			if retryOnce(streamErr, emittedContentBytes == 0) {
+				return
+			}
 			if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
 				return
 			}
@@ -2630,12 +2657,18 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		}
 	}
 	if !streamTerminal {
-		streamErr := fmt.Errorf("provider stream interrupted: closed without a terminal event")
+		streamErr := iterCtx.Err()
+		if streamErr == nil {
+			streamErr = fmt.Errorf("provider stream interrupted: closed without a terminal event")
+		}
 		logger.Warn("agent stream native provider stream interrupted",
 			"session_id", sessionID,
 			"round", round,
 			"error", streamErr,
 		)
+		if retryOnce(streamErr, emittedContentBytes == 0) {
+			return
+		}
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
 			return
 		}
@@ -2912,9 +2945,17 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		"tool_choice", fmt.Sprint(effectiveCallOpts.ToolChoice),
 		"force_search_synthesis", state.forceSearchSynthesis,
 	)
-	iterCtx, cancel := streamIterationContext(ctx, state)
-	defer cancel()
-	resp, err := a.chatLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis, state.provider)
+	resp, err, _ := a.chatLoopIterationWithSoftRetry(
+		ctx,
+		state.iterationTimeout,
+		messages,
+		callOpts,
+		state.forceSearchSynthesis,
+		state.provider,
+		func() {
+			sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventThinking, Content: "本轮模型请求超时，正在短时重试一次。", Round: round})
+		},
+	)
 	if err != nil {
 		logger.Warn("agent stream simulated iteration failed",
 			"session_id", sessionID,
