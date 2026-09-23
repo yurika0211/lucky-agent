@@ -344,6 +344,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.Tools.ComputerUse.RequireApproval)
 	case "tools.computer_use.max_steps":
 		fmt.Println(cfg.Tools.ComputerUse.MaxSteps)
+	case "tools.computer_use.max_consecutive_observe_only":
+		fmt.Println(cfg.Tools.ComputerUse.MaxConsecutiveObserveOnly)
 	case "tools.computer_use.timeout_seconds":
 		fmt.Println(cfg.Tools.ComputerUse.TimeoutSeconds)
 	case "tools.computer_use.step_timeout_seconds":

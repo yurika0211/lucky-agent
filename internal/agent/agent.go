@@ -2258,7 +2258,9 @@ func (s *streamConvergenceState) toolCallSig(name, arguments string) string {
 // trackComputerObservationLoop stops repeated screenshot-only rounds in the
 // streaming loop. The first observation is useful; the next one without an
 // action is treated as no progress.
-func (s *streamConvergenceState) trackComputerObservationLoop(toolCalls []provider.ToolCall) bool {
+// trackComputerObservationLoop stops repeated screenshot-only rounds in the
+// streaming loop. limit comes from tools.computer_use.max_consecutive_observe_only.
+func (s *streamConvergenceState) trackComputerObservationLoop(toolCalls []provider.ToolCall, limit int) bool {
 	if s == nil {
 		return false
 	}
@@ -2267,7 +2269,7 @@ func (s *streamConvergenceState) trackComputerObservationLoop(toolCalls []provid
 	} else {
 		s.consecutiveComputerObserveOnly = 0
 	}
-	return s.consecutiveComputerObserveOnly >= 2
+	return s.consecutiveComputerObserveOnly >= computerObserveOnlyLimit(limit)
 }
 
 /*
@@ -2773,7 +2775,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		toolCalls = append(toolCalls, textToolCalls...)
 
 		if len(toolCalls) > 0 {
-			if state.trackComputerObservationLoop(toolCalls) {
+			if state.trackComputerObservationLoop(toolCalls, a.cfg.Get().Tools.ComputerUse.MaxConsecutiveObserveOnly) {
 				a.finalizeStreamWithState(events, sess, turnInput, computerObservationLoopMessage, state)
 				return
 			}
@@ -2849,6 +2851,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 
 			// 裁剪上下文，继续下一轮；保留最新 computer frame transiently。
 			messages = appendLatestComputerObservation(messages, executed)
+			messages = appendComputerActDirective(messages, toolCalls)
 			messages = a.fitContextWindow(messages)
 			messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
 			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
@@ -3042,7 +3045,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	if len(resp.ToolCalls) > 0 {
 		state.emptyResponseRetries = 0
 		state.lengthRecoveryCount = 0
-		if state.trackComputerObservationLoop(resp.ToolCalls) {
+		if state.trackComputerObservationLoop(resp.ToolCalls, a.cfg.Get().Tools.ComputerUse.MaxConsecutiveObserveOnly) {
 			a.finalizeStreamWithState(events, sess, turnInput, computerObservationLoopMessage, state)
 			return
 		}
@@ -3110,6 +3113,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 
 		// 裁剪上下文，递归继续；保留最新 computer frame transiently。
 		messages = appendLatestComputerObservation(messages, executed)
+		messages = appendComputerActDirective(messages, resp.ToolCalls)
 		messages = a.fitContextWindow(messages)
 		messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
 		if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {

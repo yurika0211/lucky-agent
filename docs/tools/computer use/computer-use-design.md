@@ -608,7 +608,15 @@ Wayland（Linux 新图形会话协议）通常限制任意全局截图和输入�
 - 远程桌面和锁屏状态。
 - 普通权限进程无法操作高完整性窗口时的错误反馈。
 
-### 12.4 macOS
+### 12.4 WSLg
+
+WSLg 的 Weston RDP compositor 当前不提供 `ScreenCast` 和 `RemoteDesktop` portal。Linux 版 LA 在检测到 WSLg 后使用 `backend=wslg`，通过固定内嵌的 PowerShell helper 调用 Windows GDI 和 `SendInput`。`backend=auto` 会自动选择该后端。每次桥接调用都通过临时 JSON 请求文件传递参数。
+
+WSLg 后端捕获完整 Windows 虚拟桌面，截图可能包含宿主 Windows 应用；坐标使用截图对应的虚拟桌面物理像素。`region` 仍由 Manager 在截图后裁剪。helper 通过 JSON Lines 接收固定操作协议，不执行模型提供的 shell 命令；超时或进程退出时会销毁并重启 helper。
+
+WSLg 输入依赖 Windows interop 和 `powershell.exe`。可以用 `LA_WSLG_POWERSHELL` 指定 PowerShell 路径；显式设置 `backend=wayland` 时仍要求当前 Linux 会话提供桌面 Portal。
+
+### 12.5 macOS
 
 建议使用独立 `backend_darwin.go`。运行前需要检查：
 
@@ -651,7 +659,7 @@ RobotGo 可用于快速验证跨平台鼠标键盘能力，但会引入 CGO（Go
 | 配置 | 说明 |
 | --- | --- |
 | `enabled` | 总开关，默认关闭。 |
-| `backend` | `auto`、`x11`、`wayland`、`windows`、`darwin`。 |
+| `backend` | `auto`、`x11`、`wayland`、`wslg`、`windows`、`darwin`。WSLg 使用 Windows 宿主虚拟桌面桥接。 |
 | `mode` | `observe`、`assist`、`control`。 |
 | `allowed_sources` | 允许发起 computer use 的入口。 |
 | `allowed_windows` | 可控制的窗口白名单；空值不代表远程调用无限制。 |

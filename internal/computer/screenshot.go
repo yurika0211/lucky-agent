@@ -77,6 +77,10 @@ func fitScreenshot(ctx context.Context, obs Observation, maxWidth, maxBytes int)
 				obs.ScaleFactor = 1
 			}
 			obs.ScaleFactor *= float64(width) / float64(sourceWidth)
+			if obs.CursorVisible {
+				obs.CursorX = int(math.Round(float64(obs.CursorX) * float64(width) / float64(sourceWidth)))
+				obs.CursorY = int(math.Round(float64(obs.CursorY) * float64(height) / float64(sourceHeight)))
+			}
 			return obs, nil
 		}
 		if width == 1 && height == 1 {
@@ -176,5 +180,14 @@ func cropScreenshot(ctx context.Context, obs Observation, region *Rect) (Observa
 	obs.ImageData, obs.MimeType = out.Bytes(), "image/png"
 	obs.Width, obs.Height = region.Width, region.Height
 	obs.OriginX, obs.OriginY = obs.OriginX+region.X, obs.OriginY+region.Y
+	if obs.CursorVisible {
+		if obs.CursorX < region.X || obs.CursorY < region.Y || obs.CursorX >= region.X+region.Width || obs.CursorY >= region.Y+region.Height {
+			obs.CursorVisible = false
+			obs.CursorX, obs.CursorY = 0, 0
+		} else {
+			obs.CursorX -= region.X
+			obs.CursorY -= region.Y
+		}
+	}
 	return obs, nil
 }

@@ -24,6 +24,35 @@ type ObserveRequest struct {
 	Format string // image (default), tree, or both
 }
 
+// ActionExecution records the backend-visible outcome of one action. It is
+// attached to the post-action observation so callers can distinguish a missing
+// act call, a rejected act call, and an executed action that did not produce
+// the expected UI change.
+type ActionExecution struct {
+	RequestID          string     `json:"request_id"`
+	Index              int        `json:"index"`
+	Kind               ActionKind `json:"kind"`
+	StartedAt          time.Time  `json:"started_at"`
+	CompletedAt        time.Time  `json:"completed_at"`
+	DurationMS         int64      `json:"duration_ms"`
+	InputX             int        `json:"input_x,omitempty"`
+	InputY             int        `json:"input_y,omitempty"`
+	InputEndX          int        `json:"input_end_x,omitempty"`
+	InputEndY          int        `json:"input_end_y,omitempty"`
+	BackendX           int        `json:"backend_x,omitempty"`
+	BackendY           int        `json:"backend_y,omitempty"`
+	BackendEndX        int        `json:"backend_end_x,omitempty"`
+	BackendEndY        int        `json:"backend_end_y,omitempty"`
+	ActiveWindowBefore string     `json:"active_window_before,omitempty"`
+	ActiveWindowAfter  string     `json:"active_window_after,omitempty"`
+	CursorBeforeX      int        `json:"cursor_before_x,omitempty"`
+	CursorBeforeY      int        `json:"cursor_before_y,omitempty"`
+	CursorAfterX       int        `json:"cursor_after_x,omitempty"`
+	CursorAfterY       int        `json:"cursor_after_y,omitempty"`
+	Completed          bool       `json:"completed"`
+	Error              string     `json:"error,omitempty"`
+}
+
 // Observation is a persisted visual frame returned by a backend.
 // After Manager processing, Width and Height describe the delivered image and
 // ScaleFactor includes any downscaling. Actions use the delivered image's pixels;
@@ -48,9 +77,13 @@ type Observation struct {
 	CleanupFile   bool               `json:"-"`
 	OriginX       int                `json:"origin_x,omitempty"`
 	OriginY       int                `json:"origin_y,omitempty"`
+	CursorX       int                `json:"cursor_x,omitempty"`
+	CursorY       int                `json:"cursor_y,omitempty"`
+	CursorVisible bool               `json:"cursor_visible,omitempty"`
 	WindowID      string             `json:"window_id,omitempty"`
 	Accessibility *AccessibilityTree `json:"accessibility,omitempty"`
 	Stable        bool               `json:"stable,omitempty"`
+	ActionResults []ActionExecution  `json:"action_results,omitempty"`
 
 	// Original capture dimensions, retained by Manager for action mapping when
 	// the delivered screenshot has been downscaled. Zero means no transform.

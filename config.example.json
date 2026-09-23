@@ -98,7 +98,18 @@
   "opencli": {
     "enabled": false,
     "command": "opencli",
-    "args": ["web", "read", "--url", "{url}", "--stdout", "true", "--download-images", "false", "-f", "md"],
+    "args": [
+      "web",
+      "read",
+      "--url",
+      "{url}",
+      "--stdout",
+      "true",
+      "--download-images",
+      "false",
+      "-f",
+      "md"
+    ],
     "timeout_seconds": 20,
     "max_chars": 50000,
     "fallback_to_web_fetch": true
@@ -290,7 +301,10 @@
       "mode": "observe",
       "backend": "auto",
       "capture_dir": "",
-      "allowed_sources": ["cli", "tui"],
+      "allowed_sources": [
+        "cli",
+        "tui"
+      ],
       "allowed_windows": [],
       "require_approval": true,
       "max_steps": 50,
@@ -304,7 +318,8 @@
       "keep_frames": 2,
       "frame_ttl_seconds": 600,
       "allow_text_input": false,
-      "allow_high_risk_actions": false
+      "allow_high_risk_actions": false,
+      "max_consecutive_observe_only": 2
     }
   },
   "tool_trace": {
@@ -415,17 +430,31 @@
         "script": "~/.luckyagent/hooks/audit_log.py"
       },
       {
-        "match": ["file_write", "file_patch", "file_delete", "file_move", "file_mkdir", "shell", "terminal"],
+        "match": [
+          "file_write",
+          "file_patch",
+          "file_delete",
+          "file_move",
+          "file_mkdir",
+          "shell",
+          "terminal"
+        ],
         "sources": [],
         "script": "~/.luckyagent/hooks/protect_paths.py"
       },
       {
-        "match": ["shell", "terminal", "sql_query"],
+        "match": [
+          "shell",
+          "terminal",
+          "sql_query"
+        ],
         "sources": [],
         "script": "~/.luckyagent/hooks/block_dangerous.py"
       },
       {
-        "match": ["skill_*"],
+        "match": [
+          "skill_*"
+        ],
         "sources": [],
         "script": "~/.luckyagent/hooks/skill_capability_guard.py"
       }

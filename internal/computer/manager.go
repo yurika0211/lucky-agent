@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/yurika0211/luckyagent/internal/logger"
 )
 
 var (
@@ -22,6 +25,7 @@ type ManagerConfig struct {
 	FrameTTL            time.Duration
 	KeepFrames          int
 	Settle              time.Duration
+	ActionSettle        time.Duration
 	MaxSteps            int
 	MaxObservationBytes int
 	MaxScreenshotWidth  int
@@ -32,7 +36,7 @@ type ManagerConfig struct {
 
 func DefaultManagerConfig() ManagerConfig {
 	return ManagerConfig{
-		FrameTTL: 10 * time.Minute, KeepFrames: 2, Settle: 350 * time.Millisecond,
+		FrameTTL: 10 * time.Minute, KeepFrames: 2, Settle: 350 * time.Millisecond, ActionSettle: 100 * time.Millisecond,
 		MaxSteps: 20, MaxObservationBytes: 10 << 20, MaxScreenshotWidth: 0,
 		MaxBatchActions: 5, SettleMode: "adaptive",
 	}
@@ -46,7 +50,10 @@ func WithFrameTTL(ttl time.Duration) ManagerOption {
 }
 func WithKeepFrames(n int) ManagerOption            { return func(c *ManagerConfig) { c.KeepFrames = n } }
 func WithSettleDelay(d time.Duration) ManagerOption { return func(c *ManagerConfig) { c.Settle = d } }
-func WithMaxSteps(n int) ManagerOption              { return func(c *ManagerConfig) { c.MaxSteps = n } }
+func WithActionSettleDelay(d time.Duration) ManagerOption {
+	return func(c *ManagerConfig) { c.ActionSettle = d }
+}
+func WithMaxSteps(n int) ManagerOption { return func(c *ManagerConfig) { c.MaxSteps = n } }
 func WithAllowedWindows(names []string) ManagerOption {
 	return func(c *ManagerConfig) { c.AllowedWindows = append([]string(nil), names...) }
 }
@@ -72,6 +79,7 @@ type Manager struct {
 	mu        sync.Mutex
 	sessions  map[string]*sessionState
 	closed    map[string]bool
+	actionSeq uint64
 }
 
 func NewManager(backend Backend, options ...ManagerOption) (*Manager, error) {
@@ -99,6 +107,12 @@ func NewManager(backend Backend, options ...ManagerOption) (*Manager, error) {
 	}
 	if cfg.SettleMode != "fixed" && cfg.SettleMode != "adaptive" {
 		return nil, errors.New("computer: settle_mode must be fixed or adaptive")
+	}
+	if cfg.ActionSettle < 0 {
+		cfg.ActionSettle = 0
+	}
+	if cfg.Settle <= 0 {
+		cfg.ActionSettle = 0
 	}
 	store, err := NewFrameStore(cfg.StorageDir, cfg.KeepFrames, cfg.FrameTTL)
 	if err != nil {
@@ -230,6 +244,8 @@ func (m *Manager) StepBatch(ctx context.Context, sessionID string, actions []Act
 	if s.revision != m.revision {
 		return Observation{}, fmt.Errorf("%w: another session changed the desktop; observe again", ErrStaleFrame)
 	}
+	requestID := m.nextActionRequestID()
+	executions := make([]ActionExecution, 0, len(actions))
 	for i, action := range actions {
 		if err := ctx.Err(); err != nil {
 			return Observation{}, &BatchError{Completed: i, Err: err}
@@ -240,16 +256,63 @@ func (m *Manager) StepBatch(ctx context.Context, sessionID string, actions []Act
 			}
 		}
 		// Even a failed backend call may have injected part of an action.
+		action.RequestID = requestID
+		startedAt := time.Now().UTC()
+		execution := ActionExecution{
+			RequestID:          requestID,
+			Index:              i,
+			Kind:               action.Kind,
+			StartedAt:          startedAt,
+			InputX:             action.X,
+			InputY:             action.Y,
+			InputEndX:          action.EndX,
+			InputEndY:          action.EndY,
+			ActiveWindowBefore: s.latest.ActiveWindow,
+			CursorBeforeX:      s.latest.CursorX,
+			CursorBeforeY:      s.latest.CursorY,
+		}
+		movedAction := desktopAction(action, s.latest)
+		execution.BackendX = movedAction.X
+		execution.BackendY = movedAction.Y
+		execution.BackendEndX = movedAction.EndX
+		execution.BackendEndY = movedAction.EndY
 		s.latestFrameID = ""
 		m.revision++
 		s.steps++
-		action = desktopAction(action, s.latest)
-		action.DisplayID = s.latest.DisplayID
-		if err := m.backend.Perform(ctx, action); err != nil {
-			return Observation{}, &BatchError{Completed: i, Err: err}
+		movedAction.DisplayID = s.latest.DisplayID
+		if err := m.backend.Perform(ctx, movedAction); err != nil {
+			execution.CompletedAt = time.Now().UTC()
+			execution.DurationMS = execution.CompletedAt.Sub(startedAt).Milliseconds()
+			execution.Error = err.Error()
+			logger.Warn("computer action failed", "request_id", requestID, "action_index", i, "action", action.Kind, "duration_ms", execution.DurationMS, "error", err)
+			return Observation{}, &BatchError{Completed: i, Err: fmt.Errorf("request_id=%s action_index=%d: %w", requestID, i, err)}
+		}
+		execution.CompletedAt = time.Now().UTC()
+		execution.DurationMS = execution.CompletedAt.Sub(startedAt).Milliseconds()
+		execution.Completed = true
+		executions = append(executions, execution)
+		logger.Info("computer action executed", "request_id", requestID, "action_index", i, "action", action.Kind, "input_x", action.X, "input_y", action.Y, "backend_x", movedAction.X, "backend_y", movedAction.Y, "duration_ms", execution.DurationMS)
+		if i+1 < len(actions) && m.config.ActionSettle > 0 {
+			if err := waitContext(ctx, m.config.ActionSettle); err != nil {
+				return Observation{}, &BatchError{Completed: i + 1, Err: err}
+			}
 		}
 	}
-	return m.captureUnlocked(ctx, sessionID, s, s.request, true)
+	obs, err := m.captureUnlocked(ctx, sessionID, s, s.request, true)
+	if err != nil {
+		return Observation{}, fmt.Errorf("computer: post-action observation request_id=%s: %w", requestID, err)
+	}
+	for i := range executions {
+		executions[i].ActiveWindowAfter = obs.ActiveWindow
+		executions[i].CursorAfterX = obs.CursorX
+		executions[i].CursorAfterY = obs.CursorY
+	}
+	obs.ActionResults = executions
+	return obs, nil
+}
+
+func (m *Manager) nextActionRequestID() string {
+	return fmt.Sprintf("act-%d", atomic.AddUint64(&m.actionSeq, 1))
 }
 
 type BatchError struct {

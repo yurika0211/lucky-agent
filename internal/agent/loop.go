@@ -145,6 +145,8 @@ const (
 	lengthRecoveryPrompt           = "Continue exactly from where you stopped. Do not repeat previous content."
 	searchSynthesisPrompt          = "You now have enough search evidence from previous tool results. Synthesize a direct, source-aware answer now. Do not call any more tools unless a critical factual gap remains unresolved."
 	computerObservationLoopMessage = "Computer-use stalled: the agent requested screenshots repeatedly without performing an action. The loop was stopped to avoid an observation-only cycle. Re-observe once, then perform one concrete computer_act action or explain the blocker."
+	computerActDirectiveMarker     = "[computer-use action required]"
+	computerActDirectiveMessage    = computerActDirectiveMarker + " The latest computer_observe reason requires a desktop action. In the next response, call computer_act with the newest frame_id and the concrete action. Do not call computer_observe again or use terminal to simulate the GUI action."
 	emptyFinalResponseMessage      = "I couldn't produce a complete answer this round. Please retry."
 	lengthTruncatedNotice          = "\n\n[Output may be truncated after multiple continuation attempts.]"
 )
@@ -638,7 +640,8 @@ func newLoopRuntimeState() *loopRuntimeState {
 
 // trackComputerObservationLoop stops the common GUI failure mode where the
 // model keeps taking screenshots but never attempts a concrete action.
-func (s *loopRuntimeState) trackComputerObservationLoop(toolCalls []provider.ToolCall) bool {
+// limit comes from tools.computer_use.max_consecutive_observe_only (default 2).
+func (s *loopRuntimeState) trackComputerObservationLoop(toolCalls []provider.ToolCall, limit int) bool {
 	if s == nil {
 		return false
 	}
@@ -647,19 +650,62 @@ func (s *loopRuntimeState) trackComputerObservationLoop(toolCalls []provider.Too
 	} else {
 		s.consecutiveComputerObserveOnly = 0
 	}
-	return s.consecutiveComputerObserveOnly >= 2
+	return s.consecutiveComputerObserveOnly >= computerObserveOnlyLimit(limit)
+}
+
+func computerObserveOnlyLimit(limit int) int {
+	if limit <= 0 {
+		return 2
+	}
+	return limit
 }
 
 func computerObserveOnlyBatch(toolCalls []provider.ToolCall) bool {
 	if len(toolCalls) == 0 {
 		return false
 	}
+	hasObserve := false
 	for _, call := range toolCalls {
-		if strings.TrimSpace(call.Name) != "computer_observe" {
+		switch strings.TrimSpace(call.Name) {
+		case "computer_observe":
+			hasObserve = true
+		case "computer_act":
 			return false
 		}
 	}
-	return true
+	return hasObserve
+}
+
+func computerObservationRequestsAction(toolCalls []provider.ToolCall) bool {
+	for _, call := range toolCalls {
+		if strings.TrimSpace(call.Name) != "computer_observe" {
+			continue
+		}
+		var args struct {
+			Reason string `json:"reason"`
+		}
+		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+			continue
+		}
+		reason := strings.ToLower(strings.TrimSpace(args.Reason))
+		for _, keyword := range []string{
+			"click", "double_click", "double click", "move", "drag", "type", "keypress", "scroll",
+			"open", "switch", "play", "dismiss", "close", "select", "launch", "taskbar",
+			"点", "点击", "双击", "移动", "拖拽", "输入", "按键", "滚动", "打开", "切换", "播放", "关闭", "选择", "启动", "任务栏",
+		} {
+			if strings.Contains(reason, keyword) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appendComputerActDirective(messages []provider.Message, toolCalls []provider.ToolCall) []provider.Message {
+	if !computerObservationRequestsAction(toolCalls) || hasPendingComputerActDirective(messages) {
+		return messages
+	}
+	return append(messages, provider.Message{Role: "user", Content: computerActDirectiveMessage})
 }
 
 /*
@@ -797,7 +843,7 @@ func (a *Agent) processToolCallBatch(
 	} else {
 		loopState.consecutiveToolOnlyIters = 0
 	}
-	if loopState.trackComputerObservationLoop(resp.ToolCalls) {
+	if loopState.trackComputerObservationLoop(resp.ToolCalls, a.cfg.Get().Tools.ComputerUse.MaxConsecutiveObserveOnly) {
 		return messages, true, computerObservationLoopMessage
 	}
 
@@ -922,6 +968,7 @@ func (a *Agent) processToolCallBatch(
 	}
 
 	messages = appendLatestComputerObservation(messages, executed)
+	messages = appendComputerActDirective(messages, resp.ToolCalls)
 	messages = a.fitContextWindow(messages)
 	result.State = StateObserve
 
