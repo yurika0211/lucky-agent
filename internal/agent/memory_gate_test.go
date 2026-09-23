@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/memory"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/tool"
@@ -71,11 +72,19 @@ func TestMemoryGateAutoExecutesRequiredToolsBeforeDirectAnswer(t *testing.T) {
 	})
 
 	prov := &directThenFinalProvider{}
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+	if err := cfg.Set("agent.enable_citations", "true"); err != nil {
+		t.Fatalf("Set(agent.enable_citations) error = %v", err)
+	}
 	a := &Agent{
 		provider: prov,
 		memory:   mem,
 		tools:    reg,
 		gateway:  tool.NewGateway(reg),
+		cfg:      cfg,
 	}
 
 	result, err := a.RunLoopWithSessionInput(context.Background(), nil, TextUserTurnInput("今天下午适合和女儿出门吗"), LoopConfig{

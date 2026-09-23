@@ -1412,6 +1412,9 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 			if err := cfg.Set("stream_mode", mode); err != nil {
 				t.Fatalf("Set(stream_mode) error = %v", err)
 			}
+			if err := cfg.Set("agent.enable_citations", "true"); err != nil {
+				t.Fatalf("Set(agent.enable_citations) error = %v", err)
+			}
 			registry := tool.NewRegistry()
 			registry.Register(&tool.Tool{
 				Name:       "rag_search",
