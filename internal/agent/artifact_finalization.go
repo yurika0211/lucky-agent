@@ -12,7 +12,8 @@ var (
 		regexp.MustCompile(`(?m)^Written \d+ bytes to (.+?) \(sha256 [a-fA-F0-9]+\)$`),
 		regexp.MustCompile(`(?m)^Skipped write to (.+?); content already matches sha256 [a-fA-F0-9]+$`),
 	}
-	mediaPathPattern = regexp.MustCompile(`(?im)^[\t ` + "`" + `"'` + `]*MEDIA:\s*((?:sandbox:(?:/|[A-Za-z]:[\\/])|file://|~/|/|[A-Za-z]:[\\/])\S+(?:[^\S\n]+\S+)*?)[\t ` + "`" + `"',.;:)\]}]*$`)
+	mediaPathPattern    = regexp.MustCompile(`(?im)^[\t ` + "`" + `"'` + `]*MEDIA:\s*((?:sandbox:(?:/|[A-Za-z]:[\\/])|file://|~/|/|[A-Za-z]:[\\/])\S+(?:[^\S\n]+\S+)*?)[\t ` + "`" + `"',.;:)\]}]*$`)
+	artifactPathPattern = regexp.MustCompile("(?i)(?:sandbox:)?(?:~[/\\\\]\\.luckyagent[/\\\\](?:workspace|uploads)[/\\\\][^\\s`\"'<>]+|/(?:[^\\s`\"'<>/]+/)+\\.luckyagent/(?:workspace|uploads)/[^\\s`\"'<>]+)")
 )
 
 type artifactFinalizationGuard struct {
@@ -125,6 +126,14 @@ func MediaReferences(text string) []string {
 		if reference, ok := mediaReferenceFromLine(line); ok {
 			references = append(references, cleanArtifactPath(reference))
 		}
+	}
+	return uniqueNonEmptyStrings(references)
+}
+
+func ArtifactReferences(text string) []string {
+	var references []string
+	for _, reference := range artifactPathPattern.FindAllString(text, -1) {
+		references = append(references, cleanArtifactPath(reference))
 	}
 	return uniqueNonEmptyStrings(references)
 }

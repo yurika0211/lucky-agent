@@ -73,7 +73,7 @@ func (s *Server) historyMessages(messages []provider.Message) []sessionHistoryMe
 }
 
 func (s *Server) attachmentsFromResponse(raw string) (string, []gateway.Attachment) {
-	references := agent.MediaReferences(raw)
+	references := append(agent.MediaReferences(raw), agent.ArtifactReferences(raw)...)
 	if len(references) == 0 {
 		return raw, nil
 	}

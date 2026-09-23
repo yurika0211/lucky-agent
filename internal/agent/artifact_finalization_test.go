@@ -92,3 +92,20 @@ func TestSanitizeHistoricalMediaReferencesPreservesExistingFile(t *testing.T) {
 		t.Fatalf("existing media path should be preserved, got %q", got)
 	}
 }
+
+func TestArtifactReferencesFindsWorkspacePathInProse(t *testing.T) {
+	text := "本地路径：`~/.luckyagent/workspace/generated-images/nailong-01.jpg`"
+	references := ArtifactReferences(text)
+	if len(references) != 1 || references[0] != filepath.Join(mustUserHomeDir(t), ".luckyagent", "workspace", "generated-images", "nailong-01.jpg") {
+		t.Fatalf("artifact references = %#v", references)
+	}
+}
+
+func mustUserHomeDir(t *testing.T) string {
+	t.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("user home: %v", err)
+	}
+	return home
+}

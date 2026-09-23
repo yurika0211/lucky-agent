@@ -434,7 +434,7 @@ func (h *AgentHandler) attachmentsFromToolResult(toolName, raw string) []gateway
 }
 
 func (h *AgentHandler) attachmentsFromResponse(raw string) (string, []gateway.Attachment) {
-	references := agent.MediaReferences(raw)
+	references := append(agent.MediaReferences(raw), agent.ArtifactReferences(raw)...)
 	if len(references) == 0 {
 		return raw, nil
 	}
