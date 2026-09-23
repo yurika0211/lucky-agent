@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/function"
+	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/tool"
@@ -109,6 +110,66 @@ func (a *Agent) chatLoopIteration(ctx context.Context, messages []provider.Messa
 		return fcProvider.ChatWithOptions(ctx, messages, opts)
 	}
 	return turnProvider.provider.Chat(ctx, messages)
+}
+
+const maxAgentIterationSoftRetryTimeout = 60 * time.Second
+
+func agentIterationSoftRetryTimeout(parent context.Context, err error, originalTimeout time.Duration) (time.Duration, bool) {
+	if err == nil || errors.Is(err, context.Canceled) || (parent != nil && parent.Err() != nil) {
+		return 0, false
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		message := strings.ToLower(err.Error())
+		if !strings.Contains(message, "timeout") && !strings.Contains(message, "timed out") && !strings.Contains(message, "deadline exceeded") {
+			return 0, false
+		}
+	}
+
+	retryTimeout := originalTimeout
+	if retryTimeout <= 0 || retryTimeout > maxAgentIterationSoftRetryTimeout {
+		retryTimeout = maxAgentIterationSoftRetryTimeout
+	}
+	return retryTimeout, true
+}
+
+// chatLoopIterationWithSoftRetry gives a timed-out model round one fresh,
+// shorter deadline before its caller handles the failure. Tool execution is
+// outside this call, so retrying here cannot replay completed tool operations.
+func (a *Agent) chatLoopIterationWithSoftRetry(
+	parent context.Context,
+	timeout time.Duration,
+	messages []provider.Message,
+	base provider.CallOptions,
+	forceSearchSynthesis bool,
+	turnProvider providerSnapshot,
+	onRetry func(),
+) (*provider.Response, error, bool) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	attempt := func(attemptTimeout time.Duration) (*provider.Response, error) {
+		if attemptTimeout <= 0 {
+			return a.chatLoopIteration(parent, messages, base, forceSearchSynthesis, turnProvider)
+		}
+		attemptCtx, cancel := context.WithTimeout(parent, attemptTimeout)
+		defer cancel()
+		return a.chatLoopIteration(attemptCtx, messages, base, forceSearchSynthesis, turnProvider)
+	}
+
+	resp, err := attempt(timeout)
+	retryTimeout, retry := agentIterationSoftRetryTimeout(parent, err, timeout)
+	if !retry {
+		return resp, err, false
+	}
+	logger.Warn("agent model iteration timed out; retrying once",
+		"retry_timeout_ms", retryTimeout.Milliseconds(),
+		"error", err,
+	)
+	if onRetry != nil {
+		onRetry()
+	}
+	resp, err = attempt(retryTimeout)
+	return resp, err, true
 }
 
 func (a *Agent) streamLoopIteration(ctx context.Context, messages []provider.Message, base provider.CallOptions, forceSearchSynthesis bool, turnProvider providerSnapshot) (<-chan provider.StreamChunk, error) {
