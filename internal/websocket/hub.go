@@ -31,12 +31,21 @@ type Client struct {
 // of panicking if the client has already disconnected (Send closed) or its
 // outbound buffer is full — callers that need disconnect cleanup should
 // treat a false return as "unregister this client".
-func (c *Client) TrySend(msg *Message) bool {
+func (c *Client) TrySend(msg *Message) (ok bool) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if c.closed {
 		return false
 	}
+	// Send is exported for compatibility with older callers and tests. A
+	// caller that closes it directly can race with this method, so keep a
+	// closed channel from taking down the HTTP server.
+	defer func() {
+		if recover() != nil {
+			c.closed = true
+			ok = false
+		}
+	}()
 	select {
 	case c.Send <- msg:
 		return true
@@ -54,6 +63,10 @@ func (c *Client) Close() {
 		return
 	}
 	c.closed = true
+	// Keep shutdown safe for legacy callers that may have closed Send
+	// directly. Production code uses Close, but this boundary must not panic
+	// when an older client is still connected during an upgrade.
+	defer func() { _ = recover() }()
 	close(c.Send)
 }
 
@@ -197,48 +210,27 @@ func (h *Hub) Run() {
 			logger.Info("client connected", "client_id", client.ID, "session", client.SessionID)
 
 		case client := <-h.unregister:
-			sessionID := client.SessionID
-			lastClient := false
-			h.mu.Lock()
-			if _, ok := h.clients[client.ID]; ok {
-				delete(h.clients, client.ID)
-				if sess, ok := h.sessions[sessionID]; ok {
-					delete(sess, client.ID)
-					if len(sess) == 0 {
-						delete(h.sessions, sessionID)
-						lastClient = true
-					}
-				}
-				client.Close()
-			}
-			h.mu.Unlock()
-			// The last tab for this session is gone. Stop the run so a closed
-			// GUI socket cannot leave tools and token spend going.
-			if lastClient {
-				if canceller, ok := h.handler.(SessionCanceller); ok {
-					canceller.CancelSession(sessionID)
-				}
-			}
-
-			h.stats.mu.Lock()
-			h.stats.ActiveConns--
-			h.stats.mu.Unlock()
-			logger.Info("client disconnected", "client_id", client.ID, "session", client.SessionID)
+			h.unregisterClient(client)
 
 		case msg := <-h.broadcast:
+			var failed []*Client
 			h.mu.RLock()
 			if sess, ok := h.sessions[msg.SessionID]; ok {
 				for clientID := range sess {
 					if client, ok := h.clients[clientID]; ok {
 						if !client.TrySend(msg) {
-							h.mu.RUnlock()
-							h.unregister <- client
-							h.mu.RLock()
+							failed = append(failed, client)
 						}
 					}
 				}
 			}
 			h.mu.RUnlock()
+			// The hub owns this event loop, so sending unregister to its own
+			// unbuffered channel here would deadlock the API forever. Remove
+			// failed clients directly after releasing the read lock.
+			for _, client := range failed {
+				h.unregisterClient(client)
+			}
 
 			h.stats.mu.Lock()
 			h.stats.TotalMessages++
@@ -264,6 +256,51 @@ func (h *Hub) closeAll() {
 	h.sessions = make(map[string]map[string]bool)
 }
 
+func (h *Hub) unregisterClient(client *Client) {
+	if client == nil {
+		return
+	}
+
+	sessionID := client.SessionID
+	lastClient := false
+	h.mu.Lock()
+	if _, ok := h.clients[client.ID]; ok {
+		delete(h.clients, client.ID)
+		if sess, ok := h.sessions[sessionID]; ok {
+			delete(sess, client.ID)
+			if len(sess) == 0 {
+				delete(h.sessions, sessionID)
+				lastClient = true
+			}
+		}
+		client.Close()
+	} else {
+		h.mu.Unlock()
+		return
+	}
+	h.mu.Unlock()
+
+	// The last tab for this session is gone. Stop the run so a closed GUI
+	// socket cannot leave tools and token spend going.
+	if lastClient {
+		if canceller, ok := h.handler.(SessionCanceller); ok {
+			canceller.CancelSession(sessionID)
+		}
+	}
+
+	h.stats.mu.Lock()
+	h.stats.ActiveConns--
+	h.stats.mu.Unlock()
+	logger.Info("client disconnected", "client_id", client.ID, "session", client.SessionID)
+}
+
+func (h *Hub) requestUnregister(client *Client) {
+	select {
+	case h.unregister <- client:
+	case <-h.ctx.Done():
+	}
+}
+
 // ServeHTTP upgrades the request to websocket and registers the client.
 func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.URL.Query().Get("session")
@@ -286,7 +323,13 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		LastActive: time.Now(),
 	}
 
-	h.register <- client
+	select {
+	case h.register <- client:
+	case <-h.ctx.Done():
+		client.Close()
+		_ = conn.Close()
+		return
+	}
 	go client.writePump()
 	go client.readPump()
 }
@@ -304,7 +347,7 @@ func (h *Hub) SendToClient(clientID string, msg *Message) {
 	h.mu.RUnlock()
 	if ok {
 		if !client.TrySend(msg) {
-			h.unregister <- client
+			go h.requestUnregister(client)
 		}
 	}
 }
@@ -337,7 +380,7 @@ func (h *Hub) ClientCount() int {
 
 func (c *Client) readPump() {
 	defer func() {
-		c.Hub.unregister <- c
+		c.Hub.requestUnregister(c)
 		c.Conn.Close()
 	}()
 
