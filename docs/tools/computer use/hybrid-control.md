@@ -204,6 +204,17 @@ Wayland 窗口；控件树仍可按标题筛选。没有窗口标题证据时，
 [ScreenCast](https://flatpak.github.io/xdg-desktop-portal/docs/doc-org.freedesktop.portal.ScreenCast.html)、
 [AT-SPI Action](https://gnome.pages.gitlab.gnome.org/at-spi2-core/libatspi/method.Action.do_action.html)。
 
+## WSLg 后端
+
+WSLg 使用 Weston RDP backend，当前没有 ScreenCast/RemoteDesktop Portal。`backend=auto` 检测到
+WSLg 后会选择 `wslg`，Linux 版 LA 通过 `powershell.exe` 调用宿主 Windows 的 GDI 截图和
+`SendInput`。请求参数通过临时 JSON 文件传递，不经过 shell 命令拼接。该后端覆盖完整 Windows 虚拟桌面，因此截图和输入可能涉及 WSLg 应用以及宿主
+Windows 应用；现有 `allowed_windows`、来源白名单、审批和 `allow_text_input` 仍然生效。
+
+需要 Windows interop、`WSL2_GUI_APPS_ENABLED=1` 和可调用的 `powershell.exe`。如果路径不在
+默认位置，可设置 `LA_WSLG_POWERSHELL`。WSLg 后端支持完整桌面截图、点击、双击、移动、拖拽、
+滚动、快捷键和 Unicode 文本输入；当前使用完整虚拟桌面，不提供按窗口的宿主截图。
+
 ## 验证
 
 ```bash

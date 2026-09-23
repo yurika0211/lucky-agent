@@ -170,7 +170,7 @@ type FilesystemToolConfig struct {
 type ComputerUseToolConfig struct {
 	Enabled              bool     `json:"enabled,omitempty"`
 	Mode                 string   `json:"mode,omitempty"`    // observe, assist, control
-	Backend              string   `json:"backend,omitempty"` // auto, x11, wayland, windows, darwin
+	Backend              string   `json:"backend,omitempty"` // auto, x11, wayland, wslg, windows, darwin
 	CaptureDir           string   `json:"capture_dir,omitempty"`
 	AllowedSources       []string `json:"allowed_sources,omitempty"`
 	AllowedWindows       []string `json:"allowed_windows,omitempty"`
@@ -183,6 +183,9 @@ type ComputerUseToolConfig struct {
 	MaxObservationBytes  int      `json:"max_observation_bytes,omitempty"`
 	MaxScreenshotWidth   int      `json:"max_screenshot_width,omitempty"`
 	MaxBatchActions      int      `json:"max_batch_actions,omitempty"`
+	// MaxConsecutiveObserveOnly stops screenshot-only computer-use loops after N
+	// consecutive observe batches without a computer_act. Default 2.
+	MaxConsecutiveObserveOnly int    `json:"max_consecutive_observe_only,omitempty"`
 	SettleMode           string   `json:"settle_mode,omitempty"`
 	KeepFrames           int      `json:"keep_frames,omitempty"`
 	FrameTTLSeconds      int      `json:"frame_ttl_seconds,omitempty"`
@@ -981,6 +984,7 @@ func DefaultConfig() *Config {
 				MaxObservationBytes:  10 << 20,
 				MaxScreenshotWidth:   0,
 				MaxBatchActions:      5,
+				MaxConsecutiveObserveOnly: 2,
 				SettleMode:           "adaptive",
 				KeepFrames:           2,
 				FrameTTLSeconds:      600,
@@ -1542,6 +1546,9 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Tools.ComputerUse.MaxSteps <= 0 {
 		cfg.Tools.ComputerUse.MaxSteps = def.Tools.ComputerUse.MaxSteps
 	}
+	if cfg.Tools.ComputerUse.MaxConsecutiveObserveOnly <= 0 {
+		cfg.Tools.ComputerUse.MaxConsecutiveObserveOnly = def.Tools.ComputerUse.MaxConsecutiveObserveOnly
+	}
 	if cfg.Tools.ComputerUse.TimeoutSeconds <= 0 {
 		cfg.Tools.ComputerUse.TimeoutSeconds = def.Tools.ComputerUse.TimeoutSeconds
 	}
@@ -1709,6 +1716,8 @@ func applyLegacyComputerUseExtra(cfg *Config) {
 			cfg.Tools.ComputerUse.RequireApproval = parseBool(value)
 		case "tools.computer_use.max_steps":
 			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.MaxSteps)
+		case "tools.computer_use.max_consecutive_observe_only":
+			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.MaxConsecutiveObserveOnly)
 		case "tools.computer_use.timeout_seconds":
 			fmt.Sscanf(value, "%d", &cfg.Tools.ComputerUse.TimeoutSeconds)
 		case "tools.computer_use.step_timeout_seconds":
@@ -2341,6 +2350,13 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Tools.ComputerUse.MaxSteps = n
+	case "tools.computer_use.max_consecutive_observe_only":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		if n < 1 {
+			return fmt.Errorf("max_consecutive_observe_only must be >= 1")
+		}
+		m.config.Tools.ComputerUse.MaxConsecutiveObserveOnly = n
 	case "tools.computer_use.timeout_seconds":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

@@ -268,9 +268,17 @@ func (b *X11Backend) Perform(ctx context.Context, action Action) error {
 	case ActionMove:
 		args = []string{"mousemove", "--sync", strconv.Itoa(action.X), strconv.Itoa(action.Y)}
 	case ActionClick:
-		args = []string{"mousemove", "--sync", strconv.Itoa(action.X), strconv.Itoa(action.Y), "click", "--repeat", "1", button}
+		count := action.ClickCount
+		if count <= 0 {
+			count = 1
+		}
+		args = []string{"mousemove", "--sync", strconv.Itoa(action.X), strconv.Itoa(action.Y), "click", "--repeat", strconv.Itoa(count), button}
 	case ActionDoubleClick:
-		args = []string{"mousemove", "--sync", strconv.Itoa(action.X), strconv.Itoa(action.Y), "click", "--repeat", "2", "--delay", "80", button}
+		count := action.ClickCount
+		if count <= 0 {
+			count = 2
+		}
+		args = []string{"mousemove", "--sync", strconv.Itoa(action.X), strconv.Itoa(action.Y), "click", "--repeat", strconv.Itoa(count), "--delay", "80", button}
 	case ActionDrag:
 		args = []string{"mousemove", "--sync", strconv.Itoa(action.X), strconv.Itoa(action.Y), "mousedown", button, "mousemove", "--sync", strconv.Itoa(action.EndX), strconv.Itoa(action.EndY), "mouseup", button}
 	case ActionTypeText:

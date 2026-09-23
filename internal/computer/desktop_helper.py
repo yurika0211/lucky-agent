@@ -371,7 +371,9 @@ class Portal:
         if kind in ("click", "double_click", "move", "drag"):
             self.point(action.get("x", 0), action.get("y", 0))
         if kind in ("click", "double_click", "drag"):
-            for i in range(2 if kind == "double_click" else 1):
+            default_count = 2 if kind == "double_click" else 1
+            count = max(1, min(5, int(action.get("click_count", default_count))))
+            for i in range(count):
                 self.notify("NotifyPointerButton", "iu", button, 1)
                 try:
                     if kind == "drag":

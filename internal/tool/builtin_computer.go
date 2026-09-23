@@ -105,6 +105,7 @@ func (s *ComputerUseToolService) ActTool() *Tool {
 			"delta_x":        {Type: "number", Description: "Horizontal scroll delta.", Required: false},
 			"delta_y":        {Type: "number", Description: "Vertical scroll delta.", Required: false},
 			"button":         {Type: "string", Description: "Mouse button: left, middle, or right.", Required: false, Default: "left"},
+			"click_count":    {Type: "number", Description: "Number of clicks for click actions, from 1 to 5.", Required: false, Default: 1},
 			"text":           {Type: "string", Description: "Text for a type action.", Required: false},
 			"keys":           {Type: "array", Description: "Keys for a keypress action, for example [CTRL, L].", Required: false},
 			"duration_ms":    {Type: "number", Description: "Optional action duration in milliseconds.", Required: false},
@@ -234,6 +235,10 @@ func (s *ComputerUseToolService) act(exec ExecutionContext, args map[string]any)
 	}
 	result.Metadata["reason"] = computerStringArg(args, "reason")
 	result.Metadata["completed_actions"] = len(actions)
+	result.Metadata["action_results"] = obs.ActionResults
+	for _, execution := range obs.ActionResults {
+		result.Output += fmt.Sprintf("\nAction request_id=%s index=%d kind=%s completed=%t input=(%d,%d) backend=(%d,%d) active_window=%q→%q duration_ms=%d", execution.RequestID, execution.Index, execution.Kind, execution.Completed, execution.InputX, execution.InputY, execution.BackendX, execution.BackendY, execution.ActiveWindowBefore, execution.ActiveWindowAfter, execution.DurationMS)
+	}
 	return result, nil
 }
 
@@ -345,12 +350,15 @@ func observationResult(obs computer.Observation) ToolCallResult {
 		"sha256":         obs.SHA256,
 		"origin_x":       obs.OriginX,
 		"origin_y":       obs.OriginY,
+		"cursor_x":       obs.CursorX,
+		"cursor_y":       obs.CursorY,
+		"cursor_visible": obs.CursorVisible,
 		"window_id":      obs.WindowID,
 		"capture_bounds": obs.CaptureBounds,
 		"stable":         obs.Stable,
 	}
 	result := ToolCallResult{
-		Output:   fmt.Sprintf("Observed frame=%s size=%dx%d capture=%dx%d display=%s active_window=%q window_id=%s origin=(%d,%d) stable=%t", obs.FrameID, obs.Width, obs.Height, obs.CaptureBounds.Width, obs.CaptureBounds.Height, obs.DisplayID, obs.ActiveWindow, obs.WindowID, obs.OriginX, obs.OriginY, obs.Stable),
+		Output:   fmt.Sprintf("Observed frame=%s size=%dx%d capture=%dx%d display=%s active_window=%q window_id=%s origin=(%d,%d) cursor=(%d,%d visible=%t) stable=%t", obs.FrameID, obs.Width, obs.Height, obs.CaptureBounds.Width, obs.CaptureBounds.Height, obs.DisplayID, obs.ActiveWindow, obs.WindowID, obs.OriginX, obs.OriginY, obs.CursorX, obs.CursorY, obs.CursorVisible, obs.Stable),
 		Metadata: meta,
 		Observations: []Observation{{
 			Kind: "image", FrameID: obs.FrameID, CapturedAt: obs.CapturedAt, FilePath: obs.FilePath,
@@ -358,6 +366,7 @@ func observationResult(obs computer.Observation) ToolCallResult {
 			DisplayID: obs.DisplayID, ActiveWindow: obs.ActiveWindow,
 			WindowBounds: Rect{X: obs.WindowBounds.X, Y: obs.WindowBounds.Y, Width: obs.WindowBounds.Width, Height: obs.WindowBounds.Height},
 			SHA256:       obs.SHA256, ImageData: obs.ImageData,
+			Metadata: map[string]any{"cursor_x": obs.CursorX, "cursor_y": obs.CursorY, "cursor_visible": obs.CursorVisible},
 		}},
 	}
 	if obs.FilePath == "" && len(obs.ImageData) == 0 {
@@ -391,7 +400,8 @@ func parseComputerAction(args map[string]any) (computer.Action, error) {
 		DisplayID: computerStringArg(args, "display_id"),
 		X:         computerIntArg(args, "x"), Y: computerIntArg(args, "y"), EndX: computerIntArg(args, "end_x"), EndY: computerIntArg(args, "end_y"),
 		DeltaX: computerIntArg(args, "delta_x"), DeltaY: computerIntArg(args, "delta_y"), Button: button,
-		Text: rawComputerText(args), Keys: computerStringSliceArg(args, "keys"), DurationMS: computerIntArg(args, "duration_ms"),
+		ClickCount: computerIntArg(args, "click_count"),
+		Text:       rawComputerText(args), Keys: computerStringSliceArg(args, "keys"), DurationMS: computerIntArg(args, "duration_ms"),
 		ElementID: computerStringArg(args, "element_id"), ElementAction: computerStringArg(args, "element_action"),
 	}
 	if action.FrameID == "" {
@@ -400,7 +410,7 @@ func parseComputerAction(args map[string]any) (computer.Action, error) {
 	if action.Kind == "" {
 		return computer.Action{}, fmt.Errorf("computer: action is required")
 	}
-	for _, key := range []string{"x", "y", "end_x", "end_y", "delta_x", "delta_y", "duration_ms"} {
+	for _, key := range []string{"x", "y", "end_x", "end_y", "delta_x", "delta_y", "duration_ms", "click_count"} {
 		if value, exists := args[key]; exists {
 			if _, valid := strictComputerInt(value); !valid {
 				return computer.Action{}, fmt.Errorf("computer: %s must be an integer", key)

@@ -91,22 +91,60 @@ func TestComputerObserveOnlyBatch(t *testing.T) {
 	if computerObserveOnlyBatch([]provider.ToolCall{{Name: "computer_observe"}, {Name: "computer_act"}}) {
 		t.Fatal("expected mixed observe/act batch not to be observation-only")
 	}
+	if !computerObserveOnlyBatch([]provider.ToolCall{{Name: "computer_observe"}, {Name: "terminal"}}) {
+		t.Fatal("expected observe plus unrelated tools to remain observation-only")
+	}
 	state := newLoopRuntimeState()
-	if state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}) {
+	if state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}, 2) {
 		t.Fatal("first observation should not stop the loop")
 	}
-	if !state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}) {
+	if !state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}, 2) {
 		t.Fatal("second consecutive observation should stop the loop")
 	}
-	if state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_act"}}) {
+	if state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_act"}}, 2) {
 		t.Fatal("an action should reset observation-only tracking")
 	}
+	state = newLoopRuntimeState()
+	for i := 0; i < 19; i++ {
+		if state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}, 20) {
+			t.Fatalf("observe batch %d should not stop with limit 20", i+1)
+		}
+	}
+	if !state.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}, 20) {
+		t.Fatal("20th consecutive observation should stop the loop with limit 20")
+	}
 	streamState := &streamConvergenceState{}
-	if streamState.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}) {
+	if streamState.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}, 2) {
 		t.Fatal("stream first observation should not stop the loop")
 	}
-	if !streamState.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}) {
+	if !streamState.trackComputerObservationLoop([]provider.ToolCall{{Name: "computer_observe"}}, 2) {
 		t.Fatal("stream second observation should stop the loop")
+	}
+}
+
+func TestComputerActDirectiveForcesActionAfterActionIntent(t *testing.T) {
+	calls := []provider.ToolCall{{
+		Name:      "computer_observe",
+		Arguments: `{"format":"image","reason":"Get a frame, then click the taskbar icon."}`,
+	}}
+	messages := appendComputerActDirective(nil, calls)
+	if !hasPendingComputerActDirective(messages) {
+		t.Fatal("expected a pending computer_act directive")
+	}
+	base := provider.CallOptions{Tools: []map[string]any{
+		{"function": map[string]any{"name": "computer_observe"}},
+		{"function": map[string]any{"name": "computer_act"}},
+	}}
+	prepared := prepareLoopCallOptions(messages, base, false)
+	if forcedToolChoiceName(prepared.ToolChoice) != "computer_act" {
+		t.Fatalf("expected computer_act to be forced, got %#v", prepared.ToolChoice)
+	}
+	if len(prepared.Tools) != 1 || functionToolNameFromSchema(prepared.Tools[0]) != "computer_act" {
+		t.Fatalf("expected only computer_act to remain available, got %#v", prepared.Tools)
+	}
+	messages = append(messages, provider.Message{Role: "assistant", ToolCalls: []provider.ToolCall{{Name: "computer_act"}}})
+	if hasPendingComputerActDirective(messages) {
+		t.Fatal("computer_act should clear the pending directive")
 	}
 }
 

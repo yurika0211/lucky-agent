@@ -162,16 +162,21 @@ func (b *WindowsBackend) Perform(ctx context.Context, action Action) error {
 		if err := windowsSetCursor(moveX, moveY); err != nil {
 			return err
 		}
-		return windowsClick(action.buttonOrDefault())
+		count := action.ClickCount
+		if count <= 0 {
+			count = 1
+		}
+		return windowsClick(action.buttonOrDefault(), count, action.DurationMS)
 	case ActionDoubleClick:
 		moveX, moveY := toScreen(action.X, action.Y)
 		if err := windowsSetCursor(moveX, moveY); err != nil {
 			return err
 		}
-		if err := windowsClick(action.buttonOrDefault()); err != nil {
-			return err
+		count := action.ClickCount
+		if count <= 0 {
+			count = 2
 		}
-		return windowsClick(action.buttonOrDefault())
+		return windowsClick(action.buttonOrDefault(), count, action.DurationMS)
 	case ActionDrag:
 		startX, startY := toScreen(action.X, action.Y)
 		endX, endY := toScreen(action.EndX, action.EndY)
@@ -300,13 +305,28 @@ func windowsSetCursor(x, y int) error {
 	return nil
 }
 
-func windowsClick(button string) error {
+func windowsClick(button string, count, durationMS int) error {
 	down, up, err := windowsMouseButtonFlags(button)
 	if err != nil {
 		return err
 	}
-	winMouseEvent.Call(uintptr(down), 0, 0, 0, 0)
-	winMouseEvent.Call(uintptr(up), 0, 0, 0, 0)
+	if count <= 0 {
+		count = 1
+	}
+	for i := 0; i < count; i++ {
+		winMouseEvent.Call(uintptr(down), 0, 0, 0, 0)
+		if durationMS > 0 {
+			if err := waitContext(context.Background(), time.Duration(durationMS)*time.Millisecond); err != nil {
+				return err
+			}
+		}
+		winMouseEvent.Call(uintptr(up), 0, 0, 0, 0)
+		if i+1 < count {
+			if err := waitContext(context.Background(), 80*time.Millisecond); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

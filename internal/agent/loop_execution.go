@@ -94,9 +94,43 @@ func forcedToolChoiceName(choice any) string {
 
 func prepareLoopCallOptions(messages []provider.Message, base provider.CallOptions, forceSearchSynthesis bool) provider.CallOptions {
 	opts := constrainForcedToolChoice(messages, base)
+	if forcedToolChoiceName(opts.ToolChoice) == "" && hasPendingComputerActDirective(messages) {
+		opts = forceComputerActToolChoice(opts)
+	}
 	if forceSearchSynthesis {
 		opts.Tools = nil
 		opts.ToolChoice = "none"
+	}
+	return opts
+}
+
+func hasPendingComputerActDirective(messages []provider.Message) bool {
+	directiveIndex, actionIndex := -1, -1
+	for i, message := range messages {
+		if strings.HasPrefix(strings.TrimSpace(message.Content), computerActDirectiveMarker) {
+			directiveIndex = i
+		}
+		if message.Role != "assistant" {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if strings.TrimSpace(call.Name) == "computer_act" {
+				actionIndex = i
+			}
+		}
+	}
+	return directiveIndex > actionIndex
+}
+
+func forceComputerActToolChoice(opts provider.CallOptions) provider.CallOptions {
+	tools := filterFunctionToolsByName(opts.Tools, "computer_act")
+	if len(tools) == 0 {
+		return opts
+	}
+	opts.Tools = tools
+	opts.ToolChoice = map[string]any{
+		"type":     "function",
+		"function": map[string]any{"name": "computer_act"},
 	}
 	return opts
 }

@@ -1384,7 +1384,7 @@
                   { field: 'tools.filesystem.allowed_read_roots', example: '[]', description: '文件工具允许读取的根目录；留空表示按运行时默认策略处理。' },
                   { field: 'tools.computer_use.enabled', example: 'false', description: '是否启用桌面观察和操作工具。该能力可接触屏幕和输入，默认关闭。' },
                   { field: 'tools.computer_use.mode', example: 'observe', description: '桌面工具模式：observe、assist 或 control。' },
-                  { field: 'tools.computer_use.backend', example: 'auto', description: 'auto 在 Wayland 会话中优先选择原生桌面门户，避免只看到 XWayland 的部分画面；支持 x11、wayland、windows，darwin 暂未实现。Wayland 需 Python GI、GStreamer/PipeWire，并由用户在系统弹窗授权一个显示器。' },
+                  { field: 'tools.computer_use.backend', example: 'auto', description: 'auto 在 WSLg 会话中选择 Windows 宿主桥接，在普通 Wayland 会话中选择原生桌面门户；支持 x11、wayland、wslg、windows，darwin 暂未实现。WSLg 使用 powershell.exe 截取完整 Windows 虚拟桌面并执行输入，普通 Wayland 需 Python GI、GStreamer/PipeWire 和系统授权。' },
                   { field: 'tools.computer_use.capture_dir', example: '""', description: '截图或观察帧保存目录；留空使用临时目录。' },
                   { field: 'tools.computer_use.allowed_sources / allowed_windows', example: '["cli", "tui"] / []', description: '允许调用来源和窗口白名单；空窗口列表表示不额外限制窗口。' },
                   { field: 'tools.computer_use.require_approval', example: 'true', description: '高风险桌面操作是否需要人工批准。' },

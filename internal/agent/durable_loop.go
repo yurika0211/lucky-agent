@@ -289,7 +289,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		} else {
 			cp.ObserveOnlyBatches = 0
 		}
-		if cp.ObserveOnlyBatches >= 2 {
+		if cp.ObserveOnlyBatches >= computerObserveOnlyLimit(a.cfg.Get().Tools.ComputerUse.MaxConsecutiveObserveOnly) {
 			cp.Messages = append(cp.Messages, provider.Message{Role: "user", Content: computerObservationLoopMessage})
 			cp.ObserveOnlyBatches = 0
 			if err := save(); err != nil {

@@ -81,6 +81,9 @@ func TestBackendAutoPrefersWaylandOverXWayland(t *testing.T) {
 		t.Skip("Linux backend selection")
 	}
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("WSL_INTEROP", "")
+	t.Setenv("WSL2_GUI_APPS_ENABLED", "")
+	t.Setenv("WSL_DISTRO_NAME", "")
 	t.Setenv("DISPLAY", ":0")
 	b, err := NewBackend("auto", BackendOptions{ObserveOnly: true})
 	if err != nil {
