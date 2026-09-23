@@ -293,13 +293,13 @@ function Invoke-Capture {
 			# high-contrast arrow into the frame so the model can see the exact
 			# coordinate that will be used for the next action.
 			$points = [System.Drawing.Point[]]@(
-				(New-Object System.Drawing.Point($cursorX, $cursorY)),
-				(New-Object System.Drawing.Point($cursorX + 2, $cursorY + 18)),
-				(New-Object System.Drawing.Point($cursorX + 7, $cursorY + 13)),
-				(New-Object System.Drawing.Point($cursorX + 14, $cursorY + 22)),
-				(New-Object System.Drawing.Point($cursorX + 18, $cursorY + 19)),
-				(New-Object System.Drawing.Point($cursorX + 11, $cursorY + 10)),
-				(New-Object System.Drawing.Point($cursorX + 17, $cursorY + 8))
+				[System.Drawing.Point]::new([int]$cursorX, [int]$cursorY),
+				[System.Drawing.Point]::new([int]($cursorX + 2), [int]($cursorY + 18)),
+				[System.Drawing.Point]::new([int]($cursorX + 7), [int]($cursorY + 13)),
+				[System.Drawing.Point]::new([int]($cursorX + 14), [int]($cursorY + 22)),
+				[System.Drawing.Point]::new([int]($cursorX + 18), [int]($cursorY + 19)),
+				[System.Drawing.Point]::new([int]($cursorX + 11), [int]($cursorY + 10)),
+				[System.Drawing.Point]::new([int]($cursorX + 17), [int]($cursorY + 8))
 			)
 			$graphics.FillPolygon([System.Drawing.Brushes]::White, $points)
 			$graphics.DrawPolygon([System.Drawing.Pens]::Black, $points)
