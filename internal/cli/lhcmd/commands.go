@@ -420,6 +420,14 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(maskKey(cfg.MsgGateway.Feishu.VerificationToken))
 	case "msg_gateway.feishu.encrypt_key":
 		fmt.Println(maskKey(cfg.MsgGateway.Feishu.EncryptKey))
+	case "msg_gateway.feishu.render_mode":
+		fmt.Println(cfg.MsgGateway.Feishu.RenderMode)
+	case "msg_gateway.feishu.media_enabled":
+		fmt.Println(cfg.MsgGateway.Feishu.MediaEnabled)
+	case "msg_gateway.feishu.max_media_bytes":
+		fmt.Println(cfg.MsgGateway.Feishu.MaxMediaBytes)
+	case "msg_gateway.feishu.card_progress":
+		fmt.Println(cfg.MsgGateway.Feishu.CardProgress)
 	case "msg_gateway.feishu.listen_addr":
 		fmt.Println(cfg.MsgGateway.Feishu.ListenAddr)
 	case "msg_gateway.feishu.path":
@@ -1347,6 +1355,10 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			AppSecret:         opts.FeishuAppSecret,
 			VerificationToken: opts.FeishuVerifyToken,
 			EncryptKey:        cfg.MsgGateway.Feishu.EncryptKey,
+			RenderMode:        cfg.MsgGateway.Feishu.RenderMode,
+			MediaEnabled:      cfg.MsgGateway.Feishu.MediaEnabled,
+			MaxMediaBytes:     cfg.MsgGateway.Feishu.MaxMediaBytes,
+			CardProgress:      cfg.MsgGateway.Feishu.CardProgress,
 			ListenAddr:        opts.FeishuListenAddr,
 			Path:              opts.FeishuPath,
 			APIBaseURL:        cfg.MsgGateway.Feishu.APIBaseURL,
@@ -1354,13 +1366,16 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			AllowedUsers:      append([]string(nil), cfg.MsgGateway.Feishu.AllowedUsers...),
 			RemoveAt:          cfg.MsgGateway.Feishu.RemoveAt,
 			GroupTriggerMode:  cfg.MsgGateway.Feishu.GroupTriggerMode,
+			DataDir:           filepath.Join(a.Config().HomeDir(), "data", "feishu"),
 		})
 		handler := qqofficial.NewHandlerWithOptions(feishuAdapter, a, qqofficial.HandlerOptions{
-			PlatformName:     "feishu",
-			DisplayName:      "飞书网关",
-			LogPrefix:        "feishu",
-			FinalAnswerOnly:  true,
-			DeliveryGuidance: feishu.MediaDeliveryGuidance,
+			PlatformName:    "feishu",
+			DisplayName:     "飞书网关",
+			LogPrefix:       "feishu",
+			FinalAnswerOnly: true,
+			DeliveryGuidance: func(input string) string {
+				return feishu.MediaDeliveryGuidance(input, cfg.MsgGateway.Feishu.MediaEnabled)
+			},
 		})
 		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "feishu"))
 		feishuAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {

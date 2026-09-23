@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,10 +35,10 @@ func TestCallbackChallengeAndVerificationToken(t *testing.T) {
 	}
 }
 
-func TestCallbackRejectsEncryptedEvents(t *testing.T) {
+func TestCallbackRejectsEncryptedEventsWithoutKey(t *testing.T) {
 	a := NewAdapter(callbackTestConfig())
 	status, _ := callbackRequest(t, a, map[string]any{"encrypt": "ciphertext"})
-	if status != http.StatusNotImplemented {
+	if status != http.StatusBadRequest {
 		t.Fatalf("encrypted callback status = %d", status)
 	}
 }
@@ -235,22 +235,13 @@ func TestStartUsesLongConnectionWithoutVerificationToken(t *testing.T) {
 	}
 }
 
-func TestStartRejectsEncryptedConfiguration(t *testing.T) {
+func TestStartRejectsEncryptedConfigurationWithoutVerificationToken(t *testing.T) {
 	cfg := callbackTestConfig()
 	cfg.EncryptKey = "configured-key"
+	cfg.VerificationToken = ""
 	a := NewAdapter(cfg)
-	if err := a.Start(context.Background()); err == nil {
-		t.Fatal("expected encrypted callback configuration to fail")
-	}
-}
-
-func TestPhaseOneMediaMethodsFailClearly(t *testing.T) {
-	a := NewAdapter(callbackTestConfig())
-	if err := a.SendPhoto(context.Background(), "oc", "om", "image.png", "caption"); !errors.Is(err, ErrUnsupportedMedia) {
-		t.Fatalf("SendPhoto() error = %v", err)
-	}
-	if err := a.SendDocument(context.Background(), "oc", "om", "report.pdf", "caption"); !errors.Is(err, ErrUnsupportedMedia) {
-		t.Fatalf("SendDocument() error = %v", err)
+	if err := a.Start(context.Background()); err == nil || !strings.Contains(err.Error(), "verification_token") {
+		t.Fatalf("expected clear verification token error, got %v", err)
 	}
 }
 

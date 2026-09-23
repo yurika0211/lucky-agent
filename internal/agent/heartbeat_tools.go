@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	appheartbeat "github.com/yurika0211/luckyagent/internal/agent/heartbeat"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 	"github.com/yurika0211/luckyagent/internal/session"
 )
 
@@ -89,6 +91,15 @@ func (a *Agent) RecordRecentChatTarget(platform, chatID, replyToMsgID string) {
 		UpdatedAt:    time.Now(),
 	}
 	a.heartbeatMu.Unlock()
+	if a.cfg != nil {
+		if err := gateway.WriteRecentChatTarget(a.cfg.HomeDir(), gateway.RecentChatTarget{
+			Platform:     platform,
+			ChatID:       chatID,
+			ReplyToMsgID: replyToMsgID,
+		}); err != nil {
+			log.Printf("[agent] persist recent chat target: %v", err)
+		}
+	}
 }
 
 /*
@@ -96,8 +107,24 @@ pickRecentChatTarget 读取最近记录的外部聊天目标。
 */
 func (a *Agent) pickRecentChatTarget() recentChatTarget {
 	a.heartbeatMu.Lock()
-	defer a.heartbeatMu.Unlock()
-	return a.recentTarget
+	target := a.recentTarget
+	a.heartbeatMu.Unlock()
+	if target.Platform != "" && target.ChatID != "" {
+		return target
+	}
+	if a.cfg == nil {
+		return recentChatTarget{}
+	}
+	persisted, err := gateway.ReadRecentChatTarget(a.cfg.HomeDir())
+	if err != nil || persisted == nil {
+		return recentChatTarget{}
+	}
+	return recentChatTarget{
+		Platform:     persisted.Platform,
+		ChatID:       persisted.ChatID,
+		ReplyToMsgID: persisted.ReplyToMsgID,
+		UpdatedAt:    persisted.UpdatedAt,
+	}
 }
 
 func externalReplyAnchorKey(platform, chatID, messageID string) string {

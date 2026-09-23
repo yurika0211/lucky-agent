@@ -6,9 +6,11 @@ import (
 )
 
 const (
-	defaultListenAddr = "127.0.0.1:6710"
-	defaultPath       = "/feishu/events"
-	defaultAPIBaseURL = "https://open.feishu.cn"
+	defaultListenAddr          = "127.0.0.1:6710"
+	defaultPath                = "/feishu/events"
+	defaultAPIBaseURL          = "https://open.feishu.cn"
+	defaultRenderMode          = "auto"
+	defaultMaxMediaBytes int64 = 20 * 1024 * 1024
 )
 
 // Config holds Feishu bot delivery and Open API settings. When
@@ -19,6 +21,10 @@ type Config struct {
 	AppSecret         string
 	VerificationToken string
 	EncryptKey        string
+	RenderMode        string
+	MediaEnabled      bool
+	MaxMediaBytes     int64
+	CardProgress      bool
 	ListenAddr        string
 	Path              string
 	APIBaseURL        string
@@ -30,6 +36,7 @@ type Config struct {
 	// BotOpenID can skip the startup bot-info request when the identity is
 	// already known. Normally it is resolved automatically from Feishu.
 	BotOpenID string
+	DataDir   string
 
 	// HTTPClient is optional and primarily useful for custom transports and
 	// tests. A client with a bounded timeout is used when this is nil.
@@ -37,7 +44,7 @@ type Config struct {
 }
 
 func (c Config) usesLongConnection() bool {
-	return strings.TrimSpace(c.VerificationToken) == ""
+	return strings.TrimSpace(c.VerificationToken) == "" && strings.TrimSpace(c.EncryptKey) == ""
 }
 
 // DefaultConfig returns the production defaults for the callback server.
@@ -46,9 +53,32 @@ func DefaultConfig() Config {
 		ListenAddr:       defaultListenAddr,
 		Path:             defaultPath,
 		APIBaseURL:       defaultAPIBaseURL,
+		RenderMode:       defaultRenderMode,
+		MaxMediaBytes:    defaultMaxMediaBytes,
 		RemoveAt:         true,
 		GroupTriggerMode: "mention",
 	}
+}
+
+func (c Config) normalizedRenderMode() string {
+	switch strings.ToLower(strings.TrimSpace(c.RenderMode)) {
+	case "text":
+		return "text"
+	case "post":
+		return "post"
+	default:
+		return "auto"
+	}
+}
+
+func (c Config) normalizedMaxMediaBytes() int64 {
+	if c.MaxMediaBytes <= 0 {
+		return defaultMaxMediaBytes
+	}
+	if c.MaxMediaBytes > feishuMaxResourceBytes {
+		return feishuMaxResourceBytes
+	}
+	return c.MaxMediaBytes
 }
 
 func (c Config) normalizedListenAddr() string {

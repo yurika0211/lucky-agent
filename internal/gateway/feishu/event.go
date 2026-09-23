@@ -66,8 +66,27 @@ type textContent struct {
 	Text string `json:"text"`
 }
 
+type eventMediaContent struct {
+	ImageKey string `json:"image_key"`
+	FileKey  string `json:"file_key"`
+	FileName string `json:"file_name"`
+}
+
+type postMessageContent struct {
+	Title   string              `json:"title"`
+	Content [][]postMessagePart `json:"content"`
+}
+
+type postMessagePart struct {
+	Tag      string `json:"tag"`
+	Text     string `json:"text"`
+	Href     string `json:"href"`
+	ImageKey string `json:"image_key"`
+}
+
 func (a *Adapter) convertEvent(event messageEvent) (*gateway.Message, error) {
-	if strings.ToLower(strings.TrimSpace(event.Message.MessageType)) != "text" {
+	messageType := strings.ToLower(strings.TrimSpace(event.Message.MessageType))
+	if messageType == "" {
 		return nil, nil
 	}
 	senderType := strings.ToLower(strings.TrimSpace(event.Sender.SenderType))
@@ -80,9 +99,43 @@ func (a *Adapter) convertEvent(event messageEvent) (*gateway.Message, error) {
 		return nil, fmt.Errorf("feishu: message_id and chat_id are required")
 	}
 
-	var content textContent
-	if err := json.Unmarshal([]byte(event.Message.Content), &content); err != nil {
-		return nil, fmt.Errorf("feishu: decode text content: %w", err)
+	var text string
+	var attachments []gateway.Attachment
+	switch messageType {
+	case "text":
+		var content textContent
+		if err := json.Unmarshal([]byte(event.Message.Content), &content); err != nil {
+			return nil, fmt.Errorf("feishu: decode text content: %w", err)
+		}
+		text = content.Text
+	case "post":
+		var content postMessageContent
+		if err := json.Unmarshal([]byte(event.Message.Content), &content); err != nil {
+			return nil, fmt.Errorf("feishu: decode post content: %w", err)
+		}
+		text, attachments = flattenPostContent(content)
+	case "image":
+		var content eventMediaContent
+		if err := json.Unmarshal([]byte(event.Message.Content), &content); err != nil {
+			return nil, fmt.Errorf("feishu: decode image content: %w", err)
+		}
+		if key := strings.TrimSpace(content.ImageKey); key != "" {
+			attachments = append(attachments, gateway.Attachment{
+				Type: gateway.AttachmentImage, FileID: key, FileName: "image",
+				Metadata: map[string]string{"resource_type": "image"},
+			})
+		}
+	case "file":
+		var content eventMediaContent
+		if err := json.Unmarshal([]byte(event.Message.Content), &content); err != nil {
+			return nil, fmt.Errorf("feishu: decode file content: %w", err)
+		}
+		if key := strings.TrimSpace(content.FileKey); key != "" {
+			attachments = append(attachments, gateway.Attachment{
+				Type: gateway.AttachmentDocument, FileID: key, FileName: strings.TrimSpace(content.FileName),
+				Metadata: map[string]string{"resource_type": "file"},
+			})
+		}
 	}
 
 	senderIDs := event.Sender.SenderID
@@ -98,9 +151,10 @@ func (a *Adapter) convertEvent(event messageEvent) (*gateway.Message, error) {
 	replyToBot := a.outboundMessages.contains(strings.TrimSpace(event.Message.ParentID), a.now())
 	chatType := strings.ToLower(strings.TrimSpace(event.Message.ChatType))
 	msg := &gateway.Message{
-		ID:        messageID,
-		Text:      strings.TrimSpace(content.Text),
-		Timestamp: parseFeishuTimestamp(event.Message.CreateTime, a.now()),
+		ID:          messageID,
+		Text:        strings.TrimSpace(text),
+		Attachments: attachments,
+		Timestamp:   parseFeishuTimestamp(event.Message.CreateTime, a.now()),
 		Sender: gateway.User{
 			ID: senderID,
 		},
@@ -138,6 +192,37 @@ func (a *Adapter) convertEvent(event messageEvent) (*gateway.Message, error) {
 		msg.ReplyTo = &gateway.Message{ID: parentID}
 	}
 	return msg, nil
+}
+
+func flattenPostContent(content postMessageContent) (string, []gateway.Attachment) {
+	var text strings.Builder
+	if title := strings.TrimSpace(content.Title); title != "" {
+		text.WriteString(title)
+	}
+	var attachments []gateway.Attachment
+	for _, row := range content.Content {
+		if text.Len() > 0 {
+			text.WriteByte('\n')
+		}
+		for index, part := range row {
+			if index > 0 {
+				text.WriteByte(' ')
+			}
+			switch strings.ToLower(strings.TrimSpace(part.Tag)) {
+			case "text", "a", "at":
+				text.WriteString(part.Text)
+			case "img":
+				if key := strings.TrimSpace(part.ImageKey); key != "" {
+					attachments = append(attachments, gateway.Attachment{
+						Type: gateway.AttachmentImage, FileID: key, FileName: "image",
+						Metadata: map[string]string{"resource_type": "image"},
+					})
+					text.WriteString("[图片]")
+				}
+			}
+		}
+	}
+	return strings.TrimSpace(text.String()), attachments
 }
 
 func (a *Adapter) botMentions(mentions []eventMention) []eventMention {

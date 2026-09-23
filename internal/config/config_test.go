@@ -206,6 +206,9 @@ func TestDefaultFeishuConfig(t *testing.T) {
 	if cfg.GroupTriggerMode != "mention" {
 		t.Fatalf("unexpected group trigger mode %q", cfg.GroupTriggerMode)
 	}
+	if cfg.RenderMode != "auto" || cfg.MediaEnabled || cfg.CardProgress || cfg.MaxMediaBytes != 20*1024*1024 {
+		t.Fatalf("unexpected Feishu capability defaults: %+v", cfg)
+	}
 }
 
 func TestDefaultNapCatCrossGroupReadIsDisabledAndConfirmed(t *testing.T) {
@@ -277,6 +280,10 @@ func TestManagerSetFeishuConfig(t *testing.T) {
 		"msg_gateway.feishu.app_secret":         "secret",
 		"msg_gateway.feishu.verification_token": "verify",
 		"msg_gateway.feishu.encrypt_key":        "encrypt",
+		"msg_gateway.feishu.render_mode":        "post",
+		"msg_gateway.feishu.media_enabled":      "true",
+		"msg_gateway.feishu.max_media_bytes":    "7340032",
+		"msg_gateway.feishu.card_progress":      "true",
 		"msg_gateway.feishu.listen_addr":        "0.0.0.0:7000",
 		"msg_gateway.feishu.path":               "/callbacks/feishu",
 		"msg_gateway.feishu.api_base_url":       "https://open.feishu.example",
@@ -289,6 +296,9 @@ func TestManagerSetFeishuConfig(t *testing.T) {
 		if err := mgr.Set(key, value); err != nil {
 			t.Fatalf("Set %s: %v", key, err)
 		}
+	}
+	if err := mgr.Set("msg_gateway.feishu.render_mode", "compact"); err == nil {
+		t.Fatal("expected invalid Feishu render mode to be rejected")
 	}
 
 	cfg := mgr.Get()
@@ -304,6 +314,9 @@ func TestManagerSetFeishuConfig(t *testing.T) {
 	}
 	if feishu.RemoveAt || feishu.GroupTriggerMode != "all" {
 		t.Fatalf("unexpected message policy: remove_at=%v group_trigger_mode=%q", feishu.RemoveAt, feishu.GroupTriggerMode)
+	}
+	if feishu.RenderMode != "post" || !feishu.MediaEnabled || feishu.MaxMediaBytes != 7340032 || !feishu.CardProgress {
+		t.Fatalf("unexpected capability settings: %+v", feishu)
 	}
 
 	cfg.MsgGateway.Feishu.AllowedChats[0] = "mutated_chat"
@@ -600,30 +613,30 @@ func TestManagerSetDelegateAndAutonomyRuntimeConfig(t *testing.T) {
 	}
 
 	values := map[string]string{
-		"delegate.max_concurrent":                    "5",
-		"delegate.timeout_seconds":                   "240",
-		"delegate.min_timeout_seconds":               "10",
-		"delegate.max_timeout_seconds":               "900",
-		"delegate.max_result_bytes_inline":            "8000",
-		"delegate.max_children":                      "4",
-		"delegate.child.max_iterations":              "12",
-		"delegate.child.timeout_seconds":              "90",
-		"delegate.child.auto_approve":                 "true",
-		"delegate.child.repeat_tool_call_limit":       "4",
-		"delegate.child.tool_only_iteration_limit":    "5",
-		"delegate.child.duplicate_fetch_limit":        "2",
-		"delegate.child.disabled_tools":               "terminal,delegate_task",
-		"delegate.child.allow_recursive_delegate":     "true",
-		"autonomy.queue_buffer":                      "128",
-		"autonomy.pool.max_workers":                  "6",
-		"autonomy.pool.queue_buffer":                 "96",
-		"autonomy.pool.auto_scale":                   "true",
-		"autonomy.pool.min_workers":                  "2",
-		"autonomy.heartbeat.mode":                    "passive",
-		"autonomy.heartbeat.interval_seconds":        "600",
-		"autonomy.heartbeat.active_start":            "7",
-		"autonomy.heartbeat.active_end":              "22",
-		"autonomy.heartbeat.max_tasks_per_beat":      "5",
+		"delegate.max_concurrent":                  "5",
+		"delegate.timeout_seconds":                 "240",
+		"delegate.min_timeout_seconds":             "10",
+		"delegate.max_timeout_seconds":             "900",
+		"delegate.max_result_bytes_inline":         "8000",
+		"delegate.max_children":                    "4",
+		"delegate.child.max_iterations":            "12",
+		"delegate.child.timeout_seconds":           "90",
+		"delegate.child.auto_approve":              "true",
+		"delegate.child.repeat_tool_call_limit":    "4",
+		"delegate.child.tool_only_iteration_limit": "5",
+		"delegate.child.duplicate_fetch_limit":     "2",
+		"delegate.child.disabled_tools":            "terminal,delegate_task",
+		"delegate.child.allow_recursive_delegate":  "true",
+		"autonomy.queue_buffer":                    "128",
+		"autonomy.pool.max_workers":                "6",
+		"autonomy.pool.queue_buffer":               "96",
+		"autonomy.pool.auto_scale":                 "true",
+		"autonomy.pool.min_workers":                "2",
+		"autonomy.heartbeat.mode":                  "passive",
+		"autonomy.heartbeat.interval_seconds":      "600",
+		"autonomy.heartbeat.active_start":          "7",
+		"autonomy.heartbeat.active_end":            "22",
+		"autonomy.heartbeat.max_tasks_per_beat":    "5",
 	}
 	for key, value := range values {
 		if err := mgr.Set(key, value); err != nil {

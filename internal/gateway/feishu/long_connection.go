@@ -122,19 +122,18 @@ func (a *Adapter) handleLongConnectionEvent(_ context.Context, event longConnect
 	}
 
 	a.mu.RLock()
-	handler := a.handler
 	handlerCtx := a.runCtx
 	running := a.running
 	a.mu.RUnlock()
-	if handler == nil || !running {
+	if !running {
 		return nil
 	}
 	if handlerCtx == nil {
 		handlerCtx = context.Background()
 	}
 	go func() {
-		if err := handler(handlerCtx, msg); err != nil {
-			log.Printf("[feishu] long connection message handler failed: %v", err)
+		if err := a.dispatchMessage(handlerCtx, msg, event.Message.Message.MessageType); err != nil {
+			log.Printf("[feishu] long connection dispatch failed chat_id=%q message_id=%q: %v", msg.Chat.ID, msg.ID, err)
 		}
 	}()
 	return nil

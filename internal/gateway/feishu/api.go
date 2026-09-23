@@ -51,34 +51,6 @@ type sendMessageResponse struct {
 	} `json:"data"`
 }
 
-// feishuTextChunkLimit bounds how many runes go into a single Feishu message.
-// Feishu's own text-content limit is far higher, but very long messages hurt
-// readability in the client; splitting keeps each message reasonably sized
-// instead of sending one giant block.
-const feishuTextChunkLimit = 4000
-
-// splitFeishuText splits message into chunks of at most feishuTextChunkLimit
-// runes each. It never drops content — unlike a hard truncation, every rune
-// of the input ends up in some returned chunk.
-func splitFeishuText(message string) []string {
-	if message == "" {
-		return nil
-	}
-	runes := []rune(message)
-	if len(runes) <= feishuTextChunkLimit {
-		return []string{message}
-	}
-	out := make([]string, 0, len(runes)/feishuTextChunkLimit+1)
-	for len(runes) > feishuTextChunkLimit {
-		out = append(out, string(runes[:feishuTextChunkLimit]))
-		runes = runes[feishuTextChunkLimit:]
-	}
-	if len(runes) > 0 {
-		out = append(out, string(runes))
-	}
-	return out
-}
-
 func (a *Adapter) Send(ctx context.Context, chatID string, message string) error {
 	_, err := a.SendWithReceipt(ctx, chatID, message)
 	return err
@@ -95,13 +67,13 @@ func (a *Adapter) SendWithReceipt(ctx context.Context, chatID string, message st
 	}
 	var receipt gateway.SentMessage
 	for _, chunk := range chunks {
-		payload, err := newMessageRequest(chatID, chunk)
+		payload, err := newMessageRequestWithMode(chatID, chunk, a.cfg.normalizedRenderMode())
 		if err != nil {
 			return gateway.SentMessage{}, err
 		}
 		var response sendMessageResponse
 		query := url.Values{"receive_id_type": []string{"chat_id"}}
-		if err := a.authorizedJSON(ctx, http.MethodPost, "/open-apis/im/v1/messages", query, payload, &response); err != nil {
+		if err := a.sendTextChunk(ctx, query, payload, &response); err != nil {
 			return gateway.SentMessage{}, fmt.Errorf("feishu: send message: %w", err)
 		}
 		receipt, err = a.recordSentMessage(chatID, response)
@@ -127,14 +99,16 @@ func (a *Adapter) SendWithReplyReceipt(ctx context.Context, chatID string, reply
 		return a.sendChunksAsChatMessages(ctx, chatID, chunks)
 	}
 
-	payload, err := newMessageRequest("", chunks[0])
+	payload, err := newMessageRequestWithMode("", chunks[0], a.cfg.normalizedRenderMode())
 	if err != nil {
 		return gateway.SentMessage{}, err
 	}
 	var response sendMessageResponse
 	path := "/open-apis/im/v1/messages/" + url.PathEscape(replyToMsgID) + "/reply"
-	if err := a.authorizedJSON(ctx, http.MethodPost, path, nil, payload, &response); err != nil {
-		log.Printf("[feishu] reply message failed, falling back to chat send: %v", err)
+	if err := sendWithRateLimitRetry(ctx, func() error {
+		return a.authorizedJSON(ctx, http.MethodPost, path, nil, payload, &response)
+	}); err != nil {
+		log.Printf("[feishu] reply delivery failed chat_id=%q message_id=%q category=%s; falling back to chat send", chatID, replyToMsgID, apiErrorCategory(err))
 		return a.sendChunksAsChatMessages(ctx, chatID, chunks)
 	}
 	receipt, receiptErr := a.recordSentMessage(chatID, response)
@@ -191,10 +165,19 @@ func newTextMessageRequest(receiveID, message string) (sendMessageRequest, error
 // retaining the complete destination in href; plain responses keep the
 // existing text-message behavior.
 func newMessageRequest(receiveID, message string) (sendMessageRequest, error) {
+	return newMessageRequestWithMode(receiveID, message, "auto")
+}
+
+func newMessageRequestWithMode(receiveID, message, mode string) (sendMessageRequest, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "text" {
+		return newTextMessageRequest(receiveID, message)
+	}
 	// The post renderer intentionally normalizes surrounding whitespace. Keep
 	// messages that contain it as plain text so transport never drops bytes.
 	if message == strings.TrimSpace(message) {
-		if content, ok := newFeishuPostContent(message); ok {
+		force := mode == "post"
+		if content, ok := newFeishuPostContentWithMode(message, force); ok {
 			encoded, err := json.Marshal(content)
 			if err != nil {
 				return sendMessageRequest{}, fmt.Errorf("feishu: encode post content: %w", err)
@@ -281,7 +264,7 @@ func (a *Adapter) authorizedJSON(ctx context.Context, method, path string, query
 		return err
 	}
 	if response, ok := output.(*sendMessageResponse); ok && response.Code != 0 {
-		return fmt.Errorf("API code %d: %s", response.Code, strings.TrimSpace(response.Msg))
+		return &feishuAPIError{Code: response.Code, Message: strings.TrimSpace(response.Msg)}
 	}
 	return nil
 }
@@ -318,8 +301,7 @@ func (a *Adapter) rawJSON(ctx context.Context, method, path string, query url.Va
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		limited, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("HTTP status %d: %s", resp.StatusCode, strings.TrimSpace(string(limited)))
+		return apiErrorFromResponse(resp)
 	}
 	if output == nil {
 		_, _ = io.Copy(io.Discard, resp.Body)
@@ -332,3 +314,32 @@ func (a *Adapter) rawJSON(ctx context.Context, method, path string, query url.Va
 }
 
 var _ gateway.ReceiptGateway = (*Adapter)(nil)
+
+func (a *Adapter) sendTextChunk(ctx context.Context, query url.Values, payload sendMessageRequest, response *sendMessageResponse) error {
+	return sendWithRateLimitRetry(ctx, func() error {
+		return a.authorizedJSON(ctx, http.MethodPost, "/open-apis/im/v1/messages", query, payload, response)
+	})
+}
+
+func sendWithRateLimitRetry(ctx context.Context, send func() error) error {
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		err := send()
+		if err == nil {
+			return nil
+		}
+		apiErr, ok := err.(*feishuAPIError)
+		if !ok || apiErr.Category() != "rate limited" || attempt == maxAttempts-1 {
+			return err
+		}
+		delay := time.Duration(attempt+1) * 250 * time.Millisecond
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return nil
+}

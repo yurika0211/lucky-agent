@@ -3,10 +3,12 @@ package feishu
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +22,8 @@ const (
 	feishuStreamUpdateInterval = 300 * time.Millisecond
 	feishuStreamRequestTimeout = 10 * time.Second
 )
+
+var unsafeCardProgressLabel = regexp.MustCompile(`[^\pL\pN_.:-]+`)
 
 type createCardRequest struct {
 	Type string `json:"type"`
@@ -77,6 +81,9 @@ type feishuStreamingCardElement struct {
 // Subsequent updates replace its markdown element with the accumulated text,
 // which Feishu renders as a native streaming card.
 func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID string) (gateway.StreamSender, error) {
+	if !a.cfg.CardProgress {
+		return nil, nil
+	}
 	if !a.IsRunning() {
 		return nil, fmt.Errorf("feishu: adapter not running")
 	}
@@ -89,12 +96,20 @@ func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID st
 	if err != nil {
 		return nil, err
 	}
+	closeOrphanedCard := func() {
+		sender := &feishuStreamSender{adapter: a, cardID: cardID}
+		if closeErr := sender.closeStreamingMode(); closeErr != nil {
+			log.Printf("[feishu] failed to close unused streaming card: %v", closeErr)
+		}
+	}
 	payload, err := newInteractiveCardMessageRequest(chatID, cardID)
 	if err != nil {
+		closeOrphanedCard()
 		return nil, err
 	}
 	receipt, err := a.sendStreamCard(ctx, chatID, replyToMsgID, payload)
 	if err != nil {
+		closeOrphanedCard()
 		return nil, err
 	}
 	return &feishuStreamSender{
@@ -102,6 +117,7 @@ func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID st
 		cardID:    cardID,
 		messageID: receipt.ID,
 		content:   "正在思考...",
+		startedAt: time.Now(),
 	}, nil
 }
 
@@ -202,12 +218,14 @@ type feishuStreamSender struct {
 	cardID    string
 	messageID string
 
-	mu         sync.Mutex
-	content    string
-	hasContent bool
-	sequence   int
-	lastUpdate time.Time
-	finished   bool
+	mu           sync.Mutex
+	content      string
+	hasContent   bool
+	sequence     int
+	lastUpdate   time.Time
+	finished     bool
+	streamClosed bool
+	startedAt    time.Time
 }
 
 func (s *feishuStreamSender) Append(content string) error {
@@ -232,19 +250,18 @@ func (s *feishuStreamSender) Append(content string) error {
 }
 
 func (s *feishuStreamSender) SetThinking(label string) error {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		label = "正在思考..."
-	}
-	return s.replaceAndUpdate(label, false)
+	return s.replaceAndUpdate(s.progressLabel("正在思考", label), false, false)
 }
 
 func (s *feishuStreamSender) SetToolCall(name, _ string) error {
-	name = strings.TrimSpace(name)
+	name = unsafeCardProgressLabel.ReplaceAllString(strings.TrimSpace(name), "")
+	if len([]rune(name)) > 64 {
+		name = string([]rune(name)[:64])
+	}
 	if name == "" {
 		name = "工具"
 	}
-	return s.replaceAndUpdate("正在调用 "+name+"...", false)
+	return s.replaceAndUpdate(s.progressLabel("正在调用 "+name, ""), false, false)
 }
 
 func (s *feishuStreamSender) SetResult(content string) error {
@@ -252,7 +269,7 @@ func (s *feishuStreamSender) SetResult(content string) error {
 	if content == "" {
 		content = "我这边暂时还没有整理出可发送的结果。"
 	}
-	return s.replaceAndUpdate(content, true)
+	return s.replaceAndUpdate(content, true, true)
 }
 
 func (s *feishuStreamSender) Finish() error {
@@ -268,12 +285,14 @@ func (s *feishuStreamSender) Finish() error {
 	}
 	content, sequence := s.nextUpdateLocked()
 	s.mu.Unlock()
-	return s.update(content, sequence)
+	updateErr := s.update(content, sequence)
+	closeErr := s.closeStreamingMode()
+	return errors.Join(updateErr, closeErr)
 }
 
 func (s *feishuStreamSender) MessageID() string { return s.messageID }
 
-func (s *feishuStreamSender) replaceAndUpdate(content string, hasContent bool) error {
+func (s *feishuStreamSender) replaceAndUpdate(content string, hasContent, force bool) error {
 	s.mu.Lock()
 	if s.finished {
 		s.mu.Unlock()
@@ -281,9 +300,32 @@ func (s *feishuStreamSender) replaceAndUpdate(content string, hasContent bool) e
 	}
 	s.content = content
 	s.hasContent = hasContent
+	if !force && time.Since(s.lastUpdate) < feishuStreamUpdateInterval {
+		s.mu.Unlock()
+		return nil
+	}
 	content, sequence := s.nextUpdateLocked()
 	s.mu.Unlock()
 	return s.update(content, sequence)
+}
+
+func (s *feishuStreamSender) progressLabel(stage, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail != "" {
+		detail = unsafeCardProgressLabel.ReplaceAllString(detail, " ")
+		if len([]rune(detail)) > 96 {
+			detail = string([]rune(detail)[:96]) + "…"
+		}
+	}
+	elapsed := time.Duration(0)
+	if !s.startedAt.IsZero() {
+		elapsed = time.Since(s.startedAt).Round(time.Second)
+	}
+	label := stage
+	if detail != "" {
+		label += "：" + detail
+	}
+	return fmt.Sprintf("%s\n已耗时 %s · 发送 /stop 可取消", label, elapsed)
 }
 
 func (s *feishuStreamSender) nextUpdateLocked() (string, int) {
@@ -300,8 +342,45 @@ func (s *feishuStreamSender) update(content string, sequence int) error {
 	defer cancel()
 	if err := s.adapter.updateStreamingCard(ctx, s.cardID, content, sequence); err != nil {
 		log.Printf("[feishu] streaming card update failed: %v", err)
-		return err
+		return errors.Join(err, s.closeStreamingMode())
 	}
+	return nil
+}
+
+func (s *feishuStreamSender) closeStreamingMode() error {
+	if s == nil || s.adapter == nil {
+		return fmt.Errorf("feishu: stream sender is not initialized")
+	}
+	s.mu.Lock()
+	if s.streamClosed {
+		s.mu.Unlock()
+		return nil
+	}
+	s.sequence++
+	sequence := s.sequence
+	s.mu.Unlock()
+	settings, err := json.Marshal(map[string]any{"config": map[string]bool{"streaming_mode": false}})
+	if err != nil {
+		return fmt.Errorf("feishu: encode streaming card settings: %w", err)
+	}
+	request := map[string]any{
+		"settings": string(settings),
+		"sequence": sequence,
+		"uuid":     uuid.NewString(),
+	}
+	path := "/open-apis/cardkit/v1/cards/" + url.PathEscape(s.cardID) + "/settings"
+	ctx, cancel := context.WithTimeout(context.Background(), feishuStreamRequestTimeout)
+	defer cancel()
+	var response cardKitResponse
+	if err := s.adapter.authorizedJSON(ctx, http.MethodPatch, path, nil, request, &response); err != nil {
+		return fmt.Errorf("feishu: close streaming card: %w", err)
+	}
+	if response.Code != 0 {
+		return fmt.Errorf("feishu: close streaming card API code %d: %s", response.Code, strings.TrimSpace(response.Msg))
+	}
+	s.mu.Lock()
+	s.streamClosed = true
+	s.mu.Unlock()
 	return nil
 }
 

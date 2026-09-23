@@ -3850,6 +3850,21 @@ func TestCronNotificationHonorsSnakeCaseTelegramMetadata(t *testing.T) {
 	}
 }
 
+func TestRecentChatTargetCanBeRestoredAfterRestart(t *testing.T) {
+	cfg, _ := config.NewManagerWithDir(t.TempDir())
+	a := &Agent{cfg: cfg}
+	a.RecordRecentChatTarget("feishu", "oc_chat", "om_message")
+
+	a.heartbeatMu.Lock()
+	a.recentTarget = recentChatTarget{}
+	a.heartbeatMu.Unlock()
+
+	got := a.pickRecentChatTarget()
+	if got.Platform != "feishu" || got.ChatID != "oc_chat" || got.ReplyToMsgID != "om_message" || got.UpdatedAt.IsZero() {
+		t.Fatalf("restored recent target = %#v", got)
+	}
+}
+
 func TestCronNotificationFallsBackToRecentTelegramTarget(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)

@@ -548,6 +548,10 @@ type MsgGatewayFeishu struct {
 	AppSecret         string   `json:"app_secret,omitempty"`
 	VerificationToken string   `json:"verification_token,omitempty"`
 	EncryptKey        string   `json:"encrypt_key,omitempty"`
+	RenderMode        string   `json:"render_mode,omitempty"`
+	MediaEnabled      bool     `json:"media_enabled,omitempty"`
+	MaxMediaBytes     int64    `json:"max_media_bytes,omitempty"`
+	CardProgress      bool     `json:"card_progress,omitempty"`
 	ListenAddr        string   `json:"listen_addr,omitempty"`
 	Path              string   `json:"path,omitempty"`
 	APIBaseURL        string   `json:"api_base_url,omitempty"`
@@ -1041,6 +1045,8 @@ func DefaultConfig() *Config {
 				ListenAddr:       "127.0.0.1:6710",
 				Path:             "/feishu/events",
 				APIBaseURL:       "https://open.feishu.cn",
+				RenderMode:       "auto",
+				MaxMediaBytes:    20 * 1024 * 1024,
 				RemoveAt:         true,
 				GroupTriggerMode: "mention",
 			},
@@ -1650,6 +1656,15 @@ func normalizeConfig(cfg *Config) {
 	}
 	if strings.TrimSpace(cfg.MsgGateway.Feishu.GroupTriggerMode) == "" {
 		cfg.MsgGateway.Feishu.GroupTriggerMode = def.MsgGateway.Feishu.GroupTriggerMode
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.MsgGateway.Feishu.RenderMode)) {
+	case "text", "post", "auto":
+		cfg.MsgGateway.Feishu.RenderMode = strings.ToLower(strings.TrimSpace(cfg.MsgGateway.Feishu.RenderMode))
+	default:
+		cfg.MsgGateway.Feishu.RenderMode = def.MsgGateway.Feishu.RenderMode
+	}
+	if cfg.MsgGateway.Feishu.MaxMediaBytes <= 0 {
+		cfg.MsgGateway.Feishu.MaxMediaBytes = def.MsgGateway.Feishu.MaxMediaBytes
 	}
 	if cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds <= 0 {
 		cfg.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds = def.MsgGateway.OpenClawWeixin.PollTimeoutMilliseconds
@@ -2483,6 +2498,22 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Feishu.VerificationToken = value
 	case "msg_gateway.feishu.encrypt_key":
 		m.config.MsgGateway.Feishu.EncryptKey = value
+	case "msg_gateway.feishu.render_mode":
+		mode := strings.ToLower(strings.TrimSpace(value))
+		if mode != "text" && mode != "post" && mode != "auto" {
+			return fmt.Errorf("invalid render mode for %s: expected text, post, or auto", key)
+		}
+		m.config.MsgGateway.Feishu.RenderMode = mode
+	case "msg_gateway.feishu.media_enabled":
+		m.config.MsgGateway.Feishu.MediaEnabled = parseBool(value)
+	case "msg_gateway.feishu.max_media_bytes":
+		parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid int64 value for %s: %w", key, err)
+		}
+		m.config.MsgGateway.Feishu.MaxMediaBytes = parsed
+	case "msg_gateway.feishu.card_progress":
+		m.config.MsgGateway.Feishu.CardProgress = parseBool(value)
 	case "msg_gateway.feishu.listen_addr":
 		m.config.MsgGateway.Feishu.ListenAddr = value
 	case "msg_gateway.feishu.path":
