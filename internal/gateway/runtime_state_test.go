@@ -64,3 +64,21 @@ func TestTimeoutEventRoundTrip(t *testing.T) {
 		t.Fatalf("ReadTimeoutEventsSince() = %#v, %v", events, err)
 	}
 }
+
+func TestRecentChatTargetRoundTrip(t *testing.T) {
+	homeDir := t.TempDir()
+	target := RecentChatTarget{Platform: " feishu ", ChatID: " oc_chat ", ReplyToMsgID: " om_message "}
+	if err := WriteRecentChatTarget(homeDir, target); err != nil {
+		t.Fatalf("WriteRecentChatTarget: %v", err)
+	}
+	got, err := ReadRecentChatTarget(homeDir)
+	if err != nil {
+		t.Fatalf("ReadRecentChatTarget: %v", err)
+	}
+	if got.Platform != "feishu" || got.ChatID != "oc_chat" || got.ReplyToMsgID != "om_message" || got.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected recent target: %#v", got)
+	}
+	if time.Since(got.UpdatedAt) > time.Minute {
+		t.Fatalf("recent target timestamp is unexpectedly old: %v", got.UpdatedAt)
+	}
+}

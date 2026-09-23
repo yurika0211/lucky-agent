@@ -100,8 +100,8 @@ func (a *Adapter) Start(ctx context.Context) error {
 	if strings.TrimSpace(a.cfg.AppID) == "" || strings.TrimSpace(a.cfg.AppSecret) == "" {
 		return fmt.Errorf("feishu: app_id and app_secret are required")
 	}
-	if strings.TrimSpace(a.cfg.EncryptKey) != "" {
-		return fmt.Errorf("feishu: encrypted events are not supported")
+	if !a.cfg.usesLongConnection() && strings.TrimSpace(a.cfg.VerificationToken) == "" {
+		return fmt.Errorf("feishu: verification_token is required for HTTP callbacks")
 	}
 	if err := a.resolveBotOpenID(ctx); err != nil {
 		return fmt.Errorf("feishu: resolve bot identity: %w", err)
@@ -332,13 +332,40 @@ func (a *Adapter) handleCallback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": http.StatusBadRequest, "msg": "invalid request body"})
 		return
 	}
-	var envelope callbackEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
+	var encryptedEnvelope struct {
+		Encrypt string `json:"encrypt"`
+	}
+	if err := json.Unmarshal(body, &encryptedEnvelope); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"code": http.StatusBadRequest, "msg": "invalid JSON"})
 		return
 	}
-	if strings.TrimSpace(envelope.Encrypt) != "" {
-		writeJSON(w, http.StatusNotImplemented, map[string]any{"code": http.StatusNotImplemented, "msg": "encrypted callbacks are not supported"})
+	callbackBody := body
+	if strings.TrimSpace(encryptedEnvelope.Encrypt) != "" {
+		if strings.TrimSpace(a.cfg.EncryptKey) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": http.StatusBadRequest, "msg": "encrypted callback received without encrypt_key"})
+			return
+		}
+		if r.Header.Get("X-Lark-Signature") != "" && !verifyFeishuCallbackSignature(r, body, a.cfg.EncryptKey) {
+			writeJSON(w, http.StatusForbidden, map[string]any{"code": http.StatusForbidden, "msg": "callback signature mismatch"})
+			return
+		}
+		callbackBody, err = decryptFeishuEvent(a.cfg.EncryptKey, encryptedEnvelope.Encrypt)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"code": http.StatusBadRequest, "msg": "unable to decrypt callback event"})
+			return
+		}
+	} else if strings.TrimSpace(a.cfg.EncryptKey) != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": http.StatusBadRequest, "msg": "unencrypted callback received while encrypt_key is configured"})
+		return
+	}
+	var envelope callbackEnvelope
+	if err := json.Unmarshal(callbackBody, &envelope); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"code": http.StatusBadRequest, "msg": "invalid callback payload"})
+		return
+	}
+	challengeRequest := envelope.Type == "url_verification" || envelope.Challenge != ""
+	if strings.TrimSpace(a.cfg.EncryptKey) != "" && !challengeRequest && !verifyFeishuCallbackSignature(r, body, a.cfg.EncryptKey) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"code": http.StatusForbidden, "msg": "callback signature mismatch"})
 		return
 	}
 
@@ -350,7 +377,7 @@ func (a *Adapter) handleCallback(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"code": http.StatusForbidden, "msg": "verification token mismatch"})
 		return
 	}
-	if envelope.Type == "url_verification" || envelope.Challenge != "" {
+	if challengeRequest {
 		writeJSON(w, http.StatusOK, map[string]string{"challenge": envelope.Challenge})
 		return
 	}
@@ -381,20 +408,65 @@ func (a *Adapter) handleCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.RLock()
-	handler := a.handler
 	handlerCtx := a.runCtx
 	a.mu.RUnlock()
-	if handler != nil {
-		if handlerCtx == nil {
-			handlerCtx = context.Background()
-		}
-		go func() {
-			if err := handler(handlerCtx, msg); err != nil {
-				log.Printf("[feishu] message handler failed: %v", err)
-			}
-		}()
+	if handlerCtx == nil {
+		handlerCtx = context.Background()
 	}
+	go func() {
+		if err := a.dispatchMessage(handlerCtx, msg, envelope.Event.Message.MessageType); err != nil {
+			log.Printf("[feishu] message dispatch failed chat_id=%q message_id=%q: %v", msg.Chat.ID, msg.ID, err)
+		}
+	}()
 	writeJSON(w, http.StatusOK, map[string]any{"code": 0})
+}
+
+func (a *Adapter) dispatchMessage(ctx context.Context, msg *gateway.Message, messageType string) error {
+	if msg == nil {
+		return nil
+	}
+	messageType = strings.ToLower(strings.TrimSpace(messageType))
+	supported := messageType == "text" || messageType == "post"
+	if len(msg.Attachments) > 0 {
+		supported = true
+	}
+	if !supported {
+		return a.sendInboundNotice(ctx, msg, "我收到了这条消息，但目前支持文本、富文本、图片和文件；这种消息类型暂时还不能处理。")
+	}
+	if len(msg.Attachments) > 0 {
+		if !a.cfg.MediaEnabled {
+			return a.sendInboundNotice(ctx, msg, "我收到了图片或文件，目前仅支持文本内容。请把需要处理的内容直接发成文字。")
+		}
+		for index := range msg.Attachments {
+			path, size, mimeType, err := a.downloadInboundAttachment(ctx, msg.ID, msg.Attachments[index])
+			if err != nil {
+				if sendErr := a.sendInboundNotice(ctx, msg, "我收到了附件，但下载失败："+mediaErrorLabel(err)+"。请检查飞书应用权限或发送较小的文件后重试。"); sendErr != nil {
+					return errors.Join(err, sendErr)
+				}
+				return err
+			}
+			msg.Attachments[index].FilePath = path
+			msg.Attachments[index].FileSize = size
+			msg.Attachments[index].MimeType = mimeType
+		}
+	}
+	a.mu.RLock()
+	handler := a.handler
+	a.mu.RUnlock()
+	if handler == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return handler(ctx, msg)
+}
+
+func (a *Adapter) sendInboundNotice(ctx context.Context, msg *gateway.Message, text string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return a.SendWithReply(ctx, msg.Chat.ID, msg.ID, text)
 }
 
 func secureTokenEqual(got, want string) bool {
@@ -409,14 +481,6 @@ func secureTokenEqual(got, want string) bool {
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
-}
-
-func (a *Adapter) SendPhoto(context.Context, string, string, string, string) error {
-	return fmt.Errorf("%w in phase 1", ErrUnsupportedMedia)
-}
-
-func (a *Adapter) SendDocument(context.Context, string, string, string, string) error {
-	return fmt.Errorf("%w in phase 1", ErrUnsupportedMedia)
 }
 
 var _ gateway.Gateway = (*Adapter)(nil)

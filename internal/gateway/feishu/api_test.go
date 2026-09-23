@@ -72,6 +72,32 @@ func TestSendUsesCachedTenantTokenAndFeishuMessageAPI(t *testing.T) {
 	}
 }
 
+func TestSendWithReceiptRetriesRateLimitedChunk(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages":
+			if attempts.Add(1) == 1 {
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": 99991400, "msg": "rate limit"})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_sent"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	if _, err := apiTestAdapter(server).SendWithReceipt(context.Background(), "oc_chat", "hello"); err != nil {
+		t.Fatalf("SendWithReceipt() error = %v", err)
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("send attempts = %d, want 2", got)
+	}
+}
+
 func TestSplitFeishuTextPreservesWhitespaceAndUnicode(t *testing.T) {
 	message := " \n" + strings.Repeat("你", feishuTextChunkLimit) + "\n "
 	chunks := splitFeishuText(message)
@@ -82,6 +108,94 @@ func TestSplitFeishuTextPreservesWhitespaceAndUnicode(t *testing.T) {
 		if got := len([]rune(chunk)); got > feishuTextChunkLimit {
 			t.Fatalf("chunk rune length = %d, limit %d", got, feishuTextChunkLimit)
 		}
+	}
+}
+
+func TestSplitFeishuTextKeepsLargeCodeBlocksFenced(t *testing.T) {
+	body := strings.Repeat("fmt.Println(\"hello\")\n", 800)
+	message := "before\n\n```go\n" + body + "```\n\nafter"
+	chunks := splitFeishuText(message)
+	if len(chunks) < 3 {
+		t.Fatalf("large code block produced only %d chunks", len(chunks))
+	}
+	var codeBody strings.Builder
+	for _, chunk := range chunks {
+		if len([]rune(chunk)) > feishuTextChunkLimit {
+			t.Fatalf("chunk has %d runes, limit %d", runeLen(chunk), feishuTextChunkLimit)
+		}
+		if strings.HasPrefix(chunk, "```go\n") {
+			trimmed := strings.TrimSpace(strings.TrimPrefix(chunk, "```go"))
+			trimmed = strings.TrimSuffix(trimmed, "```")
+			codeBody.WriteString(strings.TrimSpace(trimmed))
+		}
+	}
+	if strings.Count(codeBody.String(), "fmt.Println") != 800 {
+		t.Fatalf("code lines were lost or duplicated: count=%d", strings.Count(codeBody.String(), "fmt.Println"))
+	}
+}
+
+func TestSplitFeishuTextKeepsTrailingNewlineAfterLargeCodeFence(t *testing.T) {
+	body := strings.Repeat("line\n", 1000)
+	message := "```text\n" + body + "```\n"
+	chunks := splitFeishuText(message)
+	if len(chunks) < 2 {
+		t.Fatalf("large code block produced only %d chunks", len(chunks))
+	}
+	for i, chunk := range chunks {
+		if runeLen(chunk) > feishuTextChunkLimit {
+			t.Fatalf("chunk %d has %d runes, limit %d", i, runeLen(chunk), feishuTextChunkLimit)
+		}
+		if !strings.HasPrefix(chunk, "```text\n") || !strings.Contains(chunk, "\n```") {
+			t.Fatalf("chunk %d is not independently fenced: %q", i, chunk[:min(len(chunk), 40)])
+		}
+	}
+	if !strings.HasSuffix(chunks[len(chunks)-1], "```\n") {
+		t.Fatalf("last chunk lost trailing newline after fence: %q", chunks[len(chunks)-1][len(chunks[len(chunks)-1])-8:])
+	}
+}
+
+func TestFeishuMarkdownRenderingAndModes(t *testing.T) {
+	message := "# Heading\n\n**bold** and *italic*\n\n- first\n- second\n\n```go\nfmt.Println(1)\n```"
+	request, err := newMessageRequestWithMode("oc_chat", message, "auto")
+	if err != nil {
+		t.Fatalf("auto render: %v", err)
+	}
+	if request.MsgType != "post" {
+		t.Fatalf("auto MsgType = %q, want post", request.MsgType)
+	}
+	var content feishuPostContent
+	if err := json.Unmarshal([]byte(request.Content), &content); err != nil {
+		t.Fatal(err)
+	}
+	if !postHasText(content, "first") || !postHasText(content, "│ fmt.Println(1)") {
+		t.Fatalf("post lost list or code formatting: %#v", content)
+	}
+	hasBold, hasItalic := false, false
+	for _, row := range content.ZhCN.Content {
+		for _, element := range row {
+			if strings.Contains(element.Text, "Heading") || strings.Contains(element.Text, "bold") {
+				for _, style := range element.Style {
+					hasBold = hasBold || style == "bold"
+				}
+			}
+			if strings.Contains(element.Text, "italic") {
+				for _, style := range element.Style {
+					hasItalic = hasItalic || style == "italic"
+				}
+			}
+		}
+	}
+	if !hasBold || !hasItalic {
+		t.Fatalf("post styles missing: bold=%v italic=%v content=%#v", hasBold, hasItalic, content)
+	}
+
+	plain, err := newMessageRequestWithMode("oc_chat", "**bold**", "text")
+	if err != nil || plain.MsgType != "text" {
+		t.Fatalf("text mode request=%#v error=%v", plain, err)
+	}
+	forced, err := newMessageRequestWithMode("oc_chat", "plain message", "post")
+	if err != nil || forced.MsgType != "post" {
+		t.Fatalf("post mode request=%#v error=%v", forced, err)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 const telegramRuntimeStateFile = "telegram_gateway_state.json"
 const telegramGatewayLeaseFile = "telegram_gateway.lock"
+const recentChatTargetFile = "recent_chat_target.json"
 const timeoutEventFile = "timeout_last_error.json"
 const timeoutHistoryFile = "timeout_events.jsonl"
 
@@ -32,6 +33,15 @@ type SharedTelegramState struct {
 	UpdatedAt        time.Time `json:"updated_at"`
 }
 
+// RecentChatTarget persists the most recently active gateway destination for
+// cron and autonomy notifications that run after a process restart.
+type RecentChatTarget struct {
+	Platform     string    `json:"platform"`
+	ChatID       string    `json:"chat_id"`
+	ReplyToMsgID string    `json:"reply_to_message_id,omitempty"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
 // TimeoutEvent is the latest user-visible timeout diagnostic. It contains
 // configuration metadata only and never persists credentials or message text.
 type TimeoutEvent struct {
@@ -44,6 +54,64 @@ type TimeoutEvent struct {
 
 func TelegramRuntimeStatePath(homeDir string) string {
 	return filepath.Join(homeDir, "runtime", telegramRuntimeStateFile)
+}
+
+func RecentChatTargetPath(homeDir string) string {
+	return filepath.Join(homeDir, "runtime", recentChatTargetFile)
+}
+
+func WriteRecentChatTarget(homeDir string, target RecentChatTarget) error {
+	path := RecentChatTargetPath(homeDir)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create recent chat target directory: %w", err)
+	}
+	target.Platform = strings.TrimSpace(target.Platform)
+	target.ChatID = strings.TrimSpace(target.ChatID)
+	target.ReplyToMsgID = strings.TrimSpace(target.ReplyToMsgID)
+	if target.Platform == "" || target.ChatID == "" {
+		return fmt.Errorf("platform and chat id are required")
+	}
+	target.UpdatedAt = time.Now()
+	data, err := json.MarshalIndent(target, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal recent chat target: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".recent-chat-target-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create recent chat target temp file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("secure recent chat target temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write recent chat target: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close recent chat target temp file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("rename recent chat target: %w", err)
+	}
+	return nil
+}
+
+func ReadRecentChatTarget(homeDir string) (*RecentChatTarget, error) {
+	data, err := os.ReadFile(RecentChatTargetPath(homeDir))
+	if err != nil {
+		return nil, err
+	}
+	var target RecentChatTarget
+	if err := json.Unmarshal(data, &target); err != nil {
+		return nil, fmt.Errorf("parse recent chat target: %w", err)
+	}
+	if strings.TrimSpace(target.Platform) == "" || strings.TrimSpace(target.ChatID) == "" {
+		return nil, fmt.Errorf("recent chat target is incomplete")
+	}
+	return &target, nil
 }
 
 func TimeoutEventPath(homeDir string) string {

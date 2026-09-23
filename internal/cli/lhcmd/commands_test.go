@@ -335,7 +335,11 @@ func TestRunConfigGetSupportsFeishuKeys(t *testing.T) {
       "app_id": "cli_test",
       "app_secret": "secret-1234567890",
       "verification_token": "verify-1234567890",
-      "listen_addr": "127.0.0.1:7710"
+      "listen_addr": "127.0.0.1:7710",
+      "render_mode": "post",
+      "media_enabled": true,
+      "max_media_bytes": 1048576,
+      "card_progress": true
     }
   }
 }`)
@@ -351,6 +355,19 @@ func TestRunConfigGetSupportsFeishuKeys(t *testing.T) {
 	}
 	if strings.TrimSpace(out) != "127.0.0.1:7710" {
 		t.Fatalf("unexpected listen_addr output: %q", out)
+	}
+
+	out, err = captureStdout(t, func() error {
+		return runConfigGet(&cobra.Command{}, []string{"msg_gateway.feishu.render_mode"})
+	})
+	if err != nil || strings.TrimSpace(out) != "post" {
+		t.Fatalf("runConfigGet feishu render_mode output=%q error=%v", out, err)
+	}
+	out, err = captureStdout(t, func() error {
+		return runConfigGet(&cobra.Command{}, []string{"msg_gateway.feishu.card_progress"})
+	})
+	if err != nil || strings.TrimSpace(out) != "true" {
+		t.Fatalf("runConfigGet feishu card_progress output=%q error=%v", out, err)
 	}
 
 	out, err = captureStdout(t, func() error {

@@ -35,6 +35,16 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.RemoveAt || cfg.normalizedGroupTriggerMode() != "mention" {
 		t.Fatalf("unexpected message defaults: %+v", cfg)
 	}
+	if cfg.normalizedRenderMode() != "auto" || cfg.normalizedMaxMediaBytes() != defaultMaxMediaBytes {
+		t.Fatalf("unexpected capability defaults: %+v", cfg)
+	}
+}
+
+func TestNormalizedMaxMediaBytesUsesFeishuResourceLimit(t *testing.T) {
+	cfg := Config{MaxMediaBytes: feishuMaxResourceBytes + 1}
+	if got := cfg.normalizedMaxMediaBytes(); got != feishuMaxResourceBytes {
+		t.Fatalf("normalizedMaxMediaBytes() = %d, want %d", got, feishuMaxResourceBytes)
+	}
 }
 
 func TestConfigUsesLongConnectionWhenVerificationTokenIsEmpty(t *testing.T) {

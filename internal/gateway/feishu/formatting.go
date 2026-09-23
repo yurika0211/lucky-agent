@@ -31,15 +31,20 @@ type feishuPostLocale struct {
 }
 
 type feishuPostElement struct {
-	Tag  string `json:"tag"`
-	Text string `json:"text,omitempty"`
-	Href string `json:"href,omitempty"`
+	Tag   string   `json:"tag"`
+	Text  string   `json:"text,omitempty"`
+	Href  string   `json:"href,omitempty"`
+	Style []string `json:"style,omitempty"`
 }
 
 // newFeishuPostContent converts Markdown links and bare HTTP(S) URLs to
 // native Feishu link elements. Returning false deliberately preserves the
 // legacy text payload for messages without usable links.
 func newFeishuPostContent(message string) (feishuPostContent, bool) {
+	return newFeishuPostContentWithMode(message, false)
+}
+
+func newFeishuPostContentWithMode(message string, force bool) (feishuPostContent, bool) {
 	message = strings.TrimSpace(strings.ReplaceAll(message, "\r\n", "\n"))
 	if message == "" {
 		return feishuPostContent{}, false
@@ -49,17 +54,19 @@ func newFeishuPostContent(message string) (feishuPostContent, bool) {
 	root := feishuMarkdownParser.Parser().Parse(text.NewReader(source))
 	renderer := &feishuPostRenderer{source: source}
 	renderer.renderDocument(root)
-	if !renderer.hasLink || len(renderer.rows) == 0 {
+	if (!force && !renderer.hasFormatting) || len(renderer.rows) == 0 {
 		return feishuPostContent{}, false
 	}
 	return feishuPostContent{ZhCN: feishuPostLocale{Content: renderer.rows}}, true
 }
 
 type feishuPostRenderer struct {
-	source  []byte
-	rows    [][]feishuPostElement
-	current []feishuPostElement
-	hasLink bool
+	source        []byte
+	rows          [][]feishuPostElement
+	current       []feishuPostElement
+	hasLink       bool
+	hasFormatting bool
+	style         []string
 }
 
 func (r *feishuPostRenderer) renderDocument(doc ast.Node) {
@@ -71,11 +78,17 @@ func (r *feishuPostRenderer) renderDocument(doc ast.Node) {
 
 func (r *feishuPostRenderer) renderBlock(node ast.Node, prefix string) {
 	switch n := node.(type) {
-	case *ast.Paragraph, *ast.TextBlock, *ast.Heading:
+	case *ast.Heading:
+		r.hasFormatting = true
+		r.startRow(prefix)
+		r.withStyle("bold", func() { r.renderInlineChildren(n) })
+		r.finishRow()
+	case *ast.Paragraph, *ast.TextBlock:
 		r.startRow(prefix)
 		r.renderInlineChildren(n)
 		r.finishRow()
 	case *ast.List:
+		r.hasFormatting = true
 		index := n.Start
 		if index <= 0 {
 			index = 1
@@ -93,18 +106,23 @@ func (r *feishuPostRenderer) renderBlock(node ast.Node, prefix string) {
 			r.renderListItem(item, marker)
 		}
 	case *ast.Blockquote:
+		r.hasFormatting = true
 		for child := n.FirstChild(); child != nil; child = child.NextSibling() {
 			r.renderBlock(child, prefix+"> ")
 		}
 	case *ast.FencedCodeBlock:
-		r.writeBlockText(prefix, r.blockText(n.Lines()))
+		r.hasFormatting = true
+		r.writeCodeBlock(prefix, r.blockText(n.Lines()))
 	case *ast.CodeBlock:
-		r.writeBlockText(prefix, r.blockText(n.Lines()))
+		r.hasFormatting = true
+		r.writeCodeBlock(prefix, r.blockText(n.Lines()))
 	case *ast.ThematicBreak:
+		r.hasFormatting = true
 		r.startRow(prefix)
 		r.writeText("---")
 		r.finishRow()
 	case *extast.Table:
+		r.hasFormatting = true
 		r.renderTable(n, prefix)
 	default:
 		if node.FirstChild() == nil {
@@ -171,11 +189,24 @@ func (r *feishuPostRenderer) renderInline(node ast.Node) {
 	case *ast.String:
 		r.writeText(string(n.Value))
 	case *ast.CodeSpan:
-		r.writeText(string(n.Text(r.source)))
+		r.hasFormatting = true
+		r.writeText("`" + string(n.Text(r.source)) + "`")
 	case *ast.Link:
+		r.hasFormatting = true
 		r.writeMarkdownLink(string(n.Destination), r.inlineText(n))
 	case *ast.AutoLink:
+		r.hasFormatting = true
 		r.writeAutoLink(string(n.URL(r.source)))
+	case *ast.Emphasis:
+		r.hasFormatting = true
+		style := "italic"
+		if n.Level == 2 {
+			style = "bold"
+		}
+		r.withStyle(style, func() { r.renderInlineChildren(n) })
+	case *extast.Strikethrough:
+		r.hasFormatting = true
+		r.withStyle("lineThrough", func() { r.renderInlineChildren(n) })
 	case *ast.Image:
 		r.writeText(r.inlineText(n))
 	case *ast.RawHTML:
@@ -214,6 +245,7 @@ func (r *feishuPostRenderer) writeLink(label, destination string) {
 	}
 	r.current = append(r.current, feishuPostElement{Tag: "a", Text: label, Href: destination})
 	r.hasLink = true
+	r.hasFormatting = true
 }
 
 func (r *feishuPostRenderer) writeBlockText(prefix, value string) {
@@ -221,6 +253,18 @@ func (r *feishuPostRenderer) writeBlockText(prefix, value string) {
 		linePrefix := prefix
 		if index > 0 {
 			linePrefix = ""
+		}
+		r.startRow(linePrefix)
+		r.writeText(line)
+		r.finishRow()
+	}
+}
+
+func (r *feishuPostRenderer) writeCodeBlock(prefix, value string) {
+	for index, line := range strings.Split(value, "\n") {
+		linePrefix := prefix + "│ "
+		if index > 0 {
+			linePrefix = "│ "
 		}
 		r.startRow(linePrefix)
 		r.writeText(line)
@@ -245,15 +289,38 @@ func (r *feishuPostRenderer) finishRow() {
 }
 
 func (r *feishuPostRenderer) writeText(value string) {
+	r.writeStyledText(value, r.style)
+}
+
+func (r *feishuPostRenderer) writeStyledText(value string, style []string) {
 	if value == "" {
 		return
 	}
 	last := len(r.current) - 1
-	if last >= 0 && r.current[last].Tag == "text" {
+	if last >= 0 && r.current[last].Tag == "text" && samePostStyle(r.current[last].Style, style) {
 		r.current[last].Text += value
 		return
 	}
-	r.current = append(r.current, feishuPostElement{Tag: "text", Text: value})
+	r.current = append(r.current, feishuPostElement{Tag: "text", Text: value, Style: append([]string(nil), style...)})
+}
+
+func (r *feishuPostRenderer) withStyle(style string, render func()) {
+	previous := r.style
+	r.style = append(append([]string(nil), previous...), style)
+	render()
+	r.style = previous
+}
+
+func samePostStyle(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // writeTextWithURLs fills the gap left by Goldmark Linkify: that extension

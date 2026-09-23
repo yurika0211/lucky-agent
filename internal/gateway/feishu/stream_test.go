@@ -15,7 +15,12 @@ func TestSendStreamUsesCardKitAndUpdatesOneInteractiveCard(t *testing.T) {
 		Content  string `json:"content"`
 		Sequence int    `json:"sequence"`
 	}
+	type closeUpdate struct {
+		Settings string `json:"settings"`
+		Sequence int    `json:"sequence"`
+	}
 	var updates []contentUpdate
+	var closed bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/open-apis/auth/v3/tenant_access_token/internal":
@@ -52,6 +57,20 @@ func TestSendStreamUsesCardKitAndUpdatesOneInteractiveCard(t *testing.T) {
 			}
 			updates = append(updates, update)
 			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
+		case "/open-apis/cardkit/v1/cards/card_stream/settings":
+			var update closeUpdate
+			if err := json.NewDecoder(r.Body).Decode(&update); err != nil {
+				t.Fatalf("decode close update: %v", err)
+			}
+			var settings map[string]any
+			if err := json.Unmarshal([]byte(update.Settings), &settings); err != nil || settings["config"].(map[string]any)["streaming_mode"] != false {
+				t.Fatalf("unexpected close settings %q: %v", update.Settings, err)
+			}
+			if update.Sequence != 4 {
+				t.Fatalf("close sequence = %d, want 4", update.Sequence)
+			}
+			closed = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0})
 		default:
 			http.NotFound(w, r)
 		}
@@ -59,6 +78,7 @@ func TestSendStreamUsesCardKitAndUpdatesOneInteractiveCard(t *testing.T) {
 	defer server.Close()
 
 	a := apiTestAdapter(server)
+	a.cfg.CardProgress = true
 	a.mu.Lock()
 	a.running = true
 	a.mu.Unlock()
@@ -82,11 +102,21 @@ func TestSendStreamUsesCardKitAndUpdatesOneInteractiveCard(t *testing.T) {
 	if len(updates) != 3 {
 		t.Fatalf("update count = %d, want 3; updates=%#v", len(updates), updates)
 	}
+	if !closed {
+		t.Fatal("streaming mode was not closed after Finish")
+	}
 	want := []string{"第一段", "最终结果", "最终结果"}
 	for index, update := range updates {
 		if update.Sequence != index+1 || update.Content != want[index] {
 			t.Fatalf("update %d = %#v, want sequence=%d content=%q", index, update, index+1, want[index])
 		}
+	}
+}
+
+func TestSendStreamSilentlyFallsBackWhenDisabled(t *testing.T) {
+	stream, err := NewAdapter(Config{AppID: "cli_app", AppSecret: "secret"}).SendStream(context.Background(), "oc_chat", "")
+	if err != nil || stream != nil {
+		t.Fatalf("disabled SendStream() = (%v, %v), want (nil, nil)", stream, err)
 	}
 }
 
@@ -115,6 +145,7 @@ func TestSendStreamFallsBackToChatWhenReplyEndpointFailsBeforeSending(t *testing
 	defer server.Close()
 
 	a := apiTestAdapter(server)
+	a.cfg.CardProgress = true
 	a.mu.Lock()
 	a.running = true
 	a.mu.Unlock()
