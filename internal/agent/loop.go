@@ -276,11 +276,13 @@ type LoopResult struct {
 	foregroundControl bool
 	Verified          bool
 	Verification      string
-	Response          string        // 最终回复
-	Iterations        int           // 实际循环次数
-	ToolCalls         []toolCallLog // 工具调用记录
-	State             LoopState     // 结束状态
-	TokensUsed        int           // 总 token 消耗
+	Response          string               // 最终回复
+	Iterations        int                  // 实际循环次数
+	ToolCalls         []toolCallLog        // 工具调用记录
+	State             LoopState            // 结束状态
+	TokensUsed        int                  // 总 token 消耗
+	Usage             *provider.TokenUsage // provider-reported usage for the whole turn
+	CreatedAt         *time.Time           // server timestamp of the final assistant message
 }
 
 /*
@@ -413,14 +415,21 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 			response = emptyFinalResponseMessage
 		}
 		response = utils.SanitizeToolProtocolOutput(response)
-		response = appendNaturalCitations(response, result.ToolCalls)
+		response = a.appendNaturalCitationsIfEnabled(response, result.ToolCalls)
 		response = a.appendRunningTaskNotice(response)
 		result.Response = response
 		result.State = StateDone
+		createdAt := time.Now().UTC()
+		result.CreatedAt = &createdAt
 
 		// 会话中保留 provider 级消息顺序：user -> assistant(tool call) -> tool -> assistant(final)
 		if sess != nil {
-			sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent})
+			msg := provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent, CreatedAt: result.CreatedAt}
+			if result.Usage != nil && result.Usage.TotalTokens > 0 {
+				usage := *result.Usage
+				msg.Usage = &usage
+			}
+			sess.AddProviderMessage(msg)
 		}
 
 		// Final answers are not indexed into RAG by default: indexed source
@@ -495,6 +504,12 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 		}
 
 		result.TokensUsed += resp.TokensUsed
+		if resp.Usage != nil || resp.TokensUsed > 0 {
+			if result.Usage == nil {
+				result.Usage = &provider.TokenUsage{}
+			}
+			result.Usage.AddResponse(resp)
+		}
 		applyTextToolCallsToResponse(resp, loopCfg.DisabledTools)
 		logger.Debug("agent loop provider response",
 			"session_id", sessionID,

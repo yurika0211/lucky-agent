@@ -22,6 +22,14 @@ type naturalCitation struct {
 	Summary string
 }
 
+func (a *Agent) appendNaturalCitationsIfEnabled(response string, toolCalls []toolCallLog) string {
+	response = strings.TrimSpace(response)
+	if a == nil || a.cfg == nil || !a.cfg.Get().Agent.EnableCitations {
+		return response
+	}
+	return appendNaturalCitations(response, toolCalls)
+}
+
 func appendNaturalCitations(response string, toolCalls []toolCallLog) string {
 	response = strings.TrimSpace(response)
 	citations := naturalCitationsFromToolLogs(toolCalls)

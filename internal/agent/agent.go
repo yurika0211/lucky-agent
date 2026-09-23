@@ -1651,8 +1651,16 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 	}
 
 	var result strings.Builder
+	var usageDetails *provider.UsageDetails
+	model := turnProvider.model
 	for chunk := range ch {
 		result.WriteString(chunk.Content)
+		if chunk.Usage != nil {
+			usageDetails = provider.MergeUsageDetails(usageDetails, chunk.Usage)
+		}
+		if chunk.Model != "" {
+			model = chunk.Model
+		}
 		if chunk.Done {
 			break
 		}
@@ -1660,7 +1668,15 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 
 	response := utils.SanitizeToolProtocolOutput(result.String())
 	sess.AddProviderMessage(input.Message)
-	sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
+	msg := provider.Message{Role: "assistant", Content: response}
+	if usageDetails != nil {
+		usage := &provider.TokenUsage{}
+		usage.AddDetails(usageDetails, model)
+		if usage.TotalTokens > 0 {
+			msg.Usage = usage
+		}
+	}
+	sess.AddProviderMessage(msg)
 
 	// 保存会话
 	_ = sess.Save()
@@ -2023,6 +2039,8 @@ type ChatEvent struct {
 	Round       int    // 所属轮次（Type=ChatEventReasoningContent 时使用）
 	Observation *ObservationEvent
 	Approval    *ApprovalEvent
+	Usage       *provider.TokenUsage // aggregate provider usage for ChatEventDone
+	CreatedAt   *time.Time           // server timestamp of the final assistant message
 	Err         error
 }
 
@@ -2126,6 +2144,27 @@ type streamConvergenceState struct {
 	iterationTimeout               time.Duration
 	artifactGuard                  *artifactFinalizationGuard
 	pendingDelegateTaskIDs         map[string]struct{}
+	usage                          *provider.TokenUsage
+}
+
+func (s *streamConvergenceState) addUsage(details *provider.UsageDetails, model string) {
+	if s == nil || details == nil {
+		return
+	}
+	if s.usage == nil {
+		s.usage = &provider.TokenUsage{}
+	}
+	s.usage.AddDetails(details, model)
+}
+
+func (s *streamConvergenceState) addResponseUsage(resp *provider.Response) {
+	if s == nil || resp == nil || (resp.Usage == nil && resp.TokensUsed <= 0) {
+		return
+	}
+	if s.usage == nil {
+		s.usage = &provider.TokenUsage{}
+	}
+	s.usage.AddResponse(resp)
 }
 
 /*
@@ -2432,7 +2471,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventError, Err: err})
 			} else {
 				a.finishForegroundMemory(sess, input, result)
-				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventDone, Content: result.Response})
+				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventDone, Content: result.Response, Usage: result.Usage, CreatedAt: result.CreatedAt})
 			}
 			return
 		}
@@ -2588,11 +2627,22 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 	emittedContentBytes := 0
 	streamFinishReason := ""
 	streamTerminal := false
+	var iterationUsage *provider.UsageDetails
+	recordIterationUsage := func() {
+		if iterationUsage != nil {
+			state.addUsage(iterationUsage, state.provider.model)
+			iterationUsage = nil
+		}
+	}
 	// 流式 tool_calls 增量拼接
 	var toolCallsAcc []streamToolCallAcc // 按 index 累积
 
 	for chunk := range ch {
+		if chunk.Usage != nil {
+			iterationUsage = provider.MergeUsageDetails(iterationUsage, chunk.Usage)
+		}
 		if chunk.Err != nil {
+			recordIterationUsage()
 			streamErr := fmt.Errorf("provider stream interrupted: %w", chunk.Err)
 			logger.Warn("agent stream native provider stream interrupted",
 				"session_id", sessionID,
@@ -2657,6 +2707,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		}
 	}
 	if !streamTerminal {
+		recordIterationUsage()
 		streamErr := iterCtx.Err()
 		if streamErr == nil {
 			streamErr = fmt.Errorf("provider stream interrupted: closed without a terminal event")
@@ -2676,10 +2727,12 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		return
 	}
 	if err := iterCtx.Err(); err != nil {
+		recordIterationUsage()
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, content.String()) {
 			return
 		}
 	}
+	recordIterationUsage()
 
 	response := content.String()
 	assistantContent, textToolCalls := extractTextToolCalls(response)
@@ -2968,6 +3021,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
+	state.addResponseUsage(resp)
 	applyTextToolCallsToResponse(resp, state.disabledTools)
 	logger.Debug("agent stream simulated provider response",
 		"session_id", sessionID,
@@ -3169,10 +3223,14 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 
 // finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引
 func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, citationLogs ...[]toolCallLog) {
-	a.finalizeStreamWithReasoning(events, sess, turnInput, response, "", citationLogs...)
+	a.finalizeStreamWithUsage(events, sess, turnInput, response, "", nil, citationLogs...)
 }
 
 func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, citationLogs ...[]toolCallLog) {
+	a.finalizeStreamWithUsage(events, sess, turnInput, response, reasoningContent, nil, citationLogs...)
+}
+
+func (a *Agent) finalizeStreamWithUsage(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, usage *provider.TokenUsage, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
 	if strings.TrimSpace(response) == "" {
@@ -3183,10 +3241,17 @@ func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *sessi
 	if len(citationLogs) > 0 {
 		logs = citationLogs[0]
 	}
-	response = appendNaturalCitations(response, logs)
+	response = a.appendNaturalCitationsIfEnabled(response, logs)
 	response = a.appendRunningTaskNotice(response)
+	createdAt := time.Now().UTC()
 	if sess != nil {
-		sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent})
+		msg := provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent}
+		msg.CreatedAt = &createdAt
+		if usage != nil && usage.TotalTokens > 0 {
+			usageCopy := *usage
+			msg.Usage = &usageCopy
+		}
+		sess.AddProviderMessage(msg)
 		_ = sess.Save()
 	}
 
@@ -3199,7 +3264,12 @@ func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *sessi
 	}
 
 	a.metrics.RecordChatRequest()
-	events <- ChatEvent{Type: ChatEventDone, Content: response}
+	var usageCopy *provider.TokenUsage
+	if usage != nil && usage.TotalTokens > 0 {
+		copy := *usage
+		usageCopy = &copy
+	}
+	events <- ChatEvent{Type: ChatEventDone, Content: response, Usage: usageCopy, CreatedAt: &createdAt}
 }
 
 func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, state *streamConvergenceState, reasoning ...string) {
@@ -3213,7 +3283,7 @@ func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.S
 	} else if strings.TrimSpace(state.continuedReasoning.String()) != "" {
 		reasoningContent = strings.TrimSpace(state.continuedReasoning.String())
 	}
-	a.finalizeStreamWithReasoning(events, sess, turnInput, response, reasoningContent, state.citationToolCalls)
+	a.finalizeStreamWithUsage(events, sess, turnInput, response, reasoningContent, state.usage, state.citationToolCalls)
 }
 
 // finalizeStreamAfterInterruption gives the model one final, tool-free chance
@@ -3273,6 +3343,7 @@ func (a *Agent) finalizeStreamAfterInterruption(
 	defer cancel()
 	resp, synthErr := a.chatLoopIteration(synthesisCtx, synthesisMessages, callOpts, true, state.provider)
 	if synthErr == nil && resp != nil && len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "" {
+		state.addResponseUsage(resp)
 		a.finalizeStreamWithState(events, sess, turnInput, resp.Content, state, resp.ReasoningContent)
 		return true
 	}

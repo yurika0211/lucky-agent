@@ -736,7 +736,7 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 			reasoning.WriteString(chunk.ReasoningContent)
 		}
 		if chunk.Usage != nil {
-			usage = mergeUsageDetails(usage, chunk.Usage)
+			usage = MergeUsageDetails(usage, chunk.Usage)
 		}
 		if len(chunk.ToolCallDeltas) > 0 {
 			for _, dtc := range chunk.ToolCallDeltas {
@@ -802,28 +802,6 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 		response.TokensUsed = usage.TotalTokens
 	}
 	return response, nil
-}
-
-func mergeUsageDetails(current, next *UsageDetails) *UsageDetails {
-	if current == nil && next == nil {
-		return nil
-	}
-	if current == nil {
-		copy := *next
-		return &copy
-	}
-	if next == nil {
-		return current
-	}
-	current.PromptTokens = maxInt(current.PromptTokens, next.PromptTokens)
-	current.CompletionTokens = maxInt(current.CompletionTokens, next.CompletionTokens)
-	current.TotalTokens = maxInt(current.TotalTokens, next.TotalTokens)
-	current.InputTokens = maxInt(current.InputTokens, next.InputTokens)
-	current.OutputTokens = maxInt(current.OutputTokens, next.OutputTokens)
-	current.CachedPromptTokens = maxInt(current.CachedPromptTokens, next.CachedPromptTokens)
-	current.CacheCreation5MTokens = maxInt(current.CacheCreation5MTokens, next.CacheCreation5MTokens)
-	current.CacheCreation1HTokens = maxInt(current.CacheCreation1HTokens, next.CacheCreation1HTokens)
-	return current
 }
 
 // callOpenAIStream 执行 OpenAI API 流式调用

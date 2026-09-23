@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/logger"
+	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/tool"
 )
@@ -164,11 +166,24 @@ func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatDa
 		client.TrySend(errMsg)
 		return
 	}
+	var createdAt *time.Time
+	var usage *provider.TokenUsage
+	if sessions := h.agent.Sessions(); sessions != nil {
+		if sess, ok := sessions.Get(sessionID); ok {
+			messages := sess.GetMessages()
+			if len(messages) > 0 && messages[len(messages)-1].Role == "assistant" {
+				createdAt = messages[len(messages)-1].CreatedAt
+				usage = messages[len(messages)-1].Usage
+			}
+		}
+	}
 
 	// 发送完整响应
 	endMsg, _ := NewMessage(TypeStreamEnd, client.SessionID, StreamEndData{
 		FullResponse: result,
 		Iterations:   1,
+		CreatedAt:    createdAt,
+		Usage:        usage,
 	})
 	endMsg.ParentID = parentID
 	client.TrySend(endMsg)
@@ -311,6 +326,8 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			endMsg, _ := NewMessage(TypeStreamEnd, client.SessionID, StreamEndData{
 				FullResponse: fullResponse.String(),
 				Iterations:   max(currentRound, 1),
+				CreatedAt:    evt.CreatedAt,
+				Usage:        evt.Usage,
 			})
 			endMsg.ParentID = parentID
 			client.TrySend(endMsg)
