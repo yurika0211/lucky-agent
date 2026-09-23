@@ -71,6 +71,7 @@ func (s *Server) handleUploads(w http.ResponseWriter, r *http.Request) {
 			s.sendError(w, "store upload failed", http.StatusInternalServerError, err.Error())
 			return
 		}
+		att.FileURL = s.artifactURLForPath(att.FilePath)
 		attachments = append(attachments, att)
 	}
 

@@ -338,6 +338,7 @@ func (s *Server) Start() error {
 		{path: "/api/v1/sessions", handler: s.handleSessions},
 		{path: "/api/v1/sessions/", handler: s.handleSessionByID},
 		{path: "/api/v1/uploads", handler: s.handleUploads},
+		{path: "/api/v1/artifacts", handler: s.handleArtifact},
 		{path: "/api/v1/commands", handler: s.handleCommands},
 		{path: "/api/v1/tasks", handler: s.handleTasks},
 		{path: "/api/v1/tasks/", handler: s.handleTaskByID},
@@ -1039,7 +1040,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages := sess.GetMessages()
+	messages := s.historyMessages(sess.GetMessages())
 	total := len(messages)
 
 	payload := map[string]interface{}{

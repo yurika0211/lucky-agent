@@ -119,6 +119,58 @@ func missingMediaPaths(text string) []string {
 	return uniqueNonEmptyStrings(missing)
 }
 
+func MediaReferences(text string) []string {
+	var references []string
+	for _, line := range strings.Split(text, "\n") {
+		if reference, ok := mediaReferenceFromLine(line); ok {
+			references = append(references, cleanArtifactPath(reference))
+		}
+	}
+	return uniqueNonEmptyStrings(references)
+}
+
+func StripMediaReferences(text string, references []string) string {
+	if len(references) == 0 {
+		return text
+	}
+	resolved := make(map[string]struct{}, len(references))
+	for _, reference := range references {
+		resolved[cleanArtifactPath(reference)] = struct{}{}
+	}
+	lines := strings.Split(text, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if reference, ok := mediaReferenceFromLine(line); ok {
+			if _, resolvedOK := resolved[cleanArtifactPath(reference)]; resolvedOK {
+				continue
+			}
+		}
+		kept = append(kept, line)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
+
+func mediaReferenceFromLine(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	line = strings.Trim(line, "`\"'")
+	if len(line) < len("MEDIA:") || !strings.EqualFold(line[:len("MEDIA:")], "MEDIA:") {
+		return "", false
+	}
+	reference := strings.TrimSpace(line[len("MEDIA:"):])
+	reference = strings.Trim(reference, "`\"',.;:)]}")
+	if reference == "" {
+		return "", false
+	}
+	lower := strings.ToLower(reference)
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "sandbox:") || strings.HasPrefix(lower, "file://") ||
+		strings.HasPrefix(reference, "~/") || strings.HasPrefix(reference, "/") ||
+		(len(reference) >= 3 && isASCIIAlpha(reference[0]) && reference[1] == ':' && (reference[2] == '\\' || reference[2] == '/')) {
+		return reference, true
+	}
+	return "", false
+}
+
 // sanitizeHistoricalMediaReferences removes standalone MEDIA directives that
 // point at files which no longer exist. Session history can outlive temporary
 // screenshots; retaining those old paths makes a later, unrelated turn

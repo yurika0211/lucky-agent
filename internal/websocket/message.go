@@ -68,6 +68,7 @@ type StreamEndData struct {
 	Iterations   int                  `json:"iterations"`
 	CreatedAt    *time.Time           `json:"created_at,omitempty"`
 	Usage        *provider.TokenUsage `json:"usage,omitempty"`
+	Attachments  []gateway.Attachment `json:"attachments,omitempty"`
 }
 
 // ReasoningData 推理摘要数据
@@ -93,14 +94,15 @@ type ToolCallData struct {
 
 // ToolResultData 工具调用结果数据
 type ToolResultData struct {
-	Name       string `json:"name"`
-	Success    bool   `json:"success"`
-	Output     string `json:"output"`
-	Display    string `json:"display,omitempty"`
-	Round      int    `json:"round,omitempty"`
-	GroupID    string `json:"group_id,omitempty"`
-	StepID     string `json:"step_id,omitempty"`
-	Visibility string `json:"visibility,omitempty"` // "visible" | "compact" | "hidden"
+	Name        string               `json:"name"`
+	Success     bool                 `json:"success"`
+	Output      string               `json:"output"`
+	Display     string               `json:"display,omitempty"`
+	Round       int                  `json:"round,omitempty"`
+	GroupID     string               `json:"group_id,omitempty"`
+	StepID      string               `json:"step_id,omitempty"`
+	Visibility  string               `json:"visibility,omitempty"` // "visible" | "compact" | "hidden"
+	Attachments []gateway.Attachment `json:"attachments,omitempty"`
 }
 
 // StatusData 状态更新数据

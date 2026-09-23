@@ -4,11 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mime"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
@@ -23,6 +29,10 @@ type agentRuntime interface {
 	ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 	Sessions() *session.Manager
 	Tools() *tool.Registry
+}
+
+type runtimeConfigProvider interface {
+	Config() *config.Manager
 }
 
 // AgentHandler 将 WebSocket 消息桥接到 Agent Loop
@@ -179,11 +189,13 @@ func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatDa
 	}
 
 	// 发送完整响应
+	response, responseAttachments := h.attachmentsFromResponse(result)
 	endMsg, _ := NewMessage(TypeStreamEnd, client.SessionID, StreamEndData{
-		FullResponse: result,
+		FullResponse: response,
 		Iterations:   1,
 		CreatedAt:    createdAt,
 		Usage:        usage,
+		Attachments:  appendUniqueAttachments(h.attachmentsFromToolResult("", result), responseAttachments...),
 	})
 	endMsg.ParentID = parentID
 	client.TrySend(endMsg)
@@ -221,6 +233,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 	currentRound := 0
 	toolSeq := 0
 	var pendingSteps []toolStepState
+	var turnAttachments []gateway.Attachment
 
 	sendIdle := func() {
 		idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: "idle"})
@@ -296,15 +309,18 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				currentRound = 1
 			}
 			step := matchPendingToolStep(&pendingSteps, evt.Name, currentRound)
+			attachments := h.attachmentsFromToolResult(evt.Name, evt.Result)
+			turnAttachments = appendUniqueAttachments(turnAttachments, attachments...)
 			msg, _ := NewMessage(TypeToolResult, client.SessionID, ToolResultData{
-				Name:       evt.Name,
-				Success:    !looksLikeToolError(evt.Result),
-				Output:     evt.Result,
-				Display:    formatToolResultDisplay(evt.Name, evt.Result),
-				Round:      currentRound,
-				GroupID:    step.GroupID,
-				StepID:     step.StepID,
-				Visibility: step.Visibility,
+				Name:        evt.Name,
+				Success:     !looksLikeToolError(evt.Result),
+				Output:      evt.Result,
+				Display:     formatToolResultDisplay(evt.Name, evt.Result),
+				Round:       currentRound,
+				GroupID:     step.GroupID,
+				StepID:      step.StepID,
+				Visibility:  step.Visibility,
+				Attachments: attachments,
 			})
 			msg.ParentID = parentID
 			client.TrySend(msg)
@@ -323,11 +339,14 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				fullResponse.Reset()
 				fullResponse.WriteString(evt.Content)
 			}
+			response, responseAttachments := h.attachmentsFromResponse(fullResponse.String())
+			turnAttachments = appendUniqueAttachments(turnAttachments, responseAttachments...)
 			endMsg, _ := NewMessage(TypeStreamEnd, client.SessionID, StreamEndData{
-				FullResponse: fullResponse.String(),
+				FullResponse: response,
 				Iterations:   max(currentRound, 1),
 				CreatedAt:    evt.CreatedAt,
 				Usage:        evt.Usage,
+				Attachments:  turnAttachments,
 			})
 			endMsg.ParentID = parentID
 			client.TrySend(endMsg)
@@ -341,14 +360,239 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 	}
 
 	if fullResponse.Len() > 0 {
+		response, responseAttachments := h.attachmentsFromResponse(fullResponse.String())
+		turnAttachments = appendUniqueAttachments(turnAttachments, responseAttachments...)
 		endMsg, _ := NewMessage(TypeStreamEnd, client.SessionID, StreamEndData{
-			FullResponse: fullResponse.String(),
+			FullResponse: response,
 			Iterations:   max(currentRound, 1),
+			Attachments:  turnAttachments,
 		})
 		endMsg.ParentID = parentID
 		client.TrySend(endMsg)
 	}
 	sendIdle()
+}
+
+type toolAttachmentPayload struct {
+	Paths       []string             `json:"paths"`
+	Path        string               `json:"path"`
+	OutputPath  string               `json:"output_path"`
+	FilePath    string               `json:"file_path"`
+	URL         string               `json:"url"`
+	FileURL     string               `json:"file_url"`
+	DownloadURL string               `json:"download_url"`
+	URLs        []string             `json:"urls"`
+	FileURLs    []string             `json:"file_urls"`
+	Attachments []gateway.Attachment `json:"attachments"`
+}
+
+func (h *AgentHandler) attachmentsFromToolResult(toolName, raw string) []gateway.Attachment {
+	var payload toolAttachmentPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil
+	}
+
+	fallbackType := gateway.AttachmentDocument
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "image_generate":
+		fallbackType = gateway.AttachmentImage
+	case "text_to_speech":
+		fallbackType = gateway.AttachmentAudio
+	}
+
+	attachments := make([]gateway.Attachment, 0, len(payload.Paths)+len(payload.Attachments)+len(payload.URLs)+len(payload.FileURLs)+4)
+	for _, attachment := range payload.Attachments {
+		if normalized, ok := normalizeRemoteAttachment(attachment, fallbackType); ok {
+			attachments = appendUniqueAttachments(attachments, normalized)
+			continue
+		}
+		if normalized, ok := h.attachmentForLocalPath(attachment.FilePath, fallbackType); ok {
+			attachments = appendUniqueAttachments(attachments, normalized)
+		}
+	}
+	for _, path := range append([]string{}, payload.Paths...) {
+		if attachment, ok := h.attachmentForLocalPath(path, fallbackType); ok {
+			attachments = appendUniqueAttachments(attachments, attachment)
+		}
+	}
+	for _, path := range []string{payload.Path, payload.OutputPath, payload.FilePath} {
+		if attachment, ok := h.attachmentForLocalPath(path, fallbackType); ok {
+			attachments = appendUniqueAttachments(attachments, attachment)
+		}
+	}
+	for _, rawURL := range append(append([]string{}, payload.URLs...), payload.FileURLs...) {
+		if attachment, ok := remoteAttachment(rawURL, fallbackType); ok {
+			attachments = appendUniqueAttachments(attachments, attachment)
+		}
+	}
+	for _, rawURL := range []string{payload.URL, payload.FileURL, payload.DownloadURL} {
+		if attachment, ok := remoteAttachment(rawURL, fallbackType); ok {
+			attachments = appendUniqueAttachments(attachments, attachment)
+		}
+	}
+	return attachments
+}
+
+func (h *AgentHandler) attachmentsFromResponse(raw string) (string, []gateway.Attachment) {
+	references := agent.MediaReferences(raw)
+	if len(references) == 0 {
+		return raw, nil
+	}
+
+	resolved := make([]string, 0, len(references))
+	attachments := make([]gateway.Attachment, 0, len(references))
+	for _, reference := range references {
+		var attachment gateway.Attachment
+		var ok bool
+		if strings.HasPrefix(strings.ToLower(reference), "http://") || strings.HasPrefix(strings.ToLower(reference), "https://") {
+			attachment, ok = remoteAttachment(reference, gateway.AttachmentDocument)
+		} else {
+			attachment, ok = h.attachmentForLocalPath(reference, gateway.AttachmentDocument)
+		}
+		if !ok {
+			continue
+		}
+		attachments = appendUniqueAttachments(attachments, attachment)
+		resolved = append(resolved, reference)
+	}
+	return agent.StripMediaReferences(raw, resolved), attachments
+}
+
+func (h *AgentHandler) attachmentForLocalPath(path string, fallbackType gateway.AttachmentType) (gateway.Attachment, bool) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return gateway.Attachment{}, false
+	}
+	provider, ok := h.agent.(runtimeConfigProvider)
+	if !ok || provider.Config() == nil {
+		return gateway.Attachment{}, false
+	}
+	home := strings.TrimSpace(provider.Config().HomeDir())
+	if home == "" {
+		return gateway.Attachment{}, false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return gateway.Attachment{}, false
+	}
+	for _, root := range []struct {
+		prefix string
+		path   string
+	}{
+		{prefix: "workspace", path: filepath.Join(home, "workspace")},
+		{prefix: "uploads", path: filepath.Join(home, "uploads")},
+	} {
+		rootPath, err := filepath.Abs(root.path)
+		if err != nil {
+			continue
+		}
+		rel, err := filepath.Rel(rootPath, absPath)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
+		}
+		info, err := os.Stat(absPath)
+		if err != nil || !info.Mode().IsRegular() {
+			return gateway.Attachment{}, false
+		}
+		mimeType := mime.TypeByExtension(filepath.Ext(absPath))
+		attachmentType := attachmentTypeForMIME(mimeType, fallbackType)
+		return gateway.Attachment{
+			Type:     attachmentType,
+			FileURL:  "/api/v1/artifacts?path=" + url.QueryEscape(root.prefix+"/"+filepath.ToSlash(rel)),
+			FilePath: absPath,
+			FileName: filepath.Base(absPath),
+			MimeType: mimeType,
+			FileSize: info.Size(),
+		}, true
+	}
+	return gateway.Attachment{}, false
+}
+
+func remoteAttachment(rawURL string, fallbackType gateway.AttachmentType) (gateway.Attachment, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return gateway.Attachment{}, false
+	}
+	name := filepath.Base(parsed.Path)
+	if name == "." || name == "/" || name == "" {
+		name = "attachment"
+	}
+	mimeType := mime.TypeByExtension(filepath.Ext(name))
+	return gateway.Attachment{
+		Type:     attachmentTypeForMIME(mimeType, fallbackType),
+		FileURL:  parsed.String(),
+		FileName: name,
+		MimeType: mimeType,
+	}, true
+}
+
+func normalizeRemoteAttachment(attachment gateway.Attachment, fallbackType gateway.AttachmentType) (gateway.Attachment, bool) {
+	if strings.TrimSpace(attachment.FileURL) == "" {
+		return gateway.Attachment{}, false
+	}
+	normalized, ok := remoteAttachment(attachment.FileURL, fallbackType)
+	if !ok {
+		return gateway.Attachment{}, false
+	}
+	normalized.Type = attachmentTypeForMIME(attachment.MimeType, attachment.Type)
+	if normalized.Type == "" {
+		normalized.Type = attachmentTypeForMIME(normalized.MimeType, fallbackType)
+	}
+	normalized.FileID = attachment.FileID
+	normalized.FileName = firstNonEmptyAttachmentString(attachment.FileName, normalized.FileName)
+	normalized.MimeType = firstNonEmptyAttachmentString(attachment.MimeType, normalized.MimeType)
+	normalized.FileSize = attachment.FileSize
+	normalized.Metadata = attachment.Metadata
+	return normalized, true
+}
+
+func attachmentTypeForMIME(mimeType string, fallback gateway.AttachmentType) gateway.AttachmentType {
+	switch {
+	case strings.HasPrefix(strings.ToLower(mimeType), "image/"):
+		return gateway.AttachmentImage
+	case strings.HasPrefix(strings.ToLower(mimeType), "audio/"):
+		return gateway.AttachmentAudio
+	case strings.HasPrefix(strings.ToLower(mimeType), "video/"):
+		return gateway.AttachmentVideo
+	default:
+		return fallback
+	}
+}
+
+func firstNonEmptyAttachmentString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func appendUniqueAttachments(attachments []gateway.Attachment, candidates ...gateway.Attachment) []gateway.Attachment {
+	for _, candidate := range candidates {
+		key := candidate.FileURL
+		if key == "" {
+			key = candidate.FilePath
+		}
+		if key == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range attachments {
+			existingKey := existing.FileURL
+			if existingKey == "" {
+				existingKey = existing.FilePath
+			}
+			if existingKey == key {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			attachments = append(attachments, candidate)
+		}
+	}
+	return attachments
 }
 
 // CancelSession 取消指定 session 的进行中请求

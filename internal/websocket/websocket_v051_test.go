@@ -635,6 +635,21 @@ func TestToolResultMessageSerialization(t *testing.T) {
 	}
 }
 
+func TestAttachmentsFromResponseExtractsMediaDirective(t *testing.T) {
+	h := NewAgentHandler(nil)
+	response, attachments := h.attachmentsFromResponse("图片已生成\nMEDIA:https://example.com/generated.png")
+
+	if response != "图片已生成" {
+		t.Fatalf("cleaned response = %q, want media directive removed", response)
+	}
+	if len(attachments) != 1 {
+		t.Fatalf("attachments = %+v, want one attachment", attachments)
+	}
+	if attachments[0].Type != "image" || attachments[0].FileURL != "https://example.com/generated.png" {
+		t.Fatalf("attachment = %+v", attachments[0])
+	}
+}
+
 func TestReconnectMessageSerialization(t *testing.T) {
 	reconnData := ReconnectData{
 		LastMessageID: "msg-123",
