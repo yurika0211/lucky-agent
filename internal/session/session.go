@@ -174,6 +174,10 @@ func NewSession(id, dir string) *Session {
 func (s *Session) AddProviderMessage(msg provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if msg.CreatedAt == nil {
+		now := time.Now().UTC()
+		msg.CreatedAt = &now
+	}
 
 	if msg.Role == "assistant" {
 		msg.Content = utils.SanitizeToolProtocolOutput(msg.Content)

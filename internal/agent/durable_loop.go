@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/yurika0211/luckyagent/internal/autonomy"
 	"github.com/yurika0211/luckyagent/internal/contextx"
@@ -133,20 +134,30 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			result.ToolCalls = append(result.ToolCalls, toolCallLog{Name: op.Name, Arguments: op.Arguments, Result: op.Output})
 		}
 		result.TokensUsed = cp.Tokens
+		if result.Usage == nil && result.TokensUsed > 0 {
+			result.Usage = &provider.TokenUsage{TotalTokens: result.TokensUsed}
+		}
 		if len(cp.Pending) != 0 {
 			return result, fmt.Errorf("%w: pending tools prevent completion", autonomy.ErrBlocked)
 		}
 		if message, blocked := artifactGuard.blockMessage(cp.Candidate); blocked {
 			return result, fmt.Errorf("%w: %s", autonomy.ErrBlocked, message)
 		}
-		result.Response = cp.Candidate
+		result.Response = a.appendNaturalCitationsIfEnabled(cp.Candidate, result.ToolCalls)
 		result.State = StateDone
+		createdAt := time.Now().UTC()
+		result.CreatedAt = &createdAt
 		result.Verified = true
 		result.Verification = cp.Verification.Reason + "\n" + strings.Join(cp.Verification.Evidence, "\n")
 		if sess != nil {
 			all := sess.GetMessages()
-			if len(all) == 0 || all[len(all)-1].Role != "assistant" || all[len(all)-1].Content != cp.Candidate {
-				sess.AddProviderMessage(provider.Message{Role: "assistant", Content: cp.Candidate, ReasoningContent: cp.Reasoning})
+			if len(all) == 0 || all[len(all)-1].Role != "assistant" || all[len(all)-1].Content != result.Response {
+				msg := provider.Message{Role: "assistant", Content: result.Response, ReasoningContent: cp.Reasoning, CreatedAt: result.CreatedAt}
+				if result.Usage != nil {
+					usage := *result.Usage
+					msg.Usage = &usage
+				}
+				sess.AddProviderMessage(msg)
 			}
 		}
 		return result, save()
@@ -266,6 +277,12 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		}
 		cp.Tokens += resp.TokensUsed
 		result.TokensUsed += resp.TokensUsed
+		if resp.Usage != nil || resp.TokensUsed > 0 {
+			if result.Usage == nil {
+				result.Usage = &provider.TokenUsage{}
+			}
+			result.Usage.AddResponse(resp)
+		}
 		applyTextToolCallsToResponse(resp, cfg.DisabledTools)
 		if computerObserveOnlyBatch(resp.ToolCalls) {
 			cp.ObserveOnlyBatches++

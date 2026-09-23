@@ -72,6 +72,12 @@ go run ./cmd/la config set api_base https://api.openai.com/v1
 go run ./cmd/la config set model gpt-5.4-mini
 ```
 
+如需在回答末尾显示工具来源引用，可开启自动引用尾注（默认关闭）：
+
+```bash
+go run ./cmd/la config set agent.enable_citations true
+```
+
 开始一次本地对话：
 
 ```bash

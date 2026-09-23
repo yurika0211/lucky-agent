@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/yurika0211/luckyagent/internal/config"
 )
@@ -26,6 +27,8 @@ type Message struct {
 	Content          string        `json:"content"`
 	ReasoningContent string        `json:"reasoning_content,omitempty"`
 	ContentParts     []ContentPart `json:"content_parts,omitempty"`
+	CreatedAt        *time.Time    `json:"created_at,omitempty"`
+	Usage            *TokenUsage   `json:"usage,omitempty"`
 
 	ToolCallID string     `json:"tool_call_id,omitempty"` // function calling tool result
 	Name       string     `json:"name,omitempty"`         // function name for tool messages
@@ -65,6 +68,91 @@ type UsageDetails struct {
 	CachedPromptTokens    int `json:"cached_prompt_tokens,omitempty"`
 	CacheCreation5MTokens int `json:"cache_creation_5m_tokens,omitempty"`
 	CacheCreation1HTokens int `json:"cache_creation_1h_tokens,omitempty"`
+}
+
+// TokenUsage is the normalized, user-facing token accounting for one agent
+// turn. It is intentionally separate from UsageDetails, which mirrors the
+// provider response shape and may contain provider-specific aliases.
+type TokenUsage struct {
+	InputTokens       int    `json:"input_tokens"`
+	OutputTokens      int    `json:"output_tokens"`
+	TotalTokens       int    `json:"total_tokens"`
+	CachedInputTokens int    `json:"cached_input_tokens,omitempty"`
+	Model             string `json:"model,omitempty"`
+}
+
+// AddResponse folds one provider response into an aggregate turn usage.
+// A response without structured usage can still contribute TokensUsed when a
+// provider reports only a total count (for example, some local runtimes).
+func (u *TokenUsage) AddResponse(resp *Response) {
+	if u == nil || resp == nil {
+		return
+	}
+	if resp.Usage != nil {
+		u.AddDetails(resp.Usage, resp.Model)
+	} else if resp.TokensUsed > 0 {
+		u.TotalTokens += resp.TokensUsed
+	}
+	if resp.Model != "" {
+		u.Model = resp.Model
+	}
+}
+
+// AddDetails folds one normalized provider usage record into the aggregate.
+func (u *TokenUsage) AddDetails(details *UsageDetails, model string) {
+	if u == nil || details == nil {
+		return
+	}
+	input := details.InputTokens
+	if input == 0 {
+		input = details.PromptTokens
+	}
+	output := details.OutputTokens
+	if output == 0 {
+		output = details.CompletionTokens
+	}
+	total := details.TotalTokens
+	if total == 0 {
+		total = input + output
+	}
+	u.InputTokens += input
+	u.OutputTokens += output
+	u.TotalTokens += total
+	u.CachedInputTokens += details.CachedPromptTokens
+	if model != "" {
+		u.Model = model
+	}
+}
+
+// MergeUsageDetails keeps the largest values reported across chunks of one
+// provider stream. Streaming APIs may send input and output usage separately,
+// while the final event usually contains both.
+func MergeUsageDetails(current, next *UsageDetails) *UsageDetails {
+	if current == nil && next == nil {
+		return nil
+	}
+	if current == nil {
+		copy := *next
+		return &copy
+	}
+	if next == nil {
+		return current
+	}
+	max := func(a, b int) int {
+		if b > a {
+			return b
+		}
+		return a
+	}
+	current.PromptTokens = max(current.PromptTokens, next.PromptTokens)
+	current.CompletionTokens = max(current.CompletionTokens, next.CompletionTokens)
+	current.TotalTokens = max(current.TotalTokens, next.TotalTokens)
+	current.InputTokens = max(current.InputTokens, next.InputTokens)
+	current.OutputTokens = max(current.OutputTokens, next.OutputTokens)
+	current.CachedPromptTokens = max(current.CachedPromptTokens, next.CachedPromptTokens)
+	current.CacheCreation5MTokens = max(current.CacheCreation5MTokens, next.CacheCreation5MTokens)
+	current.CacheCreation1HTokens = max(current.CacheCreation1HTokens, next.CacheCreation1HTokens)
+	return current
 }
 
 // StreamToolCallDelta 流式 tool_calls 的增量片段

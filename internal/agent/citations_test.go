@@ -3,7 +3,38 @@ package agent
 import (
 	"strings"
 	"testing"
+
+	"github.com/yurika0211/luckyagent/internal/config"
 )
+
+func TestAppendNaturalCitationsHonorsConfig(t *testing.T) {
+	mgr, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	a := &Agent{cfg: mgr}
+	logs := []toolCallLog{{
+		Name:      "file_read",
+		Arguments: `{"path":"README.md"}`,
+		Result:    "content",
+	}}
+
+	if got := a.appendNaturalCitationsIfEnabled("答案", logs); strings.Contains(got, naturalCitationHeader) {
+		t.Fatalf("citations should be disabled by default, got %q", got)
+	}
+	if err := mgr.Set("agent.enable_citations", "true"); err != nil {
+		t.Fatalf("enable citations: %v", err)
+	}
+	if got := a.appendNaturalCitationsIfEnabled("答案", logs); !strings.Contains(got, naturalCitationHeader) {
+		t.Fatalf("citations should be enabled after config update, got %q", got)
+	}
+	if err := mgr.Set("agent.enable_citations", "false"); err != nil {
+		t.Fatalf("disable citations: %v", err)
+	}
+	if got := a.appendNaturalCitationsIfEnabled("答案", logs); strings.Contains(got, naturalCitationHeader) {
+		t.Fatalf("citations should be disabled after config update, got %q", got)
+	}
+}
 
 func TestAppendNaturalCitationsAddsWebSearchFooter(t *testing.T) {
 	got := appendNaturalCitations("最终答案", []toolCallLog{{

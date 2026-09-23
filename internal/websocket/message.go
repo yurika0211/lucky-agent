@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/gateway"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 // MessageType WebSocket 消息类型
@@ -63,8 +64,10 @@ type StreamChunkData struct {
 
 // StreamEndData 流式输出结束数据
 type StreamEndData struct {
-	FullResponse string `json:"full_response"`
-	Iterations   int    `json:"iterations"`
+	FullResponse string               `json:"full_response"`
+	Iterations   int                  `json:"iterations"`
+	CreatedAt    *time.Time           `json:"created_at,omitempty"`
+	Usage        *provider.TokenUsage `json:"usage,omitempty"`
 }
 
 // ReasoningData 推理摘要数据

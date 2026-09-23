@@ -354,6 +354,7 @@ type AgentLoopConfig struct {
 	MaxIterations          int                         `json:"max_iterations,omitempty"`
 	TimeoutSeconds         int                         `json:"timeout_seconds,omitempty"`
 	AutoApprove            bool                        `json:"auto_approve,omitempty"`
+	EnableCitations        bool                        `json:"enable_citations,omitempty"`
 	RepeatToolCallLimit    int                         `json:"repeat_tool_call_limit,omitempty"`
 	ToolOnlyIterationLimit int                         `json:"tool_only_iteration_limit,omitempty"`
 	DuplicateFetchLimit    int                         `json:"duplicate_fetch_limit,omitempty"`
@@ -874,6 +875,7 @@ func DefaultConfig() *Config {
 			MaxIterations:          10,
 			TimeoutSeconds:         60,
 			AutoApprove:            false,
+			EnableCitations:        false,
 			RepeatToolCallLimit:    3,
 			ToolOnlyIterationLimit: 3,
 			DuplicateFetchLimit:    1,
@@ -2093,6 +2095,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Agent.TimeoutSeconds = n
 	case "agent.auto_approve":
 		m.config.Agent.AutoApprove = parseBool(value)
+	case "agent.enable_citations":
+		m.config.Agent.EnableCitations = parseBool(value)
 	case "agent.repeat_tool_call_limit":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

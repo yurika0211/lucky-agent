@@ -132,6 +132,24 @@ func (s *Server) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.sendJSON(w, http.StatusOK, payload)
+	case "result":
+		if r.Method != http.MethodGet {
+			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+			return
+		}
+		result, ok, err := store.Result(taskID)
+		if err != nil {
+			s.sendError(w, "get task result failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+		if !ok {
+			s.sendError(w, "task result not found", http.StatusNotFound, taskID)
+			return
+		}
+		s.sendJSON(w, http.StatusOK, map[string]any{
+			"task_id": taskID,
+			"result":  result,
+		})
 	case "observation":
 		if r.Method != http.MethodGet {
 			s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")

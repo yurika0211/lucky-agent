@@ -473,6 +473,9 @@ func TestHandleTasksAPI(t *testing.T) {
 	if err := a.TaskStore().SavePlannerTrace(record.ID, map[string]any{"planner": "test"}); err != nil {
 		t.Fatalf("save trace: %v", err)
 	}
+	if err := a.TaskStore().SaveResult(record.ID, "final task result"); err != nil {
+		t.Fatalf("save result: %v", err)
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/tasks?source=http", nil)
 	w := httptest.NewRecorder()
@@ -514,6 +517,20 @@ func TestHandleTasksAPI(t *testing.T) {
 	}
 	if trace["planner"] != "test" {
 		t.Fatalf("unexpected trace: %+v", trace)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/result", nil)
+	w = httptest.NewRecorder()
+	s.handleTaskByID(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 result, got %d: %s", w.Code, w.Body.String())
+	}
+	var resultResp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resultResp); err != nil {
+		t.Fatalf("decode result: %v", err)
+	}
+	if resultResp["result"] != "final task result" {
+		t.Fatalf("unexpected result: %+v", resultResp)
 	}
 
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/tasks/task-api-test/observation", nil)

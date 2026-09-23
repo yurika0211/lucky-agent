@@ -30,6 +30,9 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Agent.DuplicateFetchLimit != 1 {
 		t.Errorf("expected duplicate_fetch_limit 1, got %d", cfg.Agent.DuplicateFetchLimit)
 	}
+	if cfg.Agent.EnableCitations {
+		t.Errorf("expected agent.enable_citations false by default")
+	}
 	if cfg.Agent.SimpleLocalInspection.MaxIterations != 3 {
 		t.Errorf("expected simple_local_inspection.max_iterations 3, got %d", cfg.Agent.SimpleLocalInspection.MaxIterations)
 	}
