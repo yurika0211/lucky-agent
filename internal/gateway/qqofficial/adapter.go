@@ -153,6 +153,7 @@ type Adapter struct {
 	reconnectSignal chan struct{}
 	logMu           sync.Mutex
 	logFile         *os.File
+	lifecycleWG     sync.WaitGroup
 
 	accessToken string
 	tokenExpiry time.Time
@@ -253,21 +254,25 @@ func (a *Adapter) Start(ctx context.Context) error {
 	}
 
 	a.logf("connected gateway=%s sandbox=%t proxy=%s", a.cfg.normalizedGatewayURL(), a.cfg.Sandbox, a.proxyDescription())
-	go a.superviseGateway(startCtx)
+	a.lifecycleWG.Add(1)
+	go func() { defer a.lifecycleWG.Done(); a.superviseGateway(startCtx) }()
 	return nil
 }
 
 func (a *Adapter) Stop() error {
 	a.mu.Lock()
-	if a.cancel != nil {
-		a.cancel()
+	a.running = false
+	cancel := a.cancel
+	a.cancel = nil
+	if cancel != nil {
+		cancel()
 	}
 	if a.conn != nil {
 		_ = a.conn.Close()
 		a.conn = nil
 	}
-	a.running = false
 	a.mu.Unlock()
+	a.lifecycleWG.Wait()
 	a.closeLogger()
 	return nil
 }
@@ -479,9 +484,18 @@ func (a *Adapter) connectGateway(ctx context.Context) error {
 	}
 
 	a.mu.Lock()
+	if !a.running || a.cancel == nil {
+		a.mu.Unlock()
+		_ = conn.Close()
+		return context.Canceled
+	}
 	a.conn = conn
+	a.lifecycleWG.Add(1)
 	a.mu.Unlock()
-	go a.heartbeatLoop(ctx, conn, time.Duration(payload.HeartbeatInterval)*time.Millisecond)
+	go func() {
+		defer a.lifecycleWG.Done()
+		a.heartbeatLoop(ctx, conn, time.Duration(payload.HeartbeatInterval)*time.Millisecond)
+	}()
 	return nil
 }
 

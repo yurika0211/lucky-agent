@@ -12,6 +12,7 @@ let mainWindow = null;
 let tray = null;
 /** @type {import('node:child_process').ChildProcess | null} */
 let runtimeChild = null;
+let quitting = false;
 
 const DEFAULT_DEV_URL = process.env.LH_ELECTRON_DEV_URL || 'http://127.0.0.1:5173';
 const DEFAULT_API_BASE = process.env.LH_API_BASE || 'http://127.0.0.1:9090';
@@ -93,13 +94,34 @@ async function ensureLocalRuntime() {
   fs.mkdirSync(logDir, { recursive: true });
   const log = fs.openSync(path.join(logDir, 'desktop-serve.log'), 'a');
   runtimeChild = spawn(binary, ['serve', '--addr', `127.0.0.1:${port}`], {
-    detached: true,
     stdio: ['ignore', log, log],
     env: process.env,
   });
-  runtimeChild.unref();
+  runtimeChild.once('exit', () => { runtimeChild = null; });
   const ready = await waitForAPI(apiBase, 20000);
   if (!ready) console.warn(`[desktop] lh serve did not become healthy; see ${path.join(logDir, 'desktop-serve.log')}`);
+}
+
+function safeStaticPath(root, requestPath) {
+  let decoded;
+  try { decoded = decodeURIComponent(requestPath); } catch { return null; }
+  const candidate = path.resolve(root, `.${decoded.startsWith('/') ? decoded : `/${decoded}`}`);
+  const relative = path.relative(path.resolve(root), candidate);
+  if (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)) return null;
+  return candidate;
+}
+
+async function stopLocalRuntime() {
+  const child = runtimeChild;
+  if (!child || child.killed || child.exitCode !== null) { runtimeChild = null; return; }
+  runtimeChild = null;
+  await new Promise((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} finish(); }, 3000);
+    child.once('exit', finish);
+    try { child.kill('SIGTERM'); } catch { finish(); }
+  });
 }
 
 function iconForTray(icon) {
@@ -364,10 +386,10 @@ async function startDesktopGateway() {
       return;
     }
 
-    let rel = decodeURIComponent(url.pathname);
+    let rel = url.pathname;
     if (rel === '/' || rel === '') rel = '/index.html';
-    const candidate = path.normalize(path.join(distRoot, rel));
-    if (!candidate.startsWith(distRoot)) {
+    const candidate = safeStaticPath(distRoot, rel);
+    if (!candidate) {
       res.writeHead(403).end('forbidden');
       return;
     }
@@ -763,9 +785,15 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => {
+app.on('before-quit', (event) => {
+  if (quitting) return;
+  event.preventDefault();
+  quitting = true;
   if (desktopGateway) {
     try { desktopGateway.close(); } catch { /* ignore */ }
     desktopGateway = null;
   }
+  void stopLocalRuntime().finally(() => app.quit());
 });
+
+module.exports = { safeStaticPath, stopLocalRuntime };

@@ -37,7 +37,9 @@ type Message struct {
 	Type      MessageType     `json:"type"`
 	SessionID string          `json:"session_id,omitempty"`
 	ID        string          `json:"id,omitempty"`        // 消息唯一 ID
+	EventID   string          `json:"event_id,omitempty"`  // 可持久化重放 cursor
 	ParentID  string          `json:"parent_id,omitempty"` // 回复的消息 ID
+	RunID     string          `json:"run_id,omitempty"`    // 所属持久化运行 ID
 	Timestamp time.Time       `json:"timestamp"`
 	Data      json.RawMessage `json:"data"`
 }
@@ -128,10 +130,12 @@ func NewMessage(msgType MessageType, sessionID string, data interface{}) (*Messa
 	if err != nil {
 		return nil, err
 	}
+	id := generateID()
 	return &Message{
 		Type:      msgType,
 		SessionID: sessionID,
-		ID:        generateID(),
+		ID:        id,
+		EventID:   id,
 		Timestamp: time.Now().UTC(),
 		Data:      raw,
 	}, nil

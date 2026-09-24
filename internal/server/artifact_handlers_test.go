@@ -42,6 +42,28 @@ func TestArtifactHandlerServesWorkspaceFilesAndRejectsTraversal(t *testing.T) {
 	}
 }
 
+func TestArtifactHandlerRejectsSymlinkEscape(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	outside := filepath.Join(a.Config().HomeDir(), "secret.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(a.Config().HomeDir(), "workspace", "escape.txt")
+	if err := os.MkdirAll(filepath.Dir(link), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, s.artifactURLForPath(link), nil)
+	rec := httptest.NewRecorder()
+	s.handleArtifact(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("symlink status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
 func TestHistoryMessagesIncludeGeneratedArtifacts(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())
