@@ -210,6 +210,17 @@ Feedback request body:
 }
 ```
 
+## Background Autonomy
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/api/v1/autonomy/dashboard?state=&limit=200` | Read-only queue, worker, heartbeat and task snapshot |
+| `GET` | `/api/v1/autonomy/tasks/{id}` | Read-only background task detail |
+
+The dashboard never starts or changes the autonomy runtime. `state` accepts
+`ready`, `in_progress`, `blocked`, or `done`. Task details expose operation
+summaries and whether a checkpoint exists, but not the full checkpoint payload.
+
 Cancel request body:
 
 ```json
