@@ -45,21 +45,21 @@ type queuedRun struct {
 }
 
 type sessionRunner struct {
-	queue  []*queuedRun
-	active *queuedRun
-	cancel context.CancelFunc
+	queue     []*queuedRun
+	active    *queuedRun
+	cancel    context.CancelFunc
 	cancelled bool
 }
 
 // AgentHandler 将 WebSocket 消息桥接到 Agent Loop
 type AgentHandler struct {
-	agent       agentRuntime
-	pending     map[string]context.CancelFunc // sessionID → cancel
-	done        map[string]chan struct{}      // sessionID → handler goroutine completion
-	runners     map[string]*sessionRunner
-	store       *runStore
-	eventSink   func(string, *Message)
-	mu          sync.Mutex
+	agent     agentRuntime
+	pending   map[string]context.CancelFunc // sessionID → cancel
+	done      map[string]chan struct{}      // sessionID → handler goroutine completion
+	runners   map[string]*sessionRunner
+	store     *runStore
+	eventSink func(string, *Message)
+	mu        sync.Mutex
 }
 
 // NewAgentHandler 创建 Agent 消息处理器
@@ -69,11 +69,11 @@ func NewAgentHandler(a agentRuntime) *AgentHandler {
 		storeRoot = filepath.Join(provider.Config().HomeDir(), "runtime", "websocket")
 	}
 	return &AgentHandler{
-		agent:     a,
-		pending:   make(map[string]context.CancelFunc),
-		done:      make(map[string]chan struct{}),
-		runners:   make(map[string]*sessionRunner),
-		store:     newRunStore(storeRoot),
+		agent:   a,
+		pending: make(map[string]context.CancelFunc),
+		done:    make(map[string]chan struct{}),
+		runners: make(map[string]*sessionRunner),
+		store:   newRunStore(storeRoot),
 	}
 }
 
@@ -132,21 +132,36 @@ func (h *AgentHandler) HandleMessage(client *Client, msg *Message) {
 	}
 }
 
-// HandleReconnect replays all events after the supplied cursor. An empty cursor
-// deliberately replays the retained session log so a restarted app can rebuild
-// the complete current turn.
+// HandleReconnect replays events after the supplied cursor. Without a usable
+// cursor it only replays events belonging to runs that are still active.
 func (h *AgentHandler) HandleReconnect(client *Client, msg *Message) {
 	var data ReconnectData
 	if len(msg.Data) > 0 && msg.ParseData(&data) != nil {
 		data.LastMessageID = ""
 	}
-	for _, event := range h.store.replay(client.SessionID, strings.TrimSpace(data.LastMessageID)) {
+	for _, event := range h.store.replayForReconnect(client.SessionID, strings.TrimSpace(data.LastMessageID)) {
 		client.TrySend(event)
+	}
+	for _, run := range h.store.activeRuns(client.SessionID) {
+		state := "queued"
+		message := "message queued"
+		if run.State == "running" {
+			state = "running"
+			message = "agent is running"
+		}
+		status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: state, Message: message})
+		status.ParentID = run.ParentID
+		status.RunID = run.ID
+		status.ID = ""
+		status.EventID = ""
+		client.TrySend(status)
 	}
 	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
 		State:   "connected",
 		Message: "reconnected",
 	})
+	status.ID = ""
+	status.EventID = ""
 	client.TrySend(status)
 	logger.Info("client reconnecting", "client_id", client.ID, "last_msg", data.LastMessageID)
 }
@@ -182,15 +197,27 @@ func (h *AgentHandler) handleCancel(client *Client, msg *Message) {
 		}
 		return
 	}
-	h.cancelSession(sessionID)
-	status, _ := NewMessage(TypeStatus, sessionID, StatusData{
-		State:   "idle",
-		Message: "cancelled",
-	})
-	if msg != nil {
-		status.ParentID = msg.ID
+	cancelled := h.cancelSession(sessionID)
+	if len(cancelled) == 0 {
+		status, _ := NewMessage(TypeStatus, sessionID, StatusData{
+			State:   "idle",
+			Message: "cancelled",
+		})
+		if msg != nil {
+			status.ParentID = msg.ID
+		}
+		h.emit(client, sessionID, "", status)
+	} else {
+		for _, run := range cancelled {
+			status, _ := NewMessage(TypeStatus, sessionID, StatusData{
+				State:   "idle",
+				Message: "cancelled",
+			})
+			status.ParentID = run.parentID
+			status.RunID = run.id
+			h.emit(client, sessionID, run.id, status)
+		}
 	}
-	h.emit(client, sessionID, "", status)
 	logger.Info("session cancelled", "session", sessionID)
 }
 
@@ -814,13 +841,17 @@ func (h *AgentHandler) CancelSession(sessionID string) {
 	h.cancelSession(sessionID)
 }
 
-func (h *AgentHandler) cancelSession(sessionID string) {
+func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 	h.mu.Lock()
 	runner := h.runners[sessionID]
 	var cancel context.CancelFunc
 	var queued []*queuedRun
+	var cancelled []*queuedRun
 	if runner != nil {
 		runner.cancelled = true
+		if runner.active != nil {
+			cancelled = append(cancelled, runner.active)
+		}
 		cancel = runner.cancel
 		queued = append(queued, runner.queue...)
 		runner.queue = nil
@@ -842,6 +873,8 @@ func (h *AgentHandler) cancelSession(sessionID string) {
 	for _, run := range queued {
 		_ = h.store.updateRun(sessionID, run.id, func(record *persistedRun) { record.State = "cancelled" })
 	}
+	cancelled = append(cancelled, queued...)
+	return cancelled
 }
 
 // PendingCount 返回进行中的请求数

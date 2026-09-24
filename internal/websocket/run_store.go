@@ -29,10 +29,10 @@ type persistedRun struct {
 }
 
 type persistedSession struct {
-	Version   int              `json:"version"`
-	SessionID string           `json:"session_id"`
-	Runs      []*persistedRun  `json:"runs,omitempty"`
-	Events    []*Message       `json:"events,omitempty"`
+	Version   int             `json:"version"`
+	SessionID string          `json:"session_id"`
+	Runs      []*persistedRun `json:"runs,omitempty"`
+	Events    []*Message      `json:"events,omitempty"`
 }
 
 type runStore struct {
@@ -181,12 +181,16 @@ func (s *runStore) replay(sessionID, lastMessageID string) []*Message {
 	session := s.sessionLocked(sessionID)
 	start := 0
 	if lastMessageID != "" {
-		start = len(session.Events)
+		found := false
 		for i, event := range session.Events {
 			if event != nil && event.ID == lastMessageID {
 				start = i + 1
+				found = true
 				break
 			}
+		}
+		if !found {
+			start = 0
 		}
 	}
 	result := make([]*Message, 0, len(session.Events)-start)
@@ -197,6 +201,77 @@ func (s *runStore) replay(sessionID, lastMessageID string) []*Message {
 		copyMsg := *event
 		copyMsg.Data = append(json.RawMessage(nil), event.Data...)
 		result = append(result, &copyMsg)
+	}
+	return result
+}
+
+func (s *runStore) replayForReconnect(sessionID, lastMessageID string) []*Message {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.sessionLocked(sessionID)
+	start := 0
+	if lastMessageID != "" {
+		found := false
+		for i, event := range session.Events {
+			if event != nil && event.ID == lastMessageID {
+				start = i + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			return cloneEventsForRuns(session.Events, activeRunIDs(session))
+		}
+		return cloneEvents(session.Events[start:])
+	}
+	return cloneEventsForRuns(session.Events, activeRunIDs(session))
+}
+
+func activeRunIDs(session *persistedSession) map[string]bool {
+	active := make(map[string]bool)
+	for _, run := range session.Runs {
+		if run != nil && (run.State == "queued" || run.State == "running") {
+			active[run.ID] = true
+		}
+	}
+	return active
+}
+
+func cloneEvents(events []*Message) []*Message {
+	result := make([]*Message, 0, len(events))
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		copyMsg := *event
+		copyMsg.Data = append(json.RawMessage(nil), event.Data...)
+		result = append(result, &copyMsg)
+	}
+	return result
+}
+
+func cloneEventsForRuns(events []*Message, runIDs map[string]bool) []*Message {
+	result := make([]*Message, 0, len(events))
+	for _, event := range events {
+		if event == nil || !runIDs[event.RunID] {
+			continue
+		}
+		copyMsg := *event
+		copyMsg.Data = append(json.RawMessage(nil), event.Data...)
+		result = append(result, &copyMsg)
+	}
+	return result
+}
+
+func (s *runStore) activeRuns(sessionID string) []persistedRun {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.sessionLocked(sessionID)
+	result := make([]persistedRun, 0)
+	for _, run := range session.Runs {
+		if run != nil && (run.State == "queued" || run.State == "running") {
+			result = append(result, *run)
+		}
 	}
 	return result
 }
