@@ -195,6 +195,7 @@ func (q *TaskQueue) updateLocked(id string, fn func(*QueueTask) error) error {
 	if err := fn(next); err != nil {
 		return err
 	}
+	next.UpdatedAt = time.Now()
 	q.tasks[id] = next
 	if err := q.persistLocked(); err != nil {
 		q.tasks[id] = old

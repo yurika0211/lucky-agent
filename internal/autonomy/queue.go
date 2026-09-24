@@ -102,6 +102,7 @@ type QueueTask struct {
 	Tags               []string          `json:"tags,omitempty"`
 	Metadata           map[string]string `json:"metadata,omitempty"`
 	CreatedAt          time.Time         `json:"created_at"`
+	UpdatedAt          time.Time         `json:"updated_at,omitempty"`
 	StartedAt          time.Time         `json:"started_at,omitempty"`
 	CompletedAt        time.Time         `json:"completed_at,omitempty"`
 }
@@ -170,6 +171,7 @@ func (q *TaskQueue) AddWithAcceptance(title, description string, priority TaskPr
 		meta[k] = v
 	}
 	id := fmt.Sprintf("tq-%d", q.nextID.Add(1))
+	now := time.Now()
 	task := &QueueTask{
 		ID:                 id,
 		Title:              title,
@@ -179,7 +181,8 @@ func (q *TaskQueue) AddWithAcceptance(title, description string, priority TaskPr
 		Tags:               append([]string(nil), tags...),
 		AcceptanceCriteria: append([]string(nil), criteria...),
 		Metadata:           meta,
-		CreatedAt:          time.Now(),
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	q.tasks[id] = task
