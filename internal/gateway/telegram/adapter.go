@@ -318,6 +318,23 @@ func (a *Adapter) Send(ctx context.Context, chatID string, message string) error
 	return err
 }
 
+// SendControl is used for restart diagnostics while polling is temporarily
+// stopped. Normal traffic must continue to use Send and its readiness gate.
+func (a *Adapter) SendControl(ctx context.Context, chatID string, message string) error {
+	a.mu.RLock()
+	bot := a.bot
+	a.mu.RUnlock()
+	if bot == nil {
+		return fmt.Errorf("telegram: bot is not initialized")
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(chatID), 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+	_, err = bot.Send(tgbotapi.NewMessage(id, sanitizeOutgoingText(message)))
+	return err
+}
+
 // SendWithReceipt sends a message and returns the first Telegram message ID.
 func (a *Adapter) SendWithReceipt(ctx context.Context, chatID string, message string) (gateway.SentMessage, error) {
 	if err := a.ensureReady(); err != nil {

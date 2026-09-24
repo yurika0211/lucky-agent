@@ -99,10 +99,9 @@ type MessageHandler interface {
 	HandleMessage(client *Client, msg *Message)
 }
 
-// SessionCanceller stops an in-flight agent run for a session.
-// Implemented by AgentHandler. Optional: hubs used in tests may omit it.
-type SessionCanceller interface {
-	CancelSession(sessionID string)
+// ReconnectHandler replays durable session events to a newly connected client.
+type ReconnectHandler interface {
+	HandleReconnect(client *Client, msg *Message)
 }
 
 // HubConfig controls websocket timings and buffer sizes.
@@ -262,7 +261,6 @@ func (h *Hub) unregisterClient(client *Client) {
 	}
 
 	sessionID := client.SessionID
-	lastClient := false
 	h.mu.Lock()
 	if _, ok := h.clients[client.ID]; ok {
 		delete(h.clients, client.ID)
@@ -270,7 +268,6 @@ func (h *Hub) unregisterClient(client *Client) {
 			delete(sess, client.ID)
 			if len(sess) == 0 {
 				delete(h.sessions, sessionID)
-				lastClient = true
 			}
 		}
 		client.Close()
@@ -279,14 +276,6 @@ func (h *Hub) unregisterClient(client *Client) {
 		return
 	}
 	h.mu.Unlock()
-
-	// The last tab for this session is gone. Stop the run so a closed GUI
-	// socket cannot leave tools and token spend going.
-	if lastClient {
-		if canceller, ok := h.handler.(SessionCanceller); ok {
-			canceller.CancelSession(sessionID)
-		}
-	}
 
 	h.stats.mu.Lock()
 	h.stats.ActiveConns--
@@ -424,15 +413,15 @@ func (c *Client) readPump() {
 		}
 
 		if msg.Type == TypeReconnect {
-			var data ReconnectData
-			if err := msg.ParseData(&data); err == nil {
-				logger.Info("client reconnecting", "client_id", c.ID, "last_msg", data.LastMessageID)
+			if reconnecter, ok := c.Hub.handler.(ReconnectHandler); ok {
+				reconnecter.HandleReconnect(c, msg)
+			} else {
+				status, _ := NewMessage(TypeStatus, c.SessionID, StatusData{
+					State:   "connected",
+					Message: "reconnected",
+				})
+				c.TrySend(status)
 			}
-			status, _ := NewMessage(TypeStatus, c.SessionID, StatusData{
-				State:   "connected",
-				Message: "reconnected",
-			})
-			c.TrySend(status)
 			continue
 		}
 

@@ -3,6 +3,7 @@ package websocket
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"net/url"
@@ -35,18 +36,82 @@ type runtimeConfigProvider interface {
 	Config() *config.Manager
 }
 
+type queuedRun struct {
+	id       string
+	parentID string
+	data     ChatData
+	resume   bool
+	client   *Client
+}
+
+type sessionRunner struct {
+	queue     []*queuedRun
+	active    *queuedRun
+	cancel    context.CancelFunc
+	cancelled bool
+}
+
 // AgentHandler 将 WebSocket 消息桥接到 Agent Loop
 type AgentHandler struct {
-	agent   agentRuntime
-	pending map[string]context.CancelFunc // sessionID → cancel
-	mu      sync.Mutex
+	agent     agentRuntime
+	pending   map[string]context.CancelFunc // sessionID → cancel
+	done      map[string]chan struct{}      // sessionID → handler goroutine completion
+	runners   map[string]*sessionRunner
+	store     *runStore
+	eventSink func(string, *Message)
+	mu        sync.Mutex
 }
 
 // NewAgentHandler 创建 Agent 消息处理器
 func NewAgentHandler(a agentRuntime) *AgentHandler {
+	storeRoot := ""
+	if provider, ok := a.(runtimeConfigProvider); ok && provider.Config() != nil {
+		storeRoot = filepath.Join(provider.Config().HomeDir(), "runtime", "websocket")
+	}
 	return &AgentHandler{
 		agent:   a,
 		pending: make(map[string]context.CancelFunc),
+		done:    make(map[string]chan struct{}),
+		runners: make(map[string]*sessionRunner),
+		store:   newRunStore(storeRoot),
+	}
+}
+
+// SetEventSink makes agent output independent from the client that submitted it.
+// The HTTP server wires this to Hub.SendToSession so reconnecting clients receive
+// the same durable stream.
+func (h *AgentHandler) SetEventSink(sink func(string, *Message)) {
+	h.mu.Lock()
+	h.eventSink = sink
+	h.mu.Unlock()
+}
+
+// Start restores queued and interrupted runs after the runtime process starts.
+func (h *AgentHandler) Start() {
+	for _, persisted := range h.store.restoreable() {
+		data := ChatData{
+			Message:     persisted.Message,
+			Stream:      persisted.Stream,
+			MaxIter:     persisted.MaxIter,
+			Attachments: persisted.Attachments,
+		}
+		run := &queuedRun{id: persisted.ID, parentID: persisted.ParentID, data: data}
+		if persisted.TaskID != "" {
+			run.data.Message = "继续前台任务 " + persisted.TaskID
+			run.data.Attachments = nil
+			run.resume = true
+		}
+		h.mu.Lock()
+		runner := h.runners[persisted.SessionID]
+		if runner == nil {
+			runner = &sessionRunner{}
+			h.runners[persisted.SessionID] = runner
+		}
+		runner.queue = append(runner.queue, run)
+		h.mu.Unlock()
+	}
+	for sessionID := range h.runners {
+		h.startNext(sessionID)
 	}
 }
 
@@ -57,12 +122,48 @@ func (h *AgentHandler) HandleMessage(client *Client, msg *Message) {
 		h.handleChat(client, msg)
 	case TypeCancel:
 		h.handleCancel(client, msg)
+	case TypeReconnect:
+		h.HandleReconnect(client, msg)
 	case TypeStreamAck:
 		// 流式确认，暂不处理
 		logger.Debug("stream ack received", "client_id", client.ID, "msg_id", msg.ID)
 	default:
 		logger.Warn("unknown message type", "type", msg.Type, "client_id", client.ID)
 	}
+}
+
+// HandleReconnect replays events after the supplied cursor. Without a usable
+// cursor it only replays events belonging to runs that are still active.
+func (h *AgentHandler) HandleReconnect(client *Client, msg *Message) {
+	var data ReconnectData
+	if len(msg.Data) > 0 && msg.ParseData(&data) != nil {
+		data.LastMessageID = ""
+	}
+	for _, event := range h.store.replayForReconnect(client.SessionID, strings.TrimSpace(data.LastMessageID)) {
+		client.TrySend(event)
+	}
+	for _, run := range h.store.activeRuns(client.SessionID) {
+		state := "queued"
+		message := "message queued"
+		if run.State == "running" {
+			state = "running"
+			message = "agent is running"
+		}
+		status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: state, Message: message})
+		status.ParentID = run.ParentID
+		status.RunID = run.ID
+		status.ID = ""
+		status.EventID = ""
+		client.TrySend(status)
+	}
+	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
+		State:   "connected",
+		Message: "reconnected",
+	})
+	status.ID = ""
+	status.EventID = ""
+	client.TrySend(status)
+	logger.Info("client reconnecting", "client_id", client.ID, "last_msg", data.LastMessageID)
 }
 
 // handleCancel 取消指定 session 的进行中请求。客户端 Stop 必须走这条路径，
@@ -96,16 +197,26 @@ func (h *AgentHandler) handleCancel(client *Client, msg *Message) {
 		}
 		return
 	}
-	h.CancelSession(sessionID)
-	status, _ := NewMessage(TypeStatus, sessionID, StatusData{
-		State:   "idle",
-		Message: "cancelled",
-	})
-	if msg != nil {
-		status.ParentID = msg.ID
-	}
-	if client != nil {
-		client.TrySend(status)
+	cancelled := h.cancelSession(sessionID)
+	if len(cancelled) == 0 {
+		status, _ := NewMessage(TypeStatus, sessionID, StatusData{
+			State:   "idle",
+			Message: "cancelled",
+		})
+		if msg != nil {
+			status.ParentID = msg.ID
+		}
+		h.emit(client, sessionID, "", status)
+	} else {
+		for _, run := range cancelled {
+			status, _ := NewMessage(TypeStatus, sessionID, StatusData{
+				State:   "idle",
+				Message: "cancelled",
+			})
+			status.ParentID = run.parentID
+			status.RunID = run.id
+			h.emit(client, sessionID, run.id, status)
+		}
 	}
 	logger.Info("session cancelled", "session", sessionID)
 }
@@ -122,59 +233,166 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 		return
 	}
 
-	// 发送 thinking 状态
-	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
-		State:   "thinking",
-		Message: "processing your message",
-	})
-	client.TrySend(status)
-
-	// 取消该 session 之前的请求
-	h.mu.Lock()
-	if cancel, ok := h.pending[client.SessionID]; ok {
-		cancel()
-		delete(h.pending, client.SessionID)
+	run := &queuedRun{
+		id:       msg.ID,
+		parentID: msg.ID,
+		data:     data,
+		client:   client,
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	h.pending[client.SessionID] = cancel
+	if run.id == "" {
+		run.id = generateID()
+		run.parentID = run.id
+	}
+	persisted := persistedRun{
+		ID:          run.id,
+		SessionID:   client.SessionID,
+		ParentID:    run.parentID,
+		Message:     data.Message,
+		Stream:      data.Stream,
+		MaxIter:     data.MaxIter,
+		Attachments: data.Attachments,
+		State:       "queued",
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+	if err := h.store.upsertRun(persisted); err != nil {
+		logger.Error("persist websocket run failed", "session", client.SessionID, "error", err)
+	}
+	h.mu.Lock()
+	runner := h.runners[client.SessionID]
+	if runner == nil {
+		runner = &sessionRunner{}
+		h.runners[client.SessionID] = runner
+	}
+	wasBusy := runner.active != nil || len(runner.queue) > 0
+	runner.queue = append(runner.queue, run)
 	h.mu.Unlock()
+	queued, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
+		State:   map[bool]string{true: "queued", false: "thinking"}[wasBusy],
+		Message: map[bool]string{true: "message queued", false: "processing your message"}[wasBusy],
+	})
+	queued.ParentID = run.parentID
+	queued.RunID = run.id
+	h.emit(client, client.SessionID, run.id, queued)
+	if !wasBusy {
+		h.startNext(client.SessionID)
+	}
+}
 
+func (h *AgentHandler) startNext(sessionID string) {
+	h.mu.Lock()
+	runner := h.runners[sessionID]
+	if runner == nil || runner.active != nil || len(runner.queue) == 0 {
+		h.mu.Unlock()
+		return
+	}
+	run := runner.queue[0]
+	runner.queue = runner.queue[1:]
+	runner.active = run
+	ctx, cancel := context.WithCancel(context.Background())
+	runner.cancel = cancel
+	runner.cancelled = false
+	h.pending[sessionID] = cancel
+	if h.done[sessionID] == nil {
+		h.done[sessionID] = make(chan struct{})
+	}
+	h.mu.Unlock()
+	_ = h.store.updateRun(sessionID, run.id, func(record *persistedRun) { record.State = "running" })
 	go func() {
-		defer func() {
-			h.mu.Lock()
-			delete(h.pending, client.SessionID)
-			h.mu.Unlock()
-		}()
-
-		if data.Stream {
-			h.streamChat(ctx, client, data, msg.ID)
-		} else {
-			h.syncChat(ctx, client, data, msg.ID)
+		var err error
+		client := run.client
+		if client == nil {
+			client = &Client{SessionID: sessionID, Send: make(chan *Message, 1)}
 		}
+		if run.data.Stream {
+			err = h.streamChatRun(ctx, client, run.data, run.parentID, run.id)
+		} else {
+			err = h.syncChatRun(ctx, client, run.data, run.parentID, run.id)
+		}
+		h.finishRun(sessionID, run, err)
 	}()
+}
+
+func (h *AgentHandler) finishRun(sessionID string, run *queuedRun, err error) {
+	h.mu.Lock()
+	runner := h.runners[sessionID]
+	if runner == nil || runner.active != run {
+		h.mu.Unlock()
+		return
+	}
+	wasCancelled := runner.cancelled
+	runner.active = nil
+	runner.cancel = nil
+	runner.cancelled = false
+	delete(h.pending, sessionID)
+	if len(runner.queue) == 0 {
+		if done := h.done[sessionID]; done != nil {
+			close(done)
+			delete(h.done, sessionID)
+		}
+	}
+	h.mu.Unlock()
+	state := "completed"
+	if wasCancelled || errors.Is(err, context.Canceled) {
+		state = "cancelled"
+	} else if err != nil {
+		state = "error"
+	}
+	_ = h.store.updateRun(sessionID, run.id, func(record *persistedRun) { record.State = state })
+	h.startNext(sessionID)
+}
+
+func (h *AgentHandler) emit(client *Client, sessionID, runID string, msg *Message) {
+	if msg == nil {
+		return
+	}
+	msg.SessionID = sessionID
+	if runID != "" {
+		msg.RunID = runID
+	}
+	if err := h.store.appendEvent(sessionID, runID, msg); err != nil {
+		logger.Error("persist websocket event failed", "session", sessionID, "error", err)
+	}
+	h.mu.Lock()
+	sink := h.eventSink
+	h.mu.Unlock()
+	if sink != nil {
+		sink(sessionID, msg)
+		return
+	}
+	if client != nil {
+		client.TrySend(msg)
+	}
 }
 
 // syncChat 同步聊天（等待完整响应）
 func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatData, parentID string) {
+	_ = h.syncChatRun(ctx, client, data, parentID, "")
+}
+
+func (h *AgentHandler) syncChatRun(ctx context.Context, client *Client, data ChatData, parentID, runID string) error {
 	// 发送 executing 状态
 	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
 		State:   "executing",
 		Message: "agent is running",
 	})
-	client.TrySend(status)
+	status.ParentID = parentID
+	h.emit(client, client.SessionID, runID, status)
 
 	sessionID := h.ensureSession(client.SessionID)
 	turn := agent.MultimodalUserTurnInput(data.Message, data.Attachments)
 	result, err := h.agent.ChatWithSessionInput(ctx, sessionID, turn)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{
 			Code:    "AGENT_ERROR",
 			Message: err.Error(),
 		})
 		errMsg.ParentID = parentID
-		client.TrySend(errMsg)
-		return
+		h.emit(client, client.SessionID, runID, errMsg)
+		return err
 	}
 	var createdAt *time.Time
 	var usage *provider.TokenUsage
@@ -198,35 +416,45 @@ func (h *AgentHandler) syncChat(ctx context.Context, client *Client, data ChatDa
 		Attachments:  appendUniqueAttachments(h.attachmentsFromToolResult("", result), responseAttachments...),
 	})
 	endMsg.ParentID = parentID
-	client.TrySend(endMsg)
+	h.emit(client, client.SessionID, runID, endMsg)
 
 	// 发送 idle 状态
 	idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
 		State: "idle",
 	})
-	client.TrySend(idle)
+	idle.ParentID = parentID
+	h.emit(client, client.SessionID, runID, idle)
+	return nil
 }
 
 // streamChat 流式聊天（逐块推送）
 func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data ChatData, parentID string) {
+	_ = h.streamChatRun(ctx, client, data, parentID, "")
+}
+
+func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data ChatData, parentID, runID string) error {
 	// 发送 executing 状态
 	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
 		State:   "executing",
 		Message: "agent is streaming",
 	})
-	client.TrySend(status)
+	status.ParentID = parentID
+	h.emit(client, client.SessionID, runID, status)
 
 	sessionID := h.ensureSession(client.SessionID)
 	turn := agent.MultimodalUserTurnInput(data.Message, data.Attachments)
 	streamCh, err := h.agent.ChatWithSessionStreamInput(ctx, sessionID, turn)
 	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{
 			Code:    "AGENT_ERROR",
 			Message: err.Error(),
 		})
 		errMsg.ParentID = parentID
-		client.TrySend(errMsg)
-		return
+		h.emit(client, client.SessionID, runID, errMsg)
+		return err
 	}
 
 	var fullResponse strings.Builder
@@ -238,22 +466,28 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 	sendIdle := func() {
 		idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: "idle"})
 		idle.ParentID = parentID
-		client.TrySend(idle)
+		h.emit(client, client.SessionID, runID, idle)
 	}
 
 	sendError := func(err error) {
+		if err == nil {
+			err = errors.New("agent stream failed")
+		}
 		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{
 			Code:    "AGENT_ERROR",
 			Message: err.Error(),
 		})
 		errMsg.ParentID = parentID
-		client.TrySend(errMsg)
+		h.emit(client, client.SessionID, runID, errMsg)
 		sendIdle()
 	}
 
 	for evt := range streamCh {
 		switch evt.Type {
 		case agent.ChatEventThinking:
+			if evt.TaskID != "" && runID != "" {
+				_ = h.store.updateRun(client.SessionID, runID, func(record *persistedRun) { record.TaskID = evt.TaskID })
+			}
 			reasoning, ok := reasoningDataForEvent(evt.Content)
 			if !ok {
 				continue
@@ -263,7 +497,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			}
 			msg, _ := NewMessage(TypeReasoning, client.SessionID, reasoning)
 			msg.ParentID = parentID
-			client.TrySend(msg)
+			h.emit(client, client.SessionID, runID, msg)
 
 		case agent.ChatEventReasoningContent:
 			if currentRound == 0 {
@@ -275,7 +509,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Stage:   "content",
 			})
 			msg.ParentID = parentID
-			client.TrySend(msg)
+			h.emit(client, client.SessionID, runID, msg)
 
 		case agent.ChatEventToolCall:
 			if currentRound == 0 {
@@ -302,7 +536,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Visibility: step.Visibility,
 			})
 			msg.ParentID = parentID
-			client.TrySend(msg)
+			h.emit(client, client.SessionID, runID, msg)
 
 		case agent.ChatEventToolResult:
 			if currentRound == 0 {
@@ -323,7 +557,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Attachments: attachments,
 			})
 			msg.ParentID = parentID
-			client.TrySend(msg)
+			h.emit(client, client.SessionID, runID, msg)
 
 		case agent.ChatEventContent:
 			fullResponse.WriteString(evt.Content)
@@ -332,7 +566,7 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Done:    false,
 			})
 			msg.ParentID = parentID
-			client.TrySend(msg)
+			h.emit(client, client.SessionID, runID, msg)
 
 		case agent.ChatEventDone:
 			if evt.Content != "" {
@@ -349,14 +583,20 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 				Attachments:  turnAttachments,
 			})
 			endMsg.ParentID = parentID
-			client.TrySend(endMsg)
+			h.emit(client, client.SessionID, runID, endMsg)
 			sendIdle()
-			return
+			return nil
 
 		case agent.ChatEventError:
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			sendError(evt.Err)
-			return
+			return evt.Err
 		}
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
 	if fullResponse.Len() > 0 {
@@ -368,9 +608,10 @@ func (h *AgentHandler) streamChat(ctx context.Context, client *Client, data Chat
 			Attachments:  turnAttachments,
 		})
 		endMsg.ParentID = parentID
-		client.TrySend(endMsg)
+		h.emit(client, client.SessionID, runID, endMsg)
 	}
 	sendIdle()
+	return nil
 }
 
 type toolAttachmentPayload struct {
@@ -597,12 +838,43 @@ func appendUniqueAttachments(attachments []gateway.Attachment, candidates ...gat
 
 // CancelSession 取消指定 session 的进行中请求
 func (h *AgentHandler) CancelSession(sessionID string) {
+	h.cancelSession(sessionID)
+}
+
+func (h *AgentHandler) cancelSession(sessionID string) []*queuedRun {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if cancel, ok := h.pending[sessionID]; ok {
-		cancel()
-		delete(h.pending, sessionID)
+	runner := h.runners[sessionID]
+	var cancel context.CancelFunc
+	var queued []*queuedRun
+	var cancelled []*queuedRun
+	if runner != nil {
+		runner.cancelled = true
+		if runner.active != nil {
+			cancelled = append(cancelled, runner.active)
+		}
+		cancel = runner.cancel
+		queued = append(queued, runner.queue...)
+		runner.queue = nil
+		if runner.active == nil {
+			if done := h.done[sessionID]; done != nil {
+				close(done)
+				delete(h.done, sessionID)
+			}
+		}
 	}
+	if cancel == nil {
+		cancel = h.pending[sessionID]
+	}
+	delete(h.pending, sessionID)
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	for _, run := range queued {
+		_ = h.store.updateRun(sessionID, run.id, func(record *persistedRun) { record.State = "cancelled" })
+	}
+	cancelled = append(cancelled, queued...)
+	return cancelled
 }
 
 // PendingCount 返回进行中的请求数
@@ -610,6 +882,30 @@ func (h *AgentHandler) PendingCount() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return len(h.pending)
+}
+
+// WaitSession waits for the handler goroutine to exit after cancellation.
+// It is useful to make resource cleanup deterministic for callers that own
+// temporary runtime directories.
+func (h *AgentHandler) WaitSession(sessionID string, timeout time.Duration) bool {
+	h.mu.Lock()
+	done := h.done[sessionID]
+	h.mu.Unlock()
+	if done == nil {
+		return true
+	}
+	if timeout <= 0 {
+		<-done
+		return true
+	}
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
 }
 
 func (h *AgentHandler) ensureSession(sessionID string) string {

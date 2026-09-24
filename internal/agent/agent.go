@@ -2033,6 +2033,7 @@ ChatEvent 描述面向上层流式 UI 的聊天事件。
 type ChatEvent struct {
 	Type        ChatEventType
 	Content     string
+	TaskID      string // durable foreground task identifier, when available
 	Name        string // 工具名（Type=EventToolCall 时）
 	Args        string // 工具参数
 	Result      string // 工具结果

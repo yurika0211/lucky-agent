@@ -245,6 +245,8 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	// v0.18.0: WebSocket Hub
 	wsHandler := websocket.NewAgentHandler(a)
 	wsHub := websocket.NewHub(wsHandler, websocket.DefaultHubConfig())
+	wsHandler.SetEventSink(wsHub.SendToSession)
+	wsHandler.Start()
 	go wsHub.Run()
 
 	// v0.22.0: 多 Agent 协作

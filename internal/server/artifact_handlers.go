@@ -194,6 +194,18 @@ func (s *Server) resolveArtifactPath(relative string) (artifactRoot, string, err
 		if target != rootPath && !strings.HasPrefix(target, rootPath+string(filepath.Separator)) {
 			return artifactRoot{}, "", fmt.Errorf("path escapes artifact root")
 		}
+		realRoot, err := filepath.EvalSymlinks(rootPath)
+		if err != nil {
+			return artifactRoot{}, "", err
+		}
+		realTarget, err := filepath.EvalSymlinks(target)
+		if err != nil {
+			return artifactRoot{}, "", err
+		}
+		rel, err := filepath.Rel(realRoot, realTarget)
+		if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return artifactRoot{}, "", fmt.Errorf("path escapes artifact root through symlink")
+		}
 		return root, target, nil
 	}
 	return artifactRoot{}, "", fmt.Errorf("unsupported artifact root")

@@ -41,7 +41,9 @@ type queuedChatRequest struct {
 }
 
 type chatQueue struct {
-	requests []*queuedChatRequest
+	running    bool
+	generation uint64
+	requests   []*queuedChatRequest
 }
 
 type chatSessionsData struct {
@@ -89,6 +91,8 @@ type Handler struct {
 	logPrefix         string
 	finalAnswerOnly   bool
 	deliveryGuidance  func(string) string
+	workerWG          sync.WaitGroup
+	workerGeneration  uint64
 }
 
 func NewHandler(adapter sender, agentRuntime *agent.Agent) *Handler {
@@ -1691,7 +1695,13 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 			h.mu.Unlock()
 		}()
 
-		cancelled := h.cancelAllChatTasks()
+		cancelled, workersStopped := h.cancelAllChatTasksAndWait()
+		if !workersStopped {
+			if replyTo != nil {
+				_ = h.reply(context.Background(), replyTo, fmt.Sprintf("%s重启已中止：仍有任务未退出。\n已取消任务：%d", h.display(), cancelled))
+			}
+			return
+		}
 		result, err := gateway.RestartGateway(context.Background(), h.adapter, gateway.RestartOptions{
 			SettleDelay:  300 * time.Millisecond,
 			ReadyTimeout: 15 * time.Second,
@@ -1700,7 +1710,11 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 		if err != nil {
 			fmt.Printf("[%s] restart failed: %v\n", h.logPrefixValue(), err)
 			if replyTo != nil {
-				_ = h.reply(context.Background(), replyTo, fmt.Sprintf("%s重启失败：%v\n已取消任务：%d", h.display(), err, cancelled))
+				prefix := h.display() + "重启失败"
+				if result.Recovered {
+					prefix = h.display() + "首次重启失败，但已恢复接收消息"
+				}
+				_ = h.reply(context.Background(), replyTo, fmt.Sprintf("%s：%v\n已取消任务：%d", prefix, err, cancelled))
 			}
 			return
 		}
@@ -1726,12 +1740,23 @@ func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, i
 		msg:   msg,
 		input: input,
 	}
-	position, startWorker := h.enqueueChatRequest(msg.Chat.ID, req)
+	position, startWorker, generation := h.enqueueChatRequestWithGeneration(msg.Chat.ID, req)
+	if position == 0 {
+		return h.reply(ctx, msg, h.display()+"正在重启中，请稍候。")
+	}
 	if position > 1 {
 		h.notifyQueued(msg, position-1)
 	}
 	if startWorker {
-		go h.runChatQueue(msg.Chat.ID)
+		h.mu.Lock()
+		launch := !h.restarting && h.workerGeneration == generation
+		if launch {
+			h.workerWG.Add(1)
+		}
+		h.mu.Unlock()
+		if launch {
+			go h.runChatQueueGeneration(msg.Chat.ID, generation)
+		}
 	}
 	return nil
 }
@@ -1769,26 +1794,55 @@ func inputWithMediaDeliveryGuidance(input agent.UserTurnInput, guidance func(str
 }
 
 func (h *Handler) enqueueChatRequest(chatID string, req *queuedChatRequest) (position int, startWorker bool) {
+	position, startWorker, _ = h.enqueueChatRequestWithGeneration(chatID, req)
+	return position, startWorker
+}
+
+func (h *Handler) enqueueChatRequestWithGeneration(chatID string, req *queuedChatRequest) (position int, startWorker bool, generation uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.restarting {
+		return 0, false, h.workerGeneration
+	}
+	generation = h.workerGeneration
 
 	q := h.queues[chatID]
 	if q == nil {
-		q = &chatQueue{}
+		q = &chatQueue{generation: generation}
 		h.queues[chatID] = q
 	}
 	q.requests = append(q.requests, req)
 	position = len(q.requests)
-	startWorker = h.tasks[chatID] == nil
-	return position, startWorker
+	if !q.running {
+		q.running = true
+		startWorker = true
+	}
+	return position, startWorker, generation
 }
 
 func (h *Handler) dequeueChatRequest(chatID string) (*queuedChatRequest, bool) {
+	h.mu.RLock()
+	q := h.queues[chatID]
+	gen := h.workerGeneration
+	if q != nil {
+		gen = q.generation
+	}
+	h.mu.RUnlock()
+	return h.dequeueChatRequestGeneration(chatID, gen)
+}
+
+func (h *Handler) dequeueChatRequestGeneration(chatID string, generation uint64) (*queuedChatRequest, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if generation != h.workerGeneration {
+		return nil, false
+	}
 
 	q := h.queues[chatID]
 	if q == nil || len(q.requests) == 0 {
+		if q != nil {
+			q.running = false
+		}
 		delete(h.queues, chatID)
 		return nil, false
 	}
@@ -1802,8 +1856,20 @@ func (h *Handler) dequeueChatRequest(chatID string) (*queuedChatRequest, bool) {
 }
 
 func (h *Handler) runChatQueue(chatID string) {
+	h.mu.RLock()
+	q := h.queues[chatID]
+	generation := h.workerGeneration
+	if q != nil {
+		generation = q.generation
+	}
+	h.mu.RUnlock()
+	h.runChatQueueGeneration(chatID, generation)
+}
+
+func (h *Handler) runChatQueueGeneration(chatID string, generation uint64) {
+	defer h.workerWG.Done()
 	for {
-		req, ok := h.dequeueChatRequest(chatID)
+		req, ok := h.dequeueChatRequestGeneration(chatID, generation)
 		if !ok {
 			return
 		}
@@ -1861,7 +1927,13 @@ func (h *Handler) cancelChatTask(chatID string) bool {
 
 // cancelAllChatTasks cancels every in-flight chat task and drops queued work.
 func (h *Handler) cancelAllChatTasks() int {
+	cancelled, _ := h.cancelAllChatTasksAndWait()
+	return cancelled
+}
+
+func (h *Handler) cancelAllChatTasksAndWait() (int, bool) {
 	h.mu.Lock()
+	h.workerGeneration++
 	tasks := h.tasks
 	h.tasks = make(map[string]*chatTask)
 	h.queues = make(map[string]*chatQueue)
@@ -1875,7 +1947,15 @@ func (h *Handler) cancelAllChatTasks() int {
 		task.cancel()
 		cancelled++
 	}
-	return cancelled
+	done := make(chan struct{})
+	go func() { h.workerWG.Wait(); close(done) }()
+	select {
+	case <-done:
+		return cancelled, true
+	case <-time.After(5 * time.Second):
+		fmt.Printf("[%s] timed out waiting for chat workers\n", h.logPrefixValue())
+		return cancelled, false
+	}
 }
 
 func (h *Handler) restartAllowed(msg *gateway.Message) bool {
