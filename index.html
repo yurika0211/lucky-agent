@@ -664,6 +664,10 @@
         </a>
       </div>
       <div class="flex items-center gap-2">
+        <a href="./download.html" class="inline-flex h-8 items-center gap-1.5 rounded border px-2.5 text-xs font-semibold no-underline" style="border-color: var(--line); background: var(--panel); color: var(--text);" title="下载安装包">
+          <i data-lucide="download" class="h-3.5 w-3.5"></i>
+          <span>下载</span>
+        </a>
         <button type="button" @click="graphOpen = true; ensureModalSim(); $nextTick(() => refreshIcons())" class="grid h-8 w-8 place-items-center rounded border" style="border-color: var(--line); background: var(--panel); color: var(--text);" title="Interactive Graph">
           <i data-lucide="network" class="h-4 w-4"></i>
         </button>
@@ -1074,6 +1078,7 @@
             y: 12,
             summary: 'LuckyAgent 的部署主线是 Config First：所有入口围绕同一份 HOME、config.json、SOUL、记忆、RAG 和消息网关运行。',
             points: [
+              '小白用户可直接打开下载页选择系统安装包：./download.html。',
               '核心入口包括 lh tui、lh chat、lh serve、lh msg-gateway start。',
               '部署路径包括源码运行、开发 Compose、生产 Compose 和镜像直跑。',
               '服务健康检查固定为 GET /api/v1/health。',
@@ -1102,9 +1107,9 @@
             ],
             related: ['config', 'runtime', 'commands', 'source'],
             commands: [
-              { label: 'Linux', body: 'curl -fsSL https://yurika0211.github.io/luckyagent/install-lh.sh | sh\nexport PATH="$HOME/.local/bin:$PATH"\nlh init\nlh config set provider openai\nlh config set api_key sk-your-api-key\nlh config set model gpt-5.4-mini\nlh tui' },
-              { label: 'macOS', body: 'curl -fsSL https://yurika0211.github.io/luckyagent/install-lh.sh | sh\necho \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc\nexec zsh -l\nlh init\nlh tui' },
-              { label: 'Windows PowerShell', body: 'iwr https://yurika0211.github.io/luckyagent/install-lh.ps1 -OutFile "$env:TEMP\\install-lh.ps1"\npowershell -ExecutionPolicy Bypass -File "$env:TEMP\\install-lh.ps1" -Prefix "$HOME\\.local\\bin"\n$env:Path = "$HOME\\.local\\bin;$env:Path"\nlh.exe init\nlh.exe tui' },
+              { label: 'Linux', body: 'curl -fsSL https://yurika0211.github.io/lucky-agent/install-lh.sh | sh\nexport PATH="$HOME/.local/bin:$PATH"\nlh init\nlh config set provider openai\nlh config set api_key sk-your-api-key\nlh config set model gpt-5.4-mini\nlh tui' },
+              { label: 'macOS', body: 'curl -fsSL https://yurika0211.github.io/lucky-agent/install-lh.sh | sh\necho \'export PATH="$HOME/.local/bin:$PATH"\' >> ~/.zshrc\nexec zsh -l\nlh init\nlh tui' },
+              { label: 'Windows PowerShell', body: 'iwr https://yurika0211.github.io/lucky-agent/install-lh.ps1 -OutFile "$env:TEMP\\install-lh.ps1"\npowershell -ExecutionPolicy Bypass -File "$env:TEMP\\install-lh.ps1" -Prefix "$HOME\\.local\\bin"\n$env:Path = "$HOME\\.local\\bin;$env:Path"\nlh.exe init\nlh.exe tui' },
               { label: '指定版本或目录', body: 'sh scripts/install-lh.sh v0.54.1 "$HOME/bin"\n# Windows:\npowershell -ExecutionPolicy Bypass -File .\\scripts\\install-lh.ps1 -Version v0.54.1 -Prefix "$HOME\\bin"\n# 源码开发时仍可显式指定 UI:\nlh tui --ui-dir ./UI' }
             ]
           },

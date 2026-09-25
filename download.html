@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/png" href="public/favicon.png" />
+  <title>LuckyAgent 下载</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lucide@latest/dist/umd/lucide.min.js"></script>
+  <script>
+    window.tailwind = window.tailwind || {};
+    window.tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'PingFang SC', 'Microsoft YaHei', 'sans-serif']
+          }
+        }
+      }
+    };
+  </script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Roboto+Mono:wght@400;500&display=swap');
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; }
+    .theme-light {
+      --bg: #f6f4ec;
+      --bg-soft: #f2f0e7;
+      --panel: #ffffff;
+      --line: #e2e1d9;
+      --line-strong: #b7b5ac;
+      --text: #1d1d1b;
+      --muted: #6f6e69;
+      --faint: #9a9891;
+      --accent: #24837b;
+      --accent-soft: rgba(36, 131, 123, .12);
+      --warn: #bc5215;
+      --code: #1b1f26;
+      --code-text: #e9efe9;
+      --shadow: 0 18px 50px rgba(29, 29, 27, .08);
+    }
+    .theme-dark {
+      --bg: #13141c;
+      --bg-soft: #1a1b26;
+      --panel: #191a27;
+      --line: #2a2c3d;
+      --line-strong: #414868;
+      --text: #c0c8e0;
+      --muted: #8c91aa;
+      --faint: #5d637c;
+      --accent: #3aa99f;
+      --accent-soft: rgba(58, 169, 159, .16);
+      --warn: #da702c;
+      --code: #0f1117;
+      --code-text: #dce6df;
+      --shadow: 0 18px 50px rgba(0, 0, 0, .35);
+    }
+    .theme-light, .theme-dark {
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(36,131,123,.08), transparent 28%),
+        radial-gradient(circle at top right, rgba(45,111,147,.08), transparent 24%),
+        var(--bg);
+      color: var(--text);
+      font-family: "DM Sans", -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    a { color: inherit; }
+    .site-header {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      height: 58px;
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(14px);
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+    }
+    .brand-mark { width: 28px; height: 28px; color: var(--accent); }
+    .hero {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 48px 20px 24px;
+    }
+    .hero-card {
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: color-mix(in srgb, var(--panel) 92%, transparent);
+      box-shadow: var(--shadow);
+      padding: 28px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 6px 12px;
+      background: var(--bg-soft);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border-radius: 14px;
+      border: 1px solid transparent;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      text-decoration: none;
+      transition: transform .15s ease, background .15s ease, border-color .15s ease, opacity .15s ease;
+      cursor: pointer;
+    }
+    .btn:hover { transform: translateY(-1px); }
+    .btn-primary {
+      background: var(--accent);
+      color: white;
+    }
+    .btn-secondary {
+      background: var(--panel);
+      border-color: var(--line);
+      color: var(--text);
+    }
+    .btn-ghost {
+      background: transparent;
+      border-color: var(--line);
+      color: var(--muted);
+    }
+    .btn[disabled], .btn.is-disabled {
+      opacity: .45;
+      pointer-events: none;
+      transform: none;
+    }
+    .layout {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 8px 20px 72px;
+      display: grid;
+      gap: 18px;
+    }
+    .section-title {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .section-title h2 {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 700;
+    }
+    .section-title p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .grid-cards {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 14px;
+    }
+    .card {
+      grid-column: span 12;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: var(--panel);
+      padding: 18px;
+      box-shadow: var(--shadow);
+    }
+    @media (min-width: 800px) {
+      .card.span-6 { grid-column: span 6; }
+      .card.span-4 { grid-column: span 4; }
+      .card.span-8 { grid-column: span 8; }
+    }
+    .card-kicker {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+    .os-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .os-badge i, .os-badge svg { width: 18px; height: 18px; color: var(--accent); }
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    .hint-list {
+      margin: 12px 0 0;
+      padding-left: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .code-box {
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--code);
+      color: var(--code-text);
+      overflow: hidden;
+    }
+    .code-box-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      color: rgba(233,239,233,.78);
+      font-size: 12px;
+    }
+    .code-box pre {
+      margin: 0;
+      padding: 14px 14px 16px;
+      overflow-x: auto;
+      font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12.5px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .copy-btn {
+      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(255,255,255,.04);
+      color: rgba(233,239,233,.9);
+      border-radius: 10px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .status-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
+    }
+    .dot.warn { background: var(--warn); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent); }
+    .footer {
+      max-width: 1120px;
+      margin: 0 auto;
+      padding: 0 20px 40px;
+      color: var(--faint);
+      font-size: 12px;
+    }
+    .footer a { color: var(--muted); text-decoration: none; }
+    .footer a:hover { color: var(--accent); }
+    .skeleton {
+      height: 14px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--bg-soft), color-mix(in srgb, var(--line) 55%, transparent), var(--bg-soft));
+      background-size: 200% 100%;
+      animation: shimmer 1.2s linear infinite;
+    }
+    @keyframes shimmer {
+      0% { background-position: 200% 0; }
+      100% { background-position: -200% 0; }
+    }
+  </style>
+</head>
+<body>
+  <div x-data="downloadPage()" x-init="init()" :class="dark ? 'theme-dark' : 'theme-light'">
+    <header class="site-header flex items-center justify-between px-5">
+      <div class="flex items-center gap-3">
+        <a href="./" class="flex items-center gap-3 text-sm font-semibold no-underline" style="color: var(--text);">
+          <svg class="brand-mark" viewBox="0 0 34 34" fill="none" aria-hidden="true">
+            <path d="M4 28L14 5L30 28H4Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"></path>
+            <path d="M14 5V28" stroke="currentColor" stroke-width="2.2"></path>
+            <path d="M14 19L25 28" stroke="currentColor" stroke-width="2.2"></path>
+          </svg>
+          <span>LuckyAgent Downloads</span>
+        </a>
+      </div>
+      <div class="flex items-center gap-2">
+        <a href="./" class="btn btn-ghost" style="padding: 8px 12px;">知识库</a>
+        <button type="button" class="btn btn-ghost" style="padding: 8px 12px;" @click="dark = !dark; $nextTick(() => refreshIcons())" title="切换主题">
+          <i :data-lucide="dark ? 'sun' : 'moon'" class="h-4 w-4"></i>
+        </button>
+      </div>
+    </header>
+
+    <section class="hero">
+      <div class="hero-card">
+        <div class="flex flex-wrap items-center gap-3 mb-4">
+          <span class="pill"><i data-lucide="package" class="h-3.5 w-3.5"></i> 面向小白的安装包下载页</span>
+          <span class="pill" x-show="desktop.tag" x-text="'Desktop ' + desktop.tag"></span>
+          <span class="pill" x-show="android.tag" x-text="'Android ' + android.tag"></span>
+        </div>
+        <div class="grid gap-6 lg:grid-cols-[1.4fr_.9fr] items-start">
+          <div>
+            <h1 class="text-3xl sm:text-4xl font-bold tracking-tight m-0 mb-3">下载 LuckyAgent</h1>
+            <p class="m-0 text-[15px] leading-7" style="color: var(--muted); max-width: 42rem;">
+              不用翻 GitHub Release。按你的系统点下载即可。页面会自动读取最新正式版；
+              桌面端优先给安装包，命令行用户也能一键复制安装命令。
+            </p>
+            <div class="actions">
+              <a class="btn btn-primary" :class="!primaryHref && 'is-disabled'" :href="primaryHref || '#'" :download="primaryDownload || null">
+                <i data-lucide="download" class="h-4 w-4"></i>
+                <span x-text="primaryLabel">检测系统中…</span>
+              </a>
+              <a class="btn btn-secondary" href="#all-packages">
+                <i data-lucide="layout-grid" class="h-4 w-4"></i>
+                查看全部安装包
+              </a>
+              <a class="btn btn-ghost" :href="desktop.htmlUrl || 'https://github.com/yurika0211/lucky-agent/releases'" target="_blank" rel="noreferrer">
+                <i data-lucide="github" class="h-4 w-4"></i>
+                GitHub Release
+              </a>
+            </div>
+          </div>
+          <div class="rounded-2xl border p-4" style="border-color: var(--line); background: var(--bg-soft);">
+            <div class="status-line mb-3">
+              <span class="dot" :class="error ? 'warn' : ''"></span>
+              <span x-text="statusText">正在读取最新版本…</span>
+            </div>
+            <div class="grid gap-2 text-sm" style="color: var(--muted);">
+              <div class="flex justify-between gap-3"><span>检测到的系统</span><strong style="color: var(--text);" x-text="detectedLabel">—</strong></div>
+              <div class="flex justify-between gap-3"><span>桌面端最新版</span><strong style="color: var(--text);" x-text="desktop.tag || '—'">—</strong></div>
+              <div class="flex justify-between gap-3"><span>Android 最新版</span><strong style="color: var(--text);" x-text="android.tag || '—'">—</strong></div>
+              <div class="flex justify-between gap-3"><span>更新时间</span><strong style="color: var(--text);" x-text="desktop.publishedAt || '—'">—</strong></div>
+            </div>
+            <p class="meta mt-4 mb-0" x-show="error" x-text="error"></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <main class="layout">
+      <section>
+        <div class="section-title">
+          <div>
+            <h2>推荐下载</h2>
+            <p>按平台分好了。不懂终端的用户，优先点绿色/主按钮安装包。</p>
+          </div>
+        </div>
+        <div class="grid-cards">
+          <template x-for="card in platformCards" :key="card.id">
+            <article class="card" :class="card.span">
+              <div class="card-kicker">
+                <div class="os-badge">
+                  <i :data-lucide="card.icon"></i>
+                  <span x-text="card.title"></span>
+                </div>
+                <div class="meta" x-text="card.badge"></div>
+              </div>
+              <h3 x-text="card.headline"></h3>
+              <p x-text="card.desc"></p>
+              <div class="actions">
+                <a class="btn btn-primary" :class="!card.primary && 'is-disabled'" :href="card.primary ? card.primary.url : '#'" :download="card.primary && card.primary.downloadName ? card.primary.downloadName : null">
+                  <i data-lucide="download" class="h-4 w-4"></i>
+                  <span x-text="card.primary ? ('下载 ' + card.primary.label) : '暂无'"></span>
+                </a>
+                <template x-if="card.secondary">
+                  <a class="btn btn-secondary" :href="card.secondary.url" :download="card.secondary.downloadName || null">
+                    <span x-text="card.secondary.label"></span>
+                  </a>
+                </template>
+              </div>
+              <ul class="hint-list">
+                <template x-for="tip in card.tips" :key="tip">
+                  <li x-text="tip"></li>
+                </template>
+              </ul>
+              <div class="meta mt-3" x-show="card.primary" x-text="card.primary ? (card.primary.name + ' · ' + formatSize(card.primary.size)) : ''"></div>
+            </article>
+          </template>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <div>
+            <h2>一键安装命令</h2>
+            <p>适合会打开终端的用户。脚本会自动拉取最新 Release。</p>
+          </div>
+        </div>
+        <div class="grid-cards">
+          <article class="card span-6">
+            <div class="os-badge mb-3"><i data-lucide="terminal"></i><span>Linux / macOS</span></div>
+            <div class="code-box">
+              <div class="code-box-head">
+                <span>install-lh.sh</span>
+                <button type="button" class="copy-btn" @click="copyText(linuxInstall)">复制</button>
+              </div>
+              <pre x-text="linuxInstall"></pre>
+            </div>
+          </article>
+          <article class="card span-6">
+            <div class="os-badge mb-3"><i data-lucide="square-terminal"></i><span>Windows PowerShell</span></div>
+            <div class="code-box">
+              <div class="code-box-head">
+                <span>install-lh.ps1</span>
+                <button type="button" class="copy-btn" @click="copyText(windowsInstall)">复制</button>
+              </div>
+              <pre x-text="windowsInstall"></pre>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="all-packages">
+        <div class="section-title">
+          <div>
+            <h2>全部安装包</h2>
+            <p>自动同步 GitHub Release assets，发新版后这里会跟着变。</p>
+          </div>
+          <button type="button" class="btn btn-ghost" style="padding: 8px 12px;" @click="load()" :disabled="loading">
+            <i data-lucide="refresh-cw" class="h-4 w-4"></i>
+            刷新
+          </button>
+        </div>
+
+        <div class="grid-cards" x-show="loading">
+          <div class="card span-6"><div class="skeleton mb-3"></div><div class="skeleton" style="width:60%"></div></div>
+          <div class="card span-6"><div class="skeleton mb-3"></div><div class="skeleton" style="width:60%"></div></div>
+        </div>
+
+        <div class="grid-cards" x-show="!loading">
+          <article class="card span-8">
+            <div class="card-kicker">
+              <div class="os-badge"><i data-lucide="monitor"></i><span>Desktop / CLI</span></div>
+              <a class="meta" :href="desktop.htmlUrl || '#'" target="_blank" rel="noreferrer" x-text="desktop.tag ? ('Release ' + desktop.tag) : '—'"></a>
+            </div>
+            <div class="grid gap-3">
+              <template x-if="!desktop.assets.length">
+                <p class="meta m-0">还没有读取到桌面端资源。</p>
+              </template>
+              <template x-for="asset in desktop.assets" :key="asset.name">
+                <div class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border px-3 py-3" style="border-color: var(--line); background: var(--bg-soft);">
+                  <div class="min-w-0">
+                    <div class="font-semibold text-sm truncate" x-text="friendlyName(asset.name)"></div>
+                    <div class="meta truncate" x-text="asset.name + ' · ' + formatSize(asset.size)"></div>
+                  </div>
+                  <a class="btn btn-secondary" style="padding: 8px 12px;" :href="asset.url" :download="asset.name">下载</a>
+                </div>
+              </template>
+            </div>
+          </article>
+
+          <article class="card span-4">
+            <div class="card-kicker">
+              <div class="os-badge"><i data-lucide="smartphone"></i><span>Android</span></div>
+              <a class="meta" :href="android.htmlUrl || '#'" target="_blank" rel="noreferrer" x-text="android.tag ? ('Release ' + android.tag) : '—'"></a>
+            </div>
+            <div class="grid gap-3">
+              <template x-if="!android.assets.length">
+                <p class="meta m-0">还没有读取到 Android 资源。</p>
+              </template>
+              <template x-for="asset in android.assets" :key="asset.name">
+                <div class="rounded-2xl border px-3 py-3" style="border-color: var(--line); background: var(--bg-soft);">
+                  <div class="font-semibold text-sm" x-text="friendlyName(asset.name)"></div>
+                  <div class="meta mb-3" x-text="asset.name + ' · ' + formatSize(asset.size)"></div>
+                  <a class="btn btn-primary w-full" :href="asset.url" :download="asset.name">下载 APK</a>
+                </div>
+              </template>
+              <p class="meta m-0">Android 来自独立仓库 <code>luckyagent-android</code>。</p>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">
+          <div>
+            <h2>下载后怎么用</h2>
+            <p>给完全不熟 GitHub 的用户看的最短路径。</p>
+          </div>
+        </div>
+        <div class="grid-cards">
+          <article class="card span-4">
+            <h3>Windows</h3>
+            <ul class="hint-list">
+              <li>下载 <strong>Setup 安装包</strong> 并双击安装。</li>
+              <li>若只有 zip，解压后运行里面的启动脚本 / `lh.exe`。</li>
+              <li>安装后可在终端执行 `lh init`，再 `lh tui` 或打开 Desktop。</li>
+            </ul>
+          </article>
+          <article class="card span-4">
+            <h3>macOS</h3>
+            <ul class="hint-list">
+              <li>优先下载对应芯片的 <strong>.pkg</strong> 安装。</li>
+              <li>Apple Silicon 选 `arm64`，Intel 选 `amd64`。</li>
+              <li>若系统拦截，可在“隐私与安全性”里允许打开。</li>
+            </ul>
+          </article>
+          <article class="card span-4">
+            <h3>Linux / Android</h3>
+            <ul class="hint-list">
+              <li>Debian/Ubuntu 优先用 `.deb`；其他发行版可用 `.tar.gz`。</li>
+              <li>Android 下载 APK 后允许“未知来源”安装。</li>
+              <li>更完整的部署说明见知识库里的 Install / Runtime 章节。</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="flex flex-wrap gap-x-4 gap-y-2">
+        <span>链接自动来自 GitHub Releases，不必每次手改版本号。</span>
+        <a href="https://github.com/yurika0211/lucky-agent" target="_blank" rel="noreferrer">lucky-agent</a>
+        <a href="https://github.com/yurika0211/luckyagent-android" target="_blank" rel="noreferrer">luckyagent-android</a>
+        <a href="./">返回知识库</a>
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    function downloadPage() {
+      const siteBase = 'https://yurika0211.github.io/lucky-agent';
+      return {
+        dark: window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches,
+        loading: true,
+        error: '',
+        detected: { os: 'unknown', arch: 'unknown' },
+        desktop: { tag: '', htmlUrl: '', publishedAt: '', assets: [] },
+        android: { tag: '', htmlUrl: '', publishedAt: '', assets: [] },
+        linuxInstall: `curl -fsSL ${siteBase}/install-lh.sh | sh\nexport PATH="$HOME/.local/bin:$PATH"\nlh init\nlh tui`,
+        windowsInstall: `iwr ${siteBase}/install-lh.ps1 -OutFile "$env:TEMP\\install-lh.ps1"\npowershell -ExecutionPolicy Bypass -File "$env:TEMP\\install-lh.ps1"\n$env:Path = "$HOME\\.local\\bin;$env:Path"\nlh.exe init\nlh.exe tui`,
+
+        get detectedLabel() {
+          const osMap = { windows: 'Windows', mac: 'macOS', linux: 'Linux', android: 'Android', unknown: '未知' };
+          const archMap = { arm64: 'ARM64', amd64: 'x64 / amd64', unknown: '' };
+          const os = osMap[this.detected.os] || this.detected.os;
+          const arch = archMap[this.detected.arch] || this.detected.arch;
+          return arch ? `${os} · ${arch}` : os;
+        },
+
+        get statusText() {
+          if (this.loading) return '正在读取最新版本…';
+          if (this.error) return '读取 GitHub Release 时遇到问题';
+          return '已同步最新正式版';
+        },
+
+        get primaryAsset() {
+          return this.pickRecommended(this.detected.os, this.detected.arch);
+        },
+
+        get primaryHref() {
+          return this.primaryAsset ? this.primaryAsset.url : '';
+        },
+
+        get primaryDownload() {
+          return this.primaryAsset ? this.primaryAsset.name : '';
+        },
+
+        get primaryLabel() {
+          if (this.loading) return '检测系统中…';
+          if (!this.primaryAsset) return '查看全部安装包';
+          return `下载 ${this.primaryAsset.label}`;
+        },
+
+        get platformCards() {
+          const win = this.findDesktop([/LuckyAgent-Setup-.*\.exe$/i, /lh-windows-amd64\.zip$/i]);
+          const macArm = this.findDesktop([/LuckyAgent-.*-macos-arm64\.pkg$/i, /lh-darwin-arm64\.tar\.gz$/i]);
+          const macIntel = this.findDesktop([/LuckyAgent-.*-macos-amd64\.pkg$/i, /lh-darwin-amd64\.tar\.gz$/i]);
+          const linuxDeb = this.findDesktop([/luckyagent_.*_amd64\.deb$/i, /lh-linux-amd64\.tar\.gz$/i]);
+          const linuxArm = this.findDesktop([/luckyagent_.*_arm64\.deb$/i, /lh-linux-arm64\.tar\.gz$/i]);
+          const apk = this.android.assets.find(a => /\.apk$/i.test(a.name)) || this.android.assets[0] || null;
+
+          return [
+            {
+              id: 'windows',
+              span: 'span-6',
+              icon: 'app-window',
+              title: 'Windows',
+              badge: this.desktop.tag || '',
+              headline: '最省事：Setup 安装包',
+              desc: '适合大多数 Windows 用户。下载后双击安装，不必先会用 GitHub。',
+              primary: win[0] ? this.decorate(win[0], 'Windows 安装包') : null,
+              secondary: win[1] ? this.decorate(win[1], '便携版 ZIP') : null,
+              tips: ['优先选 Setup.exe', '公司电脑若拦截，可改用 ZIP 便携版', 'CLI 用户也可复制下方 PowerShell 命令']
+            },
+            {
+              id: 'mac',
+              span: 'span-6',
+              icon: 'apple',
+              title: 'macOS',
+              badge: this.desktop.tag || '',
+              headline: '按芯片选择 .pkg',
+              desc: 'M 系列选 ARM64，Intel 选 x64。不会看芯片时，用页面顶部的“推荐下载”。',
+              primary: macArm[0] ? this.decorate(macArm[0], 'Apple Silicon .pkg') : null,
+              secondary: macIntel[0] ? this.decorate(macIntel[0], 'Intel .pkg') : null,
+              tips: ['Apple Silicon = arm64', 'Intel = amd64', '也可以用 install-lh.sh']
+            },
+            {
+              id: 'linux',
+              span: 'span-6',
+              icon: 'linux',
+              title: 'Linux',
+              badge: this.desktop.tag || '',
+              headline: 'deb 或通用 tar.gz',
+              desc: 'Ubuntu / Debian 优先 deb；其他发行版用对应架构的 tar.gz。',
+              primary: linuxDeb[0] ? this.decorate(linuxDeb[0], 'amd64 .deb') : null,
+              secondary: linuxArm[0] ? this.decorate(linuxArm[0], 'arm64 .deb') : null,
+              tips: ['x86_64 电脑选 amd64', '树莓派 / ARM 设备选 arm64', '通用包看下方完整列表']
+            },
+            {
+              id: 'android',
+              span: 'span-6',
+              icon: 'smartphone',
+              title: 'Android',
+              badge: this.android.tag || '',
+              headline: '直接下载 APK',
+              desc: 'Android 客户端独立发版。下载 APK 后在手机上允许安装即可。',
+              primary: apk ? this.decorate(apk, 'app-release.apk') : null,
+              secondary: null,
+              tips: ['来源仓库：luckyagent-android', '首次安装需允许未知来源', '版本号与桌面端不一定相同']
+            }
+          ];
+        },
+
+        init() {
+          this.detected = this.detectPlatform();
+          this.load();
+          this.$nextTick(() => this.refreshIcons());
+        },
+
+        refreshIcons() {
+          if (window.lucide && typeof window.lucide.createIcons === 'function') {
+            window.lucide.createIcons();
+          }
+        },
+
+        detectPlatform() {
+          const ua = navigator.userAgent || '';
+          const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || '';
+          let os = 'unknown';
+          if (/Android/i.test(ua)) os = 'android';
+          else if (/Win/i.test(platform) || /Windows/i.test(ua)) os = 'windows';
+          else if (/Mac/i.test(platform) || /Mac OS X/i.test(ua)) os = 'mac';
+          else if (/Linux/i.test(platform) || /Linux/i.test(ua)) os = 'linux';
+
+          let arch = 'unknown';
+          const uaArch = (navigator.userAgentData && navigator.userAgentData.architecture) || '';
+          const hay = `${ua} ${platform} ${uaArch}`.toLowerCase();
+          if (/aarch64|arm64|apple silicon/.test(hay)) arch = 'arm64';
+          else if (/x86_64|win64|amd64|intel/.test(hay)) arch = 'amd64';
+          else if (os === 'windows') arch = 'amd64';
+          else if (os === 'mac') arch = 'arm64';
+          return { os, arch };
+        },
+
+        async load() {
+          this.loading = true;
+          this.error = '';
+          try {
+            const [desktop, android] = await Promise.all([
+              this.fetchRelease('yurika0211/lucky-agent'),
+              this.fetchRelease('yurika0211/luckyagent-android')
+            ]);
+            this.desktop = desktop;
+            this.android = android;
+          } catch (err) {
+            this.error = (err && err.message) ? err.message : String(err);
+          } finally {
+            this.loading = false;
+            this.$nextTick(() => this.refreshIcons());
+          }
+        },
+
+        async fetchRelease(repo) {
+          const resp = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+            headers: { Accept: 'application/vnd.github+json' }
+          });
+          if (!resp.ok) throw new Error(`读取 ${repo} release 失败 (${resp.status})`);
+          const data = await resp.json();
+          const assets = (data.assets || []).map(a => ({
+            name: a.name,
+            url: a.browser_download_url,
+            size: a.size || 0
+          })).sort((a, b) => a.name.localeCompare(b.name));
+          return {
+            tag: data.tag_name || '',
+            htmlUrl: data.html_url || `https://github.com/${repo}/releases`,
+            publishedAt: this.formatDate(data.published_at || data.created_at || ''),
+            assets
+          };
+        },
+
+        findDesktop(patterns) {
+          const out = [];
+          for (const re of patterns) {
+            const hit = this.desktop.assets.find(a => re.test(a.name));
+            if (hit) out.push(hit);
+          }
+          return out;
+        },
+
+        decorate(asset, label) {
+          return {
+            ...asset,
+            label,
+            downloadName: asset.name
+          };
+        },
+
+        pickRecommended(os, arch) {
+          const cards = {
+            windows: () => this.findDesktop([/LuckyAgent-Setup-.*\.exe$/i, /lh-windows-amd64\.zip$/i])[0],
+            mac: () => arch === 'amd64'
+              ? this.findDesktop([/LuckyAgent-.*-macos-amd64\.pkg$/i, /lh-darwin-amd64\.tar\.gz$/i])[0]
+              : this.findDesktop([/LuckyAgent-.*-macos-arm64\.pkg$/i, /lh-darwin-arm64\.tar\.gz$/i])[0],
+            linux: () => arch === 'arm64'
+              ? this.findDesktop([/luckyagent_.*_arm64\.deb$/i, /lh-linux-arm64\.tar\.gz$/i])[0]
+              : this.findDesktop([/luckyagent_.*_amd64\.deb$/i, /lh-linux-amd64\.tar\.gz$/i])[0],
+            android: () => this.android.assets.find(a => /\.apk$/i.test(a.name)) || this.android.assets[0]
+          };
+          const asset = (cards[os] || (() => null))();
+          if (!asset) return null;
+          return this.decorate(asset, this.friendlyName(asset.name));
+        },
+
+        friendlyName(name) {
+          if (/Setup-.*\.exe$/i.test(name)) return 'Windows 安装包';
+          if (/macos-arm64\.pkg$/i.test(name)) return 'macOS Apple Silicon 安装包';
+          if (/macos-amd64\.pkg$/i.test(name)) return 'macOS Intel 安装包';
+          if (/_amd64\.deb$/i.test(name)) return 'Linux amd64 deb';
+          if (/_arm64\.deb$/i.test(name)) return 'Linux arm64 deb';
+          if (/lh-windows-amd64\.zip$/i.test(name)) return 'Windows 便携版';
+          if (/lh-darwin-arm64\.tar\.gz$/i.test(name)) return 'macOS ARM 通用包';
+          if (/lh-darwin-amd64\.tar\.gz$/i.test(name)) return 'macOS Intel 通用包';
+          if (/lh-linux-arm64\.tar\.gz$/i.test(name)) return 'Linux ARM 通用包';
+          if (/lh-linux-amd64\.tar\.gz$/i.test(name)) return 'Linux x64 通用包';
+          if (/\.apk$/i.test(name)) return 'Android APK';
+          return name;
+        },
+
+        formatSize(bytes) {
+          const n = Number(bytes || 0);
+          if (!n) return '大小未知';
+          const units = ['B', 'KB', 'MB', 'GB'];
+          let v = n;
+          let i = 0;
+          while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+          return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${units[i]}`;
+        },
+
+        formatDate(iso) {
+          if (!iso) return '';
+          try {
+            const d = new Date(iso);
+            return new Intl.DateTimeFormat('zh-CN', {
+              year: 'numeric', month: '2-digit', day: '2-digit',
+              hour: '2-digit', minute: '2-digit'
+            }).format(d);
+          } catch (_) {
+            return iso;
+          }
+        },
+
+        async copyText(text) {
+          try {
+            await navigator.clipboard.writeText(text);
+          } catch (_) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+          }
+        }
+      };
+    }
+  </script>
+</body>
+</html>
