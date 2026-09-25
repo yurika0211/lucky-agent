@@ -36,6 +36,10 @@ type runtimeConfigProvider interface {
 	Config() *config.Manager
 }
 
+type progressFeedbackRuntime interface {
+	ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error)
+}
+
 type queuedRun struct {
 	id       string
 	parentID string
@@ -462,6 +466,46 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 	toolSeq := 0
 	var pendingSteps []toolStepState
 	var turnAttachments []gateway.Attachment
+	progressSummaryEnabled, progressSummaryPrompt := h.progressSummaryConfig()
+	var roundObservations []string
+	var progressHistory []string
+	lastProgress := ""
+
+	emitRoundProgress := func(round int) bool {
+		if !progressSummaryEnabled || len(roundObservations) == 0 {
+			return false
+		}
+		runtime, ok := h.agent.(progressFeedbackRuntime)
+		if !ok {
+			return false
+		}
+		observations := append([]string(nil), roundObservations...)
+		for _, previous := range progressHistory {
+			if previous = strings.TrimSpace(previous); previous != "" {
+				observations = append([]string{"Previous user-facing update: " + previous}, observations...)
+			}
+		}
+		summaryCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		summary, err := runtime.ProgressFeedbackWithPrompt(summaryCtx, data.Message, round, observations, progressSummaryPrompt)
+		cancel()
+		if err != nil {
+			return false
+		}
+		summary = strings.TrimSpace(summary)
+		if summary == "" || summary == lastProgress {
+			return false
+		}
+		msg, _ := NewMessage(TypeReasoning, client.SessionID, ReasoningData{
+			Summary: summary,
+			Round:   round,
+			Stage:   "progress",
+		})
+		msg.ParentID = parentID
+		h.emit(client, client.SessionID, runID, msg)
+		lastProgress = summary
+		progressHistory = append(progressHistory, summary)
+		return true
+	}
 
 	sendIdle := func() {
 		idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: "idle"})
@@ -493,7 +537,15 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 				continue
 			}
 			if reasoning.Round > currentRound {
+				emittedSummary := false
+				if currentRound > 0 {
+					emittedSummary = emitRoundProgress(currentRound)
+				}
+				roundObservations = nil
 				currentRound = reasoning.Round
+				if emittedSummary {
+					continue
+				}
 			}
 			msg, _ := NewMessage(TypeReasoning, client.SessionID, reasoning)
 			msg.ParentID = parentID
@@ -524,6 +576,9 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 				Visibility: h.toolVisibility(evt.Name),
 			}
 			pendingSteps = append(pendingSteps, step)
+			if progressSummaryEnabled {
+				roundObservations = append(roundObservations, fmt.Sprintf("Tool call: %s", formatToolCallDisplay(evt.Name, evt.Args)))
+			}
 			msg, _ := NewMessage(TypeToolCall, client.SessionID, ToolCallData{
 				Name:       evt.Name,
 				Params:     parseToolParams(evt.Args),
@@ -545,6 +600,13 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 			step := matchPendingToolStep(&pendingSteps, evt.Name, currentRound)
 			attachments := h.attachmentsFromToolResult(evt.Name, evt.Result)
 			turnAttachments = appendUniqueAttachments(turnAttachments, attachments...)
+			if progressSummaryEnabled {
+				result := strings.TrimSpace(evt.Result)
+				if len(result) > 600 {
+					result = result[:600] + "..."
+				}
+				roundObservations = append(roundObservations, fmt.Sprintf("Tool result (%s): %s", evt.Name, result))
+			}
 			msg, _ := NewMessage(TypeToolResult, client.SessionID, ToolResultData{
 				Name:        evt.Name,
 				Success:     !looksLikeToolError(evt.Result),
@@ -569,6 +631,7 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 			h.emit(client, client.SessionID, runID, msg)
 
 		case agent.ChatEventDone:
+			emitRoundProgress(max(currentRound, 1))
 			if evt.Content != "" {
 				fullResponse.Reset()
 				fullResponse.WriteString(evt.Content)
@@ -933,6 +996,15 @@ func reasoningDataForEvent(content string) (ReasoningData, bool) {
 		return ReasoningData{Summary: summary, Round: round, Stage: stage}, true
 	}
 	return ReasoningData{Summary: content, Stage: "update"}, true
+}
+
+func (h *AgentHandler) progressSummaryConfig() (bool, string) {
+	provider, ok := h.agent.(runtimeConfigProvider)
+	if !ok || provider.Config() == nil {
+		return false, ""
+	}
+	cfg := provider.Config().Get()
+	return cfg.Server.ProgressSummaryWithLLM, strings.TrimSpace(cfg.Server.ProgressSummaryPrompt)
 }
 
 func extractRoundNumber(thinking string) int {

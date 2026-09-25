@@ -401,6 +401,8 @@ type ServerConfig struct {
 	MetricsAddr string   `json:"metrics_addr,omitempty"`
 	LogLevel    string   `json:"log_level,omitempty"`
 	LogFormat   string   `json:"log_format,omitempty"`
+	ProgressSummaryWithLLM bool     `json:"progress_summary_with_llm,omitempty"` // React/WebSocket 每轮是否由 LLM 生成进度摘要
+	ProgressSummaryPrompt  string   `json:"progress_summary_prompt,omitempty"`   // React/WebSocket 每轮进度摘要展示提示词
 }
 
 // DashboardConfig Dashboard 配置
@@ -2205,6 +2207,10 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Server.LogLevel = value
 	case "server.log_format":
 		m.config.Server.LogFormat = value
+	case "server.progress_summary_with_llm":
+		m.config.Server.ProgressSummaryWithLLM = parseBool(value)
+	case "server.progress_summary_prompt":
+		m.config.Server.ProgressSummaryPrompt = value
 	case "dashboard.addr":
 		m.config.Dashboard.Addr = value
 	case "autonomy.enabled":

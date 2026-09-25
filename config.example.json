@@ -232,7 +232,9 @@
     "rate_limit": 60,
     "metrics_addr": "",
     "log_level": "info",
-    "log_format": "text"
+    "log_format": "text",
+    "progress_summary_with_llm": false,
+    "progress_summary_prompt": ""
   },
   "dashboard": {
     "addr": ":8765"
