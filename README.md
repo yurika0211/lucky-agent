@@ -15,10 +15,10 @@ LuckyAgent 是一个用 Go 构建的长期运行 Agent runtime。它把 Agent lo
   <a href="public/Qgroup.png">
     <img src="https://img.shields.io/badge/QQ群-加入交流群-12b7f5?style=for-the-badge&amp;logo=tencentqq&amp;logoColor=white" alt="QQ group">
   </a>
-  <a href="https://yurika0211.github.io/luckyagent/#config">
+  <a href="https://yurika0211.github.io/lucky-agent/#config">
     <img src="https://img.shields.io/badge/配置说明-Config-237452?style=for-the-badge&amp;logo=readthedocs&amp;logoColor=white" alt="Configuration guide">
   </a>
-  <a href="https://yurika0211.github.io/luckyagent/">
+  <a href="https://yurika0211.github.io/lucky-agent/">
     <img src="https://img.shields.io/badge/部署知识库-Deployment-2d6f93?style=for-the-badge&amp;logo=docker&amp;logoColor=white" alt="Deployment knowledge base">
   </a>
   <a href="docs/API.md">
@@ -147,7 +147,7 @@ go run ./cmd/la tui --api-base http://127.0.0.1:9090 --session dashboard-main
 
 请优先阅读：
 
-[打开 LuckyAgent 部署知识库](https://yurika0211.github.io/luckyagent/)
+[打开 LuckyAgent 部署知识库](https://yurika0211.github.io/lucky-agent/)
 
 仓库中也提供了两套 Compose：
 
@@ -190,7 +190,7 @@ lh rag search "deployment"
 
 ## 文档导航
 
-- [部署知识库](https://yurika0211.github.io/luckyagent/)
+- [部署知识库](https://yurika0211.github.io/lucky-agent/)
 - [使用指南](docs/wiki/使用指南.md)：初始化、配置、CLI、API、GUI、TUI、网关和 Docker
 - [特色功能](docs/wiki/特色功能.md)：记忆、RAG、工具、自动化和多 Agent
 - [使用场景](docs/wiki/使用场景.md)：本地调试、知识库问答、机器人和团队 API
