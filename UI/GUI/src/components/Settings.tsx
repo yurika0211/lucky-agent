@@ -310,6 +310,39 @@ export function Settings({ fetchRuntime, pushActivity }: SettingsProps) {
         </div>
       </section>
 
+      <section className="settings-section" aria-labelledby="react-summary-heading">
+        <div className="section-head">
+          <div>
+            <h3 id="react-summary-heading">React round summaries</h3>
+            <p className="settings-desc">
+              When enabled, the WebSocket chat produces a short user-facing summary after each tool round, using the same presentation-prompt pattern as Telegram.
+            </p>
+          </div>
+        </div>
+        <div className="settings-card">
+          <label className="auto-scroll-toggle" htmlFor="react-summary-enabled">
+            <input
+              id="react-summary-enabled"
+              type="checkbox"
+              checked={Boolean(asObject(config.server).progress_summary_with_llm)}
+              onChange={(event) => updateNested('server', 'progress_summary_with_llm', event.target.checked)}
+            />
+            <span>Generate an LLM summary for each completed round</span>
+          </label>
+          <label className="field" htmlFor="react-summary-prompt">
+            <span>Summary presentation prompt</span>
+            <textarea
+              id="react-summary-prompt"
+              rows={6}
+              value={String(asObject(config.server).progress_summary_prompt || '')}
+              onChange={(event) => updateNested('server', 'progress_summary_prompt', event.target.value)}
+              placeholder="使用简体中文，每次写 1–2 句，说明已完成的检查、当前结论和下一步。"
+            />
+            <small>Leave blank to use the built-in concise, evidence-based style. This controls presentation only; hidden reasoning is never exposed.</small>
+          </label>
+        </div>
+      </section>
+
       <section className="settings-section" aria-labelledby="advanced-heading">
         <div className="section-head">
           <div>

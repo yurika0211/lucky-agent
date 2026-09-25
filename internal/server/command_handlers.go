@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 // commandSpec describes one slash command a UI can run.
@@ -240,9 +242,61 @@ func (s *Server) runCommand(name, args, sessionID string) (string, error) {
 		return "", fmt.Errorf("unknown skill: %s", args)
 
 	case "models":
-		models := a.ListModels(nil)
+		// `refresh` is accepted by every client surface. Runtime model
+		// configuration is re-applied before listing so custom model/catalog
+		// changes become visible immediately; provider discovery remains
+		// available through the dedicated models endpoint.
+		filter, rest := splitArg(args)
+		if strings.EqualFold(filter, "refresh") {
+			if a.Config() == nil {
+				return "", fmt.Errorf("configuration unavailable")
+			}
+			cfg := a.Config().Get()
+			discovered, err := provider.NewModelDiscovery().Discover(context.Background(), provider.ModelDiscoveryConfig{
+				Provider: cfg.Provider, APIKey: cfg.APIKey, APIBase: cfg.APIBase,
+				Model: cfg.Model, ExtraHeaders: cfg.ExtraHeaders,
+			}, true)
+			if err != nil {
+				return "", fmt.Errorf("refresh models failed: %w", err)
+			}
+			if catalog := a.Catalog(); catalog != nil {
+				for _, model := range discovered {
+					catalog.Register(model)
+				}
+			}
+			filter = ""
+			args = ""
+		} else {
+			args = strings.TrimSpace(args)
+		}
+		var kind *config.ModelKind
+		providerName := ""
+		if filter != "" {
+			if strings.EqualFold(filter, "provider") {
+				providerName = strings.TrimSpace(rest)
+				if providerName == "" {
+					return "", fmt.Errorf("usage: /models [all|chat|vision|embedding|provider <name>|refresh]")
+				}
+			} else if !strings.EqualFold(filter, "all") {
+				parsed, err := config.ParseModelKind(filter)
+				if err != nil || strings.TrimSpace(rest) != "" {
+					return "", fmt.Errorf("usage: /models [all|chat|vision|embedding|provider <name>|refresh]")
+				}
+				kind = &parsed
+			}
+		}
+		models := a.ListModels(kind)
+		if providerName != "" {
+			filtered := models[:0]
+			for _, model := range models {
+				if strings.EqualFold(model.Provider, providerName) {
+					filtered = append(filtered, model)
+				}
+			}
+			models = filtered
+		}
 		if len(models) == 0 {
-			return "No models configured.", nil
+			return "No models configured for this filter.", nil
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "**Models** (%d)\n\n", len(models))
