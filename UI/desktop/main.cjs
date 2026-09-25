@@ -253,8 +253,22 @@ function applyWindowIcon(win, icon) {
 }
 
 
+function guiDistCandidates() {
+  // Packaged install layout: <appRoot>/desktop + <appRoot>/UI/GUI/dist
+  // Source/dev layout: UI/desktop + UI/GUI/dist (i.e. ../GUI/dist from __dirname)
+  // Keep a few fallbacks so older bundles and local checkouts keep working.
+  const root = packagedRoot();
+  return [
+    path.join(root, 'UI', 'GUI', 'dist', 'index.html'),
+    path.join(root, 'GUI', 'dist', 'index.html'),
+    path.resolve(__dirname, '..', 'UI', 'GUI', 'dist', 'index.html'),
+    path.resolve(__dirname, '..', 'GUI', 'dist', 'index.html'),
+  ];
+}
+
 function guiDistIndex() {
-  return path.resolve(__dirname, '..', 'GUI', 'dist', 'index.html');
+  const candidates = guiDistCandidates();
+  return candidates.find((candidate) => fs.existsSync(candidate)) || candidates[0];
 }
 
 function shouldLoadDist() {
