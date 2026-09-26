@@ -803,7 +803,6 @@ func DefaultConfig() *Config {
 			Enabled:        false,
 			Command:        "codex",
 			Args:           []string{"app-server"},
-			ApprovalMode:   "gateway",
 			DefaultSandbox: "workspace-write",
 			MaxEvents:      256,
 		},
