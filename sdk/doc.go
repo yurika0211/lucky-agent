@@ -12,12 +12,15 @@
 // v0 surface:
 //   - Lifecycle: New, Close, HomeDir
 //   - Chat: Chat, ChatSession, ChatStream, ChatSessionStream
-//   - Sessions: NewSession, NewSessionWithTitle, ListSessions, GetSession, DeleteSession
+//   - Sessions: NewSession, NewSessionWithTitle, ListSessions, GetSession,
+//     RenameSession, DeleteSession
 //   - Memory: Remember, RememberLongTerm, Recall
+//   - RAG: IndexText, IndexFile, IndexDirectory, SearchRAG, RemoveDocument,
+//     ListDocuments, RAGStats
 //   - Tools: RegisterTool, UnregisterTool, EnableTool, DisableTool, ListTools
-//   - Model: SwitchModel
+//   - Model: SwitchModel, CurrentModel, ListModels
 //
-// Cancellation is done by canceling the context passed to Chat* methods.
+// Cancellation is done by canceling the context passed to Chat* / RAG methods.
 //
 // Minimal usage:
 //

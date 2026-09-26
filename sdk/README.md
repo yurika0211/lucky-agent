@@ -24,7 +24,7 @@ out, err := agent.Chat(ctx, "hello")
 - This is an **Embed SDK**, not an HTTP client for `lh serve`.
 - Always pass an app-specific `HomeDir` so you do not overwrite the CLI profile under `~/.luckyagent`.
 - Do not import `internal/*` from application code; use `sdk` only.
-- Cancel in-flight turns by canceling the `context.Context` passed to `Chat*`.
+- Cancel in-flight turns by canceling the `context.Context` passed to `Chat*` / RAG helpers.
 
 ## v0 surface
 
@@ -32,10 +32,13 @@ out, err := agent.Chat(ctx, "hello")
 |------|-----|
 | Lifecycle | `New`, `Close`, `HomeDir` |
 | Chat | `Chat`, `ChatSession`, `ChatStream`, `ChatSessionStream` |
-| Sessions | `NewSession`, `NewSessionWithTitle`, `ListSessions`, `GetSession`, `DeleteSession` |
+| Sessions | `NewSession`, `NewSessionWithTitle`, `ListSessions`, `GetSession`, `RenameSession`, `DeleteSession` |
 | Memory | `Remember`, `RememberLongTerm`, `Recall` |
+| RAG | `IndexText`, `IndexFile`, `IndexDirectory`, `SearchRAG`, `RemoveDocument`, `ListDocuments`, `RAGStats` |
 | Tools | `RegisterTool`, `UnregisterTool`, `EnableTool`, `DisableTool`, `ListTools` |
-| Model | `SwitchModel` |
+| Model | `SwitchModel`, `CurrentModel`, `ListModels` |
+
+Streaming `Event` values may carry optional `Approval`, `Observation`, and `Usage` payloads when the runtime emits them.
 
 ### Config knobs
 
@@ -59,6 +62,13 @@ err := agent.RegisterTool(sdk.ToolSpec{
         return lookupOrder(id)
     },
 })
+```
+
+### Index host knowledge
+
+```go
+_, err := agent.IndexText(ctx, "docs:faq", "FAQ", faqMarkdown)
+hits, err := agent.SearchRAG(ctx, "refund policy", &sdk.RAGSearchOptions{TopK: 5})
 ```
 
 ## Example

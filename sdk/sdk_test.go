@@ -1,6 +1,7 @@
 package sdk_test
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -197,4 +198,125 @@ func mustAbs(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return abs
+}
+
+func TestRenameSession(t *testing.T) {
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:  t.TempDir(),
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+		APIKey:   "test-key-not-used",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	sid, err := agent.NewSessionWithTitle("old-title")
+	if err != nil {
+		t.Fatalf("NewSessionWithTitle: %v", err)
+	}
+	if err := agent.RenameSession(sid, "new-title"); err != nil {
+		t.Fatalf("RenameSession: %v", err)
+	}
+	sess, err := agent.GetSession(sid)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if sess.Title != "new-title" {
+		t.Fatalf("title=%q", sess.Title)
+	}
+}
+
+func TestCurrentAndListModels(t *testing.T) {
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:  t.TempDir(),
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+		APIKey:   "test-key-not-used",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	cur, ok := agent.CurrentModel()
+	if !ok {
+		t.Fatal("expected current model")
+	}
+	if cur.ID == "" || !cur.Current {
+		t.Fatalf("unexpected current model: %+v", cur)
+	}
+
+	models, err := agent.ListModels("chat")
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if len(models) == 0 {
+		t.Fatal("expected chat models")
+	}
+	if _, err := agent.ListModels("not-a-kind"); err == nil {
+		t.Fatal("expected invalid kind error")
+	}
+}
+
+func TestRAGIndexSearchRemove(t *testing.T) {
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:  t.TempDir(),
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+		APIKey:   "test-key-not-used",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	ctx := context.Background()
+	doc, err := agent.IndexText(ctx, "sdk:test", "SDK Test Doc", "LuckyAgent embed SDK indexes host knowledge for retrieval.")
+	if err != nil {
+		t.Fatalf("IndexText: %v", err)
+	}
+	if doc == nil || doc.ID == "" {
+		t.Fatalf("unexpected doc: %+v", doc)
+	}
+
+	stats, err := agent.RAGStats()
+	if err != nil {
+		t.Fatalf("RAGStats: %v", err)
+	}
+	if stats.DocumentCount < 1 {
+		t.Fatalf("expected documents, got %+v", stats)
+	}
+
+	ids, err := agent.ListDocuments()
+	if err != nil {
+		t.Fatalf("ListDocuments: %v", err)
+	}
+	found := false
+	for _, id := range ids {
+		if id == doc.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("doc %s not listed: %v", doc.ID, ids)
+	}
+
+	hits, err := agent.SearchRAG(ctx, "embed SDK knowledge retrieval", &sdk.RAGSearchOptions{TopK: 5, MinScore: 0})
+	if err != nil {
+		t.Fatalf("SearchRAG: %v", err)
+	}
+	if len(hits) == 0 {
+		t.Fatal("expected at least one rag hit")
+	}
+
+	removed, err := agent.RemoveDocument(doc.ID)
+	if err != nil {
+		t.Fatalf("RemoveDocument: %v", err)
+	}
+	if !removed {
+		t.Fatal("expected document removed")
+	}
 }
