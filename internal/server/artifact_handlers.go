@@ -35,7 +35,10 @@ type historyToolAttachmentPayload struct {
 func (s *Server) historyMessages(messages []provider.Message) []sessionHistoryMessage {
 	result := make([]sessionHistoryMessage, 0, len(messages))
 	for _, message := range messages {
-		item := sessionHistoryMessage{Message: message}
+		item := sessionHistoryMessage{
+			Message:     message,
+			Attachments: append([]gateway.Attachment(nil), message.Attachments...),
+		}
 		fallbackType := gateway.AttachmentDocument
 		switch strings.ToLower(strings.TrimSpace(message.Name)) {
 		case "image_generate":

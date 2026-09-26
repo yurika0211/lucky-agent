@@ -116,6 +116,9 @@ func (in UserTurnInput) Normalize() UserTurnInput {
 		}
 	}
 	msg.ContentParts = parts
+	// Preserve the descriptors on the provider message so history can restore
+	// the attachment cards after the client is recreated.
+	msg.Attachments = append([]gateway.Attachment(nil), in.Attachments...)
 
 	return UserTurnInput{
 		OriginalText: in.OriginalText,
