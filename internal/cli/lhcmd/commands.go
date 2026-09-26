@@ -70,7 +70,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("LuckyAgent 初始化完成")
 	fmt.Printf("主目录: %s\n", mgr.HomeDir())
 	fmt.Println("下一步:")
-	fmt.Println("  la config set api_key sk-xxx")
+	fmt.Println("  la credential add openai-main --kind llm_api_key")
+	fmt.Println("  la config set models.endpoints.chat.credential_ref openai-main")
 	fmt.Println("  la config set provider openai")
 	fmt.Println("  la chat")
 	return nil
@@ -468,8 +469,22 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 	if err := mgr.Save(); err != nil {
 		return err
 	}
-	fmt.Printf("%s = %s\n", args[0], args[1])
+	if isSensitiveConfigKey(args[0]) {
+		fmt.Printf("%s = (已设置)\n", args[0])
+	} else {
+		fmt.Printf("%s = %s\n", args[0], args[1])
+	}
 	return nil
+}
+
+func isSensitiveConfigKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	for _, marker := range []string{"api_key", "token", "secret", "password", "access_token", "encrypt_key"} {
+		if strings.Contains(key, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func runConfigList(cmd *cobra.Command, args []string) error {
@@ -485,6 +500,7 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Println("LuckyAgent 配置:")
 	fmt.Printf("  provider: %s\n", cfg.Provider)
 	fmt.Printf("  api_key: %s\n", maskKey(cfg.APIKey))
+	fmt.Printf("  credential_ref: %s\n", cfg.ModelEndpoint(config.ModelKindChat).CredentialRef)
 	fmt.Printf("  api_base: %s\n", cfg.APIBase)
 	fmt.Printf("  model: %s\n", cfg.Model)
 	fmt.Printf("  soul_path: %s\n", cfg.SoulPath)

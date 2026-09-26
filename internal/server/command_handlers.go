@@ -33,6 +33,7 @@ func webCommandSpecs() []commandSpec {
 		{Name: "help", Usage: "/help", Description: "List available commands", Group: "basic"},
 		{Name: "version", Usage: "/version", Description: "Show runtime version", Group: "system"},
 		{Name: "status", Usage: "/status", Description: "Show runtime status", Group: "system"},
+		{Name: "set", Usage: "/set <dev|iso|status>", Description: "Switch the global execution mode", Group: "system"},
 		{Name: "health", Usage: "/health", Description: "System health check", Group: "system"},
 		{Name: "metrics", Usage: "/metrics", Description: "Show usage metrics", Group: "system"},
 		{Name: "tools", Usage: "/tools [all]", Description: "List available tools", Group: "system"},
@@ -130,8 +131,18 @@ func (s *Server) runCommand(name, args, sessionID string) (string, error) {
 		if ref, ok := a.CurrentModel(config.ModelKindChat); ok {
 			model = ref.ID
 		}
-		return fmt.Sprintf("**Status**\n\n- Chat model: `%s`\n- Sessions: %d\n- Tools enabled: %d\n- Memories: %d",
-			model, sessionCount, toolCount, total), nil
+		return fmt.Sprintf("**Status**\n\n- Chat model: `%s`\n- Sandbox mode: `%s`\n- Sessions: %d\n- Tools enabled: %d\n- Memories: %d",
+			model, a.SandboxMode(), sessionCount, toolCount, total), nil
+
+	case "set":
+		mode := strings.ToLower(strings.TrimSpace(args))
+		if mode == "" || mode == "status" {
+			return fmt.Sprintf("Sandbox mode: `%s`\n\nUse `/set dev` for direct project development or `/set iso` for an isolated temporary copy.", a.SandboxMode()), nil
+		}
+		if err := a.SetSandboxMode(mode); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Sandbox mode set to `%s`. New tasks use this mode; running tasks keep their current mode.", a.SandboxMode()), nil
 
 	case "health":
 		lines := []string{"**Health**", ""}

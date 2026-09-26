@@ -16,6 +16,7 @@ import (
 
 	appheartbeat "github.com/yurika0211/luckyagent/internal/agent/heartbeat"
 	"github.com/yurika0211/luckyagent/internal/autonomy"
+	codexruntime "github.com/yurika0211/luckyagent/internal/codex"
 	"github.com/yurika0211/luckyagent/internal/collab"
 	"github.com/yurika0211/luckyagent/internal/computer"
 	"github.com/yurika0211/luckyagent/internal/config"
@@ -33,6 +34,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/rag"
 	"github.com/yurika0211/luckyagent/internal/resilience"
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/soul"
 	taskstore "github.com/yurika0211/luckyagent/internal/task"
@@ -161,6 +163,7 @@ type Agent struct {
 	cronStore             *cron.Store
 	autonomy              *autonomy.AutonomyKit // 自主工作套件
 	computerMgr           *computer.Manager
+	sandbox               *sandbox.Manager
 	autonomyResultsMu     sync.Mutex
 	autonomyResultsCancel context.CancelFunc
 	heartbeatSvc          *appheartbeat.Service
@@ -700,6 +703,19 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 		AllowedReadRoots: append([]string(nil), c.Tools.Filesystem.AllowedReadRoots...),
 	}
 	toolServices := tool.NewServices(searchCfg, opencliCfg, "", mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults, mem, ragMgr, delegateMgr, filesystemPolicy)
+	if c.Codex.Enabled {
+		command := append([]string{c.Codex.Command}, c.Codex.Args...)
+		if strings.TrimSpace(command[0]) == "" {
+			command = []string{"codex", "app-server"}
+		}
+		toolServices.Codex = tool.NewCodexToolService(codexruntime.NewManager(codexruntime.Config{
+			Command:        command,
+			ApprovalMode:   c.Codex.ApprovalMode,
+			DefaultSandbox: c.Codex.DefaultSandbox,
+			CWDAllowlist:   append([]string(nil), c.Codex.CWDAllowlist...),
+			MaxEvents:      c.Codex.MaxEvents,
+		}))
+	}
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
@@ -975,6 +991,9 @@ func (a *Agent) ValidateRuntimeConfig(c *config.Config) error {
 	if err != nil {
 		return err
 	}
+	if err := resolveConfiguredCredentials(a.cfg.HomeDir(), next); err != nil {
+		return err
+	}
 	_, err = buildConfiguredProvider(next, provider.NewRegistry())
 	return err
 }
@@ -988,6 +1007,9 @@ func (a *Agent) ApplyRuntimeConfig(c *config.Config) error {
 		return err
 	}
 	c = next
+	if err := resolveConfiguredCredentials(a.cfg.HomeDir(), c); err != nil {
+		return err
+	}
 	registry := provider.NewRegistry()
 	nextProvider, err := buildConfiguredProvider(c, registry)
 	if err != nil {
@@ -1146,6 +1168,13 @@ func New(cfg *config.Manager) (*Agent, error) {
 	applyWebSearchEnv(cfg)
 	applyOpenCLIEnv(cfg)
 	c := cfg.Get()
+	sandboxMgr, sandboxErr := sandbox.NewManager(cfg.HomeDir())
+	if sandboxErr != nil {
+		return nil, fmt.Errorf("init sandbox manager: %w", sandboxErr)
+	}
+	if err := resolveConfiguredCredentials(cfg.HomeDir(), c); err != nil {
+		return nil, err
+	}
 	soulRT := initSoulRuntime(c)
 	providerRT, err := initProviderRuntime(cfg, c)
 	if err != nil {
@@ -1248,6 +1277,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		cronStore:           cron.NewStore(filepath.Join(cfg.HomeDir(), "memory", "prompts", "mission.md")),
 		autonomy:            supportRT.autonomyKit,
 		computerMgr:         supportRT.computerMgr,
+		sandbox:             sandboxMgr,
 		contextCache:        newContextMessageCache(64),
 		mediaProcessor:      supportRT.mediaProcessor,
 		taskStore:           taskStore,
@@ -2460,13 +2490,21 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 	if !turnProvider.valid() {
 		return nil, fmt.Errorf("provider not initialized")
 	}
+	snapshot, snapshotErr := a.sandboxSnapshot(sess)
+	if snapshotErr != nil {
+		return nil, fmt.Errorf("prepare %s sandbox: %w", a.SandboxMode(), snapshotErr)
+	}
+	loopCfg.Sandbox = snapshot
+	ctx = sandbox.WithSnapshot(ctx, snapshot)
 
 	events := make(chan ChatEvent, 64)
 
 	go func() {
 		defer close(events)
+		defer snapshot.Close()
 
 		sanitizeLoopConfig(&loopCfg)
+		a.applySandboxToolPolicy(&loopCfg, snapshot)
 		if a.useForeground(sess, loopCfg) {
 			loopCfg.emit = func(eventCtx context.Context, event ChatEvent) { sendForegroundEvent(eventCtx, events, event) }
 			result, err := a.runForeground(ctx, sess, input, loopCfg, turnProvider)
@@ -2517,7 +2555,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
 			disabledTools:          append([]string(nil), loopCfg.DisabledTools...),
 			memoryGate:             a.buildMemoryToolGate(routingText, input.Scope, loopCfg.DisabledTools),
-			toolExecutionGuard:     newTurnToolGuard(routingText, loopCfg.DisabledTools),
+			toolExecutionGuard:     newTurnToolGuard(routingText, loopCfg.DisabledTools, snapshotMode(loopCfg.Sandbox)),
 			iterationTimeout:       loopCfg.Timeout,
 			artifactGuard:          newArtifactFinalizationGuard(routingText),
 		}
@@ -4325,6 +4363,12 @@ func (a *Agent) CollabManager() *collab.DelegateManager {
 // Close 释放资源，保存持久化数据
 func (a *Agent) Close() error {
 	var firstErr error
+
+	if a.toolServices != nil {
+		if err := a.toolServices.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("close tool services: %w", err)
+		}
+	}
 
 	if a.autonomy != nil && a.autonomy.Status().Started {
 		a.stopAutonomyResultReporter()

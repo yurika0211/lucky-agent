@@ -30,6 +30,7 @@ func qqCommandSpecs() []qqCommandSpec {
 		{Command: "init", Usage: "/init", Description: "查看初始化状态", Group: qqCommandGroupSystem},
 		{Command: "config", Usage: "/config [list|get]", Description: "查看配置", Group: qqCommandGroupSystem},
 		{Command: "version", Usage: "/version", Description: "查看运行版本", Group: qqCommandGroupSystem},
+		{Command: "set", Usage: "/set <dev|iso|status>", Description: "切换执行模式", Group: qqCommandGroupSystem},
 		{Command: "model", Usage: "/model [name]", Description: "查看或切换模型", Group: qqCommandGroupSystem},
 		{Command: "models", Usage: "/models", Description: "列出可用模型", Group: qqCommandGroupSystem},
 		{Command: "soul", Usage: "/soul", Description: "查看当前 SOUL", Group: qqCommandGroupSystem},

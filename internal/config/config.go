@@ -39,6 +39,9 @@ type Config struct {
 	// OpenCLI 内容抽取配置
 	OpenCLI OpenCLIConfig `json:"opencli,omitempty"`
 
+	// Codex App Server coding runtime configuration.
+	Codex CodexConfig `json:"codex,omitempty"`
+
 	// Embedding 配置（供 RAG / 记忆向量化使用）
 	Embedding EmbeddingConfig `json:"embedding,omitempty"`
 
@@ -168,30 +171,30 @@ type FilesystemToolConfig struct {
 // Computer use is disabled by default because it can observe and control the
 // interactive desktop, including applications outside LuckyAgent.
 type ComputerUseToolConfig struct {
-	Enabled              bool     `json:"enabled,omitempty"`
-	Mode                 string   `json:"mode,omitempty"`    // observe, assist, control
-	Backend              string   `json:"backend,omitempty"` // auto, x11, wayland, wslg, windows, darwin
-	CaptureDir           string   `json:"capture_dir,omitempty"`
-	AllowedSources       []string `json:"allowed_sources,omitempty"`
-	AllowedWindows       []string `json:"allowed_windows,omitempty"`
-	RequireApproval      bool     `json:"require_approval,omitempty"`
-	MaxSteps             int      `json:"max_steps,omitempty"`
-	TimeoutSeconds       int      `json:"timeout_seconds,omitempty"`
-	StepTimeoutSeconds   int      `json:"step_timeout_seconds,omitempty"`
-	SettleMS             int      `json:"settle_ms,omitempty"`
-	SettleMilliseconds   int      `json:"settle_milliseconds,omitempty"`
-	MaxObservationBytes  int      `json:"max_observation_bytes,omitempty"`
-	MaxScreenshotWidth   int      `json:"max_screenshot_width,omitempty"`
-	MaxBatchActions      int      `json:"max_batch_actions,omitempty"`
+	Enabled             bool     `json:"enabled,omitempty"`
+	Mode                string   `json:"mode,omitempty"`    // observe, assist, control
+	Backend             string   `json:"backend,omitempty"` // auto, x11, wayland, wslg, windows, darwin
+	CaptureDir          string   `json:"capture_dir,omitempty"`
+	AllowedSources      []string `json:"allowed_sources,omitempty"`
+	AllowedWindows      []string `json:"allowed_windows,omitempty"`
+	RequireApproval     bool     `json:"require_approval,omitempty"`
+	MaxSteps            int      `json:"max_steps,omitempty"`
+	TimeoutSeconds      int      `json:"timeout_seconds,omitempty"`
+	StepTimeoutSeconds  int      `json:"step_timeout_seconds,omitempty"`
+	SettleMS            int      `json:"settle_ms,omitempty"`
+	SettleMilliseconds  int      `json:"settle_milliseconds,omitempty"`
+	MaxObservationBytes int      `json:"max_observation_bytes,omitempty"`
+	MaxScreenshotWidth  int      `json:"max_screenshot_width,omitempty"`
+	MaxBatchActions     int      `json:"max_batch_actions,omitempty"`
 	// MaxConsecutiveObserveOnly stops screenshot-only computer-use loops after N
 	// consecutive observe batches without a computer_act. Default 2.
 	MaxConsecutiveObserveOnly int    `json:"max_consecutive_observe_only,omitempty"`
-	SettleMode           string   `json:"settle_mode,omitempty"`
-	KeepFrames           int      `json:"keep_frames,omitempty"`
-	FrameTTLSeconds      int      `json:"frame_ttl_seconds,omitempty"`
-	RetainFrames         int      `json:"retain_frames,omitempty"`
-	AllowTextInput       bool     `json:"allow_text_input,omitempty"`
-	AllowHighRiskActions bool     `json:"allow_high_risk_actions,omitempty"`
+	SettleMode                string `json:"settle_mode,omitempty"`
+	KeepFrames                int    `json:"keep_frames,omitempty"`
+	FrameTTLSeconds           int    `json:"frame_ttl_seconds,omitempty"`
+	RetainFrames              int    `json:"retain_frames,omitempty"`
+	AllowTextInput            bool   `json:"allow_text_input,omitempty"`
+	AllowHighRiskActions      bool   `json:"allow_high_risk_actions,omitempty"`
 }
 
 // HooksConfig 配置工具执行边界上的 hook。Enabled 为 false 时所有 hook 不生效，
@@ -393,14 +396,14 @@ type DelegateConfig struct {
 
 // ServerConfig API Server 配置
 type ServerConfig struct {
-	Addr        string   `json:"addr,omitempty"`
-	APIKeys     []string `json:"api_keys,omitempty"`
-	EnableCORS  bool     `json:"enable_cors,omitempty"`
-	CORSOrigins []string `json:"cors_origins,omitempty"`
-	RateLimit   int      `json:"rate_limit,omitempty"`
-	MetricsAddr string   `json:"metrics_addr,omitempty"`
-	LogLevel    string   `json:"log_level,omitempty"`
-	LogFormat   string   `json:"log_format,omitempty"`
+	Addr                   string   `json:"addr,omitempty"`
+	APIKeys                []string `json:"api_keys,omitempty"`
+	EnableCORS             bool     `json:"enable_cors,omitempty"`
+	CORSOrigins            []string `json:"cors_origins,omitempty"`
+	RateLimit              int      `json:"rate_limit,omitempty"`
+	MetricsAddr            string   `json:"metrics_addr,omitempty"`
+	LogLevel               string   `json:"log_level,omitempty"`
+	LogFormat              string   `json:"log_format,omitempty"`
 	ProgressSummaryWithLLM bool     `json:"progress_summary_with_llm,omitempty"` // React/WebSocket 每轮是否由 LLM 生成进度摘要
 	ProgressSummaryPrompt  string   `json:"progress_summary_prompt,omitempty"`   // React/WebSocket 每轮进度摘要展示提示词
 }
@@ -744,10 +747,24 @@ type OpenCLIConfig struct {
 	FallbackToWebFetch bool     `json:"fallback_to_web_fetch,omitempty"` // OpenCLI 失败后是否回退到 web_fetch
 }
 
+// CodexConfig configures the optional local Codex App Server bridge. The
+// bridge is deliberately disabled by default; enabling it exposes codex.*
+// tools to the agent and starts the configured app-server lazily on demand.
+type CodexConfig struct {
+	Enabled        bool     `json:"enabled,omitempty"`
+	Command        string   `json:"command,omitempty"`
+	Args           []string `json:"args,omitempty"`
+	ApprovalMode   string   `json:"approval_mode,omitempty"` // gateway, auto, deny
+	DefaultSandbox string   `json:"default_sandbox,omitempty"`
+	CWDAllowlist   []string `json:"cwd_allowlist,omitempty"`
+	MaxEvents      int      `json:"max_events,omitempty"`
+}
+
 // FallbackEntry 是降级链中的一个节点配置
 type FallbackEntry struct {
 	Provider         string `json:"provider"`
 	APIKey           string `json:"api_key,omitempty"`
+	CredentialRef    string `json:"credential_ref,omitempty"`
 	APIBase          string `json:"api_base,omitempty"`
 	Model            string `json:"model,omitempty"`
 	Protocol         string `json:"protocol,omitempty"`
@@ -781,6 +798,13 @@ func DefaultConfig() *Config {
 			TimeoutSeconds:     20,
 			MaxChars:           50000,
 			FallbackToWebFetch: true,
+		},
+		Codex: CodexConfig{
+			Enabled:        false,
+			Command:        "codex",
+			Args:           []string{"app-server"},
+			DefaultSandbox: "workspace-write",
+			MaxEvents:      256,
 		},
 		Multimodal: MultimodalConfig{
 			Provider:           "openai",
@@ -973,26 +997,26 @@ func DefaultConfig() *Config {
 		},
 		Tools: ToolsConfig{
 			ComputerUse: ComputerUseToolConfig{
-				Enabled:              false,
-				Mode:                 "observe",
-				Backend:              "auto",
-				AllowedSources:       []string{"cli", "tui"},
-				RequireApproval:      true,
-				MaxSteps:             50,
-				TimeoutSeconds:       300,
-				StepTimeoutSeconds:   30,
-				SettleMS:             350,
-				SettleMilliseconds:   350,
-				MaxObservationBytes:  10 << 20,
-				MaxScreenshotWidth:   0,
-				MaxBatchActions:      5,
+				Enabled:                   false,
+				Mode:                      "observe",
+				Backend:                   "auto",
+				AllowedSources:            []string{"cli", "tui"},
+				RequireApproval:           true,
+				MaxSteps:                  50,
+				TimeoutSeconds:            300,
+				StepTimeoutSeconds:        30,
+				SettleMS:                  350,
+				SettleMilliseconds:        350,
+				MaxObservationBytes:       10 << 20,
+				MaxScreenshotWidth:        0,
+				MaxBatchActions:           5,
 				MaxConsecutiveObserveOnly: 2,
-				SettleMode:           "adaptive",
-				KeepFrames:           2,
-				FrameTTLSeconds:      600,
-				RetainFrames:         2,
-				AllowTextInput:       false,
-				AllowHighRiskActions: false,
+				SettleMode:                "adaptive",
+				KeepFrames:                2,
+				FrameTTLSeconds:           600,
+				RetainFrames:              2,
+				AllowTextInput:            false,
+				AllowHighRiskActions:      false,
 			},
 		},
 		Hooks: HooksConfig{
@@ -1799,6 +1823,8 @@ func cloneConfig(in *Config) *Config {
 		}
 	}
 	cp.Fallbacks = append([]FallbackEntry(nil), in.Fallbacks...)
+	cp.Codex.Args = append([]string(nil), in.Codex.Args...)
+	cp.Codex.CWDAllowlist = append([]string(nil), in.Codex.CWDAllowlist...)
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
 	cp.Tools.Filesystem.AllowedReadRoots = append([]string(nil), in.Tools.Filesystem.AllowedReadRoots...)
@@ -2055,6 +2081,22 @@ func (m *Manager) Set(key, value string) error {
 		m.config.OpenCLI.MaxChars = n
 	case "opencli.fallback_to_web_fetch":
 		m.config.OpenCLI.FallbackToWebFetch = parseBool(value)
+	case "codex.enabled":
+		m.config.Codex.Enabled = parseBool(value)
+	case "codex.command":
+		m.config.Codex.Command = value
+	case "codex.args":
+		m.config.Codex.Args = splitCSV(value)
+	case "codex.approval_mode":
+		m.config.Codex.ApprovalMode = value
+	case "codex.default_sandbox":
+		m.config.Codex.DefaultSandbox = value
+	case "codex.cwd_allowlist":
+		m.config.Codex.CWDAllowlist = splitCSV(value)
+	case "codex.max_events":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Codex.MaxEvents = n
 	case "stream_mode":
 		m.config.StreamMode = value
 	case "memory.tidal.enabled":

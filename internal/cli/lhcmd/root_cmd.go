@@ -129,6 +129,59 @@ func newRootCmd() *cobra.Command {
 	}
 	configCmd.AddCommand(configGetCmd, configSetCmd, configListCmd, configTimeoutCmd)
 
+	credentialCmd := &cobra.Command{
+		Use:     "credential",
+		Aliases: []string{"credentials", "cred"},
+		Short:   "管理本地加密凭据",
+	}
+	credentialAddCmd := &cobra.Command{
+		Use:   "add <id>",
+		Short: "通过隐藏输入保存凭据",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			kind, err := cmd.Flags().GetString("kind")
+			if err != nil {
+				return err
+			}
+			scope, err := cmd.Flags().GetString("scope")
+			if err != nil {
+				return err
+			}
+			mgr, err := config.NewManager()
+			if err != nil {
+				return err
+			}
+			return runCredentialAdd(credentialCommandArgs{homeDir: mgr.HomeDir(), id: args[0], kind: kind, scope: scope})
+		},
+	}
+	credentialAddCmd.Flags().String("kind", "generic", "凭据类型")
+	credentialAddCmd.Flags().String("scope", "default", "配置域")
+	credentialListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出凭据元数据",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			mgr, err := config.NewManager()
+			if err != nil {
+				return err
+			}
+			return runCredentialList(mgr.HomeDir())
+		},
+	}
+	credentialRemoveCmd := &cobra.Command{
+		Use:   "remove <id>",
+		Short: "删除凭据",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr, err := config.NewManager()
+			if err != nil {
+				return err
+			}
+			return runCredentialRemove(mgr.HomeDir(), args[0])
+		},
+	}
+	credentialCmd.AddCommand(credentialAddCmd, credentialListCmd, credentialRemoveCmd)
+
 	diagCmd := &cobra.Command{Use: "diag", Aliases: []string{"d"}, Short: "查看运行诊断信息"}
 	diagTimeoutCmd := &cobra.Command{
 		Use:     "timeout",
@@ -342,7 +395,7 @@ func newRootCmd() *cobra.Command {
 
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)
-	rootCmd.AddCommand(initCmd, chatCmd, configCmd, diagCmd, soulCmd, versionCmd, newUpdateCmd(), serveCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd, newSessionCmd())
+	rootCmd.AddCommand(initCmd, chatCmd, configCmd, credentialCmd, diagCmd, soulCmd, versionCmd, newUpdateCmd(), serveCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd, newSessionCmd())
 
 	return rootCmd
 }

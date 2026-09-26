@@ -171,6 +171,7 @@ func (h *Handler) buildCommandRegistry() map[string]commandHandler {
 		"init":          h.handleInit,
 		"config":        h.handleConfig,
 		"version":       h.handleVersion,
+		"set":           h.handleSetSandbox,
 		"model":         h.handleModel,
 		"models":        h.handleModels,
 		"soul":          h.handleSoul,
@@ -598,6 +599,17 @@ func (h *Handler) handleVersion(ctx context.Context, msg *gateway.Message) error
 		runtime.GOARCH,
 	)
 	return h.reply(ctx, msg, info)
+}
+
+func (h *Handler) handleSetSandbox(ctx context.Context, msg *gateway.Message) error {
+	mode := strings.ToLower(strings.TrimSpace(msg.Args))
+	if mode == "" || mode == "status" {
+		return h.reply(ctx, msg, fmt.Sprintf("当前沙箱模式：%s\n用法：/set dev 或 /set iso", h.agent.SandboxMode()))
+	}
+	if err := h.agent.SetSandboxMode(mode); err != nil {
+		return h.reply(ctx, msg, "❌ "+err.Error())
+	}
+	return h.reply(ctx, msg, fmt.Sprintf("✅ 沙箱模式已切换为 %s。新任务使用新模式，运行中的任务保持原模式。", h.agent.SandboxMode()))
 }
 
 func (h *Handler) handleModels(ctx context.Context, msg *gateway.Message) error {
@@ -1647,6 +1659,7 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 
 	cfg := h.agent.Config().Get()
 	sb.WriteString(fmt.Sprintf("Model：%s\n", cfg.Model))
+	sb.WriteString(fmt.Sprintf("Sandbox mode：%s\n", h.agent.SandboxMode()))
 
 	metricsVal := h.agent.Metrics()
 	if metricsVal != nil {

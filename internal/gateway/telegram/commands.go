@@ -32,6 +32,7 @@ func telegramCommandSpecs() []telegramCommandSpec {
 		{Command: "init", Usage: "/init", Description: "Show init status", Group: commandGroupSystem},
 		{Command: "config", Usage: "/config [list|get]", Description: "Show configuration", Group: commandGroupSystem},
 		{Command: "version", Usage: "/version", Description: "Show runtime version", Group: commandGroupSystem},
+		{Command: "set", Usage: "/set <dev|iso|status>", Description: "Switch the execution mode", Group: commandGroupSystem},
 		{Command: "model", Usage: "/model [kind] [name]", Description: "Show or switch a typed model", Group: commandGroupSystem},
 		{Command: "models", Usage: "/models [kind|provider <name>|refresh]", Description: "List configured and available models", Group: commandGroupSystem},
 		{Command: "soul", Usage: "/soul", Description: "Show SOUL info", Group: commandGroupSystem},
