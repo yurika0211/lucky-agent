@@ -18,6 +18,15 @@ type Services struct {
 	Autonomy  *AutonomyToolService
 	Heartbeat *HeartbeatToolService
 	Skills    *SkillToolService
+	Codex     *CodexToolService
+}
+
+// Close releases optional long-lived tool runtimes such as Codex App Server.
+func (s *Services) Close() error {
+	if s == nil || s.Codex == nil {
+		return nil
+	}
+	return s.Codex.Close()
 }
 
 // SetComputerUseService attaches the optional desktop automation tools to the
@@ -89,5 +98,8 @@ func (s *Services) RegisterCoreTools(r *Registry) {
 	}
 	if s.Skills != nil {
 		s.Skills.RegisterSkillTools(r)
+	}
+	if s.Codex != nil {
+		s.Codex.RegisterTools(r)
 	}
 }

@@ -53,6 +53,9 @@ func (a *Agent) providerSnapshotForTurn(userInput string) (snapshot providerSnap
 	}
 
 	cfg := a.cfg.Get()
+	if err := resolveConfiguredCredentials(a.cfg.HomeDir(), cfg); err != nil {
+		return base
+	}
 	if cfg == nil || !cfg.ModelRouter.Enable || len(cfg.Fallbacks) > 0 {
 		return base
 	}

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 )
 
 // PermissionLevel 工具权限级别
@@ -127,6 +129,9 @@ type ExecutionContext struct {
 	// tools may use it to verify that an operation was explicitly requested.
 	UserRequest string
 	AutoApprove bool
+	// Sandbox is captured when the task starts. A running task keeps the same
+	// execution boundary even if the global mode changes later.
+	Sandbox *sandbox.Snapshot
 }
 
 // ToOpenAIFormat 转换为 OpenAI function calling 格式

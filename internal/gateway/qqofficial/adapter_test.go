@@ -980,7 +980,7 @@ func TestHandlerAcknowledgesGroupMessagesOnly(t *testing.T) {
 func TestQQCommandNamesMatchTelegramCommandSet(t *testing.T) {
 	expected := []string{
 		"start", "help", "chat", "lucky",
-		"review", "init", "config", "version", "model", "models", "soul", "tools", "skills", "mcp", "approve", "deny", "cron", "watch", "dashboard", "msg_gateway", "rag", "context", "fc", "embedder", "metrics", "health",
+		"review", "init", "config", "version", "set", "model", "models", "soul", "tools", "skills", "mcp", "approve", "deny", "cron", "watch", "dashboard", "msg_gateway", "rag", "context", "fc", "embedder", "metrics", "health",
 		"remember", "remember_long", "recall", "memstats", "memdecay", "promote", "profile", "reset", "history", "session", "sessions", "resume", "rename", "new", "stop", "status", "restart",
 	}
 	got := qqCommandNames()

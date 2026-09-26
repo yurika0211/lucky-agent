@@ -44,6 +44,11 @@ func (g *Gateway) ExecuteWithContext(name string, args map[string]any, userID st
 	if exec.UserID == "" {
 		exec.UserID = userID
 	}
+	if exec.Sandbox != nil {
+		if err := exec.Sandbox.ValidateToolArgs(name, args); err != nil {
+			return nil, err
+		}
+	}
 	result, execErr := g.registry.CallDetailedWithContext(name, args, exec)
 	duration := time.Since(start)
 	g.recordUsage(name, userID, duration, execErr == nil)
@@ -76,6 +81,11 @@ func (g *Gateway) ExecuteWithShellExecutionContext(name string, args map[string]
 	}
 	if exec.UserID == "" {
 		exec.UserID = userID
+	}
+	if exec.Sandbox != nil {
+		if err := exec.Sandbox.ValidateToolArgs(name, args); err != nil {
+			return nil, err
+		}
 	}
 	result, execErr := g.registry.CallDetailedWithShellExecutionContext(name, args, sc, exec)
 	duration := time.Since(start)

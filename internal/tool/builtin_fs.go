@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 )
 
 const (
@@ -64,16 +67,28 @@ func TerminalTool() *Tool {
 			"workdir": {Type: "string", Description: "Optional working directory. Use when the command must run in a specific project or subdirectory.", Required: false},
 		},
 		Handler: handleShell,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			out, err := handleShellWithSandbox(exec.Sandbox, args)
+			return ToolCallResult{Output: out}, err
+		},
 	}
 }
 
 func handleShell(args map[string]any) (string, error) {
+	return handleShellWithSandbox(nil, args)
+}
+
+func handleShellWithSandbox(snapshot *sandbox.Snapshot, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 	if !ok {
 		return "", fmt.Errorf("command is required")
 	}
-	if err := validateShellSandbox(command); err != nil {
-		return "", err
+	// The dev mode is intentionally permissive for normal project work. Direct
+	// calls without an execution snapshot retain the legacy command guard.
+	if snapshot == nil || snapshot.Mode == sandbox.ModeIso {
+		if err := validateShellSandbox(command); err != nil {
+			return "", err
+		}
 	}
 
 	timeout := 30
@@ -101,18 +116,27 @@ func handleShell(args map[string]any) (string, error) {
 		}
 	}
 
-	prefix := ""
-	if len(env) > 0 {
-		prefix = shellEnvPrefix(env, runtime.GOOS)
+	fullCommand := command
+	if snapshot == nil || snapshot.Mode == sandbox.ModeDev {
+		prefix := ""
+		if len(env) > 0 {
+			prefix = shellEnvPrefix(env, runtime.GOOS)
+		}
+		fullCommand = prefix + command
 	}
-	fullCommand := prefix + command
 
 	ctx := time.Duration(timeout) * time.Second
-	cmd, err := buildShellCommand(fullCommand)
+	var cmd *exec.Cmd
+	var err error
+	if snapshot != nil {
+		cmd, err = snapshot.Command(fullCommand, workdir, env)
+	} else {
+		cmd, err = buildShellCommand(fullCommand)
+	}
 	if err != nil {
 		return "", err
 	}
-	if workdir != "" {
+	if workdir != "" && snapshot == nil {
 		cmd.Dir = workdir
 	}
 

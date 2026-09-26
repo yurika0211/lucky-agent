@@ -50,6 +50,7 @@ func ParseModelKind(value string) (ModelKind, error) {
 type ModelEndpointConfig struct {
 	Provider         string            `json:"provider,omitempty"`
 	APIKey           string            `json:"api_key,omitempty"`
+	CredentialRef    string            `json:"credential_ref,omitempty"`
 	APIBase          string            `json:"api_base,omitempty"`
 	Protocol         string            `json:"protocol,omitempty"`
 	ReasoningSummary string            `json:"reasoning_summary,omitempty"`
@@ -142,6 +143,9 @@ func mergeModelEndpoint(base, override ModelEndpointConfig) ModelEndpointConfig 
 	}
 	if value := strings.TrimSpace(override.APIKey); value != "" {
 		result.APIKey = value
+	}
+	if value := strings.TrimSpace(override.CredentialRef); value != "" {
+		result.CredentialRef = value
 	}
 	if value := strings.TrimSpace(override.APIBase); value != "" {
 		result.APIBase = value

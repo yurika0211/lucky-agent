@@ -77,10 +77,13 @@ go run ./cmd/la init
 
 ```bash
 go run ./cmd/la config set provider openai
-go run ./cmd/la config set api_key sk-your-api-key
 go run ./cmd/la config set api_base https://api.openai.com/v1
 go run ./cmd/la config set model gpt-5.4-mini
+go run ./cmd/la credential add openai-main --kind llm_api_key
+go run ./cmd/la config set models.endpoints.chat.credential_ref openai-main
 ```
+
+凭据值通过 TTY 隐藏输入，保存在 `~/.luckyagent/runtime/credentials.db` 中；配置文件只保存引用。`credential list` 只显示凭据元数据，`credential remove <id>` 删除凭据。
 
 如需在回答末尾显示工具来源引用，可开启自动引用尾注（默认关闭）：
 
@@ -205,6 +208,7 @@ lh rag search "deployment"
 - [特色功能](docs/wiki/特色功能.md)：记忆、RAG、工具、自动化和多 Agent
 - [使用场景](docs/wiki/使用场景.md)：本地调试、知识库问答、机器人和团队 API
 - [HTTP API](docs/API.md)
+- [Codex App Server 集成](docs/codex-app-server.md)
 - [记忆系统](docs/memory_system.md)
 - [Graph RAG 快速开始](docs/GRAPH_RAG_QUICKSTART.md)
 - [多 Agent 协作](docs/multi-agent/collaboration.md)

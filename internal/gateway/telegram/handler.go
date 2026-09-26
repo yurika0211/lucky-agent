@@ -29,6 +29,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/metrics"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/soul"
 	taskstore "github.com/yurika0211/luckyagent/internal/task"
@@ -81,6 +82,11 @@ type unifiedModelRuntime interface {
 type agentProvider interface {
 	chatRuntime
 	stateRuntime
+}
+
+type sandboxRuntime interface {
+	SandboxMode() sandbox.Mode
+	SetSandboxMode(string) error
 }
 
 type activeRouteRecorder interface {
@@ -184,6 +190,20 @@ func (a agentProviderAdapter) Config() agentConfigProvider {
 
 func (a agentProviderAdapter) SwitchModel(modelID string) error {
 	return a.inner.SwitchModel(modelID)
+}
+
+func (a agentProviderAdapter) SandboxMode() sandbox.Mode {
+	if a.inner == nil {
+		return sandbox.ModeDev
+	}
+	return a.inner.SandboxMode()
+}
+
+func (a agentProviderAdapter) SetSandboxMode(mode string) error {
+	if a.inner == nil {
+		return fmt.Errorf("sandbox controls are unavailable")
+	}
+	return a.inner.SetSandboxMode(mode)
 }
 
 func (a agentProviderAdapter) SwitchModelKind(kind config.ModelKind, modelID string, opts agent.SwitchModelOptions) error {
@@ -555,6 +575,7 @@ func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 		"init":    h.handleInit,
 		"config":  h.handleConfig,
 		"version": h.handleVersion,
+		"set":     h.handleSetSandbox,
 		"model":   h.handleModel,
 		"models":  h.handleModels,
 		"soul":    h.handleSoul,
@@ -3367,6 +3388,21 @@ func (h *Handler) handleVersion(ctx context.Context, msg *gateway.Message) error
 	return h.adapter.Send(ctx, msg.Chat.ID, info)
 }
 
+func (h *Handler) handleSetSandbox(ctx context.Context, msg *gateway.Message) error {
+	runtime, ok := h.agent.(sandboxRuntime)
+	if !ok {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Sandbox controls are unavailable")
+	}
+	mode := strings.ToLower(strings.TrimSpace(msg.Args))
+	if mode == "" || mode == "status" {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("当前沙箱模式：%s\n用法：/set dev 或 /set iso", runtime.SandboxMode()))
+	}
+	if err := runtime.SetSandboxMode(mode); err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ "+err.Error())
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ 沙箱模式已切换为 %s。新任务使用新模式，运行中的任务保持原模式。", runtime.SandboxMode()))
+}
+
 func buildInfo() (version, commit, date string) {
 	version = "dev"
 	commit = "unknown"
@@ -4647,6 +4683,9 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	// 模型
 	cfg := h.configSnapshot()
 	sb.WriteString(fmt.Sprintf("• Model: %s\n", cfg.Model))
+	if runtime, ok := h.agent.(sandboxRuntime); ok {
+		sb.WriteString(fmt.Sprintf("• Sandbox mode: %s\n", runtime.SandboxMode()))
+	}
 
 	// 运行时间
 	metricsVal := h.metricsCollector()
