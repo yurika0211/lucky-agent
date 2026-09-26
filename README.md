@@ -37,6 +37,16 @@ LuckyAgent 是一个用 Go 构建的长期运行 Agent runtime。它把 Agent lo
   <img src="public/GUI-gateways.png" alt="LuckyAgent messaging gateways workspace" width="49%">
 </p>
 
+## Embed SDK（进程内）
+
+把 LuckyAgent 当作 Go library 嵌入宿主进程，无需先起 `lh serve`：
+
+```bash
+go run ./examples/embed_minimal
+```
+
+详情见 [`sdk/README.md`](sdk/README.md)。稳定面（v0）：`New` / `Chat*` / Sessions / Memory / Tools / `SwitchModel`。
+
 ## 核心能力
 
 - **统一运行时**：CLI、HTTP API、GUI、TUI 和消息网关共享同一个 Agent 核心。
