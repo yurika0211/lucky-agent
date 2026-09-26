@@ -41,6 +41,16 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
+	// Optional: host knowledge base (works offline with local embedder fallback)
+	if _, err := agent.IndexText(ctx, "demo:note", "Demo Note", "Embed SDK can index host documents."); err == nil {
+		if hits, err := agent.SearchRAG(ctx, "index host documents", &sdk.RAGSearchOptions{TopK: 3, MinScore: 0}); err == nil && len(hits) > 0 {
+			fmt.Println("rag:", hits[0].Content)
+		}
+	}
+	if m, ok := agent.CurrentModel(); ok {
+		fmt.Println("model:", m.ID)
+	}
+
 	// One-shot
 	reply, err := agent.Chat(ctx, "Reply with exactly: embed-sdk-ok")
 	if err != nil {
