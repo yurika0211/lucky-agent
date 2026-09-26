@@ -320,3 +320,118 @@ func TestRAGIndexSearchRemove(t *testing.T) {
 		t.Fatal("expected document removed")
 	}
 }
+
+func TestChatInputValidation(t *testing.T) {
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:  t.TempDir(),
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+		APIKey:   "test-key-not-used",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	ctx := context.Background()
+	if _, err := agent.ChatWithInput(ctx, sdk.ChatInput{}); err == nil {
+		t.Fatal("expected empty input error")
+	}
+	if _, err := agent.ChatWithInput(ctx, sdk.ChatInput{
+		Message: "see image",
+		Attachments: []sdk.Attachment{{
+			Type: sdk.AttachmentImage,
+		}},
+	}); err == nil {
+		t.Fatal("expected attachment body error")
+	}
+	if _, err := agent.ChatSessionWithInput(ctx, "", sdk.ChatInput{Message: "x"}); err == nil {
+		t.Fatal("expected empty session id error")
+	}
+}
+
+func TestCompactSessionForceLocal(t *testing.T) {
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:  t.TempDir(),
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+		APIKey:   "test-key-not-used",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	sid, err := agent.NewSessionWithTitle("compact-me")
+	if err != nil {
+		t.Fatalf("NewSessionWithTitle: %v", err)
+	}
+	inner := agent.Underlying()
+	if inner == nil {
+		t.Fatal("Underlying is nil")
+	}
+	sess, ok := inner.Sessions().Get(sid)
+	if !ok || sess == nil {
+		t.Fatalf("session %s missing", sid)
+	}
+	sess.AddMessage("user", "Please summarize the long debugging session about context compaction.")
+	sess.AddMessage("assistant", "I inspected CompactSession options and prepared a local fallback summary path.")
+	sess.AddToolMessage("terminal", "go test ./sdk failed before force-local compact coverage existed")
+
+	dry, err := agent.CompactSession(context.Background(), sid, "dry", &sdk.CompactOptions{ForceLocal: true, DryRun: true})
+	if err != nil {
+		t.Fatalf("CompactSession dry-run: %v", err)
+	}
+	if dry == nil || !dry.DryRun || dry.SummarySource != "local" {
+		t.Fatalf("expected dry-run result: %+v", dry)
+	}
+
+	result, err := agent.CompactSession(context.Background(), sid, "test", &sdk.CompactOptions{ForceLocal: true})
+	if err != nil {
+		t.Fatalf("CompactSession: %v", err)
+	}
+	if result == nil || result.BoundaryID == "" || result.SummarySource != "local" || result.DryRun {
+		t.Fatalf("unexpected compact result: %+v", result)
+	}
+}
+
+func TestLoadSkillsFromDir(t *testing.T) {
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:  t.TempDir(),
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+		APIKey:   "test-key-not-used",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "demo-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	body := "---\nname: demo_skill\ndescription: Demo skill for embed sdk tests.\n---\n\n# Demo Skill\n\nReturn a short ping.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	n, err := agent.LoadSkills(root)
+	if err != nil {
+		t.Fatalf("LoadSkills: %v", err)
+	}
+	if n < 1 {
+		t.Fatalf("expected loaded skills, got %d", n)
+	}
+	found := false
+	for _, info := range agent.ListSkills() {
+		if info.Name == "demo_skill" || strings.Contains(info.Name, "demo") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("demo skill not listed: %+v", agent.ListSkills())
+	}
+}

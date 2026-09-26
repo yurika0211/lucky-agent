@@ -45,7 +45,7 @@ LuckyAgent 是一个用 Go 构建的长期运行 Agent runtime。它把 Agent lo
 go run ./examples/embed_minimal
 ```
 
-详情见 [`sdk/README.md`](sdk/README.md)。稳定面（v0）：`New` / `Chat*` / Sessions / Memory / RAG / Tools / Models（`SwitchModel` / `CurrentModel` / `ListModels`）。
+详情见 [`sdk/README.md`](sdk/README.md)。稳定面（v0）：`New` / `Chat*`（含多模态 Input） / Sessions（含 Compact） / Memory / RAG / Tools / Models / Skills。
 
 ## 核心能力
 

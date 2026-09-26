@@ -31,12 +31,13 @@ out, err := agent.Chat(ctx, "hello")
 | Area | API |
 |------|-----|
 | Lifecycle | `New`, `Close`, `HomeDir` |
-| Chat | `Chat`, `ChatSession`, `ChatStream`, `ChatSessionStream` |
-| Sessions | `NewSession`, `NewSessionWithTitle`, `ListSessions`, `GetSession`, `RenameSession`, `DeleteSession` |
+| Chat | `Chat`, `ChatSession`, `ChatStream`, `ChatSessionStream`, `ChatWithInput`, `ChatSessionWithInput`, `ChatStreamWithInput`, `ChatSessionStreamWithInput` |
+| Sessions | `NewSession`, `NewSessionWithTitle`, `ListSessions`, `GetSession`, `RenameSession`, `DeleteSession`, `CompactSession` |
 | Memory | `Remember`, `RememberLongTerm`, `Recall` |
 | RAG | `IndexText`, `IndexFile`, `IndexDirectory`, `SearchRAG`, `RemoveDocument`, `ListDocuments`, `RAGStats` |
 | Tools | `RegisterTool`, `UnregisterTool`, `EnableTool`, `DisableTool`, `ListTools` |
 | Model | `SwitchModel`, `CurrentModel`, `ListModels` |
+| Skills | `ListSkills`, `LoadSkills`, `ReloadSkills`, `SkillsDir` |
 
 Streaming `Event` values may carry optional `Approval`, `Observation`, and `Usage` payloads when the runtime emits them.
 
@@ -61,6 +62,19 @@ err := agent.RegisterTool(sdk.ToolSpec{
         id, _ := args["order_id"].(string)
         return lookupOrder(id)
     },
+})
+```
+
+### Multimodal turn
+
+```go
+reply, err := agent.ChatWithInput(ctx, sdk.ChatInput{
+    Message: "What is in this screenshot?",
+    Attachments: []sdk.Attachment{{
+        Type:     sdk.AttachmentImage,
+        FilePath: "/tmp/shot.png",
+        MimeType: "image/png",
+    }},
 })
 ```
 
