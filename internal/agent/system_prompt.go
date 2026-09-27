@@ -453,8 +453,17 @@ func toolNameInSet(set map[string]struct{}, name string) bool {
 	if len(set) == 0 {
 		return false
 	}
-	_, ok := set[strings.TrimSpace(name)]
-	return ok
+	name = strings.TrimSpace(name)
+	if _, ok := set[name]; ok {
+		return true
+	}
+	modelName := tool.ToOpenAIName(name)
+	for candidate := range set {
+		if tool.ToOpenAIName(candidate) == modelName {
+			return true
+		}
+	}
+	return false
 }
 
 /*

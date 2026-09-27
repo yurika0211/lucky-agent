@@ -46,7 +46,7 @@ func filterFunctionTools(tools []map[string]any, disabled []string) []map[string
 
 	filtered := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		if _, blocked := disabledSet[functionToolNameFromSchema(t)]; blocked {
+		if toolNameInSet(disabledSet, functionToolNameFromSchema(t)) {
 			continue
 		}
 		filtered = append(filtered, t)
@@ -479,14 +479,20 @@ func (a *Agent) executeToolCallsOrderedGuarded(
 	blockedResults := make(map[int]executedToolCall, len(toolCalls))
 	allowed := make([]provider.ToolCall, 0, len(toolCalls))
 	for idx, tc := range toolCalls {
-		if msg, blocked := guard.blockMessage(tc); blocked {
+		// Providers receive OpenAI-compatible names (for example
+		// codex_start_turn), while guard rules use the registry's canonical
+		// names (codex.start_turn). Resolve the name before policy checks so an
+		// aliased call cannot bypass the turn guard.
+		guardCall := tc
+		guardCall.Name = a.canonicalToolName(tc.Name)
+		if msg, blocked := guard.blockMessage(guardCall); blocked {
 			result := executedToolCall{Index: idx, ToolCall: tc, Result: msg}
 			blockedResults[idx] = result
 			a.recordProactiveToolEvent(sess, result, true)
 			continue
 		}
 		if hooksActive {
-			finalArgs, blocked, blockMsg := a.hooks.RunPre(tc.Name, tc.Arguments, source, sessionID)
+			finalArgs, blocked, blockMsg := a.hooks.RunPre(a.canonicalToolName(tc.Name), tc.Arguments, source, sessionID)
 			if blocked {
 				result := executedToolCall{Index: idx, ToolCall: tc, Result: blockMsg}
 				blockedResults[idx] = result
