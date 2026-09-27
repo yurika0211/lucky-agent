@@ -698,20 +698,21 @@
         },
 
         async fetchRelease(repo) {
-          const resp = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, {
-            headers: { Accept: 'application/vnd.github+json' }
+          const resp = await fetch(`https://github.com/${repo}/releases/latest/download/update.json`, {
+            headers: { Accept: 'application/json' },
+            cache: 'no-cache'
           });
           if (!resp.ok) throw new Error(`读取 ${repo} release 失败 (${resp.status})`);
           const data = await resp.json();
           const assets = (data.assets || []).map(a => ({
             name: a.name,
-            url: a.browser_download_url,
+            url: a.download_url,
             size: a.size || 0
           })).sort((a, b) => a.name.localeCompare(b.name));
           return {
             tag: data.tag_name || '',
-            htmlUrl: data.html_url || `https://github.com/${repo}/releases`,
-            publishedAt: this.formatDate(data.published_at || data.created_at || ''),
+            htmlUrl: data.html_url || `https://github.com/${repo}/releases/tag/${data.tag_name || ''}`,
+            publishedAt: this.formatDate(data.published_at || ''),
             assets
           };
         },
