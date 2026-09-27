@@ -64,6 +64,64 @@ func TestExecuteGuardedPreToolUseBlocks(t *testing.T) {
 	}
 }
 
+func TestExecuteGuardedPreToolUseResolvesOpenAICompatibleName(t *testing.T) {
+	requireShForHooks(t)
+	tools := tool.NewRegistry()
+	tools.Register(&tool.Tool{
+		Name:       "codex.start_turn",
+		Permission: tool.PermAuto,
+		Handler:    func(map[string]any) (string, error) { return "RAN", nil },
+	})
+	a := &Agent{
+		tools:   tools,
+		gateway: tool.NewGateway(tools),
+		hooks: hook.NewRunner(hook.Config{
+			Enabled: true,
+			Timeout: 2 * time.Second,
+			PreToolUse: []hook.Spec{{
+				Match:   []string{"codex.start_turn"},
+				Command: `echo '{"decision":"block","reason":"codex policy"}'`,
+			}},
+		}),
+	}
+
+	results := runGuarded(a, []provider.ToolCall{{Name: "codex_start_turn", Arguments: "{}"}})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !strings.Contains(results[0].Result, "codex policy") {
+		t.Errorf("expected canonical-name hook to block, got %q", results[0].Result)
+	}
+	if strings.Contains(results[0].Result, "RAN") {
+		t.Error("tool handler should not have executed when aliased hook blocked")
+	}
+}
+
+func TestExecuteGuardedPolicyResolvesOpenAICompatibleName(t *testing.T) {
+	tools := tool.NewRegistry()
+	tools.Register(&tool.Tool{
+		Name:       "codex.start_turn",
+		Permission: tool.PermAuto,
+		Handler:    func(map[string]any) (string, error) { return "RAN", nil },
+	})
+	a := &Agent{tools: tools, gateway: tool.NewGateway(tools)}
+
+	results := a.executeToolCallsOrderedGuarded(
+		[]provider.ToolCall{{Name: "codex_start_turn", Arguments: "{}"}},
+		true, nil, map[string]int{}, map[string]string{}, 1, false,
+		newTurnToolGuard("不要修改文件", nil),
+	)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+	if !strings.Contains(results[0].Result, "read-only/no-file-modification") {
+		t.Errorf("expected canonical-name policy to block, got %q", results[0].Result)
+	}
+	if strings.Contains(results[0].Result, "RAN") {
+		t.Error("tool handler should not have executed when aliased policy blocked")
+	}
+}
+
 func TestExecuteGuardedPostToolUseRewritesOutput(t *testing.T) {
 	requireShForHooks(t)
 	a := newHookTestAgent(hook.Config{

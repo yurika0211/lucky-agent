@@ -45,7 +45,7 @@ func (g *Gateway) ExecuteWithContext(name string, args map[string]any, userID st
 		exec.UserID = userID
 	}
 	if exec.Sandbox != nil {
-		if err := exec.Sandbox.ValidateToolArgs(name, args); err != nil {
+		if err := exec.Sandbox.ValidateToolArgs(g.canonicalToolName(name), args); err != nil {
 			return nil, err
 		}
 	}
@@ -83,7 +83,7 @@ func (g *Gateway) ExecuteWithShellExecutionContext(name string, args map[string]
 		exec.UserID = userID
 	}
 	if exec.Sandbox != nil {
-		if err := exec.Sandbox.ValidateToolArgs(name, args); err != nil {
+		if err := exec.Sandbox.ValidateToolArgs(g.canonicalToolName(name), args); err != nil {
 			return nil, err
 		}
 	}
@@ -118,17 +118,18 @@ func (g *Gateway) checkExecutable(name, userID string) error {
 	if perm == PermDeny {
 		return ErrToolDenied{name: name}
 	}
+	canonicalName := t.Name
 
-	if userID != "" && !g.sub.CanUse(userID, name) {
+	if userID != "" && !g.sub.CanUse(userID, canonicalName) {
 		return ErrQuotaExceeded{
-			Tool:   name,
+			Tool:   canonicalName,
 			UserID: userID,
 			Reason: "subscription does not allow this tool",
 		}
 	}
-	if userID != "" && !g.tracker.CheckQuota(userID, name) {
+	if userID != "" && !g.tracker.CheckQuota(userID, canonicalName) {
 		return ErrQuotaExceeded{
-			Tool:   name,
+			Tool:   canonicalName,
 			UserID: userID,
 			Reason: "usage quota exceeded",
 		}
@@ -140,8 +141,19 @@ func (g *Gateway) recordUsage(name, userID string, duration time.Duration, succe
 	if userID == "" {
 		return
 	}
+	name = g.canonicalToolName(name)
 	g.tracker.Record(userID, name, duration, success)
 	g.sub.RecordUsage(userID, name)
+}
+
+func (g *Gateway) canonicalToolName(name string) string {
+	if g == nil || g.registry == nil {
+		return name
+	}
+	if resolved, ok := g.registry.Get(name); ok && resolved != nil {
+		return resolved.Name
+	}
+	return name
 }
 
 func (g *Gateway) Tracker() *UsageTracker {

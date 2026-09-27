@@ -38,7 +38,8 @@ const (
 // read-only roots. Write, patch, move, mkdir, and delete operations continue to
 // use the built-in sandbox only.
 type FilesystemPolicy struct {
-	AllowedReadRoots []string
+	AllowedReadRoots    []string
+	AllowOutsideSandbox bool
 }
 
 func DefaultFilesystemPolicy() FilesystemPolicy {
@@ -1414,7 +1415,7 @@ func resolvePathArg(args map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("%s is required", key)
 	}
 	cwd, _ := args["_cwd"].(string)
-	return resolvePath(path, cwd)
+	return resolvePathForOperation(path, cwd, "", filesystemPolicyFromArgs(args, DefaultFilesystemPolicy()))
 }
 
 func resolveReadPathArg(args map[string]any, key string, policy FilesystemPolicy) (string, error) {
@@ -1423,7 +1424,15 @@ func resolveReadPathArg(args map[string]any, key string, policy FilesystemPolicy
 		return "", fmt.Errorf("%s is required", key)
 	}
 	cwd, _ := args["_cwd"].(string)
-	return resolvePathForOperation(path, cwd, filesystemRead, policy)
+	return resolvePathForOperation(path, cwd, filesystemRead, filesystemPolicyFromArgs(args, policy))
+}
+
+func filesystemPolicyFromArgs(args map[string]any, policy FilesystemPolicy) FilesystemPolicy {
+	mode, _ := args["_sandbox_mode"].(string)
+	if strings.EqualFold(strings.TrimSpace(mode), "dev") {
+		policy.AllowOutsideSandbox = true
+	}
+	return policy
 }
 
 func resolvePath(path, baseCwd string) (string, error) {
@@ -1515,6 +1524,9 @@ func validateSandboxForOperation(cleanPath string, op filesystemOperation, polic
 		if pathMatchesPrefix(absPath, denied) {
 			return fmt.Errorf("access denied: path is outside sandbox (%s)", cleanPath)
 		}
+	}
+	if policy.AllowOutsideSandbox {
+		return nil
 	}
 	for _, allowed := range allowedPrefixes {
 		if pathMatchesPrefix(absPath, allowed) {

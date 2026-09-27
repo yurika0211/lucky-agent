@@ -15,6 +15,20 @@ type detailedToolExecutionResult struct {
 	Observations []tool.Observation
 }
 
+// canonicalToolName converts a model-facing OpenAI-compatible name back to
+// the registry name used by policies and hooks. The registry remains the
+// single source of truth for this mapping.
+func (a *Agent) canonicalToolName(name string) string {
+	name = stringsTrimSpace(name)
+	if a == nil || a.tools == nil {
+		return name
+	}
+	if resolved, ok := a.tools.Get(name); ok && resolved != nil {
+		return resolved.Name
+	}
+	return name
+}
+
 func (a *Agent) executeToolMaybeDedupDetailed(
 	name, arguments string,
 	autoApprove bool,
@@ -72,6 +86,12 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		}
 		sc.Cwd = snapshot.Root
 	}
+	if snapshot != nil && !snapshot.Isolated() {
+		if args == nil {
+			args = make(map[string]any)
+		}
+		args["_sandbox_mode"] = snapshot.Mode.String()
+	}
 
 	var result *tool.GatewayResult
 	userRequest := ""
@@ -98,7 +118,7 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		a.updateShellContext(sess, arguments, output)
 	}
 	if a.hooks.Enabled() {
-		output = a.hooks.RunPost(name, arguments, "", sessionID, output, nil)
+		output = a.hooks.RunPost(a.canonicalToolName(name), arguments, "", sessionID, output, nil)
 	}
 	return detailedToolExecutionResult{Output: output, Metadata: result.Metadata, Observations: result.Observations}, nil
 }
