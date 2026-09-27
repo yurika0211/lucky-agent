@@ -44,6 +44,29 @@ func TestResolveUpdateAssetName(t *testing.T) {
 	}
 }
 
+func TestReleaseManifestURL(t *testing.T) {
+	tests := []struct {
+		repo, version, want string
+	}{
+		{"yurika0211/lucky-agent", "", "https://github.com/yurika0211/lucky-agent/releases/latest/download/update.json"},
+		{"yurika0211/lucky-agent", "latest", "https://github.com/yurika0211/lucky-agent/releases/latest/download/update.json"},
+		{"yurika0211/lucky-agent", "1.5.16", "https://github.com/yurika0211/lucky-agent/releases/download/v1.5.16/update.json"},
+		{"yurika0211/lucky-agent", "v1.5.16", "https://github.com/yurika0211/lucky-agent/releases/download/v1.5.16/update.json"},
+	}
+	for _, tt := range tests {
+		got, err := releaseManifestURL(tt.repo, tt.version)
+		if err != nil {
+			t.Fatalf("releaseManifestURL(%q,%q): %v", tt.repo, tt.version, err)
+		}
+		if got != tt.want {
+			t.Fatalf("releaseManifestURL(%q,%q)=%q want %q", tt.repo, tt.version, got, tt.want)
+		}
+	}
+	if _, err := releaseManifestURL("invalid", "latest"); err == nil {
+		t.Fatal("expected invalid repository to fail")
+	}
+}
+
 func TestCompareVersionLabels(t *testing.T) {
 	tests := []struct {
 		a, b string

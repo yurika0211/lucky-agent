@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,7 +22,7 @@ import (
 
 const (
 	defaultUpdateRepo     = "yurika0211/lucky-agent"
-	githubAPIBase         = "https://api.github.com"
+	githubReleaseBase     = "https://github.com"
 	updateHTTPTimeout     = 60 * time.Second
 	updateUserAgent       = "LuckyAgent-Updater"
 	managedInstallUIMark  = "UI"
@@ -35,15 +36,14 @@ type updateOptions struct {
 	version   string
 }
 
-type githubRelease struct {
-	TagName string        `json:"tag_name"`
-	Draft   bool          `json:"draft"`
-	Assets  []githubAsset `json:"assets"`
+type updateManifest struct {
+	TagName string          `json:"tag_name"`
+	Assets  []manifestAsset `json:"assets"`
 }
 
-type githubAsset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
+type manifestAsset struct {
+	Name        string `json:"name"`
+	DownloadURL string `json:"download_url"`
 }
 
 type releaseTarget struct {
@@ -218,25 +218,17 @@ func resolveUpdateAssetName(goos, goarch string) (platform string, assetName str
 }
 
 func fetchReleaseTarget(ctx context.Context, repo, version, assetName string) (*releaseTarget, error) {
-	version = strings.TrimSpace(version)
-	apiURL := githubAPIBase + "/repos/" + repo + "/releases/latest"
-	if version != "" && !strings.EqualFold(version, "latest") {
-		tag := version
-		if !strings.HasPrefix(tag, "v") && looksLikeDottedVersion(tag) {
-			tag = "v" + tag
-		}
-		apiURL = githubAPIBase + "/repos/" + repo + "/releases/tags/" + tag
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	manifestURL, err := releaseManifestURL(repo, version)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", updateUserAgent)
-	if token := firstNonEmpty(os.Getenv("GH_TOKEN"), os.Getenv("GITHUB_TOKEN")); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return nil, err
 	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", updateUserAgent)
 
 	client := &http.Client{Timeout: updateHTTPTimeout}
 	resp, err := client.Do(req)
@@ -246,30 +238,44 @@ func fetchReleaseTarget(ctx context.Context, repo, version, assetName string) (*
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github release api %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return nil, fmt.Errorf("github update manifest %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
-	var release githubRelease
-	if err := json.Unmarshal(body, &release); err != nil {
-		return nil, fmt.Errorf("decode github release: %w", err)
+	var manifest updateManifest
+	if err := json.Unmarshal(body, &manifest); err != nil {
+		return nil, fmt.Errorf("decode update manifest: %w", err)
 	}
-	if release.Draft {
-		return nil, errors.New("latest release is a draft")
-	}
-	if strings.TrimSpace(release.TagName) == "" {
-		return nil, errors.New("github release missing tag_name")
+	if strings.TrimSpace(manifest.TagName) == "" {
+		return nil, errors.New("update manifest missing tag_name")
 	}
 
-	for _, asset := range release.Assets {
-		if asset.Name == assetName && strings.TrimSpace(asset.BrowserDownloadURL) != "" {
+	for _, asset := range manifest.Assets {
+		if asset.Name == assetName && strings.TrimSpace(asset.DownloadURL) != "" {
 			return &releaseTarget{
-				Tag:         release.TagName,
+				Tag:         manifest.TagName,
 				AssetName:   asset.Name,
-				DownloadURL: asset.BrowserDownloadURL,
+				DownloadURL: asset.DownloadURL,
 			}, nil
 		}
 	}
-	return nil, fmt.Errorf("release %s has no asset %q", release.TagName, assetName)
+	return nil, fmt.Errorf("release %s has no asset %q", manifest.TagName, assetName)
+}
+
+func releaseManifestURL(repo, version string) (string, error) {
+	repo = strings.TrimSpace(repo)
+	if strings.Count(repo, "/") != 1 {
+		return "", fmt.Errorf("invalid repo %q, expected owner/name", repo)
+	}
+	version = strings.TrimSpace(version)
+	base := githubReleaseBase + "/" + repo + "/releases/"
+	if version == "" || strings.EqualFold(version, "latest") {
+		return base + "latest/download/update.json", nil
+	}
+	tag := version
+	if !strings.HasPrefix(tag, "v") && looksLikeDottedVersion(tag) {
+		tag = "v" + tag
+	}
+	return base + "download/" + url.PathEscape(tag) + "/update.json", nil
 }
 
 func downloadFile(ctx context.Context, url, dest string) error {
@@ -278,10 +284,6 @@ func downloadFile(ctx context.Context, url, dest string) error {
 		return err
 	}
 	req.Header.Set("User-Agent", updateUserAgent)
-	if token := firstNonEmpty(os.Getenv("GH_TOKEN"), os.Getenv("GITHUB_TOKEN")); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
 	client := &http.Client{Timeout: 5 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
