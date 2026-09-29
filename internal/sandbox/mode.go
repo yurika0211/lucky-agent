@@ -195,6 +195,9 @@ func (s *Snapshot) ValidateToolArgs(toolName string, args map[string]any) error 
 	if strings.HasPrefix(name, "skill_") && strings.HasSuffix(name, "_run") {
 		return fmt.Errorf("skill execution is disabled in iso sandbox")
 	}
+	if strings.HasPrefix(name, "grok.") {
+		return fmt.Errorf("tool %s is disabled in iso sandbox", toolName)
+	}
 	if strings.HasPrefix(name, "codex.") {
 		if cwd, ok := args["cwd"].(string); ok && strings.TrimSpace(cwd) != "" {
 			candidate, err := filepath.Abs(strings.TrimSpace(cwd))

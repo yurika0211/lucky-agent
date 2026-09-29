@@ -19,14 +19,27 @@ type Services struct {
 	Heartbeat *HeartbeatToolService
 	Skills    *SkillToolService
 	Codex     *CodexToolService
+	Grok      *GrokToolService
 }
 
-// Close releases optional long-lived tool runtimes such as Codex App Server.
+// Close releases optional long-lived tool runtimes such as Codex App Server
+// and the Grok agent process.
 func (s *Services) Close() error {
-	if s == nil || s.Codex == nil {
+	if s == nil {
 		return nil
 	}
-	return s.Codex.Close()
+	var first error
+	if s.Codex != nil {
+		if err := s.Codex.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	if s.Grok != nil {
+		if err := s.Grok.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // SetComputerUseService attaches the optional desktop automation tools to the
@@ -101,5 +114,8 @@ func (s *Services) RegisterCoreTools(r *Registry) {
 	}
 	if s.Codex != nil {
 		s.Codex.RegisterTools(r)
+	}
+	if s.Grok != nil {
+		s.Grok.RegisterTools(r)
 	}
 }

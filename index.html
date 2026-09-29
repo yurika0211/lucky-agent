@@ -1245,6 +1245,20 @@
                 ]
               },
               {
+                id: 'grok',
+                title: 'grok · 本地编码代理',
+                description: '通过 grok agent stdio 把编码任务交给本机 Grok。默认关闭，开启后才注册 grok.* 工具。',
+                fields: [
+                  { field: 'grok.enabled', example: 'false', description: '是否启用 Grok agent 桥。关闭时不启动进程，也不暴露 grok.* 工具。' },
+                  { field: 'grok.command', example: 'grok', description: 'Grok 可执行文件名或绝对路径。' },
+                  { field: 'grok.args', example: '["agent", "stdio"]', description: '启动参数。默认使用本机 stdio ACP，不要改成交互 TUI。' },
+                  { field: 'grok.approval_mode', example: 'gateway', description: 'gateway 把工具权限留给 grok.respond_approval；auto 自动允许一次；deny 自动拒绝。' },
+                  { field: 'grok.model', example: '""', description: '可选模型 ID。留空使用 Grok 自己的默认模型。' },
+                  { field: 'grok.cwd_allowlist', example: '[]', description: '允许作为会话工作区的目录。空数组表示不额外限制。' },
+                  { field: 'grok.max_events', example: '256', description: '本地事件缓冲最多保留的条数。工具只返回摘要和游标。' }
+                ]
+              },
+              {
                 id: 'memory',
                 title: 'memory / rag · 记忆和检索',
                 description: 'memory 管理持久记忆，rag 管理文档检索；两者不要混作同一类数据。',
