@@ -130,6 +130,15 @@
     "cwd_allowlist": [],
     "max_events": 256
   },
+  "grok": {
+    "enabled": false,
+    "command": "grok",
+    "args": ["agent", "stdio"],
+    "approval_mode": "gateway",
+    "model": "",
+    "cwd_allowlist": [],
+    "max_events": 256
+  },
   "stream_mode": "native",
   "memory": {
     "short_term_max_turns": 10,

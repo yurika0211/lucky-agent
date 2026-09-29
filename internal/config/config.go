@@ -42,6 +42,9 @@ type Config struct {
 	// Codex App Server coding runtime configuration.
 	Codex CodexConfig `json:"codex,omitempty"`
 
+	// Grok Build agent runtime configuration.
+	Grok GrokConfig `json:"grok,omitempty"`
+
 	// Embedding 配置（供 RAG / 记忆向量化使用）
 	Embedding EmbeddingConfig `json:"embedding,omitempty"`
 
@@ -760,6 +763,19 @@ type CodexConfig struct {
 	MaxEvents      int      `json:"max_events,omitempty"`
 }
 
+// GrokConfig configures the optional local Grok agent bridge. The bridge is
+// disabled by default; enabling it exposes grok.* tools and starts
+// `grok agent stdio` lazily on the first session.
+type GrokConfig struct {
+	Enabled      bool     `json:"enabled,omitempty"`
+	Command      string   `json:"command,omitempty"`
+	Args         []string `json:"args,omitempty"`
+	ApprovalMode string   `json:"approval_mode,omitempty"` // gateway, auto, deny
+	Model        string   `json:"model,omitempty"`
+	CWDAllowlist []string `json:"cwd_allowlist,omitempty"`
+	MaxEvents    int      `json:"max_events,omitempty"`
+}
+
 // FallbackEntry 是降级链中的一个节点配置
 type FallbackEntry struct {
 	Provider         string `json:"provider"`
@@ -805,6 +821,12 @@ func DefaultConfig() *Config {
 			Args:           []string{"app-server"},
 			DefaultSandbox: "workspace-write",
 			MaxEvents:      256,
+		},
+		Grok: GrokConfig{
+			Enabled:   false,
+			Command:   "grok",
+			Args:      []string{"agent", "stdio"},
+			MaxEvents: 256,
 		},
 		Multimodal: MultimodalConfig{
 			Provider:           "openai",
@@ -1825,6 +1847,8 @@ func cloneConfig(in *Config) *Config {
 	cp.Fallbacks = append([]FallbackEntry(nil), in.Fallbacks...)
 	cp.Codex.Args = append([]string(nil), in.Codex.Args...)
 	cp.Codex.CWDAllowlist = append([]string(nil), in.Codex.CWDAllowlist...)
+	cp.Grok.Args = append([]string(nil), in.Grok.Args...)
+	cp.Grok.CWDAllowlist = append([]string(nil), in.Grok.CWDAllowlist...)
 	cp.Server.APIKeys = append([]string(nil), in.Server.APIKeys...)
 	cp.Server.CORSOrigins = append([]string(nil), in.Server.CORSOrigins...)
 	cp.Tools.Filesystem.AllowedReadRoots = append([]string(nil), in.Tools.Filesystem.AllowedReadRoots...)
@@ -2097,6 +2121,22 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Codex.MaxEvents = n
+	case "grok.enabled":
+		m.config.Grok.Enabled = parseBool(value)
+	case "grok.command":
+		m.config.Grok.Command = value
+	case "grok.args":
+		m.config.Grok.Args = splitCSV(value)
+	case "grok.approval_mode":
+		m.config.Grok.ApprovalMode = value
+	case "grok.model":
+		m.config.Grok.Model = value
+	case "grok.cwd_allowlist":
+		m.config.Grok.CWDAllowlist = splitCSV(value)
+	case "grok.max_events":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Grok.MaxEvents = n
 	case "stream_mode":
 		m.config.StreamMode = value
 	case "memory.tidal.enabled":

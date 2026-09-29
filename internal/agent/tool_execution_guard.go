@@ -171,6 +171,15 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 		if (decision == "accept" || decision == "acceptforsession") && g.mutationBlocked() {
 			return "the user requested a read-only/no-file-modification task"
 		}
+	case "grok.start_turn":
+		if g.mutationBlocked() {
+			return "the user requested a read-only/no-file-modification task"
+		}
+	case "grok.respond_approval":
+		decision := strings.ToLower(guardStringArg(args, "decision"))
+		if (decision == "allow" || decision == "allow_always" || decision == "allow-always") && g.mutationBlocked() {
+			return "the user requested a read-only/no-file-modification task"
+		}
 	}
 
 	if strings.HasPrefix(name, "skill_") && strings.HasSuffix(name, "_run") && g.noSkillRun {

@@ -24,6 +24,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/cron"
 	"github.com/yurika0211/luckyagent/internal/embedder"
 	"github.com/yurika0211/luckyagent/internal/gateway"
+	grokruntime "github.com/yurika0211/luckyagent/internal/grok"
 	"github.com/yurika0211/luckyagent/internal/hook"
 	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/memory"
@@ -714,6 +715,19 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 			DefaultSandbox: c.Codex.DefaultSandbox,
 			CWDAllowlist:   append([]string(nil), c.Codex.CWDAllowlist...),
 			MaxEvents:      c.Codex.MaxEvents,
+		}))
+	}
+	if c.Grok.Enabled {
+		command := append([]string{c.Grok.Command}, c.Grok.Args...)
+		if strings.TrimSpace(command[0]) == "" {
+			command = []string{"grok", "agent", "stdio"}
+		}
+		toolServices.Grok = tool.NewGrokToolService(grokruntime.NewManager(grokruntime.Config{
+			Command:      command,
+			ApprovalMode: c.Grok.ApprovalMode,
+			CWDAllowlist: append([]string(nil), c.Grok.CWDAllowlist...),
+			MaxEvents:    c.Grok.MaxEvents,
+			Model:        c.Grok.Model,
 		}))
 	}
 
