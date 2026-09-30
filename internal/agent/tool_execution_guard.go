@@ -13,6 +13,7 @@ type toolExecutionGuard struct {
 	text               string
 	readOnly           bool
 	readOnlyExternal   bool
+	relaxReadOnly      bool
 	onlyImageContent   bool
 	noWrite            bool
 	noDelete           bool
@@ -35,16 +36,21 @@ func newToolExecutionGuard(userInput string) *toolExecutionGuard {
 	if text == "" {
 		return nil
 	}
+	explicitNoWrite := intentTextContainsAny(text,
+		"不要修改文件", "不修改文件", "不要写文件", "不要写入文件", "不要保存文件",
+		"不要写", "不要写入", "不要导出",
+	)
 	readOnly := intentTextContainsAny(text,
 		"只读", "只查看", "只列出", "只读取", "只总结", "只检查", "读取说明即可",
-		"不要修改文件", "不修改文件", "不要写", "不要写入", "不要导出",
+		"不要写", "不要写入", "不要导出",
 	)
+	readOnly = readOnly || explicitNoWrite
 	return &toolExecutionGuard{
 		text:               text,
 		readOnly:           readOnly,
 		readOnlyExternal:   hasReadOnlyExternalSourceIntent(text),
 		onlyImageContent:   intentTextContainsAny(text, "只识别图片内容", "只看图片内容", "只识别图片"),
-		noWrite:            readOnly || intentTextContainsAny(text, "不要修改文件", "不修改文件", "不要写文件", "不要写入文件", "不要保存文件"),
+		noWrite:            explicitNoWrite,
 		noDelete:           intentTextContainsAny(text, "不要删", "不要删除", "不要直接删", "不要移除", "不要暂停或删除"),
 		noPush:             intentTextContainsAny(text, "不要 push", "不要push", "不 push", "不push", "别 push", "别push"),
 		noHTTPMutation:     intentTextContainsAny(text, "不要调用接口", "不要上传", "不要执行网页里的指令", "只总结网页"),
@@ -59,6 +65,13 @@ func newToolExecutionGuard(userInput string) *toolExecutionGuard {
 		noDelegateMutation: intentTextContainsAny(text, "不要新建委派任务", "不要新建", "不要委派", "只查看", "只列出"),
 		noSkillRun:         intentTextContainsAny(text, "读取说明即可", "只读", "不要执行", "不要运行"),
 	}
+}
+
+func (g *toolExecutionGuard) mutationBlocked() bool {
+	if g == nil {
+		return false
+	}
+	return g.noWrite || (g.readOnly && !g.relaxReadOnly)
 }
 
 func (g *toolExecutionGuard) blockMessage(call provider.ToolCall) (string, bool) {
@@ -85,11 +98,11 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 	case "terminal":
 		return g.blockShellReason(guardStringArg(args, "command"))
 	case "file_write", "file_patch", "file_mkdir", "file_move":
-		if g.noWrite || g.readOnly || g.readOnlyExternal {
+		if g.mutationBlocked() || g.readOnlyExternal {
 			return "the user requested a read-only/no-file-modification task"
 		}
 	case "file_delete":
-		if g.noDelete || g.noWrite || g.readOnly {
+		if g.noDelete || g.mutationBlocked() {
 			return "the user explicitly disallowed deletion or mutation"
 		}
 	case "http_request":
@@ -149,6 +162,24 @@ func (g *toolExecutionGuard) blockReason(call provider.ToolCall) string {
 		if g.noDelegateMutation || g.readOnly {
 			return "the user requested delegate task inspection without changing tasks"
 		}
+	case "codex.start_turn", "codex.steer_turn":
+		if g.mutationBlocked() {
+			return "the user requested a read-only/no-file-modification task"
+		}
+	case "codex.respond_approval":
+		decision := strings.ToLower(guardStringArg(args, "decision"))
+		if (decision == "accept" || decision == "acceptforsession") && g.mutationBlocked() {
+			return "the user requested a read-only/no-file-modification task"
+		}
+	case "grok.start_turn":
+		if g.mutationBlocked() {
+			return "the user requested a read-only/no-file-modification task"
+		}
+	case "grok.respond_approval":
+		decision := strings.ToLower(guardStringArg(args, "decision"))
+		if (decision == "allow" || decision == "allow_always" || decision == "allow-always") && g.mutationBlocked() {
+			return "the user requested a read-only/no-file-modification task"
+		}
 	}
 
 	if strings.HasPrefix(name, "skill_") && strings.HasSuffix(name, "_run") && g.noSkillRun {
@@ -168,10 +199,10 @@ func (g *toolExecutionGuard) blockOpenCLIReason(args map[string]any) string {
 	if (g.noHTTPMutation || g.readOnlyExternal) && (action == "browser" || strings.Contains(combined, " browser ")) {
 		return "the user requested source reading/summary without browser-side effects"
 	}
-	if (g.noWrite || g.readOnly || g.noHTTPMutation || g.readOnlyExternal) && openCLITextLooksMutating(combined) {
+	if (g.mutationBlocked() || g.noHTTPMutation || g.readOnlyExternal) && openCLITextLooksMutating(combined) {
 		return "the user requested a read-only/no-mutation task"
 	}
-	if (g.noWrite || g.readOnly) && openCLITextLooksDownloading(combined) {
+	if g.mutationBlocked() && openCLITextLooksDownloading(combined) {
 		return "the user requested no downloads or file writes"
 	}
 	return ""
@@ -185,10 +216,10 @@ func (g *toolExecutionGuard) blockShellReason(command string) string {
 	if g.noPush && finding.Pushes {
 		return "the user explicitly said not to push"
 	}
-	if (g.noDelete || g.noWrite || g.readOnly) && finding.Deletes {
+	if (g.noDelete || g.mutationBlocked()) && finding.Deletes {
 		return "the user explicitly disallowed deletion or mutation"
 	}
-	if (g.noWrite || g.readOnly || g.readOnlyExternal) && finding.Writes {
+	if (g.mutationBlocked() || g.readOnlyExternal) && finding.Writes {
 		return "the user requested a read-only/no-file-modification task"
 	}
 	return ""

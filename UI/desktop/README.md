@@ -120,3 +120,21 @@ Still not included:
 - code signing
 - auto-update
 - notarized macOS / Authenticode-signed Windows packages
+
+## Packaged install layout
+
+Release bundles stage the dashboard at `UI/GUI/dist`. The desktop shell resolves GUI assets from:
+
+1. `$LH_APP_ROOT/UI/GUI/dist/index.html` (packaged install)
+2. `$LH_APP_ROOT/GUI/dist/index.html` (legacy fallback)
+3. paths relative to `UI/desktop` for local source checkouts
+
+### Linux system libraries
+
+The bundled Electron binary still needs host NSS/NSPR:
+
+- Debian/Ubuntu: `sudo apt-get install -y libnspr4 libnss3`
+- Fedora/RHEL: `sudo dnf install -y nspr nss`
+
+`.deb` packages declare `Depends: libnspr4, libnss3`. Tarball installs print a clear error when `ldd` reports missing libraries.
+

@@ -229,7 +229,7 @@ func (a *Agent) runForeground(ctx context.Context, sess *session.Session, input 
 		if err := cfg.Execution.BindSession(sess.ID); err != nil {
 			return last, err
 		}
-		emitForeground(cfg, ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("前台任务 %s，执行第 %d 段。", task.ID, claimed.Attempts-claimed.BudgetStartAttempt)})
+		emitForeground(cfg, ChatEvent{Type: ChatEventThinking, TaskID: task.ID, Content: fmt.Sprintf("前台任务 %s，执行第 %d 段。", task.ID, claimed.Attempts-claimed.BudgetStartAttempt)})
 		last, err = a.runDurableLoop(runCtx, sess, input, cfg, snapshot)
 		outcome := &autonomy.WorkerResult{Error: err}
 		if last != nil {

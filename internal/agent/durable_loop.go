@@ -108,7 +108,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 	if err := save(); err != nil {
 		return result, err
 	}
-	guard := newTurnToolGuard(input.RoutingText, cfg.DisabledTools)
+	guard := newTurnToolGuard(input.RoutingText, cfg.DisabledTools, snapshotMode(cfg.Sandbox))
 	memoryGate := a.buildMemoryToolGate(input.RoutingText, input.Scope, cfg.DisabledTools)
 	artifactGuard := newArtifactFinalizationGuard(input.RoutingText)
 	for _, op := range task.Operations {
@@ -394,13 +394,15 @@ func (a *Agent) executeDurablePending(ctx context.Context, sess *session.Session
 			if ctx.Err() != nil {
 				return fmt.Errorf("%w: canceled before operation %s could be confirmed", autonomy.ErrBlocked, op.ID)
 			}
-			blockMessage, blocked := guard.blockMessage(pending.Call)
+			guardCall := pending.Call
+			guardCall.Name = a.canonicalToolName(pending.Call.Name)
+			blockMessage, blocked := guard.blockMessage(guardCall)
 			if !blocked && a.hooks.Enabled() {
 				sessionID := ""
 				if sess != nil {
 					sessionID = sess.ID
 				}
-				executeArgs, blocked, blockMessage = a.hooks.RunPre(pending.Call.Name, executeArgs, cfg.Source, sessionID)
+				executeArgs, blocked, blockMessage = a.hooks.RunPre(a.canonicalToolName(pending.Call.Name), executeArgs, cfg.Source, sessionID)
 			}
 			if blocked {
 				executed.Output = blockMessage

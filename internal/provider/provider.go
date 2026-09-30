@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/config"
+	"github.com/yurika0211/luckyagent/internal/gateway"
 )
 
 type ContentPart struct {
@@ -27,8 +28,11 @@ type Message struct {
 	Content          string        `json:"content"`
 	ReasoningContent string        `json:"reasoning_content,omitempty"`
 	ContentParts     []ContentPart `json:"content_parts,omitempty"`
-	CreatedAt        *time.Time    `json:"created_at,omitempty"`
-	Usage            *TokenUsage   `json:"usage,omitempty"`
+	// Attachments are persisted for session history. Provider adapters do not
+	// include this field in their model wire payloads.
+	Attachments []gateway.Attachment `json:"attachments,omitempty"`
+	CreatedAt   *time.Time           `json:"created_at,omitempty"`
+	Usage       *TokenUsage          `json:"usage,omitempty"`
 
 	ToolCallID string     `json:"tool_call_id,omitempty"` // function calling tool result
 	Name       string     `json:"name,omitempty"`         // function name for tool messages

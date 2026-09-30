@@ -245,6 +245,8 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	// v0.18.0: WebSocket Hub
 	wsHandler := websocket.NewAgentHandler(a)
 	wsHub := websocket.NewHub(wsHandler, websocket.DefaultHubConfig())
+	wsHandler.SetEventSink(wsHub.SendToSession)
+	wsHandler.Start()
 	go wsHub.Run()
 
 	// v0.22.0: 多 Agent 协作
@@ -340,8 +342,11 @@ func (s *Server) Start() error {
 		{path: "/api/v1/uploads", handler: s.handleUploads},
 		{path: "/api/v1/artifacts", handler: s.handleArtifact},
 		{path: "/api/v1/commands", handler: s.handleCommands},
+		{path: "/api/v1/cron", handler: s.handleCron},
 		{path: "/api/v1/tasks", handler: s.handleTasks},
 		{path: "/api/v1/tasks/", handler: s.handleTaskByID},
+		{path: "/api/v1/autonomy/dashboard", handler: s.handleAutonomyDashboard},
+		{path: "/api/v1/autonomy/tasks/", handler: s.handleAutonomyTaskByID},
 		{path: "/api/v1/memory", handler: s.handleMemory},
 		{path: "/api/v1/memory/recall", handler: s.handleMemoryRecall},
 		{path: "/api/v1/memory/recall/trace", handler: s.handleMemoryRecallTrace},
@@ -782,12 +787,12 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 	turn := agent.MultimodalUserTurnInput(req.Message, req.Attachments)
 	// v0.56.0: 检测内置命令
 	if strings.HasPrefix(req.Message, "/") {
-		parts := strings.SplitN(strings.TrimPrefix(req.Message, "/"), " ", 2)
-		cmd := parts[0]
-		// args := ""
-		// if len(parts) > 1 {
-		// 	args = parts[1]
-		// }
+		parts := strings.SplitN(strings.TrimSpace(strings.TrimPrefix(req.Message, "/")), " ", 2)
+		cmd := strings.ToLower(strings.TrimSpace(parts[0]))
+		args := ""
+		if len(parts) > 1 {
+			args = strings.TrimSpace(parts[1])
+		}
 
 		// 简单命令处理（不依赖 gateway handler）
 		switch cmd {
@@ -845,9 +850,16 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			})
 			return
 		default:
-			s.sendJSON(w, http.StatusOK, ChatResponse{
-				Response: fmt.Sprintf("Unknown command: /%s\nType /help for available commands.", cmd),
-			})
+			// Keep the synchronous chat endpoint and /api/v1/commands on the
+			// same command router. This preserves the complete argument tail,
+			// including spaces, for commands such as `/models refresh` and
+			// `/rag search foo bar`.
+			output, err := s.runCommand(cmd, args, strings.TrimSpace(req.SessionID))
+			if err != nil {
+				s.sendJSON(w, http.StatusOK, ChatResponse{Response: fmt.Sprintf("%s\nType /help for available commands.", err)})
+				return
+			}
+			s.sendJSON(w, http.StatusOK, ChatResponse{Response: output, SessionID: strings.TrimSpace(req.SessionID)})
 			return
 		}
 	}
@@ -1479,6 +1491,9 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"GET  /api/v1/memory/recall?q= — 搜索记忆",
 			"GET  /api/v1/memory/stats    — 记忆统计",
 			"GET  /api/v1/proactive/status — proactive 状态",
+			"GET  /api/v1/autonomy/dashboard — 后台队列与 worker 状态",
+			"GET  /api/v1/autonomy/tasks/{id} — 后台任务详情",
+			"GET  /api/v1/cron       — 定时任务列表",
 			"GET  /api/v1/tools      — 工具列表",
 			"GET  /api/v1/stats      — 服务器统计",
 			"GET  /api/v1/soul       — SOUL 信息",

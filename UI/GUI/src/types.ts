@@ -63,6 +63,7 @@ export type ProviderMessage = {
   name?: string;
   tool_call_id?: string;
   tool_calls?: HistoryToolCall[];
+  attachments?: RuntimeAttachment[];
 };
 
 export type SessionHistory = RuntimeSession & {

@@ -15,10 +15,10 @@ LuckyAgent 是一个用 Go 构建的长期运行 Agent runtime。它把 Agent lo
   <a href="public/Qgroup.png">
     <img src="https://img.shields.io/badge/QQ群-加入交流群-12b7f5?style=for-the-badge&amp;logo=tencentqq&amp;logoColor=white" alt="QQ group">
   </a>
-  <a href="https://yurika0211.github.io/luckyagent/#config">
+  <a href="https://yurika0211.github.io/lucky-agent/#config">
     <img src="https://img.shields.io/badge/配置说明-Config-237452?style=for-the-badge&amp;logo=readthedocs&amp;logoColor=white" alt="Configuration guide">
   </a>
-  <a href="https://yurika0211.github.io/luckyagent/">
+  <a href="https://yurika0211.github.io/lucky-agent/">
     <img src="https://img.shields.io/badge/部署知识库-Deployment-2d6f93?style=for-the-badge&amp;logo=docker&amp;logoColor=white" alt="Deployment knowledge base">
   </a>
   <a href="docs/API.md">
@@ -36,6 +36,16 @@ LuckyAgent 是一个用 Go 构建的长期运行 Agent runtime。它把 Agent lo
   <img src="public/GUI-memory-graph.png" alt="LuckyAgent memory graph workspace" width="49%">
   <img src="public/GUI-gateways.png" alt="LuckyAgent messaging gateways workspace" width="49%">
 </p>
+
+## Embed SDK（进程内）
+
+把 LuckyAgent 当作 Go library 嵌入宿主进程，无需先起 `lh serve`：
+
+```bash
+go run ./examples/embed_minimal
+```
+
+详情见 [`sdk/README.md`](sdk/README.md)。稳定面（v0）：`New` / `Chat*`（含多模态 Input） / Sessions（含 Compact） / Memory / RAG / Tools / Models / Skills。
 
 ## 核心能力
 
@@ -67,10 +77,13 @@ go run ./cmd/la init
 
 ```bash
 go run ./cmd/la config set provider openai
-go run ./cmd/la config set api_key sk-your-api-key
 go run ./cmd/la config set api_base https://api.openai.com/v1
 go run ./cmd/la config set model gpt-5.4-mini
+go run ./cmd/la credential add openai-main --kind llm_api_key
+go run ./cmd/la config set models.endpoints.chat.credential_ref openai-main
 ```
+
+凭据值通过 TTY 隐藏输入，保存在 `~/.luckyagent/runtime/credentials.db` 中；配置文件只保存引用。`credential list` 只显示凭据元数据，`credential remove <id>` 删除凭据。
 
 如需在回答末尾显示工具来源引用，可开启自动引用尾注（默认关闭）：
 
@@ -147,7 +160,7 @@ go run ./cmd/la tui --api-base http://127.0.0.1:9090 --session dashboard-main
 
 请优先阅读：
 
-[打开 LuckyAgent 部署知识库](https://yurika0211.github.io/luckyagent/)
+[打开 LuckyAgent 部署知识库](https://yurika0211.github.io/lucky-agent/)
 
 仓库中也提供了两套 Compose：
 
@@ -190,11 +203,13 @@ lh rag search "deployment"
 
 ## 文档导航
 
-- [部署知识库](https://yurika0211.github.io/luckyagent/)
+- [部署知识库](https://yurika0211.github.io/lucky-agent/)
 - [使用指南](docs/wiki/使用指南.md)：初始化、配置、CLI、API、GUI、TUI、网关和 Docker
 - [特色功能](docs/wiki/特色功能.md)：记忆、RAG、工具、自动化和多 Agent
 - [使用场景](docs/wiki/使用场景.md)：本地调试、知识库问答、机器人和团队 API
 - [HTTP API](docs/API.md)
+- [Codex App Server 集成](docs/codex-app-server.md)
+- [Grok agent 集成](docs/grok-agent.md)
 - [记忆系统](docs/memory_system.md)
 - [Graph RAG 快速开始](docs/GRAPH_RAG_QUICKSTART.md)
 - [多 Agent 协作](docs/multi-agent/collaboration.md)

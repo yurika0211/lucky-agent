@@ -79,6 +79,17 @@ else
   exit 1
 fi
 
+# Electron on Linux needs system NSS/NSPR. Official tarballs do not bundle them.
+if [ "$(uname -s 2>/dev/null || true)" = Linux ] && command -v ldd >/dev/null 2>&1; then
+  missing=$(ldd "$electron_bin" 2>/dev/null | awk '/not found/ {print $1}' | sort -u | tr '\n' ' ')
+  if [ -n "${missing:-}" ]; then
+    echo "LuckyAgent desktop is missing shared libraries: $missing" >&2
+    echo "On Debian/Ubuntu, install: sudo apt-get install -y libnspr4 libnss3" >&2
+    echo "On Fedora/RHEL, install: sudo dnf install -y nspr nss" >&2
+    exit 1
+  fi
+fi
+
 exec "$electron_bin" "$app_root/desktop" "$@"
 LAUNCHER
 chmod 0755 "$stage_dir/luckyagent-desktop"

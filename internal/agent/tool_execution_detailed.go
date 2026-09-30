@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/tool"
 )
@@ -12,6 +13,20 @@ type detailedToolExecutionResult struct {
 	Output       string
 	Metadata     map[string]any
 	Observations []tool.Observation
+}
+
+// canonicalToolName converts a model-facing OpenAI-compatible name back to
+// the registry name used by policies and hooks. The registry remains the
+// single source of truth for this mapping.
+func (a *Agent) canonicalToolName(name string) string {
+	name = stringsTrimSpace(name)
+	if a == nil || a.tools == nil {
+		return name
+	}
+	if resolved, ok := a.tools.Get(name); ok && resolved != nil {
+		return resolved.Name
+	}
+	return name
 }
 
 func (a *Agent) executeToolMaybeDedupDetailed(
@@ -54,6 +69,7 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 	}
 
 	var sc *tool.ShellContext
+	snapshot := sandbox.SnapshotFromContext(ctx)
 	if sess != nil {
 		cwd := sess.GetCwd()
 		env := sess.GetEnv()
@@ -63,6 +79,18 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 				Env: env,
 			}
 		}
+	}
+	if snapshot != nil && snapshot.Isolated() {
+		if sc == nil {
+			sc = &tool.ShellContext{}
+		}
+		sc.Cwd = snapshot.Root
+	}
+	if snapshot != nil && !snapshot.Isolated() {
+		if args == nil {
+			args = make(map[string]any)
+		}
+		args["_sandbox_mode"] = snapshot.Mode.String()
 	}
 
 	var result *tool.GatewayResult
@@ -74,7 +102,7 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		Context: ctx, SessionID: sessionID,
 		// The CLI/TUI loop is the local trusted entry point. Remote servers
 		// should set an explicit allowed_sources policy before enabling control.
-		Source: source, UserID: "", UserRequest: userRequest, AutoApprove: autoApprove,
+		Source: source, UserID: "", UserRequest: userRequest, AutoApprove: autoApprove, Sandbox: snapshot,
 	}
 	if sc != nil {
 		result, err = a.gateway.ExecuteWithShellExecutionContext(name, args, "", sc, exec)
@@ -90,7 +118,7 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		a.updateShellContext(sess, arguments, output)
 	}
 	if a.hooks.Enabled() {
-		output = a.hooks.RunPost(name, arguments, "", sessionID, output, nil)
+		output = a.hooks.RunPost(a.canonicalToolName(name), arguments, "", sessionID, output, nil)
 	}
 	return detailedToolExecutionResult{Output: output, Metadata: result.Metadata, Observations: result.Observations}, nil
 }

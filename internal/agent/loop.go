@@ -18,6 +18,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/provider"
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/telemetry"
 	"github.com/yurika0211/luckyagent/internal/tool"
@@ -120,6 +121,7 @@ type LoopConfig struct {
 	DisabledTools          []string            // 本轮对模型隐藏的工具名
 	Ephemeral              bool                // 临时后台执行，不写会话外持久化上下文
 	Source                 string              // 调用入口，例如 cli、tui、http、telegram
+	Sandbox                *sandbox.Snapshot   // task-scoped execution boundary
 }
 
 // DefaultLoopConfig 返回默认 Loop 配置
@@ -325,6 +327,22 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
+	snapshot := loopCfg.Sandbox
+	ownedSnapshot := false
+	if snapshot == nil {
+		var snapshotErr error
+		snapshot, snapshotErr = a.sandboxSnapshot(sess)
+		if snapshotErr != nil {
+			return nil, fmt.Errorf("prepare %s sandbox: %w", a.SandboxMode(), snapshotErr)
+		}
+		ownedSnapshot = true
+	}
+	loopCfg.Sandbox = snapshot
+	if ownedSnapshot {
+		defer snapshot.Close()
+	}
+	ctx = sandbox.WithSnapshot(ctx, snapshot)
+	a.applySandboxToolPolicy(&loopCfg, snapshot)
 	if strings.TrimSpace(loopCfg.Source) == "" {
 		loopCfg.Source = "cli"
 	}
@@ -455,7 +473,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 	}
 	loopState := newLoopRuntimeState()
 	loopState.provider = turnProvider
-	loopState.toolExecutionGuard = newTurnToolGuard(routingText, loopCfg.DisabledTools)
+	loopState.toolExecutionGuard = newTurnToolGuard(routingText, loopCfg.DisabledTools, snapshotMode(loopCfg.Sandbox))
 	loopState.artifactGuard = newArtifactFinalizationGuard(routingText)
 	memoryGate := a.buildMemoryToolGate(routingText, turnInput.Scope, loopCfg.DisabledTools)
 
@@ -1450,7 +1468,7 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 	if a.hooks.Enabled() {
 		// PostToolUse: 允许 hook 在工具结果回上下文前改写/脱敏/截断。
 		// source 暂传空（匹配全部来源），TODO 接入网关来源。
-		output = a.hooks.RunPost(name, arguments, "", sessionID, output, nil)
+		output = a.hooks.RunPost(a.canonicalToolName(name), arguments, "", sessionID, output, nil)
 	}
 	return output, nil
 }

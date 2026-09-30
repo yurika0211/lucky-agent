@@ -24,7 +24,7 @@ func canonicalModelKey(key string) string {
 		if key == section+".model" {
 			return "models.active." + kind
 		}
-		for _, field := range []string{"provider", "api_key", "api_base"} {
+		for _, field := range []string{"provider", "api_key", "credential_ref", "api_base"} {
 			if key == section+"."+field {
 				return "models.endpoints." + kind + "." + field
 			}
@@ -47,7 +47,7 @@ func (c *Config) setModelKey(key, value string) (bool, error) {
 		}
 		key = "models.endpoints.vision.provider"
 	}
-	for _, field := range []string{"provider", "api_key", "api_base"} {
+	for _, field := range []string{"provider", "api_key", "credential_ref", "api_base"} {
 		if key == "multimodal."+field {
 			for _, kind := range []string{"vision", "transcription"} {
 				if _, err := c.setModelKey("models.endpoints."+kind+"."+field, value); err != nil {
@@ -86,6 +86,8 @@ func (c *Config) setModelKey(key, value string) (bool, error) {
 			ep.Provider = value
 		case "api_key":
 			ep.APIKey = value
+		case "credential_ref":
+			ep.CredentialRef = strings.TrimSpace(value)
 		case "api_base":
 			ep.APIBase = value
 		case "protocol":

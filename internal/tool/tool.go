@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 )
 
 // PermissionLevel 工具权限级别
@@ -127,6 +129,9 @@ type ExecutionContext struct {
 	// tools may use it to verify that an operation was explicitly requested.
 	UserRequest string
 	AutoApprove bool
+	// Sandbox is captured when the task starts. A running task keeps the same
+	// execution boundary even if the global mode changes later.
+	Sandbox *sandbox.Snapshot
 }
 
 // ToOpenAIFormat 转换为 OpenAI function calling 格式
@@ -199,6 +204,13 @@ func toOpenAIName(name string) string {
 	return ret
 }
 
+// ToOpenAIName returns the model-facing name used in function schemas. It is
+// exported so policy and routing code can compare registry names with names
+// returned by providers without duplicating the conversion rules.
+func ToOpenAIName(name string) string {
+	return toOpenAIName(name)
+}
+
 // Registry 管理所有已注册的工具
 type Registry struct {
 	mu       sync.RWMutex
@@ -226,14 +238,18 @@ func (r *Registry) Register(tool *Tool) {
 func (r *Registry) Unregister(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.tools, name)
+	_, canonical, ok := r.lookupToolLocked(name)
+	if ok {
+		delete(r.tools, canonical)
+		delete(r.permConf, canonical)
+	}
 }
 
-// Get 获取工具
+// Get 获取工具。name 可以是内部注册名，也可以是模型侧的 OpenAI 兼容名。
 func (r *Registry) Get(name string) (*Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	t, ok := r.tools[name]
+	t, _, ok := r.lookupToolLocked(name)
 	return t, ok
 }
 
@@ -487,13 +503,13 @@ func (r *Registry) CheckPermission(name string) (PermissionLevel, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	t, ok := r.tools[name]
+	t, canonical, ok := r.lookupToolLocked(name)
 	if !ok {
 		return PermDeny, ErrToolNotFound{name: name}
 	}
 
 	perm := t.Permission
-	if override, has := r.permConf[name]; has {
+	if override, has := r.permConf[canonical]; has {
 		perm = override
 	}
 	return perm, nil
@@ -504,10 +520,11 @@ func (r *Registry) SetPermissionOverride(name string, perm PermissionLevel) erro
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if _, ok := r.tools[name]; !ok {
+	_, canonical, ok := r.lookupToolLocked(name)
+	if !ok {
 		return ErrToolNotFound{name: name}
 	}
-	r.permConf[name] = perm
+	r.permConf[canonical] = perm
 	return nil
 }
 
@@ -516,7 +533,7 @@ func (r *Registry) Enable(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	t, ok := r.tools[name]
+	t, _, ok := r.lookupToolLocked(name)
 	if !ok {
 		return ErrToolNotFound{name: name}
 	}
@@ -529,7 +546,7 @@ func (r *Registry) Disable(name string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	t, ok := r.tools[name]
+	t, _, ok := r.lookupToolLocked(name)
 	if !ok {
 		return ErrToolNotFound{name: name}
 	}

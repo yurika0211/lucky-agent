@@ -23,11 +23,14 @@ type RestartOptions struct {
 	ReadyTimeout time.Duration
 	// PollInterval is the readiness poll cadence. Default 100ms.
 	PollInterval time.Duration
+	// RecoveryTimeout bounds a best-effort second start after startup failure.
+	RecoveryTimeout time.Duration
 }
 
 // RestartResult captures one gateway bounce attempt.
 type RestartResult struct {
-	Duration time.Duration
+	Duration  time.Duration
+	Recovered bool
 }
 
 func (o RestartOptions) withDefaults() RestartOptions {
@@ -39,6 +42,9 @@ func (o RestartOptions) withDefaults() RestartOptions {
 	}
 	if o.PollInterval <= 0 {
 		o.PollInterval = 100 * time.Millisecond
+	}
+	if o.RecoveryTimeout <= 0 {
+		o.RecoveryTimeout = 5 * time.Second
 	}
 	return o
 }
@@ -68,7 +74,8 @@ func RestartGateway(ctx context.Context, gw Restartable, opts RestartOptions) (R
 	}
 
 	if err := gw.Start(ctx); err != nil {
-		return RestartResult{Duration: time.Since(started)}, fmt.Errorf("start: %w", err)
+		recovered := recoverGateway(gw, opts)
+		return RestartResult{Duration: time.Since(started), Recovered: recovered}, fmt.Errorf("start: %w (recovered=%t)", err, recovered)
 	}
 
 	deadline := time.Now().Add(opts.ReadyTimeout)
@@ -77,7 +84,8 @@ func RestartGateway(ctx context.Context, gw Restartable, opts RestartOptions) (R
 			return RestartResult{Duration: time.Since(started)}, nil
 		}
 		if time.Now().After(deadline) {
-			return RestartResult{Duration: time.Since(started)}, fmt.Errorf("not ready within %s after start", opts.ReadyTimeout)
+			recovered := recoverGateway(gw, opts)
+			return RestartResult{Duration: time.Since(started), Recovered: recovered}, fmt.Errorf("not ready within %s after start (recovered=%t)", opts.ReadyTimeout, recovered)
 		}
 		poll := time.NewTimer(opts.PollInterval)
 		select {
@@ -85,6 +93,40 @@ func RestartGateway(ctx context.Context, gw Restartable, opts RestartOptions) (R
 			poll.Stop()
 			return RestartResult{Duration: time.Since(started)}, fmt.Errorf("ready wait: %w", ctx.Err())
 		case <-poll.C:
+		}
+	}
+}
+
+func recoverGateway(gw Restartable, opts RestartOptions) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), opts.RecoveryTimeout)
+	defer cancel()
+	_ = gw.Stop()
+	if opts.SettleDelay > 0 {
+		t := time.NewTimer(opts.SettleDelay)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return false
+		case <-t.C:
+		}
+	}
+	if err := gw.Start(ctx); err != nil {
+		return false
+	}
+	deadline := time.NewTimer(opts.RecoveryTimeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(opts.PollInterval)
+	defer tick.Stop()
+	for {
+		if gw.IsRunning() {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-tick.C:
 		}
 	}
 }

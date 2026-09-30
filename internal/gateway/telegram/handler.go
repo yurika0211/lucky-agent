@@ -29,6 +29,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/metrics"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/soul"
 	taskstore "github.com/yurika0211/luckyagent/internal/task"
@@ -83,6 +84,11 @@ type agentProvider interface {
 	stateRuntime
 }
 
+type sandboxRuntime interface {
+	SandboxMode() sandbox.Mode
+	SetSandboxMode(string) error
+}
+
 type activeRouteRecorder interface {
 	RecordRecentChatTarget(platform, chatID, replyToMsgID string)
 }
@@ -99,6 +105,10 @@ type telegramSender interface {
 	SendWithReplyHTML(ctx context.Context, chatID string, replyToMsgID string, message string) error
 	SendTypingLoop(ctx context.Context, chatID string)
 	ReactToMessage(chatID string, messageID string, emoji string)
+}
+
+type restartNoticeSender interface {
+	SendControl(context.Context, string, string) error
 }
 
 // agentConfigProvider 定义 Handler 需要从 config 获得的能力接口。
@@ -180,6 +190,20 @@ func (a agentProviderAdapter) Config() agentConfigProvider {
 
 func (a agentProviderAdapter) SwitchModel(modelID string) error {
 	return a.inner.SwitchModel(modelID)
+}
+
+func (a agentProviderAdapter) SandboxMode() sandbox.Mode {
+	if a.inner == nil {
+		return sandbox.ModeDev
+	}
+	return a.inner.SandboxMode()
+}
+
+func (a agentProviderAdapter) SetSandboxMode(mode string) error {
+	if a.inner == nil {
+		return fmt.Errorf("sandbox controls are unavailable")
+	}
+	return a.inner.SetSandboxMode(mode)
 }
 
 func (a agentProviderAdapter) SwitchModelKind(kind config.ModelKind, modelID string, opts agent.SwitchModelOptions) error {
@@ -429,6 +453,8 @@ type Handler struct {
 	delegateChats     map[string]string
 	delegateTrackers  map[string]*delegateProgressTracker
 	delegateTaskChats map[string]string
+	workerWG          sync.WaitGroup
+	workerGeneration  uint64
 
 	// v0.44.0: chatID→sessionID 映射持久化
 	dataDir string
@@ -473,8 +499,9 @@ type queuedChatRequest struct {
 }
 
 type chatQueue struct {
-	running bool
-	items   []*queuedChatRequest
+	running    bool
+	generation uint64
+	items      []*queuedChatRequest
 }
 
 const defaultChatStreamTimeout = 10 * time.Minute
@@ -548,6 +575,7 @@ func (h *Handler) buildCommandRegistry() map[string]telegramCommandHandler {
 		"init":    h.handleInit,
 		"config":  h.handleConfig,
 		"version": h.handleVersion,
+		"set":     h.handleSetSandbox,
 		"model":   h.handleModel,
 		"models":  h.handleModels,
 		"soul":    h.handleSoul,
@@ -1297,13 +1325,24 @@ func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, i
 	input = h.inputWithMessageScope(input, msg)
 	msgCopy := *msg
 	scope := telegramConversationScope(msg)
-	position, startWorker := h.enqueueChatRequest(scope, &queuedChatRequest{
+	position, startWorker, generation := h.enqueueChatRequestWithGeneration(scope, &queuedChatRequest{
 		ctx:   ctx,
 		msg:   &msgCopy,
 		input: input,
 	})
+	if position == 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "ℹ️ Bot 正在重启中，请稍候")
+	}
 	if startWorker {
-		go h.runChatQueue(scope)
+		h.mu.Lock()
+		launch := !h.restarting && h.workerGeneration == generation
+		if launch {
+			h.workerWG.Add(1)
+		}
+		h.mu.Unlock()
+		if launch {
+			go h.runChatQueueGeneration(scope, generation)
+		}
 	}
 	if position > 1 {
 		h.notifyQueued(msg.Chat.ID, msg.ID, position-1)
@@ -1311,16 +1350,25 @@ func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, i
 	return nil
 }
 
-func (h *Handler) enqueueChatRequest(chatID string, req *queuedChatRequest) (position int, startWorker bool) {
+func (h *Handler) enqueueChatRequest(chatID string, req *queuedChatRequest) (int, bool) {
+	position, start, _ := h.enqueueChatRequestWithGeneration(chatID, req)
+	return position, start
+}
+
+func (h *Handler) enqueueChatRequestWithGeneration(chatID string, req *queuedChatRequest) (position int, startWorker bool, generation uint64) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.restarting {
+		return 0, false, h.workerGeneration
+	}
+	generation = h.workerGeneration
 
 	if h.queues == nil {
 		h.queues = make(map[string]*chatQueue)
 	}
 	q := h.queues[chatID]
 	if q == nil {
-		q = &chatQueue{}
+		q = &chatQueue{generation: generation}
 		h.queues[chatID] = q
 	}
 
@@ -1333,12 +1381,26 @@ func (h *Handler) enqueueChatRequest(chatID string, req *queuedChatRequest) (pos
 		q.running = true
 		startWorker = true
 	}
-	return position, startWorker
+	return position, startWorker, generation
 }
 
 func (h *Handler) dequeueChatRequest(chatID string) (*queuedChatRequest, bool) {
+	h.mu.RLock()
+	q := h.queues[chatID]
+	gen := h.workerGeneration
+	if q != nil {
+		gen = q.generation
+	}
+	h.mu.RUnlock()
+	return h.dequeueChatRequestGeneration(chatID, gen)
+}
+
+func (h *Handler) dequeueChatRequestGeneration(chatID string, generation uint64) (*queuedChatRequest, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if generation != h.workerGeneration {
+		return nil, false
+	}
 
 	q := h.queues[chatID]
 	if q == nil || len(q.items) == 0 {
@@ -1355,11 +1417,23 @@ func (h *Handler) dequeueChatRequest(chatID string) (*queuedChatRequest, bool) {
 }
 
 func (h *Handler) runChatQueue(chatID string) {
+	h.mu.RLock()
+	q := h.queues[chatID]
+	generation := h.workerGeneration
+	if q != nil {
+		generation = q.generation
+	}
+	h.mu.RUnlock()
+	h.runChatQueueGeneration(chatID, generation)
+}
+
+func (h *Handler) runChatQueueGeneration(chatID string, generation uint64) {
+	defer h.workerWG.Done()
 	release := h.acquireChatWorkerSlot()
 	defer release()
 
 	for {
-		req, ok := h.dequeueChatRequest(chatID)
+		req, ok := h.dequeueChatRequestGeneration(chatID, generation)
 		if !ok {
 			return
 		}
@@ -1439,7 +1513,13 @@ func (h *Handler) cancelChatTask(chatID string) bool {
 // cancelAllChatTasks cancels every in-flight chat task and drops queued work.
 // Used by /restart so a gateway bounce does not leave orphaned goroutines.
 func (h *Handler) cancelAllChatTasks() int {
+	cancelled, _ := h.cancelAllChatTasksAndWait()
+	return cancelled
+}
+
+func (h *Handler) cancelAllChatTasksAndWait() (int, bool) {
 	h.mu.Lock()
+	h.workerGeneration++
 	tasks := h.tasks
 	h.tasks = make(map[string]*chatTask)
 	h.queues = make(map[string]*chatQueue)
@@ -1453,7 +1533,15 @@ func (h *Handler) cancelAllChatTasks() int {
 		task.cancel()
 		cancelled++
 	}
-	return cancelled
+	done := make(chan struct{})
+	go func() { h.workerWG.Wait(); close(done) }()
+	select {
+	case <-done:
+		return cancelled, true
+	case <-time.After(5 * time.Second):
+		fmt.Printf("[telegram] timed out waiting for chat workers\n")
+		return cancelled, false
+	}
 }
 
 func (h *Handler) restartAdminGate(ctx context.Context, msg *gateway.Message) error {
@@ -1468,7 +1556,8 @@ func (h *Handler) restartAdminGate(ctx context.Context, msg *gateway.Message) er
 		if adapter.cfg.IsAdmin(msg.Sender.ID) {
 			return nil
 		}
-		return h.adapter.Send(ctx, msg.Chat.ID, "⛔ /restart 仅管理员可用")
+		_ = h.adapter.Send(ctx, msg.Chat.ID, "⛔ /restart 仅管理员可用")
+		return fmt.Errorf("restart requires administrator")
 	}
 	return nil
 }
@@ -3299,6 +3388,21 @@ func (h *Handler) handleVersion(ctx context.Context, msg *gateway.Message) error
 	return h.adapter.Send(ctx, msg.Chat.ID, info)
 }
 
+func (h *Handler) handleSetSandbox(ctx context.Context, msg *gateway.Message) error {
+	runtime, ok := h.agent.(sandboxRuntime)
+	if !ok {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Sandbox controls are unavailable")
+	}
+	mode := strings.ToLower(strings.TrimSpace(msg.Args))
+	if mode == "" || mode == "status" {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("当前沙箱模式：%s\n用法：/set dev 或 /set iso", runtime.SandboxMode()))
+	}
+	if err := runtime.SetSandboxMode(mode); err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ "+err.Error())
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ 沙箱模式已切换为 %s。新任务使用新模式，运行中的任务保持原模式。", runtime.SandboxMode()))
+}
+
 func buildInfo() (version, commit, date string) {
 	version = "dev"
 	commit = "unknown"
@@ -4579,6 +4683,9 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	// 模型
 	cfg := h.configSnapshot()
 	sb.WriteString(fmt.Sprintf("• Model: %s\n", cfg.Model))
+	if runtime, ok := h.agent.(sandboxRuntime); ok {
+		sb.WriteString(fmt.Sprintf("• Sandbox mode: %s\n", runtime.SandboxMode()))
+	}
 
 	// 运行时间
 	metricsVal := h.metricsCollector()
@@ -4642,7 +4749,16 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 			h.mu.Unlock()
 		}()
 
-		cancelled := h.cancelAllChatTasks()
+		cancelled, workersStopped := h.cancelAllChatTasksAndWait()
+		if !workersStopped {
+			notice := fmt.Sprintf("❌ Bot 网关重启已中止：仍有任务未退出\n已取消任务：%d", cancelled)
+			if sender, ok := h.adapter.(restartNoticeSender); ok {
+				_ = sender.SendControl(context.Background(), chatID, notice)
+			} else {
+				_ = h.adapter.Send(context.Background(), chatID, notice)
+			}
+			return
+		}
 		result, err := gateway.RestartGateway(context.Background(), h.adapter, gateway.RestartOptions{
 			SettleDelay:  300 * time.Millisecond,
 			ReadyTimeout: 15 * time.Second,
@@ -4650,7 +4766,16 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 		})
 		if err != nil {
 			fmt.Printf("[telegram] restart failed: %v\n", err)
-			_ = h.adapter.Send(context.Background(), chatID, fmt.Sprintf("❌ Bot 网关重启失败：%v\n已取消任务：%d", err, cancelled))
+			prefix := "❌ Bot 网关重启失败"
+			if result.Recovered {
+				prefix = "⚠️ Bot 网关首次重启失败，但已恢复轮询"
+			}
+			notice := fmt.Sprintf("%s：%v\n已取消任务：%d", prefix, err, cancelled)
+			if sender, ok := h.adapter.(restartNoticeSender); ok {
+				_ = sender.SendControl(context.Background(), chatID, notice)
+			} else {
+				_ = h.adapter.Send(context.Background(), chatID, notice)
+			}
 			return
 		}
 		_ = h.adapter.Send(context.Background(), chatID, fmt.Sprintf("✅ Bot 已重连并恢复轮询\n耗时：%s · 已取消任务：%d", result.Duration.Round(time.Millisecond), cancelled))

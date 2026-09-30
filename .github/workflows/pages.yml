@@ -27,8 +27,11 @@ jobs:
         run: |
           mkdir -p _site
           cp index.html _site/
+          cp download.html _site/
           cp -R public _site/
           cp -R docs _site/
+          cp scripts/install-lh.sh _site/install-lh.sh
+          cp scripts/install-lh.ps1 _site/install-lh.ps1
           touch _site/.nojekyll
 
       - name: Publish to gh-pages

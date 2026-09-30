@@ -9,13 +9,14 @@ import (
 )
 
 type fakeRestartable struct {
-	stopErr    error
-	startErr   error
-	running    atomic.Bool
-	stopCalls  atomic.Int32
-	startCalls atomic.Int32
-	readyAfter time.Duration
-	startedAt  time.Time
+	stopErr      error
+	startErr     error
+	startErrOnce error
+	running      atomic.Bool
+	stopCalls    atomic.Int32
+	startCalls   atomic.Int32
+	readyAfter   time.Duration
+	startedAt    time.Time
 }
 
 func (f *fakeRestartable) Stop() error {
@@ -26,6 +27,9 @@ func (f *fakeRestartable) Stop() error {
 
 func (f *fakeRestartable) Start(ctx context.Context) error {
 	f.startCalls.Add(1)
+	if f.startErrOnce != nil && f.startCalls.Load() == 1 {
+		return f.startErrOnce
+	}
 	if f.startErr != nil {
 		return f.startErr
 	}
@@ -34,6 +38,22 @@ func (f *fakeRestartable) Start(ctx context.Context) error {
 		f.running.Store(true)
 	}
 	return nil
+}
+
+func TestRestartGatewayRecoversAfterStartError(t *testing.T) {
+	gw := &fakeRestartable{startErrOnce: errors.New("transient")}
+	result, err := RestartGateway(context.Background(), gw, RestartOptions{
+		SettleDelay:     1 * time.Millisecond,
+		ReadyTimeout:    20 * time.Millisecond,
+		PollInterval:    1 * time.Millisecond,
+		RecoveryTimeout: 100 * time.Millisecond,
+	})
+	if err == nil || !result.Recovered {
+		t.Fatalf("expected recovered start error, result=%+v err=%v", result, err)
+	}
+	if gw.startCalls.Load() != 2 || !gw.IsRunning() {
+		t.Fatalf("start calls=%d running=%v", gw.startCalls.Load(), gw.IsRunning())
+	}
 }
 
 func (f *fakeRestartable) IsRunning() bool {

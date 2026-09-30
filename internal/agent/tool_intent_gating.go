@@ -96,10 +96,12 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	dbIntent := hasDatabaseIntent(intentText)
 	delegateIntent := hasDelegateIntent(intentText)
 	computerIntent := hasComputerUseIntent(intentText)
+	codexIntent := intentTextContainsAny(intentText, "codex", "app-server", "app server", "编码 agent", "代码代理")
+	grokIntent := intentTextContainsAny(intentText, "grok", "grok agent")
 
 	strongToolIntent := localIntent || editIntent || webIntent || timeIntent || calcIntent ||
 		memoryIntent || memoryHygieneIntent || rememberIntent || ragIndexIntent || skillIntent || mediaIntent ||
-		dbIntent || delegateIntent || computerIntent
+		dbIntent || delegateIntent || computerIntent || codexIntent || grokIntent
 	if noToolDirective && !strongToolIntent {
 		return allowed, true
 	}
@@ -146,6 +148,12 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 	}
 	if computerIntent {
 		addIntentTools(allowed, "computer_observe", "computer_act")
+	}
+	if codexIntent {
+		addIntentTools(allowed, "codex.start_thread", "codex.resume_thread", "codex.start_turn", "codex.steer_turn", "codex.subscribe_events", "codex.respond_approval", "codex.get_turn_summary")
+	}
+	if grokIntent {
+		addIntentTools(allowed, "grok.start_session", "grok.resume_session", "grok.start_turn", "grok.subscribe_events", "grok.respond_approval", "grok.get_turn_summary")
 	}
 
 	if webIntent {

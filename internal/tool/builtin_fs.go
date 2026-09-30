@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/yurika0211/luckyagent/internal/sandbox"
 )
 
 const (
@@ -35,7 +38,8 @@ const (
 // read-only roots. Write, patch, move, mkdir, and delete operations continue to
 // use the built-in sandbox only.
 type FilesystemPolicy struct {
-	AllowedReadRoots []string
+	AllowedReadRoots    []string
+	AllowOutsideSandbox bool
 }
 
 func DefaultFilesystemPolicy() FilesystemPolicy {
@@ -64,16 +68,28 @@ func TerminalTool() *Tool {
 			"workdir": {Type: "string", Description: "Optional working directory. Use when the command must run in a specific project or subdirectory.", Required: false},
 		},
 		Handler: handleShell,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			out, err := handleShellWithSandbox(exec.Sandbox, args)
+			return ToolCallResult{Output: out}, err
+		},
 	}
 }
 
 func handleShell(args map[string]any) (string, error) {
+	return handleShellWithSandbox(nil, args)
+}
+
+func handleShellWithSandbox(snapshot *sandbox.Snapshot, args map[string]any) (string, error) {
 	command, ok := args["command"].(string)
 	if !ok {
 		return "", fmt.Errorf("command is required")
 	}
-	if err := validateShellSandbox(command); err != nil {
-		return "", err
+	// The dev mode is intentionally permissive for normal project work. Direct
+	// calls without an execution snapshot retain the legacy command guard.
+	if snapshot == nil || snapshot.Mode == sandbox.ModeIso {
+		if err := validateShellSandbox(command); err != nil {
+			return "", err
+		}
 	}
 
 	timeout := 30
@@ -101,18 +117,27 @@ func handleShell(args map[string]any) (string, error) {
 		}
 	}
 
-	prefix := ""
-	if len(env) > 0 {
-		prefix = shellEnvPrefix(env, runtime.GOOS)
+	fullCommand := command
+	if snapshot == nil || snapshot.Mode == sandbox.ModeDev {
+		prefix := ""
+		if len(env) > 0 {
+			prefix = shellEnvPrefix(env, runtime.GOOS)
+		}
+		fullCommand = prefix + command
 	}
-	fullCommand := prefix + command
 
 	ctx := time.Duration(timeout) * time.Second
-	cmd, err := buildShellCommand(fullCommand)
+	var cmd *exec.Cmd
+	var err error
+	if snapshot != nil {
+		cmd, err = snapshot.Command(fullCommand, workdir, env)
+	} else {
+		cmd, err = buildShellCommand(fullCommand)
+	}
 	if err != nil {
 		return "", err
 	}
-	if workdir != "" {
+	if workdir != "" && snapshot == nil {
 		cmd.Dir = workdir
 	}
 
@@ -1390,7 +1415,7 @@ func resolvePathArg(args map[string]any, key string) (string, error) {
 		return "", fmt.Errorf("%s is required", key)
 	}
 	cwd, _ := args["_cwd"].(string)
-	return resolvePath(path, cwd)
+	return resolvePathForOperation(path, cwd, "", filesystemPolicyFromArgs(args, DefaultFilesystemPolicy()))
 }
 
 func resolveReadPathArg(args map[string]any, key string, policy FilesystemPolicy) (string, error) {
@@ -1399,7 +1424,15 @@ func resolveReadPathArg(args map[string]any, key string, policy FilesystemPolicy
 		return "", fmt.Errorf("%s is required", key)
 	}
 	cwd, _ := args["_cwd"].(string)
-	return resolvePathForOperation(path, cwd, filesystemRead, policy)
+	return resolvePathForOperation(path, cwd, filesystemRead, filesystemPolicyFromArgs(args, policy))
+}
+
+func filesystemPolicyFromArgs(args map[string]any, policy FilesystemPolicy) FilesystemPolicy {
+	mode, _ := args["_sandbox_mode"].(string)
+	if strings.EqualFold(strings.TrimSpace(mode), "dev") {
+		policy.AllowOutsideSandbox = true
+	}
+	return policy
 }
 
 func resolvePath(path, baseCwd string) (string, error) {
@@ -1491,6 +1524,9 @@ func validateSandboxForOperation(cleanPath string, op filesystemOperation, polic
 		if pathMatchesPrefix(absPath, denied) {
 			return fmt.Errorf("access denied: path is outside sandbox (%s)", cleanPath)
 		}
+	}
+	if policy.AllowOutsideSandbox {
+		return nil
 	}
 	for _, allowed := range allowedPrefixes {
 		if pathMatchesPrefix(absPath, allowed) {

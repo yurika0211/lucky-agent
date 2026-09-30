@@ -13,7 +13,8 @@
     "endpoints": {
       "chat": {
         "provider": "openai",
-        "api_key": "sk-your-api-key",
+        "api_key": "",
+        "credential_ref": "",
         "api_base": "https://api.openai.com/v1",
         "protocol": "chat_completions",
         "reasoning_summary": "detailed",
@@ -24,26 +25,31 @@
       "vision": {
         "provider": "openai",
         "api_key": "",
+        "credential_ref": "",
         "api_base": "https://api.openai.com/v1"
       },
       "embedding": {
         "provider": "openai-compatible",
         "api_key": "",
+        "credential_ref": "",
         "api_base": "https://proxy.pieixan.icu/v1"
       },
       "transcription": {
         "provider": "openai",
         "api_key": "",
+        "credential_ref": "",
         "api_base": "https://api.openai.com/v1"
       },
       "image": {
         "provider": "openai",
         "api_key": "",
+        "credential_ref": "",
         "api_base": "https://api.openai.com/v1"
       },
       "tts": {
         "provider": "openai",
         "api_key": "",
+        "credential_ref": "",
         "api_base": "https://api.openai.com/v1"
       }
     },
@@ -83,7 +89,8 @@
   "fallbacks": [
     {
       "provider": "openai",
-      "api_key": "sk-your-fallback-api-key",
+      "api_key": "",
+      "credential_ref": "",
       "api_base": "https://api.openai.com/v1",
       "model": "gpt-5.4-mini"
     }
@@ -113,6 +120,24 @@
     "timeout_seconds": 20,
     "max_chars": 50000,
     "fallback_to_web_fetch": true
+  },
+  "codex": {
+    "enabled": false,
+    "command": "codex",
+    "args": ["app-server"],
+    "approval_mode": "gateway",
+    "default_sandbox": "workspace-write",
+    "cwd_allowlist": [],
+    "max_events": 256
+  },
+  "grok": {
+    "enabled": false,
+    "command": "grok",
+    "args": ["agent", "stdio"],
+    "approval_mode": "gateway",
+    "model": "",
+    "cwd_allowlist": [],
+    "max_events": 256
   },
   "stream_mode": "native",
   "memory": {
@@ -232,7 +257,9 @@
     "rate_limit": 60,
     "metrics_addr": "",
     "log_level": "info",
-    "log_format": "text"
+    "log_format": "text",
+    "progress_summary_with_llm": false,
+    "progress_summary_prompt": ""
   },
   "dashboard": {
     "addr": ":8765"

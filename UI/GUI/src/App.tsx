@@ -437,6 +437,25 @@ function clipHistoryText(value: string, limit = 1200): string {
   return `${text.slice(0, limit)}…`;
 }
 
+type BubbleAttachment = { type: 'image' | 'file'; name: string; url: string };
+
+function attachmentURL(raw: string): string {
+  if (raw.startsWith('/api/')) return `/lh-api${raw.slice(4)}`;
+  return raw;
+}
+
+function bubbleAttachments(items?: RuntimeAttachment[] | unknown): BubbleAttachment[] | undefined {
+  if (!Array.isArray(items)) return undefined;
+  const result = items.flatMap((item) => {
+    if (!item || typeof item !== 'object') return [];
+    const value = item as RuntimeAttachment;
+    const url = String(value.file_url || '').trim();
+    if (!url) return [];
+    return [{ type: value.type === 'image' ? 'image' : 'file', name: value.file_name || 'attachment', url: attachmentURL(url) } as BubbleAttachment];
+  });
+  return result.length ? result : undefined;
+}
+
 function historyToBubbles(history?: ProviderMessage[]): Bubble[] {
   const bubbles: Bubble[] = [];
   for (const msg of history || []) {
@@ -476,6 +495,7 @@ function historyToBubbles(history?: ProviderMessage[]): Bubble[] {
           output,
           done: true,
         },
+        attachments: bubbleAttachments(msg.attachments),
       });
       continue;
     }
@@ -487,6 +507,7 @@ function historyToBubbles(history?: ProviderMessage[]): Bubble[] {
       title: roleTitle(role, msg.name),
       body,
       meta: 'history',
+      attachments: bubbleAttachments(msg.attachments),
     });
   }
   return bubbles;
@@ -579,8 +600,18 @@ export function App() {
     return next.id;
   }
 
-  function updateBubble(id: string, body: string, meta?: string) {
-    setMessages((prev) => prev.map((item) => (item.id === id ? { ...item, body, meta: meta ?? item.meta } : item)));
+  function updateBubble(id: string, body: string, meta?: string, nextAttachments?: BubbleAttachment[]) {
+    setMessages((prev) => prev.map((item) => (item.id === id ? { ...item, body, meta: meta ?? item.meta, attachments: nextAttachments || item.attachments } : item)));
+  }
+
+  function appendAssistantAttachments(next?: BubbleAttachment[]) {
+    if (!next?.length) return;
+    const id = ensureAssistantBubble();
+    setMessages((prev) => prev.map((item) => {
+      if (item.id !== id) return item;
+      const seen = new Set((item.attachments || []).map((att) => att.url));
+      return { ...item, attachments: [...(item.attachments || []), ...next.filter((att) => !seen.has(att.url))] };
+    }));
   }
 
   /**
@@ -1137,6 +1168,7 @@ export function App() {
         // Same here: `output` carries the whole result, `display` is truncated
         // to ~160 characters for compact surfaces.
         const output = String(payload.output || payload.display || '');
+        appendAssistantAttachments(bubbleAttachments(payload.attachments));
         pushActivity(payload.success === false ? 'error' : 'tool', `Result ${name}`, preview(payload.display || payload.output), 'done');
         upsertToolStep(stepId, name, (prev) => ({
           name,
@@ -1159,7 +1191,7 @@ export function App() {
       case 'stream_end': {
         cancelStreamFlush();
         const finalText = String(payload.full_response || assistantDraftRef.current || '').trim() || 'Done.';
-        updateBubble(ensureAssistantBubble(), finalText, 'done');
+        updateBubble(ensureAssistantBubble(), finalText, 'done', bubbleAttachments(payload.attachments));
         assistantDraftRef.current = '';
         assistantBubbleRef.current = null;
         setSocketState('connected');
@@ -1824,6 +1856,17 @@ export function App() {
                           <div className="assistant-avatar"><LogoMark /></div>
                           <div className="assistant-body">
                             {msg.body ? <Markdown source={msg.body} /> : <span className="typing"><i /><i /><i /></span>}
+                            {msg.attachments?.length ? (
+                              <div className="message-attachments">
+                                {msg.attachments.map((att, index) => (
+                                  <div className="message-attachment" key={`${att.name}-${index}`}>
+                                    {att.type === 'image' ? <img src={att.url} alt={att.name} /> : (
+                                      <a href={att.url} download={att.name} className="file-attachment"><IconFile />{att.name}</a>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : null}
                             {msg.body && !streaming ? (
                               <div className="turn-actions">
                                 <button className="icon-button tiny" type="button" title="Copy" onClick={() => void copyMessage(msg.id, msg.body)}>

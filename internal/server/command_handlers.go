@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/memory"
+	"github.com/yurika0211/luckyagent/internal/provider"
 )
 
 // commandSpec describes one slash command a UI can run.
@@ -31,6 +33,7 @@ func webCommandSpecs() []commandSpec {
 		{Name: "help", Usage: "/help", Description: "List available commands", Group: "basic"},
 		{Name: "version", Usage: "/version", Description: "Show runtime version", Group: "system"},
 		{Name: "status", Usage: "/status", Description: "Show runtime status", Group: "system"},
+		{Name: "set", Usage: "/set <dev|iso|status>", Description: "Switch the global execution mode", Group: "system"},
 		{Name: "health", Usage: "/health", Description: "System health check", Group: "system"},
 		{Name: "metrics", Usage: "/metrics", Description: "Show usage metrics", Group: "system"},
 		{Name: "tools", Usage: "/tools [all]", Description: "List available tools", Group: "system"},
@@ -128,8 +131,18 @@ func (s *Server) runCommand(name, args, sessionID string) (string, error) {
 		if ref, ok := a.CurrentModel(config.ModelKindChat); ok {
 			model = ref.ID
 		}
-		return fmt.Sprintf("**Status**\n\n- Chat model: `%s`\n- Sessions: %d\n- Tools enabled: %d\n- Memories: %d",
-			model, sessionCount, toolCount, total), nil
+		return fmt.Sprintf("**Status**\n\n- Chat model: `%s`\n- Sandbox mode: `%s`\n- Sessions: %d\n- Tools enabled: %d\n- Memories: %d",
+			model, a.SandboxMode(), sessionCount, toolCount, total), nil
+
+	case "set":
+		mode := strings.ToLower(strings.TrimSpace(args))
+		if mode == "" || mode == "status" {
+			return fmt.Sprintf("Sandbox mode: `%s`\n\nUse `/set dev` for direct project development or `/set iso` for an isolated temporary copy.", a.SandboxMode()), nil
+		}
+		if err := a.SetSandboxMode(mode); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Sandbox mode set to `%s`. New tasks use this mode; running tasks keep their current mode.", a.SandboxMode()), nil
 
 	case "health":
 		lines := []string{"**Health**", ""}
@@ -240,9 +253,61 @@ func (s *Server) runCommand(name, args, sessionID string) (string, error) {
 		return "", fmt.Errorf("unknown skill: %s", args)
 
 	case "models":
-		models := a.ListModels(nil)
+		// `refresh` is accepted by every client surface. Runtime model
+		// configuration is re-applied before listing so custom model/catalog
+		// changes become visible immediately; provider discovery remains
+		// available through the dedicated models endpoint.
+		filter, rest := splitArg(args)
+		if strings.EqualFold(filter, "refresh") {
+			if a.Config() == nil {
+				return "", fmt.Errorf("configuration unavailable")
+			}
+			cfg := a.Config().Get()
+			discovered, err := provider.NewModelDiscovery().Discover(context.Background(), provider.ModelDiscoveryConfig{
+				Provider: cfg.Provider, APIKey: cfg.APIKey, APIBase: cfg.APIBase,
+				Model: cfg.Model, ExtraHeaders: cfg.ExtraHeaders,
+			}, true)
+			if err != nil {
+				return "", fmt.Errorf("refresh models failed: %w", err)
+			}
+			if catalog := a.Catalog(); catalog != nil {
+				for _, model := range discovered {
+					catalog.Register(model)
+				}
+			}
+			filter = ""
+			args = ""
+		} else {
+			args = strings.TrimSpace(args)
+		}
+		var kind *config.ModelKind
+		providerName := ""
+		if filter != "" {
+			if strings.EqualFold(filter, "provider") {
+				providerName = strings.TrimSpace(rest)
+				if providerName == "" {
+					return "", fmt.Errorf("usage: /models [all|chat|vision|embedding|provider <name>|refresh]")
+				}
+			} else if !strings.EqualFold(filter, "all") {
+				parsed, err := config.ParseModelKind(filter)
+				if err != nil || strings.TrimSpace(rest) != "" {
+					return "", fmt.Errorf("usage: /models [all|chat|vision|embedding|provider <name>|refresh]")
+				}
+				kind = &parsed
+			}
+		}
+		models := a.ListModels(kind)
+		if providerName != "" {
+			filtered := models[:0]
+			for _, model := range models {
+				if strings.EqualFold(model.Provider, providerName) {
+					filtered = append(filtered, model)
+				}
+			}
+			models = filtered
+		}
 		if len(models) == 0 {
-			return "No models configured.", nil
+			return "No models configured for this filter.", nil
 		}
 		var b strings.Builder
 		fmt.Fprintf(&b, "**Models** (%d)\n\n", len(models))

@@ -35,7 +35,10 @@ type historyToolAttachmentPayload struct {
 func (s *Server) historyMessages(messages []provider.Message) []sessionHistoryMessage {
 	result := make([]sessionHistoryMessage, 0, len(messages))
 	for _, message := range messages {
-		item := sessionHistoryMessage{Message: message}
+		item := sessionHistoryMessage{
+			Message:     message,
+			Attachments: append([]gateway.Attachment(nil), message.Attachments...),
+		}
 		fallbackType := gateway.AttachmentDocument
 		switch strings.ToLower(strings.TrimSpace(message.Name)) {
 		case "image_generate":
@@ -193,6 +196,18 @@ func (s *Server) resolveArtifactPath(relative string) (artifactRoot, string, err
 		}
 		if target != rootPath && !strings.HasPrefix(target, rootPath+string(filepath.Separator)) {
 			return artifactRoot{}, "", fmt.Errorf("path escapes artifact root")
+		}
+		realRoot, err := filepath.EvalSymlinks(rootPath)
+		if err != nil {
+			return artifactRoot{}, "", err
+		}
+		realTarget, err := filepath.EvalSymlinks(target)
+		if err != nil {
+			return artifactRoot{}, "", err
+		}
+		rel, err := filepath.Rel(realRoot, realTarget)
+		if err != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return artifactRoot{}, "", fmt.Errorf("path escapes artifact root through symlink")
 		}
 		return root, target, nil
 	}

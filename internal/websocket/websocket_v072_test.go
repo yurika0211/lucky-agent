@@ -40,6 +40,9 @@ func createTestAgentForWS(t *testing.T) *agent.Agent {
 func cleanupPendingSession(t *testing.T, h *AgentHandler, sessionID string) {
 	t.Helper()
 	h.CancelSession(sessionID)
+	if h.WaitSession(sessionID, 5*time.Second) {
+		return
+	}
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -53,12 +56,12 @@ func cleanupPendingSession(t *testing.T, h *AgentHandler, sessionID string) {
 }
 
 type stubAgentRuntime struct {
-	sessions       *session.Manager
-	tools          *tool.Registry
-	chatFn         func(ctx context.Context, userInput string) (string, error)
-	chatSessFn     func(ctx context.Context, sessionID, userInput string) (string, error)
-	chatStreamSess func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
-	chatInputFn    func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
+	sessions          *session.Manager
+	tools             *tool.Registry
+	chatFn            func(ctx context.Context, userInput string) (string, error)
+	chatSessFn        func(ctx context.Context, sessionID, userInput string) (string, error)
+	chatStreamSess    func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	chatInputFn       func(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error)
 	chatStreamInputFn func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 }
 
