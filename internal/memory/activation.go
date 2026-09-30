@@ -181,7 +181,7 @@ func (s *Store) Activate(query string, opts ActivationOptions) []ActivationScore
 			entry.AccessCount++
 			entry.AccessedAt = now
 		}
-		_ = s.persist()
+		_ = s.persistEntriesLocked(accessedIDs(activated))
 	}
 
 	return activated
@@ -206,6 +206,33 @@ func applyActivationReranker(reranker ActivationReranker, query string, scores [
 	return reranked
 }
 
+func accessedIDs(scores []ActivationScore) []string {
+	ids := make([]string, 0, len(scores))
+	for _, score := range scores {
+		if score.EntryID != "" {
+			ids = append(ids, score.EntryID)
+		}
+	}
+	return ids
+}
+
+func (s *Store) activationCandidatesLocked(queryLower string, queryTerms []string) map[string]*Entry {
+	if s == nil {
+		return nil
+	}
+	if s.lexical == nil || len(s.entries) <= 32 {
+		return s.entries
+	}
+	ids := s.lexical.candidateIDs(queryLower, queryTerms)
+	out := make(map[string]*Entry, len(ids))
+	for id := range ids {
+		if e := s.entries[id]; e != nil {
+			out[id] = e
+		}
+	}
+	return out
+}
+
 func activationScoresToEntries(scores []ActivationScore) []Entry {
 	if len(scores) == 0 {
 		return []Entry{}
@@ -225,7 +252,7 @@ func (s *Store) activateLocked(queryLower string, queryTerms []string, now time.
 		graphSeeds = make([]string, 0, min(opts.MaxGraphSeeds, 16))
 	}
 
-	for id, e := range s.entries {
+	for id, e := range s.activationCandidatesLocked(queryLower, queryTerms) {
 		if !entryIsActive(e, now) {
 			continue
 		}
@@ -239,8 +266,8 @@ func (s *Store) activateLocked(queryLower string, queryTerms []string, now time.
 		}
 		components.Importance = e.Importance
 		components.Tier = tierActivationMultiplier(e.Tier)
-		components.Recency = e.recencyFactor(now)
-		components.Access = e.accessBoost()
+		components.Recency = e.RecencyFactor(now)
+		components.Access = e.AccessBoost()
 		total := matchScore * e.Weight(now) * components.Tier
 		scores[id] = &ActivationScore{
 			EntryID:     id,
@@ -566,8 +593,8 @@ func (s *Store) addActivationBoostLocked(scores map[string]*ActivationScore, sou
 			Components: ActivationComponents{
 				Importance: target.Importance,
 				Tier:       tierActivationMultiplier(target.Tier),
-				Recency:    target.recencyFactor(now),
-				Access:     target.accessBoost(),
+				Recency:    target.RecencyFactor(now),
+				Access:     target.AccessBoost(),
 			},
 		}
 		scores[targetID] = score

@@ -124,9 +124,11 @@ func (s *Store) MigrateGraphMemory(opts GraphMigrationOptions) (GraphMigrationRe
 		report.WouldUpdateLinks++
 		if opts.Apply {
 			conceptLinks = append(conceptLinks, plan.AddLinks...)
+			s.unindexEntryLocked(e)
 			e.Links = normalizeMemoryLinks(append(e.Links, plan.AddLinks...))
 			e.Aliases = dedupSlice(append(e.Aliases, plan.AddAliases...))
 			e.Tags = mergeTags(e.Tags, plan.AddTags)
+			s.indexEntryLocked(e)
 			report.UpdatedLinks++
 			changed = true
 		}
@@ -134,8 +136,9 @@ func (s *Store) MigrateGraphMemory(opts GraphMigrationOptions) (GraphMigrationRe
 	}
 
 	if opts.Apply && changed {
-		s.ensureConceptEntriesLocked(conceptLinks)
-		if err := s.persist(); err != nil {
+		created := s.ensureConceptEntriesLocked(conceptLinks)
+		ids := append(created, changedEntryIDs(report)...)
+		if err := s.persistEntriesLocked(ids); err != nil {
 			return report, err
 		}
 	}
@@ -165,6 +168,7 @@ func (s *Store) archiveEntryLocked(e *Entry, relArchivePath, reason string) erro
 			return fmt.Errorf("archive memory %s: %w", e.ID, err)
 		}
 	}
+	s.unindexEntryLocked(e)
 	e.Path = relArchivePath
 	e.Status = "archived"
 	e.Tags = mergeTags(e.Tags, []string{"hygiene", "dirty", "hygiene-" + reason})
@@ -172,7 +176,24 @@ func (s *Store) archiveEntryLocked(e *Entry, relArchivePath, reason string) erro
 		e.Confidence = 0.25
 	}
 	s.paths[e.ID] = relArchivePath
+	s.indexEntryLocked(e)
 	return nil
+}
+
+func changedEntryIDs(report GraphMigrationReport) []string {
+	ids := make([]string, 0, len(report.Entries))
+	seen := make(map[string]struct{}, len(report.Entries))
+	for _, plan := range report.Entries {
+		if plan.ID == "" {
+			continue
+		}
+		if _, ok := seen[plan.ID]; ok {
+			continue
+		}
+		seen[plan.ID] = struct{}{}
+		ids = append(ids, plan.ID)
+	}
+	return ids
 }
 
 func missingNormalizedLinks(existing, candidates []string) []string {

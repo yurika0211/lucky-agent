@@ -1,4 +1,4 @@
-package memory
+package tidal
 
 import (
 	"math"
@@ -41,7 +41,7 @@ func DefaultTidalRerankerConfig() TidalRerankerConfig {
 type TidalFeedback struct {
 	Query   string
 	QueryID string
-	Entry   Entry
+	Entry   Note
 	Signal  string
 	Value   float64
 	At      time.Time
@@ -123,7 +123,7 @@ func normalizeTidalRerankerConfig(config TidalRerankerConfig) TidalRerankerConfi
 }
 
 // RerankMemoryActivations implements ActivationReranker.
-func (r *TidalMemoryReranker) RerankMemoryActivations(query string, scores []ActivationScore, now time.Time) []ActivationScore {
+func (r *TidalMemoryReranker) RerankMemoryActivations(query string, scores []Score, now time.Time) []Score {
 	if r == nil || len(scores) == 0 {
 		return scores
 	}
@@ -131,7 +131,7 @@ func (r *TidalMemoryReranker) RerankMemoryActivations(query string, scores []Act
 		now = time.Now()
 	}
 
-	out := make([]ActivationScore, len(scores))
+	out := make([]Score, len(scores))
 	copy(out, scores)
 
 	r.mu.RLock()
@@ -185,7 +185,7 @@ func (r *TidalMemoryReranker) ObserveFeedback(feedback TidalFeedback) {
 }
 
 // ObserveActivationFeedback implements ActivationFeedbackObserver.
-func (r *TidalMemoryReranker) ObserveActivationFeedback(feedback ActivationFeedback) {
+func (r *TidalMemoryReranker) ObserveActivationFeedback(feedback Feedback) {
 	if r == nil {
 		return
 	}
@@ -251,11 +251,11 @@ func (r *TidalMemoryReranker) ApplyKernelSnapshots(snapshots []TidalKernelSnapsh
 }
 
 // RecordMemoryActivation implements ActivationEventRecorder.
-func (r *TidalMemoryReranker) RecordMemoryActivation(query string, scores []ActivationScore, now time.Time) {
+func (r *TidalMemoryReranker) RecordMemoryActivation(query string, scores []Score, now time.Time) {
 	if r == nil || r.store == nil {
 		return
 	}
-	copied := make([]ActivationScore, len(scores))
+	copied := make([]Score, len(scores))
 	copy(copied, scores)
 	r.store.RecordActivation(query, copied, now)
 }
@@ -283,7 +283,7 @@ func (r *TidalMemoryReranker) Close() error {
 	return store.Close()
 }
 
-func (r *TidalMemoryReranker) boostLocked(query string, entry Entry, now time.Time) float64 {
+func (r *TidalMemoryReranker) boostLocked(query string, entry Note, now time.Time) float64 {
 	bin := r.binLocked(memoryDelay(entry, now))
 	keys := r.keysForQueryEntryLocked(query, entry)
 	if len(keys) == 0 {
@@ -322,7 +322,7 @@ func (r *TidalMemoryReranker) keysForFeedbackLocked(feedback TidalFeedback) []st
 	return dedupeStrings(keys)
 }
 
-func (r *TidalMemoryReranker) entryFeatureKeysLocked(entry Entry) []string {
+func (r *TidalMemoryReranker) entryFeatureKeysLocked(entry Note) []string {
 	keys := []string{
 		"tier:" + entry.Tier.String(),
 	}
@@ -337,7 +337,7 @@ func (r *TidalMemoryReranker) entryFeatureKeysLocked(entry Entry) []string {
 	return dedupeStrings(keys)
 }
 
-func (r *TidalMemoryReranker) keysForQueryEntryLocked(query string, entry Entry) []string {
+func (r *TidalMemoryReranker) keysForQueryEntryLocked(query string, entry Note) []string {
 	intents := inferTidalIntentTags(query)
 	keys := r.entryFeatureKeysLocked(entry)
 	for _, intent := range intents {
@@ -376,7 +376,7 @@ func (r *TidalMemoryReranker) binLocked(delay time.Duration) int {
 	return len(r.config.Bins)
 }
 
-func memoryDelay(entry Entry, now time.Time) time.Duration {
+func memoryDelay(entry Note, now time.Time) time.Duration {
 	ref := entry.AccessedAt
 	if ref.IsZero() || ref.Before(entry.CreatedAt) {
 		ref = entry.CreatedAt
@@ -414,7 +414,7 @@ func inferTidalIntentTags(query string) []string {
 	return dedupeStrings(intents)
 }
 
-func tidalIntentPairKeys(intents []string, entry Entry) []string {
+func tidalIntentPairKeys(intents []string, entry Note) []string {
 	pairs := tidalWhitelistedIntentPairs(intents)
 	if len(pairs) == 0 {
 		return nil

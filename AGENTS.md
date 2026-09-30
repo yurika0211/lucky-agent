@@ -47,8 +47,9 @@ Important context behavior:
   memory gate, skill routing, session-aware chat.
 - `internal/config`: config loading, defaults, runtime home initialization.
 - `internal/session`: persistent conversation sessions.
-- `internal/memory`: Obsidian-compatible Markdown memory vault, activation,
-  temporal resolution, hygiene.
+- `internal/memory`: Aestus memory system vendored in-tree. Durable notes stay
+  Obsidian-compatible Markdown. Short-term buffers, mid-term summaries, route
+  policies, hygiene, and the optional tidal reranker live in this package.
 - `internal/rag`: RAG indexing, SQLite persistence, retrieval, stream indexer.
 - `internal/tool`: built-in tools, skill loading, MCP/opencli/web/filesystem
   adapters, cron/autonomy services.

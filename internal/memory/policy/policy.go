@@ -1,76 +1,33 @@
-package memory
+package policy
 
 import (
 	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/yurika0211/luckyagent/internal/memory/textutil"
+	"github.com/yurika0211/luckyagent/internal/memory/note"
 )
 
-// RoutePolicy is a typed, data-owned rule attached to a durable memory note.
-// The router evaluates only policies on memories activated for the current query.
-type RoutePolicy struct {
-	ID             string                 `json:"id" yaml:"id"`
-	Match          RoutePolicyMatch       `json:"match,omitempty" yaml:"match,omitempty"`
-	Risks          []RouteRisk            `json:"risks,omitempty" yaml:"risks,omitempty"`
-	RequiredTools  []RouteToolRequirement `json:"required_tools,omitempty" yaml:"required_tools,omitempty"`
-	Constraints    []string               `json:"constraints,omitempty" yaml:"constraints,omitempty"`
-	Clarifications []string               `json:"clarifications,omitempty" yaml:"clarifications,omitempty"`
-}
-
-// RoutePolicyMatch combines query term groups and temporal state predicates.
-// Every QueryAll group and every State predicate must match. QueryAny, when
-// present, requires at least one match. QueryNone excludes a policy.
-type RoutePolicyMatch struct {
-	QueryAll  []RouteTermGroup  `json:"query_all,omitempty" yaml:"query_all,omitempty"`
-	QueryAny  []string          `json:"query_any,omitempty" yaml:"query_any,omitempty"`
-	QueryNone []string          `json:"query_none,omitempty" yaml:"query_none,omitempty"`
-	States    []RouteStateMatch `json:"states,omitempty" yaml:"states,omitempty"`
-}
-
-// RouteTermGroup represents one required semantic slot with alternative terms.
-type RouteTermGroup struct {
-	Any []string `json:"any" yaml:"any"`
-}
-
-// RouteStateMatch requires the current value of an exact memory state key.
-type RouteStateMatch struct {
-	Key       string   `json:"key" yaml:"key"`
-	Values    []string `json:"values,omitempty" yaml:"values,omitempty"`
-	NotValues []string `json:"not_values,omitempty" yaml:"not_values,omitempty"`
-}
-
-// RouteRisk is a named policy signal with data-defined ordering priority.
-type RouteRisk struct {
-	Name     string `json:"name" yaml:"name"`
-	Priority int    `json:"priority,omitempty" yaml:"priority,omitempty"`
-}
-
-// RouteToolRequirement describes one tool and the calls needed before synthesis.
-// Empty Calls means one call with an empty argument object.
-type RouteToolRequirement struct {
-	Name  string          `json:"name" yaml:"name"`
-	Calls []RouteToolCall `json:"calls,omitempty" yaml:"calls,omitempty"`
-}
-
-// RouteToolCall holds provider-independent structured tool arguments.
-type RouteToolCall struct {
-	Arguments map[string]any `json:"arguments,omitempty" yaml:"arguments,omitempty"`
-}
-
-// AppliedRoutePolicy identifies the durable memory rule that affected routing.
-type AppliedRoutePolicy struct {
-	ID          string `json:"id"`
-	EntryID     string `json:"entry_id"`
-	EvidenceRef string `json:"evidence_ref,omitempty"`
-}
+type (
+	RoutePolicy          = note.RoutePolicy
+	RoutePolicyMatch     = note.RoutePolicyMatch
+	RouteTermGroup       = note.RouteTermGroup
+	RouteStateMatch      = note.RouteStateMatch
+	RouteRisk            = note.RouteRisk
+	RouteToolRequirement = note.RouteToolRequirement
+	RouteToolCall        = note.RouteToolCall
+	AppliedRoutePolicy   = note.AppliedRoutePolicy
+)
 
 // RouteOptions controls which recalled entries can affect routing.
 type RouteOptions struct {
-	EntryFilter func(Entry) bool
+	EntryFilter func(note.Entry) bool
 }
 
-func normalizeRoutePolicies(policies []RoutePolicy) ([]RoutePolicy, error) {
+// Normalize checks policy ids, match groups, and effects.
+func Normalize(policies []RoutePolicy) ([]RoutePolicy, error) {
 	if len(policies) == 0 {
 		return nil, nil
 	}
@@ -131,7 +88,8 @@ func normalizeRoutePolicies(policies []RoutePolicy) ([]RoutePolicy, error) {
 	return out, nil
 }
 
-func mergeRoutePolicies(existing, incoming []RoutePolicy) []RoutePolicy {
+// Merge replaces policies that share an id and appends the rest.
+func Merge(existing, incoming []RoutePolicy) []RoutePolicy {
 	if len(incoming) == 0 {
 		return existing
 	}
@@ -152,7 +110,7 @@ func mergeRoutePolicies(existing, incoming []RoutePolicy) []RoutePolicy {
 	return out
 }
 
-func applyRoutePolicies(route *RouteAnalysis, query string, entries []Entry) {
+func Apply(route *Analysis, query string, entries []note.Entry) {
 	if route == nil || len(entries) == 0 {
 		return
 	}
@@ -179,7 +137,7 @@ func applyRoutePolicies(route *RouteAnalysis, query string, entries []Entry) {
 			route.AppliedPolicies = append(route.AppliedPolicies, AppliedRoutePolicy{
 				ID:          policy.ID,
 				EntryID:     entry.ID,
-				EvidenceRef: refForEntry(&entry),
+				EvidenceRef: note.Ref(entry),
 			})
 			for _, risk := range policy.Risks {
 				key := strings.ToLower(risk.Name)
@@ -232,14 +190,14 @@ func applyRoutePolicies(route *RouteAnalysis, query string, entries []Entry) {
 			}
 		}
 	}
-	route.RequiredTools = dedupSlice(route.RequiredTools)
-	route.SuggestedSearches = dedupSlice(route.SuggestedSearches)
-	route.RiskFlags = dedupSlice(route.RiskFlags)
-	route.Constraints = dedupSlice(route.Constraints)
-	route.Clarifications = dedupSlice(route.Clarifications)
+	route.RequiredTools = textutil.DedupNonEmptyStrings(route.RequiredTools)
+	route.SuggestedSearches = textutil.DedupNonEmptyStrings(route.SuggestedSearches)
+	route.RiskFlags = textutil.DedupNonEmptyStrings(route.RiskFlags)
+	route.Constraints = textutil.DedupNonEmptyStrings(route.Constraints)
+	route.Clarifications = textutil.DedupNonEmptyStrings(route.Clarifications)
 }
 
-func routePolicyMatches(match RoutePolicyMatch, query string, entries []Entry) bool {
+func routePolicyMatches(match RoutePolicyMatch, query string, entries []note.Entry) bool {
 	query = strings.ToLower(query)
 	if containsAnyFold(query, match.QueryNone) {
 		return false
@@ -260,7 +218,7 @@ func routePolicyMatches(match RoutePolicyMatch, query string, entries []Entry) b
 	return true
 }
 
-func routeStateMatches(entries []Entry, match RouteStateMatch) bool {
+func routeStateMatches(entries []note.Entry, match RouteStateMatch) bool {
 	for _, entry := range entries {
 		if !strings.EqualFold(strings.TrimSpace(entry.StateKey), strings.TrimSpace(match.Key)) {
 			continue

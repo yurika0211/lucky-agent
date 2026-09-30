@@ -1,4 +1,4 @@
-package memory
+package midterm
 
 import (
 	"regexp"
@@ -12,10 +12,7 @@ var generatedTruncationMarkerPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?im)^\s*\[Output may be truncated after multiple continuation attempts\.\]\s*$`),
 }
 
-// sanitizeDurableMemoryContent removes generated truncation markers before
-// Markdown notes become durable memory. It intentionally keeps ordinary prose
-// ellipses because users may type them as meaningful content.
-func sanitizeDurableMemoryContent(content string) string {
+func sanitizeSummaryText(content string) string {
 	content = strings.TrimSpace(content)
 	if content == "" {
 		return ""
@@ -23,10 +20,10 @@ func sanitizeDurableMemoryContent(content string) string {
 	for _, pattern := range generatedTruncationMarkerPatterns {
 		content = pattern.ReplaceAllString(content, "")
 	}
-	return strings.TrimSpace(collapseBlankLines(content))
+	return strings.TrimSpace(collapseSummaryBlankLines(content))
 }
 
-func collapseBlankLines(content string) string {
+func collapseSummaryBlankLines(content string) string {
 	lines := strings.Split(content, "\n")
 	out := make([]string, 0, len(lines))
 	blank := false

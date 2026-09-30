@@ -1,11 +1,11 @@
 package memory
 
-import "github.com/yurika0211/luckyagent/internal/utils"
+import "github.com/yurika0211/luckyagent/internal/memory/textutil"
 
 func truncateField(s string, maxLen int) string {
-	return utils.TrimToRunes(s, maxLen)
+	return textutil.TrimToRunes(s, maxLen)
 }
 
 func dedupSlice(items []string) []string {
-	return utils.DedupNonEmptyStrings(items)
+	return textutil.DedupNonEmptyStrings(items)
 }

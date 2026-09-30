@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Aestus · 记忆</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="rail">
+      <div class="mark">Ae</div>
+      <nav>
+        <button class="nav active" type="button" data-view="graph">图</button>
+        <button class="nav" type="button" data-view="notes">笔记</button>
+      </nav>
+    </aside>
+
+    <main>
+      <header class="head">
+        <div>
+          <p class="eyebrow">Memory</p>
+          <h1>知识图谱</h1>
+          <p class="desc">笔记存在 Markdown vault 里。连线来自 <code>[[wikilink]]</code>，召回沿着这些链接走。</p>
+        </div>
+        <button class="ghost" id="refresh" type="button">刷新</button>
+      </header>
+
+      <section class="trace-bar">
+        <label>追踪一条查询
+          <input id="query" placeholder="比如：召回 图谱" spellcheck="false">
+        </label>
+        <select id="depth" title="图跳数">
+          <option value="1">1 跳</option>
+          <option value="2" selected>2 跳</option>
+          <option value="3">3 跳</option>
+        </select>
+        <button class="solid" id="trace" type="button">追踪</button>
+        <button class="mini" id="clear" type="button" hidden>清除</button>
+        <span class="elapsed" id="elapsed"></span>
+      </section>
+
+      <section class="stats" id="stats"></section>
+
+      <section class="stage" id="graph-view">
+        <div class="canvas">
+          <svg id="graph" viewBox="0 0 1200 760" role="img" aria-label="记忆图谱"></svg>
+          <div class="legend">
+            <span><i class="dot fact"></i>事实</span>
+            <span><i class="dot rule"></i>规则</span>
+            <span><i class="dot project"></i>项目</span>
+            <span><i class="dot preference"></i>偏好</span>
+            <span><i class="dot concept"></i>概念</span>
+            <span><i class="ring"></i>尚未写下来的链接</span>
+          </div>
+        </div>
+        <aside class="detail" id="detail">
+          <p class="muted">点一个节点，或追踪一条查询。</p>
+        </aside>
+      </section>
+
+      <section class="notes" id="notes-view" hidden>
+        <form id="remember" class="composer">
+          <textarea name="content" rows="3" required placeholder="记一条，可以用 [[链接]] 接到已有笔记"></textarea>
+          <div class="row">
+            <select name="category">
+              <option value="fact">事实</option>
+              <option value="preference">偏好</option>
+              <option value="rule">规则</option>
+              <option value="project">项目</option>
+            </select>
+            <select name="tier">
+              <option value="medium">中期</option>
+              <option value="long">长期</option>
+              <option value="short">短期</option>
+            </select>
+            <input name="links" placeholder="链接，逗号分隔" spellcheck="false">
+            <button class="solid" type="submit">记住</button>
+          </div>
+        </form>
+        <ol id="recent"></ol>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

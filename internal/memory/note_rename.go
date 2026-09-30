@@ -67,8 +67,12 @@ func (s *Store) RenameNotes(opts NoteRenameOptions) (NoteRenameReport, error) {
 	report.DuplicatePruneEntries = duplicatePlans
 	if opts.Apply {
 		for id, file := range canonical {
+			if previous := s.entries[id]; previous != nil {
+				s.unindexEntryLocked(previous)
+			}
 			s.entries[id] = file.Entry
 			s.paths[id] = file.Rel
+			s.indexEntryLocked(file.Entry)
 		}
 		s.ensureConceptEntriesLocked(renameNotesEntryLinks(s.entries))
 	}
@@ -144,8 +148,10 @@ func (s *Store) RenameNotes(opts NoteRenameOptions) (NoteRenameReport, error) {
 			return report, fmt.Errorf("rename memory note %s to %s: %w", plan.From, plan.To, err)
 		}
 		if entry := s.entries[plan.ID]; entry != nil {
+			s.unindexEntryLocked(entry)
 			entry.Path = plan.To
 			s.paths[plan.ID] = plan.To
+			s.indexEntryLocked(entry)
 		}
 		report.Renamed++
 	}
@@ -334,8 +340,12 @@ func (s *Store) pruneDuplicateNotesAfterPersistLocked(report *NoteRenameReport) 
 		return nil
 	}
 	for id, file := range canonical {
+		if previous := s.entries[id]; previous != nil {
+			s.unindexEntryLocked(previous)
+		}
 		s.entries[id] = file.Entry
 		s.paths[id] = file.Rel
+		s.indexEntryLocked(file.Entry)
 	}
 	if report != nil {
 		report.WouldPruneDuplicates += len(plans)

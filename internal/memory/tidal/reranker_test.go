@@ -1,4 +1,4 @@
-package memory
+package tidal
 
 import (
 	"path/filepath"
@@ -10,9 +10,9 @@ import (
 func TestTidalRerankerNoFeedbackKeepsScores(t *testing.T) {
 	now := time.Now()
 	reranker := NewTidalMemoryReranker(TidalRerankerConfig{Beta: 1})
-	scores := []ActivationScore{
-		{EntryID: "a", Entry: Entry{ID: "a", Content: "alpha", Tier: TierLong, CreatedAt: now}, Score: 1.2},
-		{EntryID: "b", Entry: Entry{ID: "b", Content: "beta", Tier: TierLong, CreatedAt: now}, Score: 0.8},
+	scores := []Score{
+		{EntryID: "a", Entry: Note{ID: "a", Content: "alpha", Tier: TierLong, CreatedAt: now}, Score: 1.2},
+		{EntryID: "b", Entry: Note{ID: "b", Content: "beta", Tier: TierLong, CreatedAt: now}, Score: 0.8},
 	}
 
 	got := reranker.RerankMemoryActivations("anything", scores, now)
@@ -37,7 +37,7 @@ func TestTidalRerankerPositiveFeedbackCanPromoteCurrentIntent(t *testing.T) {
 	config.LearningRate = 1
 	reranker := NewTidalMemoryReranker(config)
 
-	graphEntry := Entry{
+	graphEntry := Note{
 		ID:        "graph",
 		Content:   "Graph RAG indexing benchmark",
 		Category:  "project",
@@ -45,7 +45,7 @@ func TestTidalRerankerPositiveFeedbackCanPromoteCurrentIntent(t *testing.T) {
 		Tags:      []string{"graph-rag"},
 		CreatedAt: now.Add(-2 * 24 * time.Hour),
 	}
-	pdfEntry := Entry{
+	pdfEntry := Note{
 		ID:        "pdf",
 		Content:   "PDF export benchmark",
 		Category:  "docs",
@@ -60,12 +60,12 @@ func TestTidalRerankerPositiveFeedbackCanPromoteCurrentIntent(t *testing.T) {
 		At:    now,
 	})
 
-	scores := []ActivationScore{
+	scores := []Score{
 		{EntryID: "pdf", Entry: pdfEntry, Score: 1.0},
 		{EntryID: "graph", Entry: graphEntry, Score: 0.8},
 	}
 	got := reranker.RerankMemoryActivations("benchmark", scores, now)
-	sortActivationScores(got)
+	sortScores(got)
 	if got[0].EntryID != "graph" {
 		t.Fatalf("expected graph entry to be promoted, got %#v", got)
 	}
@@ -82,7 +82,7 @@ func TestTidalRerankerNegativeFeedbackCanSuppressStaleMemory(t *testing.T) {
 	config.LearningRate = 1
 	reranker := NewTidalMemoryReranker(config)
 
-	staleEntry := Entry{
+	staleEntry := Note{
 		ID:        "stale",
 		Content:   "Old transcription model works",
 		Category:  "stale",
@@ -90,7 +90,7 @@ func TestTidalRerankerNegativeFeedbackCanSuppressStaleMemory(t *testing.T) {
 		Tags:      []string{"obsolete"},
 		CreatedAt: now.Add(-30 * time.Minute),
 	}
-	currentEntry := Entry{
+	currentEntry := Note{
 		ID:        "current",
 		Content:   "Current transcription request returns 404",
 		Category:  "evidence",
@@ -105,12 +105,12 @@ func TestTidalRerankerNegativeFeedbackCanSuppressStaleMemory(t *testing.T) {
 		At:    now,
 	})
 
-	scores := []ActivationScore{
+	scores := []Score{
 		{EntryID: "stale", Entry: staleEntry, Score: 1.0},
 		{EntryID: "current", Entry: currentEntry, Score: 0.9},
 	}
 	got := reranker.RerankMemoryActivations("transcription status", scores, now)
-	sortActivationScores(got)
+	sortScores(got)
 	if got[0].EntryID != "current" {
 		t.Fatalf("expected stale entry to be suppressed below current evidence, got %#v", got)
 	}
@@ -124,7 +124,7 @@ func TestTidalRerankerNegativeFeedbackCanSuppressStaleMemory(t *testing.T) {
 func TestTidalRerankerSnapshotsExposeLearnedKernels(t *testing.T) {
 	now := time.Now()
 	reranker := NewTidalMemoryReranker(TidalRerankerConfig{LearningRate: 1})
-	entry := Entry{
+	entry := Note{
 		ID:        "health",
 		Content:   "Pollen allergy",
 		Category:  "health",
@@ -171,7 +171,7 @@ func TestPersistentTidalRerankerRestoresKernelsAndRecordsTelemetry(t *testing.T)
 		t.Fatalf("NewPersistentTidalMemoryReranker() error = %v", err)
 	}
 
-	entry := Entry{
+	entry := Note{
 		ID:        "graph",
 		Content:   "Graph RAG benchmark matters for the current project",
 		Category:  "project",
@@ -179,8 +179,8 @@ func TestPersistentTidalRerankerRestoresKernelsAndRecordsTelemetry(t *testing.T)
 		Tags:      []string{"graph-rag"},
 		CreatedAt: now,
 	}
-	reranker.RecordMemoryActivation("graph rag benchmark", []ActivationScore{
-		{EntryID: entry.ID, Entry: entry, Score: 1.2, Components: ActivationComponents{TidalBoost: 1}},
+	reranker.RecordMemoryActivation("graph rag benchmark", []Score{
+		{EntryID: entry.ID, Entry: entry, Score: 1.2, Components: Components{TidalBoost: 1}},
 	}, now.Add(time.Second))
 	reranker.ObserveFeedback(TidalFeedback{
 		Query:  "graph rag benchmark",
@@ -198,14 +198,14 @@ func TestPersistentTidalRerankerRestoresKernelsAndRecordsTelemetry(t *testing.T)
 		t.Fatalf("unexpected stats before reopen: %#v", stats)
 	}
 	var feedbackQueryID string
-	if err := store.db.QueryRow(`SELECT query_id FROM feedback_events LIMIT 1`).Scan(&feedbackQueryID); err != nil {
+	if err := store.DB().QueryRow(`SELECT query_id FROM feedback_events LIMIT 1`).Scan(&feedbackQueryID); err != nil {
 		t.Fatalf("read feedback query id: %v", err)
 	}
 	if feedbackQueryID == "" {
 		t.Fatal("expected feedback to be linked to a query event")
 	}
 	var feature, bins string
-	if err := store.db.QueryRow(`SELECT feature, bins FROM response_kernels WHERE key = ?`, "tag:graph-rag").Scan(&feature, &bins); err != nil {
+	if err := store.DB().QueryRow(`SELECT feature, bins FROM response_kernels WHERE key = ?`, "tag:graph-rag").Scan(&feature, &bins); err != nil {
 		t.Fatalf("read response kernel metadata: %v", err)
 	}
 	if feature != "tag" || bins == "" || bins == "[]" {
@@ -237,10 +237,18 @@ func TestPersistentTidalRerankerRestoresKernelsAndRecordsTelemetry(t *testing.T)
 		t.Fatalf("expected persisted tag kernel after reopen, got %#v", snapshots)
 	}
 
-	got := reopened.RerankMemoryActivations("graph rag benchmark", []ActivationScore{
+	got := reopened.RerankMemoryActivations("graph rag benchmark", []Score{
 		{EntryID: entry.ID, Entry: entry, Score: 1.0},
 	}, now)
 	if len(got) != 1 || got[0].Components.TidalBoost <= 0 || got[0].Score <= 1.0 {
 		t.Fatalf("expected restored kernel to boost activation, got %#v", got)
+	}
+}
+
+func sortScores(scores []Score) {
+	for i := 1; i < len(scores); i++ {
+		for j := i; j > 0 && scores[j].Score > scores[j-1].Score; j-- {
+			scores[j], scores[j-1] = scores[j-1], scores[j]
+		}
 	}
 }

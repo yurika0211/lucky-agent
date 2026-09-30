@@ -1,12 +1,11 @@
-package memory
+package shortterm
 
 import (
 	"fmt"
 	"strings"
 	"sync"
 
-	"github.com/yurika0211/luckyagent/internal/provider"
-	"github.com/yurika0211/luckyagent/internal/utils"
+	"github.com/yurika0211/luckyagent/internal/memory/textutil"
 )
 
 // --- 短期记忆：滑动窗口 + 摘要压缩 ---
@@ -18,6 +17,14 @@ import (
 
 // ConversationTurn 代表一轮对话（user + assistant）
 type ConversationTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// Message is an LLM-agnostic chat message returned by short-term context
+// helpers. It intentionally contains only the fields needed to assemble a
+// conversation, so callers can convert it to their provider's message type.
+type Message struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
@@ -110,7 +117,7 @@ func (s *SessionShortTermStore) Summary(sessionID string) string {
 
 // GetContext returns the existing session context without allocating a
 // buffer.  The returned messages are safe for the caller to modify.
-func (s *SessionShortTermStore) GetContext(sessionID string) []provider.Message {
+func (s *SessionShortTermStore) GetContext(sessionID string) []Message {
 	if b, ok := s.Get(sessionID); ok {
 		return b.GetContext()
 	}
@@ -204,11 +211,11 @@ func (b *ShortTermBuffer) generateStructuredSummary(overflow []ConversationTurn)
 	for _, msg := range overflow {
 		switch msg.Role {
 		case "user":
-			userStatements = append(userStatements, utils.TrimToRunes(msg.Content, 120))
+			userStatements = append(userStatements, textutil.TrimToRunes(msg.Content, 120))
 			entities = append(entities, extractEntities(msg.Content)...)
 			decisions = append(decisions, extractDecisions(msg.Content)...)
 		case "assistant":
-			assistantStatements = append(assistantStatements, utils.TrimToRunes(msg.Content, 120))
+			assistantStatements = append(assistantStatements, textutil.TrimToRunes(msg.Content, 120))
 			decisions = append(decisions, extractDecisions(msg.Content)...)
 		}
 	}
@@ -218,25 +225,25 @@ func (b *ShortTermBuffer) generateStructuredSummary(overflow []ConversationTurn)
 
 	if len(userStatements) > 0 {
 		sb.WriteString("User said:\n")
-		for _, s := range utils.DedupNonEmptyStrings(userStatements) {
+		for _, s := range textutil.DedupNonEmptyStrings(userStatements) {
 			sb.WriteString("  - " + s + "\n")
 		}
 	}
 
 	if len(assistantStatements) > 0 {
 		sb.WriteString("Assistant responded:\n")
-		for _, s := range utils.DedupNonEmptyStrings(assistantStatements) {
+		for _, s := range textutil.DedupNonEmptyStrings(assistantStatements) {
 			sb.WriteString("  - " + s + "\n")
 		}
 	}
 
 	if len(entities) > 0 {
-		sb.WriteString("Key entities: " + strings.Join(utils.DedupNonEmptyStrings(entities), ", ") + "\n")
+		sb.WriteString("Key entities: " + strings.Join(textutil.DedupNonEmptyStrings(entities), ", ") + "\n")
 	}
 
 	if len(decisions) > 0 {
 		sb.WriteString("Decisions:\n")
-		for _, d := range utils.DedupNonEmptyStrings(decisions) {
+		for _, d := range textutil.DedupNonEmptyStrings(decisions) {
 			sb.WriteString("  - " + d + "\n")
 		}
 	}
@@ -249,25 +256,25 @@ func (b *ShortTermBuffer) mergeSummaries(oldSummary, newSummary string) string {
 	// 简单合并：旧摘要截断 + 新摘要追加
 	merged := oldSummary
 	if len(merged) > 800 {
-		merged = utils.TrimToRunes(merged, 800)
+		merged = textutil.TrimToRunes(merged, 800)
 	}
 	merged += "\n" + newSummary
 	if len(merged) > 2000 {
-		merged = utils.TrimToRunes(merged, 2000)
+		merged = textutil.TrimToRunes(merged, 2000)
 	}
 	return merged
 }
 
 // GetContext 返回摘要 + 最近消息，用于构建上下文
-func (b *ShortTermBuffer) GetContext() []provider.Message {
+func (b *ShortTermBuffer) GetContext() []Message {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	var result []provider.Message
+	var result []Message
 
 	// 如果有摘要，作为 system 消息注入
 	if b.summary != "" {
-		result = append(result, provider.Message{
+		result = append(result, Message{
 			Role:    "system",
 			Content: b.summary,
 		})
@@ -275,7 +282,7 @@ func (b *ShortTermBuffer) GetContext() []provider.Message {
 
 	// 最近 N 轮完整对话
 	for _, msg := range b.messages {
-		result = append(result, provider.Message{
+		result = append(result, Message{
 			Role:    msg.Role,
 			Content: msg.Content,
 		})
@@ -381,7 +388,7 @@ func extractDecisions(text string) []string {
 				end = len(text)
 			}
 			fragment := text[start:end]
-			decisions = append(decisions, utils.TrimToRunes(fragment, 100))
+			decisions = append(decisions, textutil.TrimToRunes(fragment, 100))
 		}
 	}
 

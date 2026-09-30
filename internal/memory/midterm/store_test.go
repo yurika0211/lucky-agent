@@ -1,4 +1,4 @@
-package memory
+package midterm
 
 import (
 	"fmt"
@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yurika0211/luckyagent/internal/memory/shortterm"
 )
 
 func TestMidTermStoreSave(t *testing.T) {
@@ -440,7 +442,7 @@ func TestMidTermStoreSaveValidation(t *testing.T) {
 // --- GenerateSessionSummary 测试 ---
 
 func TestGenerateSessionSummary(t *testing.T) {
-	messages := []ConversationTurn{
+	messages := []shortterm.ConversationTurn{
 		{Role: "user", Content: "I decided to use Go for the backend"},
 		{Role: "assistant", Content: "Good choice. Go is great for building APIs."},
 		{Role: "user", Content: "How do I implement connection pooling?"},
@@ -473,7 +475,7 @@ func TestGenerateSessionSummaryEmpty(t *testing.T) {
 // --- 辅助函数测试 ---
 
 func TestExtractTopics(t *testing.T) {
-	messages := []ConversationTurn{
+	messages := []shortterm.ConversationTurn{
 		{Role: "user", Content: "I need to debug this error in the API"},
 		{Role: "assistant", Content: "Let's look at the error logs"},
 	}
@@ -495,7 +497,7 @@ func TestExtractTopics(t *testing.T) {
 }
 
 func TestExtractKeyDecisions(t *testing.T) {
-	messages := []ConversationTurn{
+	messages := []shortterm.ConversationTurn{
 		{Role: "user", Content: "We decided to use Redis for caching"},
 		{Role: "assistant", Content: "Redis is a good choice for caching"},
 	}
@@ -507,7 +509,7 @@ func TestExtractKeyDecisions(t *testing.T) {
 }
 
 func TestExtractOpenQuestions(t *testing.T) {
-	messages := []ConversationTurn{
+	messages := []shortterm.ConversationTurn{
 		{Role: "user", Content: "How do I implement the API?"},
 		{Role: "assistant", Content: "You can use the standard library"},
 	}
@@ -519,7 +521,7 @@ func TestExtractOpenQuestions(t *testing.T) {
 }
 
 func TestExtractCodeContext(t *testing.T) {
-	messages := []ConversationTurn{
+	messages := []shortterm.ConversationTurn{
 		{Role: "user", Content: "Look at this func main() in cmd/server/main.go"},
 		{Role: "assistant", Content: "I see the issue in the import statement"},
 	}

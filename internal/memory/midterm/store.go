@@ -1,4 +1,4 @@
-package memory
+package midterm
 
 import (
 	"fmt"
@@ -9,8 +9,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/yurika0211/luckyagent/internal/memory/notemd"
+	"github.com/yurika0211/luckyagent/internal/memory/textutil"
+	"github.com/yurika0211/luckyagent/internal/memory/shortterm"
 )
 
 // --- 中期记忆：会话级持久化 ---
@@ -400,19 +405,19 @@ func normalizeSessionSummaryForSave(sm *SessionSummary) {
 	sm.Topics = sanitizeSummarySlice(sm.Topics)
 	sm.KeyDecisions = sanitizeSummarySlice(sm.KeyDecisions)
 	sm.OpenQuestions = sanitizeSummarySlice(sm.OpenQuestions)
-	sm.CodeContext = sanitizeDurableMemoryContent(sm.CodeContext)
-	sm.RawSummary = sanitizeDurableMemoryContent(sm.RawSummary)
+	sm.CodeContext = sanitizeSummaryText(sm.CodeContext)
+	sm.RawSummary = sanitizeSummaryText(sm.RawSummary)
 }
 
 func sanitizeSummarySlice(items []string) []string {
 	out := make([]string, 0, len(items))
 	for _, item := range items {
-		item = sanitizeDurableMemoryContent(item)
+		item = sanitizeSummaryText(item)
 		if item != "" {
 			out = append(out, item)
 		}
 	}
-	return dedupSlice(out)
+	return textutil.DedupNonEmptyStrings(out)
 }
 
 func (s *MidTermStore) load() error {
@@ -464,7 +469,27 @@ func sessionNotePath(sm *SessionSummary) string {
 }
 
 func uniqueSessionNotePath(root string, sm *SessionSummary, used map[string]string, currentRel string) string {
-	return uniqueNotePath(root, "", sessionSummaryFileBase(sm), used, currentRel)
+	base := sessionSummaryFileBase(sm)
+	currentRel = filepath.ToSlash(strings.TrimSpace(currentRel))
+	for i := 0; ; i++ {
+		name := base
+		if i > 0 {
+			name = fmt.Sprintf("%s %d", base, i+1)
+		}
+		rel := name + ".md"
+		if rel == currentRel {
+			return rel
+		}
+		if _, ok := used[rel]; ok {
+			continue
+		}
+		if root != "" {
+			if _, err := os.Stat(filepath.Join(root, rel)); err == nil {
+				continue
+			}
+		}
+		return rel
+	}
 }
 
 func sessionSummaryFileBase(sm *SessionSummary) string {
@@ -472,15 +497,110 @@ func sessionSummaryFileBase(sm *SessionSummary) string {
 		return "Session Summary"
 	}
 	if len(sm.Topics) > 0 {
-		return humanFileTitle("Session - "+strings.Join(sm.Topics, ", "), "Session Summary")
+		return sessionFileTitle("Session - " + strings.Join(sm.Topics, ", "))
 	}
-	if text := firstHumanTitleLine(sm.RawSummary); text != "" {
-		return humanFileTitle("Session - "+text, "Session Summary")
+	if text := firstSummaryTitleLine(sm.RawSummary); text != "" {
+		return sessionFileTitle("Session - " + text)
 	}
 	if strings.TrimSpace(sm.SessionID) != "" {
-		return humanFileTitle("Session - "+sm.SessionID, "Session Summary")
+		return sessionFileTitle("Session - " + sm.SessionID)
 	}
 	return "Session Summary"
+}
+
+func firstSummaryTitleLine(text string) string {
+	text = strings.TrimSpace(text)
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "#>-* \t"))
+		if line == "" || strings.HasPrefix(line, "^") || strings.HasPrefix(line, "```") {
+			continue
+		}
+		return strings.Join(strings.Fields(line), " ")
+	}
+	return ""
+}
+
+func sessionFileTitle(text string) string {
+	var b strings.Builder
+	lastSpace := false
+	for _, r := range strings.TrimSpace(text) {
+		if r < 32 || r == 127 || strings.ContainsRune(`<>:"/\|?*`, r) || unicode.IsSpace(r) {
+			if !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		lastSpace = false
+	}
+	out := strings.Trim(b.String(), " .-_")
+	if out == "" {
+		return "Session Summary"
+	}
+	runes := []rune(out)
+	if len(runes) > 80 {
+		out = strings.Trim(string(runes[:80]), " .-_")
+	}
+	if out == "" || windowsReservedSessionTitle(out) {
+		if out == "" {
+			return "Session Summary"
+		}
+		out += " note"
+	}
+	return out
+}
+
+func trimSummary(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	return string(runes[:maxLen]) + "..."
+}
+
+func sessionSlug(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	var b strings.Builder
+	lastDash := false
+	for _, r := range s {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func sessionBlockID(id string) string {
+	id = strings.ReplaceAll(strings.TrimSpace(id), "_", "-")
+	if id == "" {
+		return "mem-block"
+	}
+	return id
+}
+
+func windowsReservedSessionTitle(title string) bool {
+	title = strings.ToUpper(strings.TrimSpace(strings.TrimSuffix(title, ".")))
+	switch title {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	for i := 1; i <= 9; i++ {
+		if title == fmt.Sprintf("COM%d", i) || title == fmt.Sprintf("LPT%d", i) {
+			return true
+		}
+	}
+	return false
 }
 
 func renderSessionSummaryNote(sm *SessionSummary) string {
@@ -488,7 +608,7 @@ func renderSessionSummaryNote(sm *SessionSummary) string {
 	tags = append(tags, "memory/session")
 	for _, topic := range sm.Topics {
 		if strings.TrimSpace(topic) != "" {
-			tags = append(tags, "topic/"+slugify(topic))
+			tags = append(tags, "topic/"+sessionSlug(topic))
 		}
 	}
 	fm := sessionSummaryFrontmatter{
@@ -501,7 +621,7 @@ func renderSessionSummaryNote(sm *SessionSummary) string {
 		OpenQuestions: sm.OpenQuestions,
 		CodeContext:   sm.CodeContext,
 		Status:        "active",
-		Tags:          dedupSlice(tags),
+		Tags:          textutil.DedupNonEmptyStrings(tags),
 	}
 	yml, _ := yaml.Marshal(fm)
 	title := sm.SessionID
@@ -516,7 +636,7 @@ func renderSessionSummaryNote(sm *SessionSummary) string {
 	b.WriteString("# Session " + title + "\n\n")
 	b.WriteString("## Summary\n\n")
 	b.WriteString(strings.TrimSpace(sm.RawSummary))
-	b.WriteString("\n\n^session-" + blockIDForEntry(sm.SessionID) + "\n")
+	b.WriteString("\n\n^session-" + sessionBlockID(sm.SessionID) + "\n")
 	if len(sm.KeyDecisions) > 0 {
 		b.WriteString("\n## Key Decisions\n\n")
 		for _, item := range sm.KeyDecisions {
@@ -542,7 +662,7 @@ func parseSessionSummaryNote(path, root string) (*SessionSummary, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	fmRaw, body, ok := splitFrontmatter(string(raw))
+	fmRaw, body, ok := notemd.SplitFrontmatter(string(raw))
 	if !ok {
 		return nil, false, nil
 	}
@@ -561,13 +681,13 @@ func parseSessionSummaryNote(path, root string) (*SessionSummary, bool, error) {
 		KeyDecisions:  fm.KeyDecisions,
 		OpenQuestions: fm.OpenQuestions,
 		CodeContext:   fm.CodeContext,
-		RawSummary:    strings.TrimSpace(blockIDPattern.ReplaceAllString(extractMarkdownSection(body, "Summary"), "")),
+		RawSummary:    strings.TrimSpace(notemd.BlockIDPattern.ReplaceAllString(notemd.Section(body, "Summary"), "")),
 	}
 	if sm.CreatedAt.IsZero() {
 		sm.CreatedAt = time.Now()
 	}
 	if sm.RawSummary == "" {
-		sm.RawSummary = strings.TrimSpace(blockIDPattern.ReplaceAllString(bodyWithoutTitle(body), ""))
+		sm.RawSummary = strings.TrimSpace(notemd.BlockIDPattern.ReplaceAllString(notemd.BodyWithoutTitle(body), ""))
 	}
 	return sm, true, nil
 }
@@ -583,7 +703,7 @@ func (s *MidTermStore) removeSummaryFileLocked(sessionID string) {
 
 // GenerateSessionSummary 从对话消息生成结构化会话摘要
 // 暂不接 LLM，用启发式规则提取
-func GenerateSessionSummary(sessionID, userID string, messages []ConversationTurn) *SessionSummary {
+func GenerateSessionSummary(sessionID, userID string, messages []shortterm.ConversationTurn) *SessionSummary {
 	summary := &SessionSummary{
 		SessionID:     sessionID,
 		UserID:        userID,
@@ -598,7 +718,7 @@ func GenerateSessionSummary(sessionID, userID string, messages []ConversationTur
 }
 
 // extractTopics 从对话中提取讨论主题
-func extractTopics(messages []ConversationTurn) []string {
+func extractTopics(messages []shortterm.ConversationTurn) []string {
 	topicKeywords := map[string][]string{
 		"debugging":     {"bug", "debug", "fix", "error", "crash", "调试", "修复", "报错"},
 		"architecture":  {"design", "architecture", "structure", "refactor", "架构", "设计", "重构"},
@@ -635,7 +755,7 @@ func extractTopics(messages []ConversationTurn) []string {
 }
 
 // extractKeyDecisions 从对话中提取关键决策
-func extractKeyDecisions(messages []ConversationTurn) []string {
+func extractKeyDecisions(messages []shortterm.ConversationTurn) []string {
 	var decisions []string
 	decisionPatterns := []string{
 		"决定", "决定用", "选择了", "采用", "方案是",
@@ -648,7 +768,7 @@ func extractKeyDecisions(messages []ConversationTurn) []string {
 		lower := strings.ToLower(msg.Content)
 		for _, pattern := range decisionPatterns {
 			if strings.Contains(lower, strings.ToLower(pattern)) {
-				fragment := truncateField(msg.Content, 150)
+				fragment := trimSummary(msg.Content, 150)
 				if !seen[fragment] {
 					decisions = append(decisions, fragment)
 					seen[fragment] = true
@@ -662,7 +782,7 @@ func extractKeyDecisions(messages []ConversationTurn) []string {
 }
 
 // extractOpenQuestions 从对话中提取未解决的问题
-func extractOpenQuestions(messages []ConversationTurn) []string {
+func extractOpenQuestions(messages []shortterm.ConversationTurn) []string {
 	var questions []string
 	questionPatterns := []string{
 		"怎么", "如何", "为什么", "是否", "能不能",
@@ -678,7 +798,7 @@ func extractOpenQuestions(messages []ConversationTurn) []string {
 		lower := strings.ToLower(msg.Content)
 		for _, pattern := range questionPatterns {
 			if strings.Contains(lower, strings.ToLower(pattern)) {
-				fragment := truncateField(msg.Content, 150)
+				fragment := trimSummary(msg.Content, 150)
 				if !seen[fragment] {
 					questions = append(questions, fragment)
 					seen[fragment] = true
@@ -692,7 +812,7 @@ func extractOpenQuestions(messages []ConversationTurn) []string {
 }
 
 // extractCodeContext 从对话中提取代码/项目上下文
-func extractCodeContext(messages []ConversationTurn) string {
+func extractCodeContext(messages []shortterm.ConversationTurn) string {
 	var codeParts []string
 	codeIndicators := []string{
 		"func ", "func(", "package ", "import ",
@@ -707,7 +827,7 @@ func extractCodeContext(messages []ConversationTurn) string {
 		lower := strings.ToLower(msg.Content)
 		for _, indicator := range codeIndicators {
 			if strings.Contains(lower, strings.ToLower(indicator)) {
-				codeParts = append(codeParts, truncateField(msg.Content, 200))
+				codeParts = append(codeParts, trimSummary(msg.Content, 200))
 				break
 			}
 		}
@@ -721,11 +841,11 @@ func extractCodeContext(messages []ConversationTurn) string {
 	}
 
 	result := strings.Join(codeParts, " | ")
-	return truncateField(result, 500)
+	return trimSummary(result, 500)
 }
 
 // generateRawSummary 生成自然语言摘要
-func generateRawSummary(messages []ConversationTurn) string {
+func generateRawSummary(messages []shortterm.ConversationTurn) string {
 	if len(messages) == 0 {
 		return ""
 	}
@@ -736,9 +856,9 @@ func generateRawSummary(messages []ConversationTurn) string {
 	for _, msg := range messages {
 		switch msg.Role {
 		case "user":
-			userParts = append(userParts, truncateField(msg.Content, 80))
+			userParts = append(userParts, trimSummary(msg.Content, 80))
 		case "assistant":
-			assistantParts = append(assistantParts, truncateField(msg.Content, 80))
+			assistantParts = append(assistantParts, trimSummary(msg.Content, 80))
 		}
 	}
 
@@ -776,5 +896,5 @@ func generateRawSummary(messages []ConversationTurn) string {
 	}
 
 	result := sb.String()
-	return truncateField(result, 800)
+	return trimSummary(result, 800)
 }

@@ -1,4 +1,4 @@
-package memory
+package tidal
 
 import (
 	"database/sql"
@@ -52,7 +52,7 @@ func TestTidalStoreMigratesLegacySchema(t *testing.T) {
 		{"response_kernels", "feature"},
 		{"response_kernels", "bins"},
 	} {
-		if !tidalTestColumnExists(t, store.db, check.table, check.column) {
+		if !tidalTestColumnExists(t, store.DB(), check.table, check.column) {
 			t.Fatalf("expected migrated column %s.%s", check.table, check.column)
 		}
 	}

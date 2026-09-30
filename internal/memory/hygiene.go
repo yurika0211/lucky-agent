@@ -154,12 +154,14 @@ func (s *Store) RestoreHygiene(opts HygieneOptions) (HygieneReport, error) {
 		if !entryHasTag(e, "hygiene") && !entryHasTag(e, "dirty") {
 			continue
 		}
+		s.unindexEntryLocked(e)
 		e.Status = "active"
 		e.Tags = mergeTags(e.Tags, []string{"hygiene-restored"})
+		s.indexEntryLocked(e)
 		report.Restored++
 	}
 	if report.Restored > 0 {
-		if err := s.persist(); err != nil {
+		if err := s.persistEntriesLocked(restoredHygieneIDs(s, report)); err != nil {
 			return report, err
 		}
 	}
@@ -193,16 +195,24 @@ func (s *Store) applyHygiene(opts HygieneOptions, action string) (HygieneReport,
 			delete(s.entries, issue.ID)
 			report.Deleted++
 		default:
+			s.unindexEntryLocked(entry)
 			entry.Status = "archived"
 			entry.Tags = mergeTags(entry.Tags, []string{"hygiene", "dirty", "hygiene-" + issue.Reason})
 			if entry.Confidence == 0 || entry.Confidence > 0.25 {
 				entry.Confidence = 0.25
 			}
+			s.indexEntryLocked(entry)
 			report.Quarantined++
 		}
 	}
-	if report.Quarantined > 0 || report.Deleted > 0 {
-		if err := s.persist(); err != nil {
+	if report.Quarantined > 0 {
+		ids := make([]string, 0, report.Quarantined)
+		for _, issue := range issues {
+			if s.entries[issue.ID] != nil {
+				ids = append(ids, issue.ID)
+			}
+		}
+		if err := s.persistEntriesLocked(ids); err != nil {
 			return report, err
 		}
 	}
@@ -292,6 +302,19 @@ func (s *Store) hygieneScannedLocked(opts HygieneOptions, now time.Time) int {
 		scanned++
 	}
 	return scanned
+}
+
+func restoredHygieneIDs(s *Store, report HygieneReport) []string {
+	if s == nil {
+		return nil
+	}
+	ids := make([]string, 0, report.Restored)
+	for id, e := range s.entries {
+		if e != nil && entryHasTag(e, "hygiene-restored") && strings.EqualFold(e.Status, "active") {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func hygieneIDSet(ids []string) map[string]bool {

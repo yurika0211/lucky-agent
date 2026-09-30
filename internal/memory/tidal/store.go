@@ -1,4 +1,4 @@
-package memory
+package tidal
 
 import (
 	"database/sql"
@@ -15,6 +15,14 @@ import (
 // TidalStore persists tidal memory telemetry and learned response kernels.
 type TidalStore struct {
 	db *sql.DB
+}
+
+// DB returns the underlying connection for diagnostics.
+func (s *TidalStore) DB() *sql.DB {
+	if s == nil {
+		return nil
+	}
+	return s.db
 }
 
 // TidalStoreStats summarizes persisted tidal memory data.
@@ -134,7 +142,7 @@ func (s *TidalStore) Close() error {
 	return s.db.Close()
 }
 
-func (s *TidalStore) RecordActivation(query string, scores []ActivationScore, now time.Time) {
+func (s *TidalStore) RecordActivation(query string, scores []Score, now time.Time) {
 	if s == nil || s.db == nil || len(scores) == 0 {
 		return
 	}
@@ -142,7 +150,7 @@ func (s *TidalStore) RecordActivation(query string, scores []ActivationScore, no
 		now = time.Now()
 	}
 	queryID := fmt.Sprintf("q-%d", now.UnixNano())
-	terms, _ := json.Marshal(extractQueryTerms(strings.ToLower(strings.TrimSpace(query))))
+	terms, _ := json.Marshal(tidalQueryTerms(query))
 	intents, _ := json.Marshal(inferTidalIntentTags(query))
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -219,7 +227,7 @@ func (s *TidalStore) latestOrCreateQueryEvent(query string, at time.Time) (strin
 		at = time.Now()
 	}
 	queryID := fmt.Sprintf("q-feedback-%d", at.UnixNano())
-	terms, _ := json.Marshal(extractQueryTerms(strings.ToLower(query)))
+	terms, _ := json.Marshal(tidalQueryTerms(query))
 	intents, _ := json.Marshal(inferTidalIntentTags(query))
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO query_events(id, session_id, query, query_terms, intent_tags, created_at) VALUES (?, ?, ?, ?, ?, ?)`,

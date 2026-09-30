@@ -1,4 +1,4 @@
-package memory
+package maintain
 
 import (
 	"fmt"
@@ -7,7 +7,7 @@ import (
 )
 
 func TestMaintenanceCoordinatorCadenceAndSessionAttribution(t *testing.T) {
-	c := NewMaintenanceCoordinator(MaintenanceConfig{
+	c := NewCoordinator(Config{
 		DecayEvery:     2,
 		SummarizeEvery: 3,
 		ExpireEvery:    5,
@@ -54,7 +54,7 @@ func TestMaintenanceCoordinatorConcurrentRecordTurn(t *testing.T) {
 		workers        = 12
 		turnsPerWorker = 250
 	)
-	c := NewMaintenanceCoordinator(MaintenanceConfig{})
+	c := NewCoordinator(Config{})
 
 	var wg sync.WaitGroup
 	for worker := 0; worker < workers; worker++ {
@@ -82,16 +82,5 @@ func TestMaintenanceCoordinatorConcurrentRecordTurn(t *testing.T) {
 		if got := c.SessionCount(fmt.Sprintf("session-%d", worker)); got != want {
 			t.Fatalf("session-%d count = %d, want %d", worker, got, want)
 		}
-	}
-}
-
-func TestStoreRecordTurnSupportsZeroValue(t *testing.T) {
-	var store Store
-	event := store.RecordTurn("session-zero")
-	if event.RuntimeCount != 1 || event.SessionCount != 1 {
-		t.Fatalf("unexpected zero-value store event: %#v", event)
-	}
-	if got := store.MaintenanceCoordinator().RuntimeCount(); got != 1 {
-		t.Fatalf("store runtime count = %d, want 1", got)
 	}
 }

@@ -237,7 +237,7 @@ HOME="$PWD/.lh-home" go run ./cmd/la chat "Test the local runtime"
 cmd/la                   CLI 入口
 internal/agent           Agent 核心运行时和 Agent loop
 internal/config          配置加载、默认值和运行目录
-internal/memory          Markdown 记忆 vault 和召回
+internal/memory          Aestus 记忆系统：Markdown vault、召回、短期和中期记忆
 internal/rag             RAG 索引、检索和持久化
 internal/tool            工具、技能、MCP 和 OpenCLI
 internal/server           HTTP API、SSE、WebSocket 和 Dashboard
