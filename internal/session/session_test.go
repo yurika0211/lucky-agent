@@ -1,6 +1,7 @@
 package session
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -318,6 +319,51 @@ func TestSessionSaveAndLoad(t *testing.T) {
 	}
 	if len(loaded.GetMessages()) != 2 {
 		t.Errorf("expected 2 messages, got %d", len(loaded.GetMessages()))
+	}
+}
+
+func TestSessionHistoryPageStreamsLegacyFile(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("test-page", dir)
+	for i := 0; i < 150; i++ {
+		s.AddMessage("user", fmt.Sprintf("message-%d", i))
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	loaded, ok := m.Get("test-page")
+	if !ok {
+		t.Fatal("session not found after save/load")
+	}
+	if loaded.messagesLoaded {
+		t.Fatal("manager should load metadata without the full message slice")
+	}
+
+	first, total, more, err := loaded.GetMessagesPage(60, 0)
+	if err != nil {
+		t.Fatalf("GetMessagesPage: %v", err)
+	}
+	if total != 150 || !more || len(first) != 60 {
+		t.Fatalf("page metadata = total %d, more %v, messages %d", total, more, len(first))
+	}
+	if first[0].Content != "message-90" || first[59].Content != "message-149" {
+		t.Fatalf("unexpected first page: %q ... %q", first[0].Content, first[59].Content)
+	}
+	if loaded.messagesLoaded {
+		t.Fatal("paged read should not promote the full session into memory")
+	}
+
+	last, total, more, err := loaded.GetMessagesPage(60, 120)
+	if err != nil {
+		t.Fatalf("GetMessagesPage final page: %v", err)
+	}
+	if total != 150 || more || len(last) != 30 || last[0].Content != "message-0" {
+		t.Fatalf("unexpected final page: total=%d more=%v messages=%d first=%q", total, more, len(last), last[0].Content)
 	}
 }
 

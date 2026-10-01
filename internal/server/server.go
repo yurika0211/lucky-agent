@@ -1052,8 +1052,25 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	messages := s.historyMessages(sess.GetMessages())
-	total := len(messages)
+	hasLimit := r.URL.Query().Has("limit")
+	var rawMessages []provider.Message
+	var total int
+	var hasMore bool
+	var limit, offset int
+	if hasLimit {
+		limit = boundedQueryInt(r, "limit", defaultHistoryLimit, 1, maxHistoryLimit)
+		offset = boundedQueryInt(r, "offset", 0, 0, 1_000_000)
+		var err error
+		rawMessages, total, hasMore, err = sess.GetMessagesPage(limit, offset)
+		if err != nil {
+			s.sendError(w, "load session history failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+	} else {
+		rawMessages = sess.GetMessages()
+		total = len(rawMessages)
+	}
+	messages := s.historyMessages(rawMessages)
 
 	payload := map[string]interface{}{
 		"id":            sess.ID,
@@ -1069,24 +1086,12 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	// the end, so a client walks into older history by growing the offset.
 	// Long sessions run to thousands of messages and megabytes of JSON, which
 	// no interactive client wants in a single response.
-	if r.URL.Query().Has("limit") {
-		limit := boundedQueryInt(r, "limit", defaultHistoryLimit, 1, maxHistoryLimit)
-		offset := boundedQueryInt(r, "offset", 0, 0, 1_000_000)
-
-		end := total - offset
-		if end < 0 {
-			end = 0
-		}
-		start := end - limit
-		if start < 0 {
-			start = 0
-		}
-
-		payload["messages"] = messages[start:end]
+	if hasLimit {
 		payload["limit"] = limit
 		payload["offset"] = offset
-		payload["returned"] = end - start
-		payload["has_more"] = start > 0
+		payload["returned"] = len(messages)
+		payload["has_more"] = hasMore
+		payload["messages"] = messages
 	}
 
 	s.sendJSON(w, http.StatusOK, payload)
