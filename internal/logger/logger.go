@@ -149,6 +149,7 @@ func newTextHandler(w io.Writer, level slog.Level) slog.Handler {
 		return &prettyTextHandler{
 			writer: w,
 			opts:   opts,
+			mu:     &sync.Mutex{},
 		}
 	}
 	return slog.NewTextHandler(w, opts)
@@ -158,10 +159,12 @@ type prettyTextHandler struct {
 	writer io.Writer
 	opts   *slog.HandlerOptions
 
-	mu     sync.Mutex
+	mu     *sync.Mutex
 	attrs  []slog.Attr
 	groups []string
 }
+
+var prettyTextFallbackMu sync.Mutex
 
 func (h *prettyTextHandler) Enabled(_ context.Context, level slog.Level) bool {
 	if h.opts == nil || h.opts.Level.Level() == 0 {
@@ -202,8 +205,12 @@ func (h *prettyTextHandler) Handle(_ context.Context, record slog.Record) error 
 	}
 	b.WriteByte('\n')
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	mu := h.mu
+	if mu == nil {
+		mu = &prettyTextFallbackMu
+	}
+	mu.Lock()
+	defer mu.Unlock()
 	_, err := io.WriteString(h.writer, b.String())
 	return err
 }

@@ -208,19 +208,16 @@ func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]fl
 		}
 	}
 
-	if o.dimension <= 0 {
-		o.dimension = openAIDefaultDim(modelName)
+	dimension := o.dimension
+	if dimension <= 0 {
+		dimension = openAIDefaultDim(modelName)
 	}
-	if o.dimension <= 0 {
+	if dimension <= 0 {
 		return nil, fmt.Errorf("unsupported model: %s", modelName)
 	}
 
-	o.model = modelName
-	o.apiKey = apiKey
-	o.baseURL = baseURL
-
 	if apiKey == "" || baseURL == "" {
-		mock := NewMockEmbedder(o.dimension)
+		mock := NewMockEmbedder(dimension)
 		return mock.EmbedBatch(ctx, texts)
 	}
 
@@ -388,6 +385,9 @@ func readEmbeddingStatusError(resp *http.Response) error {
 	if resp == nil {
 		return fmt.Errorf("unexpected nil response")
 	}
+	if resp.Body == nil {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	snippet := strings.TrimSpace(string(body))
 	if snippet == "" {
@@ -407,6 +407,7 @@ type OllamaEmbedder struct {
 	baseURL   string
 	model     string
 	dimension int
+	client    *http.Client
 }
 
 // OllamaEmbedderConfig configures an Ollama embedder.
@@ -466,8 +467,58 @@ func (o *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float64, err
 }
 
 func (o *OllamaEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float64, error) {
-	// TODO: implement real HTTP call to Ollama /api/embeddings
-	// For now, fall back to mock vectors.
-	mock := NewMockEmbedder(o.dimension)
-	return mock.EmbedBatch(ctx, texts)
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	client := o.client
+	if client == nil {
+		client = &http.Client{Timeout: embeddingTimeoutFromEnv()}
+	}
+
+	type requestBody struct {
+		Model  string `json:"model"`
+		Prompt string `json:"prompt"`
+	}
+	type responseBody struct {
+		Embedding []float64 `json:"embedding"`
+	}
+
+	url := strings.TrimRight(strings.TrimSpace(o.baseURL), "/") + "/api/embeddings"
+	result := make([][]float64, len(texts))
+	for i, text := range texts {
+		data, err := jsonAPI.Marshal(requestBody{Model: o.model, Prompt: text})
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal Ollama request: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("create Ollama request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("send Ollama request: %w", err)
+		}
+		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+			err := readEmbeddingStatusError(resp)
+			_ = resp.Body.Close()
+			return nil, fmt.Errorf("Ollama embedding request: %w", err)
+		}
+
+		var body responseBody
+		err = jsonAPI.NewDecoder(resp.Body).Decode(&body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("decode Ollama response: %w", err)
+		}
+		if len(body.Embedding) == 0 {
+			return nil, fmt.Errorf("Ollama returned an empty embedding for input %d", i)
+		}
+		if o.dimension > 0 && len(body.Embedding) != o.dimension {
+			return nil, fmt.Errorf("Ollama embedding dimension mismatch for input %d: got %d, want %d", i, len(body.Embedding), o.dimension)
+		}
+		result[i] = body.Embedding
+	}
+	return result, nil
 }

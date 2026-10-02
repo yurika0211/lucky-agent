@@ -4364,6 +4364,29 @@ func (a *Agent) EmbedderRegistry() *embedder.Registry {
 	return a.embedderReg
 }
 
+// SwitchEmbedder changes the active embedding provider and rebinds the RAG
+// pipeline. A populated index cannot change embedding identity or dimensions;
+// callers must rebuild it first.
+func (a *Agent) SwitchEmbedder(id string) error {
+	if a.embedderReg == nil {
+		return fmt.Errorf("embedder registry not available")
+	}
+	next, ok := a.embedderReg.Get(id)
+	if !ok {
+		return fmt.Errorf("embedder not found: %s", id)
+	}
+	if a.ragManager != nil {
+		cached := embedder.NewCachedEmbedder(next, 512)
+		if err := a.ragManager.ReconfigureEmbedder(cached); err != nil {
+			return err
+		}
+	}
+	if !a.embedderReg.Switch(id) {
+		return fmt.Errorf("embedder not found: %s", id)
+	}
+	return nil
+}
+
 // AgentRegistry 返回 Agent 协作注册表 (v0.22.0)
 func (a *Agent) AgentRegistry() *collab.Registry {
 	return a.collabReg

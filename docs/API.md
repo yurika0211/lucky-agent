@@ -468,7 +468,7 @@ Render accepts query parameters prefixed with `var_`, for example:
 | `GET` | `/api/v1/embedders` | List embedders |
 | `GET` | `/api/v1/embedders/{id}` | Get embedder |
 | `POST` | `/api/v1/embedders/register` | Register embedder |
-| `POST` | `/api/v1/embedders/switch` | Switch active embedder |
+| `POST` | `/api/v1/embedders/switch` | Switch active embedder and rebind the RAG pipeline; a populated index must keep the same embedder identity and vector dimension |
 | `POST` | `/api/v1/embedders/{id}/test` | Test embedder |
 
 Switch request body:

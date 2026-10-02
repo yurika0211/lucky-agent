@@ -257,3 +257,34 @@ func TestOpenAIEmbedder_EmbedBatch_IncludesErrorBodyOn403(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestOllamaEmbedder_EmbedBatchCallsAPI(t *testing.T) {
+	var requests int
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests++
+		if r.Method != http.MethodPost || r.URL.Path != "/api/embeddings" {
+			t.Fatalf("unexpected Ollama request: %s %s", r.Method, r.URL.Path)
+		}
+		var body struct {
+			Model  string `json:"model"`
+			Prompt string `json:"prompt"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if body.Model != "nomic-embed-text" {
+			t.Fatalf("model = %q", body.Model)
+		}
+		payload, _ := json.Marshal(map[string][]float64{"embedding": {float64(len(body.Prompt))}})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(payload))}, nil
+	})}
+	emb := NewOllamaEmbedder(OllamaEmbedderConfig{BaseURL: "http://ollama.test", Model: "nomic-embed-text", Dimension: 1})
+	emb.client = client
+	vecs, err := emb.EmbedBatch(context.Background(), []string{"hi", "there"})
+	if err != nil {
+		t.Fatalf("EmbedBatch returned error: %v", err)
+	}
+	if requests != 2 || !reflect.DeepEqual(vecs, [][]float64{{2}, {5}}) {
+		t.Fatalf("requests=%d vectors=%#v", requests, vecs)
+	}
+}

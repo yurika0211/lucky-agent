@@ -4,7 +4,6 @@ package multimodal
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"sync"
 
@@ -19,6 +18,7 @@ type OpenAIVisionProvider struct {
 	model     string
 	maxTokens int
 	analyzed  int
+	media     *OpenAIMediaProvider
 }
 
 // OpenAIConfig holds OpenAI provider configuration
@@ -44,11 +44,20 @@ func NewOpenAIVisionProvider(cfg OpenAIConfig) (*OpenAIVisionProvider, error) {
 		cfg.APIBase = "https://api.openai.com/v1"
 	}
 
+	media, err := NewOpenAIMediaProvider(OpenAIMediaConfig{
+		APIKey:         cfg.APIKey,
+		APIBase:        cfg.APIBase,
+		ResponsesModel: cfg.Model,
+	})
+	if err != nil {
+		return nil, err
+	}
 	return &OpenAIVisionProvider{
 		apiKey:    cfg.APIKey,
 		apiBase:   cfg.APIBase,
 		model:     cfg.Model,
 		maxTokens: cfg.MaxTokens,
+		media:     media,
 	}, nil
 }
 
@@ -75,26 +84,10 @@ func (o *OpenAIVisionProvider) Analyze(ctx context.Context, input *Input) (*Anal
 
 	switch input.Modality {
 	case ModalityImage:
-		// Build the image URL or base64 data
-		var imageURL string
-		if input.URL != "" {
-			imageURL = input.URL
-		} else if len(input.Data) > 0 {
-			imageURL = fmt.Sprintf("data:%s;base64,%s", input.MimeType, base64.StdEncoding.EncodeToString(input.Data))
-		} else {
-			return nil, fmt.Errorf("image input requires either URL or Data")
+		if o.media == nil {
+			return nil, fmt.Errorf("openai vision media client is not configured")
 		}
-
-		// In a real implementation, this would call the OpenAI API
-		// For now, return a placeholder
-		result.Text = fmt.Sprintf("[OpenAI Vision analysis of image: %s]", imageURL[:min(100, len(imageURL))])
-		result.Summary = "Image analyzed via OpenAI Vision API"
-		result.Labels = []string{"image", "openai"}
-		result.Confidence = 0.9
-		result.Metadata = map[string]string{
-			"model":  o.model,
-			"source": "openai",
-		}
+		return o.media.Analyze(ctx, input)
 
 	case ModalityText:
 		result.Text = string(input.Data)

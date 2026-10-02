@@ -149,6 +149,51 @@ func (s *SQLiteStore) EnsureEmbeddingFingerprint(fingerprint string) error {
 	}
 }
 
+// SetEmbeddingFingerprint updates the model identity after an empty-index
+// embedder switch. Existing vectors must be rebuilt before this is used.
+func (s *SQLiteStore) SetEmbeddingFingerprint(fingerprint string) error {
+	fingerprint = strings.TrimSpace(fingerprint)
+	if fingerprint == "" {
+		return fmt.Errorf("embedding fingerprint is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM vectors`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("cannot change embedding fingerprint of a non-empty store")
+	}
+	_, err := s.db.Exec(`INSERT INTO store_meta (key, value) VALUES ('embedding_fingerprint', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, fingerprint)
+	return err
+}
+
+// ReconfigureDimension changes the persisted dimension only while empty.
+func (s *SQLiteStore) ReconfigureDimension(dim int) error {
+	if dim <= 0 {
+		return fmt.Errorf("vector dimension must be positive, got %d", dim)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM vectors`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return fmt.Errorf("cannot change vector dimension of a non-empty store")
+	}
+	if _, err := s.db.Exec(`INSERT INTO store_meta (key, value) VALUES ('dimension', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, fmt.Sprintf("%d", dim)); err != nil {
+		return err
+	}
+	s.dim = dim
+	s.cache = make(map[string]*VectorEntry)
+	s.loaded = true
+	return nil
+}
+
 // Dimension returns the expected vector dimension.
 func (s *SQLiteStore) Dimension() int { return s.dim }
 

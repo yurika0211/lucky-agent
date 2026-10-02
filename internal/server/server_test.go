@@ -1073,6 +1073,24 @@ func TestServerStats(t *testing.T) {
 	}
 }
 
+func TestChatRequestTracksExplicitAutoApprove(t *testing.T) {
+	var omitted ChatRequest
+	if err := jsonAPI.Unmarshal([]byte(`{"message":"hello"}`), &omitted); err != nil {
+		t.Fatal(err)
+	}
+	if omitted.autoApproveSet {
+		t.Fatal("auto_approve should be unset when omitted")
+	}
+
+	var explicit ChatRequest
+	if err := jsonAPI.Unmarshal([]byte(`{"message":"hello","auto_approve":false}`), &explicit); err != nil {
+		t.Fatal(err)
+	}
+	if !explicit.autoApproveSet {
+		t.Fatal("auto_approve should be marked as explicitly supplied")
+	}
+}
+
 func TestChatEventTypeString(t *testing.T) {
 	tests := []struct {
 		input    agent.ChatEventType

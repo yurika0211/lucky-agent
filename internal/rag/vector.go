@@ -30,12 +30,26 @@ type VectorStore struct {
 func NewVectorStore(dim int) *VectorStore {
 	return &VectorStore{
 		entries: make(map[string]*VectorEntry),
-		dim:    dim,
+		dim:     dim,
 	}
 }
 
 // Dimension returns the expected vector dimension.
 func (v *VectorStore) Dimension() int { return v.dim }
+
+// ReconfigureDimension changes the vector dimension only while the store is empty.
+func (v *VectorStore) ReconfigureDimension(dim int) error {
+	if dim <= 0 {
+		return fmt.Errorf("vector dimension must be positive, got %d", dim)
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if len(v.entries) > 0 {
+		return fmt.Errorf("cannot change vector dimension of a non-empty store")
+	}
+	v.dim = dim
+	return nil
+}
 
 // Len returns the number of stored vectors.
 func (v *VectorStore) Len() int {

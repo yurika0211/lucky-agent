@@ -3,6 +3,7 @@ package rag
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1105,7 +1106,9 @@ func TestNormalizeVector(t *testing.T) {
 	for _, x := range n {
 		norm += x * x
 	}
-	norm = norm // should be ~1
+	if math.Abs(norm-1) > 1e-9 {
+		t.Errorf("normalized vector should have unit norm, got %f", norm)
+	}
 	if len(n) != 2 {
 		t.Errorf("expected length 2, got %d", len(n))
 	}

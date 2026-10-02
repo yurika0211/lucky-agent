@@ -59,8 +59,12 @@ func (s *Server) handleEmbedderSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !reg.Switch(req.ID) {
-		s.sendError(w, "embedder not found: "+req.ID, http.StatusNotFound, "")
+	if err := s.agent.SwitchEmbedder(req.ID); err != nil {
+		status := http.StatusConflict
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		s.sendError(w, "embedder switch failed", status, err.Error())
 		return
 	}
 
@@ -75,7 +79,7 @@ func (s *Server) handleEmbedderSwitch(w http.ResponseWriter, r *http.Request) {
 
 type embedderRegisterRequest struct {
 	ID        string `json:"id"`
-	Provider  string `json:"provider"`  // "mock", "openai", "ollama"
+	Provider  string `json:"provider"` // "mock", "openai", "ollama"
 	Model     string `json:"model"`
 	Dimension int    `json:"dimension,omitempty"`
 	APIKey    string `json:"api_key,omitempty"`

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,11 +44,14 @@ const (
 
 // Server 是 LuckyAgent 的 HTTP API Server
 type Server struct {
-	mu      sync.RWMutex
-	server  *http.Server
-	agent   *agent.Agent
-	config  ServerConfig
-	running bool
+	mu           sync.RWMutex
+	server       *http.Server
+	agent        *agent.Agent
+	config       ServerConfig
+	running      bool
+	statsMu      sync.RWMutex
+	chatCancelMu sync.Mutex
+	chatCancels  map[string]*chatCancellation
 
 	// 限流
 	rateLimiter *rateLimiter
@@ -98,7 +102,6 @@ func DefaultServerConfig() ServerConfig {
 
 // ServerStats 服务器统计
 type ServerStats struct {
-	mu          sync.RWMutex
 	TotalReqs   int64
 	ChatReqs    int64
 	ErrorReqs   int64
@@ -106,15 +109,38 @@ type ServerStats struct {
 	LastReqTime time.Time
 }
 
+type chatCancellation struct {
+	cancel context.CancelFunc
+}
+
 // ChatRequest 聊天请求
 type ChatRequest struct {
-	Message     string               `json:"message"`
-	SessionID   string               `json:"session_id,omitempty"`
-	Stream      bool                 `json:"stream,omitempty"`
-	MaxIter     int                  `json:"max_iterations,omitempty"`
-	AutoApprove bool                 `json:"auto_approve,omitempty"`
-	Metadata    map[string]string    `json:"metadata,omitempty"`
-	Attachments []gateway.Attachment `json:"attachments,omitempty"`
+	Message        string               `json:"message"`
+	SessionID      string               `json:"session_id,omitempty"`
+	Stream         bool                 `json:"stream,omitempty"`
+	MaxIter        int                  `json:"max_iterations,omitempty"`
+	AutoApprove    bool                 `json:"auto_approve,omitempty"`
+	Metadata       map[string]string    `json:"metadata,omitempty"`
+	Attachments    []gateway.Attachment `json:"attachments,omitempty"`
+	autoApproveSet bool
+}
+
+// UnmarshalJSON keeps the legacy bool field while remembering whether the
+// caller explicitly supplied auto_approve. This lets the agent config remain
+// effective when the request omits the optional override.
+func (r *ChatRequest) UnmarshalJSON(data []byte) error {
+	type alias ChatRequest
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*r = ChatRequest(decoded)
+	_, r.autoApproveSet = fields["auto_approve"]
+	return nil
 }
 
 // ChatResponse 聊天响应
@@ -275,6 +301,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		stats: ServerStats{
 			StartTime: time.Now(),
 		},
+		chatCancels:     make(map[string]*chatCancellation),
 		metrics:         m,
 		healthCheck:     hc,
 		wsHub:           wsHub,
@@ -478,9 +505,19 @@ func publicServerURL(addr string) string {
 // Stop 停止 API Server
 func (s *Server) Stop() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	running := s.running
+	httpServer := s.server
+	s.mu.Unlock()
 
-	if !s.running || s.server == nil {
+	// These components are started by New, so they must also be stopped when
+	// Stop is called before Start (or after Serve exits unexpectedly).
+	if s.rateLimiter != nil {
+		s.rateLimiter.Stop()
+	}
+	if s.wsHub != nil {
+		s.wsHub.Stop()
+	}
+	if !running || httpServer == nil {
 		return nil
 	}
 
@@ -489,12 +526,7 @@ func (s *Server) Stop() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// v0.18.0: 停止 WebSocket Hub
-	if s.wsHub != nil {
-		s.wsHub.Stop()
-	}
-
-	if err := s.server.Shutdown(ctx); err != nil {
+	if err := httpServer.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown server: %w", err)
 	}
 	if s.telemetryStop != nil {
@@ -503,7 +535,9 @@ func (s *Server) Stop() error {
 		}
 	}
 
+	s.mu.Lock()
 	s.running = false
+	s.mu.Unlock()
 	logger.Info("api server stopped", "addr", s.config.Addr)
 	return nil
 }
@@ -517,8 +551,8 @@ func (s *Server) IsRunning() bool {
 
 // Stats 返回服务器统计
 func (s *Server) Stats() ServerStats {
-	s.stats.mu.RLock()
-	defer s.stats.mu.RUnlock()
+	s.statsMu.RLock()
+	defer s.statsMu.RUnlock()
 	return s.stats
 }
 
@@ -609,11 +643,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.stats.mu.Lock()
+	s.statsMu.Lock()
 	s.stats.ChatReqs++
 	s.stats.TotalReqs++
 	s.stats.LastReqTime = time.Now()
-	s.stats.mu.Unlock()
+	s.statsMu.Unlock()
 
 	// v0.17.0: 记录 metrics
 	s.metrics.RecordChatRequest()
@@ -639,17 +673,17 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if req.MaxIter > 0 {
 		loopCfg.MaxIterations = req.MaxIter
 	}
-	loopCfg.AutoApprove = req.AutoApprove
+	if req.autoApproveSet {
+		loopCfg.AutoApprove = req.AutoApprove
+	}
 	loopCfg.Source = "http"
-
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	parentCtx := r.Context()
 
 	// SSE 流式响应
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		// 不支持 SSE，降级为同步
-		s.doChatSync(w, r, req, loopCfg, ctx, start)
+		s.doChatSync(w, r, req, loopCfg, parentCtx, start)
 		return
 	}
 
@@ -668,6 +702,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			sessionID = sess.ID
 		}
 	}
+	ctx, cancel := s.registerChatCancellation(parentCtx, sessionID)
+	defer cancel()
 	turn := agent.MultimodalUserTurnInput(req.Message, req.Attachments)
 	events, err := s.agent.ChatWithSessionStreamInputWithLoopConfig(ctx, sessionID, turn, loopCfg)
 	if err != nil {
@@ -750,11 +786,11 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.stats.mu.Lock()
+	s.statsMu.Lock()
 	s.stats.ChatReqs++
 	s.stats.TotalReqs++
 	s.stats.LastReqTime = time.Now()
-	s.stats.mu.Unlock()
+	s.statsMu.Unlock()
 
 	// v0.17.0: 记录 metrics
 	s.metrics.RecordChatRequest()
@@ -773,10 +809,16 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	loopCfg := agent.DefaultLoopConfig()
+	if s.agent != nil && s.agent.Config() != nil {
+		cfg := s.agent.Config().Get()
+		agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+	}
 	if req.MaxIter > 0 {
 		loopCfg.MaxIterations = req.MaxIter
 	}
-	loopCfg.AutoApprove = req.AutoApprove
+	if req.autoApproveSet {
+		loopCfg.AutoApprove = req.AutoApprove
+	}
 	loopCfg.Source = "http"
 
 	ctx := r.Context()
@@ -837,8 +879,13 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			})
 			return
 		case "stop":
+			if strings.TrimSpace(req.SessionID) == "" || !s.cancelChat(strings.TrimSpace(req.SessionID)) {
+				s.sendError(w, "no active chat for session", http.StatusNotFound, "provide the session_id of a running chat")
+				return
+			}
 			s.sendJSON(w, http.StatusOK, ChatResponse{
-				Response: "ℹ️ Stop command received. Task cancellation not yet implemented.",
+				Response:  "✅ Stop requested for the active chat.",
+				SessionID: strings.TrimSpace(req.SessionID),
 			})
 			return
 		case "restart":
@@ -879,6 +926,8 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			sess = s
 		}
 	}
+	ctx, cancel := s.registerChatCancellation(ctx, sessionID)
+	defer cancel()
 
 	// 使用 RunLoopWithSession 确保消息被保存；无法创建/获取会话时降级为无会话 RunLoop
 	var (
@@ -892,9 +941,9 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 		result, err = s.agent.RunLoopWithSessionInput(ctx, nil, turn, loopCfg)
 	}
 	if err != nil {
-		s.stats.mu.Lock()
+		s.statsMu.Lock()
 		s.stats.ErrorReqs++
-		s.stats.mu.Unlock()
+		s.statsMu.Unlock()
 		s.sendError(w, "chat failed", http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -919,6 +968,44 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 	}
 
 	s.sendJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) registerChatCancellation(parent context.Context, sessionID string) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	if strings.TrimSpace(sessionID) == "" {
+		return ctx, cancel
+	}
+	entry := &chatCancellation{cancel: cancel}
+	s.chatCancelMu.Lock()
+	if s.chatCancels == nil {
+		s.chatCancels = make(map[string]*chatCancellation)
+	}
+	previous := s.chatCancels[sessionID]
+	s.chatCancels[sessionID] = entry
+	s.chatCancelMu.Unlock()
+	if previous != nil {
+		previous.cancel()
+	}
+
+	return ctx, func() {
+		cancel()
+		s.chatCancelMu.Lock()
+		if s.chatCancels[sessionID] == entry {
+			delete(s.chatCancels, sessionID)
+		}
+		s.chatCancelMu.Unlock()
+	}
+}
+
+func (s *Server) cancelChat(sessionID string) bool {
+	s.chatCancelMu.Lock()
+	entry := s.chatCancels[sessionID]
+	s.chatCancelMu.Unlock()
+	if entry == nil {
+		return false
+	}
+	entry.cancel()
+	return true
 }
 
 func boundedQueryInt(r *http.Request, name string, fallback, minValue, maxValue int) int {
@@ -1571,10 +1658,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		// 无配置 API Key 则仅允许本地访问
 		if len(s.config.APIKeys) == 0 {
-			ip := r.RemoteAddr
-			if idx := strings.LastIndex(ip, ":"); idx != -1 {
-				ip = ip[:idx]
-			}
+			ip := requestRemoteIP(r.RemoteAddr)
 			if ip != "127.0.0.1" && ip != "::1" && ip != "localhost" {
 				logger.Warn("auth rejected non-local request without api keys",
 					"path", r.URL.Path,
@@ -1634,7 +1718,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 // rateLimitMiddleware 限流中间件
 func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
+		ip := requestRemoteIP(r.RemoteAddr)
 		if !s.rateLimiter.Allow(ip) {
 			logger.Warn("rate limit exceeded",
 				"path", r.URL.Path,
@@ -1648,6 +1732,16 @@ func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// requestRemoteIP strips the transport port from RemoteAddr and handles both
+// bracketed and unbracketed IPv6 addresses.
+func requestRemoteIP(remoteAddr string) string {
+	remoteAddr = strings.TrimSpace(remoteAddr)
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return strings.Trim(host, "[]")
+	}
+	return strings.Trim(remoteAddr, "[]")
 }
 
 // loggingMiddleware 日志中间件
@@ -1698,9 +1792,9 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
-				s.stats.mu.Lock()
+				s.statsMu.Lock()
 				s.stats.ErrorReqs++
-				s.stats.mu.Unlock()
+				s.statsMu.Unlock()
 				// 内部错误详情只写日志，不返回给客户端
 				logger.Error("panic recovered",
 					"path", r.URL.Path,
@@ -1796,9 +1890,11 @@ func permString(p tool.PermissionLevel) string {
 // ===== 限流器 =====
 
 type rateLimiter struct {
-	mu      sync.RWMutex
-	limit   int
-	clients map[string]*clientBucket
+	mu       sync.RWMutex
+	limit    int
+	clients  map[string]*clientBucket
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 type clientBucket struct {
@@ -1810,18 +1906,31 @@ func newRateLimiter(limit int) *rateLimiter {
 	rl := &rateLimiter{
 		limit:   limit,
 		clients: make(map[string]*clientBucket),
+		stopCh:  make(chan struct{}),
 	}
 
 	// 后台清理过期桶
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
-		for range ticker.C {
-			rl.cleanup()
+		for {
+			select {
+			case <-ticker.C:
+				rl.cleanup()
+			case <-rl.stopCh:
+				return
+			}
 		}
 	}()
 
 	return rl
+}
+
+func (rl *rateLimiter) Stop() {
+	if rl == nil || rl.stopCh == nil {
+		return
+	}
+	rl.stopOnce.Do(func() { close(rl.stopCh) })
 }
 
 func (rl *rateLimiter) Allow(ip string) bool {

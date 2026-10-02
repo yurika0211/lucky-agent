@@ -41,7 +41,54 @@ type RAGManager struct {
 	graph          *KnowledgeGraph  // 知识图谱（可选）
 	graphExtractor *EntityExtractor // 实体提取器（可选）
 
-	mu sync.RWMutex
+	mu         sync.RWMutex
+	embedderMu sync.RWMutex
+}
+
+// ReconfigureEmbedder swaps the embedder used for future indexing and search.
+// Existing vectors may only be kept when their embedder identity and dimension
+// are unchanged. An empty index can be resized safely; an indexed store must be
+// rebuilt before switching models.
+func (m *RAGManager) ReconfigureEmbedder(next embedderpkg.Embedder) error {
+	if next == nil {
+		return fmt.Errorf("embedder is nil")
+	}
+	nextDim := next.Dimension()
+	if nextDim <= 0 {
+		return fmt.Errorf("embedder dimension must be positive")
+	}
+	m.embedderMu.Lock()
+	defer m.embedderMu.Unlock()
+	if m.store.Len() > 0 && (m.embedder.Name() != next.Name() || m.embedder.Model() != next.Model() || m.store.Dimension() != nextDim) {
+		return fmt.Errorf("cannot switch embedder on a populated RAG index; rebuild the index first")
+	}
+	if m.store.Dimension() != nextDim {
+		if m.store.Len() > 0 {
+			return fmt.Errorf("cannot switch embedding dimension from %d to %d while the RAG index is populated; rebuild the index first", m.store.Dimension(), nextDim)
+		}
+		switch store := m.store.(type) {
+		case *VectorStore:
+			if err := store.ReconfigureDimension(nextDim); err != nil {
+				return err
+			}
+		case *SQLiteStore:
+			if err := store.ReconfigureDimension(nextDim); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("vector store does not support dimension changes")
+		}
+	}
+	m.embedder = next
+	m.indexer.embedder = next
+	m.retriever.embedder = next
+	if store, ok := m.store.(*SQLiteStore); ok {
+		fingerprint := fmt.Sprintf("%s|%s|%d", next.Name(), next.Model(), nextDim)
+		if err := store.SetEmbeddingFingerprint(fingerprint); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type RAGConfig struct {
@@ -150,36 +197,50 @@ func NewRAGManagerWithSQLite(embedder embedderpkg.Embedder, config RAGConfig, db
 
 // IndexFile indexes a single file.
 func (m *RAGManager) IndexFile(path string) (*Document, error) {
+	m.embedderMu.RLock()
+	defer m.embedderMu.RUnlock()
 	return m.indexer.IndexFile(path)
 }
 
 // IndexFileContext indexes a file with cancellation support.
 func (m *RAGManager) IndexFileContext(ctx context.Context, path string) (*Document, error) {
+	m.embedderMu.RLock()
+	defer m.embedderMu.RUnlock()
 	return m.indexer.IndexFileContext(ctx, path)
 }
 
 // IndexText indexes raw text content.
 func (m *RAGManager) IndexText(source, title, content string) (*Document, error) {
+	m.embedderMu.RLock()
+	defer m.embedderMu.RUnlock()
 	return m.indexer.IndexText(source, title, content)
 }
 
 // IndexTextContext indexes text with cancellation support.
 func (m *RAGManager) IndexTextContext(ctx context.Context, source, title, content string) (*Document, error) {
+	m.embedderMu.RLock()
+	defer m.embedderMu.RUnlock()
 	return m.indexer.IndexTextContext(ctx, source, title, content)
 }
 
 // IndexDirectory indexes all .md/.txt files in a directory.
 func (m *RAGManager) IndexDirectory(dir string) ([]*Document, error) {
+	m.embedderMu.RLock()
+	defer m.embedderMu.RUnlock()
 	return m.indexer.IndexDirectory(dir)
 }
 
 // Search queries the knowledge base.
 func (m *RAGManager) Search(ctx context.Context, query string) ([]RetrievalResult, error) {
+	m.embedderMu.RLock()
+	defer m.embedderMu.RUnlock()
 	return m.retriever.Search(ctx, query)
 }
 
 // SearchWithOptions queries the knowledge base with per-call retrieval options.
 func (m *RAGManager) SearchWithOptions(ctx context.Context, query string, opts SearchOptions) ([]RetrievalResult, error) {
+	m.embedderMu.RLock()
+	defer m.embedderMu.RUnlock()
 	cfg := m.RetrieverConfig()
 	if opts.TopK > 0 {
 		cfg.TopK = opts.TopK
@@ -199,6 +260,8 @@ func (m *RAGManager) SearchWithOptions(ctx context.Context, query string, opts S
 
 // SearchWithContext queries and returns assembled context string.
 func (m *RAGManager) SearchWithContext(ctx context.Context, query string) (string, []RetrievalResult, error) {
+	m.embedderMu.RLock()
+	defer m.embedderMu.RUnlock()
 	results, err := m.retriever.Search(ctx, query)
 	if err != nil {
 		return "", nil, err

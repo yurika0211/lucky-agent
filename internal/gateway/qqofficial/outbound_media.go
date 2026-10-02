@@ -170,6 +170,9 @@ func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outb
 				if kind != outboundMediaPhoto {
 					return match
 				}
+				if !isRemoteMedia(source) && !outboundMediaSourceAvailable(source) {
+					return match
+				}
 				existing = append(existing, outboundMedia{
 					Kind:    kind,
 					Source:  source,

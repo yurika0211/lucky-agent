@@ -1,8 +1,12 @@
 package embedder
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"testing"
 )
@@ -117,6 +121,10 @@ func TestOpenAIEmbedderCustomBaseURL(t *testing.T) {
 
 func TestOllamaEmbedder(t *testing.T) {
 	e := NewOllamaEmbedder(OllamaEmbedderConfig{})
+	e.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		payload, _ := json.Marshal(map[string][]float64{"embedding": make([]float64, 768)})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(payload))}, nil
+	})}
 	if e.Name() != "ollama" {
 		t.Errorf("Name() = %q, want %q", e.Name(), "ollama")
 	}
