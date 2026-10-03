@@ -63,6 +63,7 @@ type AgentHandler struct {
 	runners   map[string]*sessionRunner
 	store     *runStore
 	eventSink func(string, *Message)
+	started   bool
 	mu        sync.Mutex
 }
 
@@ -92,6 +93,14 @@ func (h *AgentHandler) SetEventSink(sink func(string, *Message)) {
 
 // Start restores queued and interrupted runs after the runtime process starts.
 func (h *AgentHandler) Start() {
+	h.mu.Lock()
+	if h.started {
+		h.mu.Unlock()
+		return
+	}
+	h.started = true
+	h.mu.Unlock()
+
 	for _, persisted := range h.store.restoreable() {
 		data := ChatData{
 			Message:     persisted.Message,

@@ -141,6 +141,63 @@ func TestRunStoreReconnectReplaySkipsCompletedRunsWithoutCursor(t *testing.T) {
 	}
 }
 
+func TestHandlerStartRestoresPersistedRunOnlyOnce(t *testing.T) {
+	mgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan string, 2)
+	runtime := &stubAgentRuntime{
+		sessions: mgr,
+		tools:    tool.NewRegistry(),
+		chatStreamInputFn: func(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error) {
+			started <- input.RoutingText
+			out := make(chan agent.ChatEvent, 1)
+			out <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "recovered"}
+			close(out)
+			return out, nil
+		},
+	}
+	h := NewAgentHandler(runtime)
+	h.store = newRunStore(t.TempDir())
+	now := time.Now().UTC()
+	if err := h.store.upsertRun(persistedRun{
+		ID:        "restore-once",
+		SessionID: "restore-session",
+		ParentID:  "restore-once",
+		Message:   "continue this task",
+		Stream:    true,
+		State:     "running",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.Start()
+	h.Start()
+	h.WaitSession("restore-session", 2*time.Second)
+
+	select {
+	case got := <-started:
+		if got != "continue this task" {
+			t.Fatalf("restored message = %q, want original message", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("persisted run was not restored")
+	}
+	select {
+	case duplicate := <-started:
+		t.Fatalf("run restored twice with message %q", duplicate)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	active := h.store.activeRuns("restore-session")
+	if len(active) != 0 {
+		t.Fatalf("restored run remained active after completion: %#v", active)
+	}
+}
+
 func TestHubDisconnectDoesNotCancelSession(t *testing.T) {
 	handler := &cancelTrackingHandler{}
 	hub := NewHub(handler, DefaultHubConfig())
