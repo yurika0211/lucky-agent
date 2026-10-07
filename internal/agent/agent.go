@@ -735,7 +735,7 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
-		ReservedTokens:       c.MaxTokens / 4,
+		ReservedTokens:       reservedTokensFor(c),
 		Strategy:             contextx.TrimLowPriority,
 		SlidingWindowSize:    10,
 		MaxConversationTurns: 50,
@@ -764,6 +764,29 @@ func initSupportRuntime(c *config.Config, mem *memory.Store, ragMgr *rag.RAGMana
 /**
  * buildAutonomyRuntimeConfig 构建 Autonomy 运行时配置，包括设置最大迭代次数、超时和自动审批等。
  */
+// reservedTokensFor 按 context_budget.reserved_ratio 从 max_tokens 里留出回复份额。
+// 缺省比例是 0.25，与改动前的 MaxTokens/4 一致。
+func reservedTokensFor(c *config.Config) int {
+	if c == nil || c.MaxTokens <= 0 {
+		return 0
+	}
+	ratio := c.ContextBudget.ReservedRatio
+	if ratio <= 0 || ratio >= 1 {
+		ratio = 0.25
+	}
+	reserved := int(float64(c.MaxTokens) * ratio)
+	if reserved < 1 {
+		reserved = 1
+	}
+	if reserved >= c.MaxTokens {
+		reserved = c.MaxTokens / 4
+		if reserved < 1 {
+			reserved = 1
+		}
+	}
+	return reserved
+}
+
 func buildAutonomyRuntimeConfig(c *config.Config) autonomy.AutonomyConfig {
 	cfg := autonomy.DefaultAutonomyConfig()
 	if c == nil {

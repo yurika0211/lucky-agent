@@ -191,6 +191,19 @@
     "tokens_per_minute": 100000,
     "burst_size": 10
   },
+  "context_budget": {
+    "system_ratio": 0.15,
+    "memory_ratio": 0.10,
+    "rag_ratio": 0.20,
+    "history_ratio": 0.25,
+    "tool_result_ratio": 0.30,
+    "reserved_ratio": 0.25,
+    "system_floor": 256,
+    "memory_floor": 128,
+    "rag_floor": 256,
+    "history_floor": 256,
+    "tool_result_floor": 256
+  },
   "context": {
     "max_history_turns": 50,
     "max_context_tokens": 8000,

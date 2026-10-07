@@ -84,6 +84,9 @@ type Config struct {
 	// 上下文配置
 	Context ContextConfig `json:"context,omitempty"`
 
+	// 上下文预算分配。零值回落到默认比例，现有配置文件行为不变。
+	ContextBudget ContextBudgetConfig `json:"context_budget,omitempty"`
+
 	// Agent Loop 配置
 	Agent AgentLoopConfig `json:"agent,omitempty"`
 
@@ -332,6 +335,23 @@ type RateLimitConfig struct {
 }
 
 // ContextConfig 上下文配置
+// ContextBudgetConfig 控制上下文窗口里各类别的 token 预算比例。
+// 五类比例不要求和为 1，加载时会归一化。零值与非法值回落到默认。
+type ContextBudgetConfig struct {
+	SystemRatio     float64 `json:"system_ratio,omitempty"`
+	MemoryRatio     float64 `json:"memory_ratio,omitempty"`
+	RAGRatio        float64 `json:"rag_ratio,omitempty"`
+	HistoryRatio    float64 `json:"history_ratio,omitempty"`
+	ToolResultRatio float64 `json:"tool_result_ratio,omitempty"`
+	// ReservedRatio 是 max_tokens 里留给回复的比例，替代写死的 1/4。
+	ReservedRatio   float64 `json:"reserved_ratio,omitempty"`
+	SystemFloor     int     `json:"system_floor,omitempty"`
+	MemoryFloor     int     `json:"memory_floor,omitempty"`
+	RAGFloor        int     `json:"rag_floor,omitempty"`
+	HistoryFloor    int     `json:"history_floor,omitempty"`
+	ToolResultFloor int     `json:"tool_result_floor,omitempty"`
+}
+
 type ContextConfig struct {
 	MaxHistoryTurns                  int     `json:"max_history_turns"`
 	MaxContextTokens                 int     `json:"max_context_tokens"`
@@ -357,11 +377,11 @@ type ContextConfig struct {
 	SessionMaxBytes        int64 `json:"session_max_bytes,omitempty"`
 	SessionRollRetainTurns int   `json:"session_roll_retain_turns,omitempty"`
 	// HistoryPreviewChars caps each message body on GET /sessions/{id} unless include=full.
-	HistoryPreviewChars int `json:"history_preview_chars,omitempty"`
-	MemoryHygieneBeforeContext       bool    `json:"memory_hygiene_before_context,omitempty"`
-	MemoryHygieneAction              string  `json:"memory_hygiene_action,omitempty"`
-	MemoryHygieneMinSeverity         string  `json:"memory_hygiene_min_severity,omitempty"`
-	MemoryHygieneMaxFindings         int     `json:"memory_hygiene_max_findings,omitempty"`
+	HistoryPreviewChars        int    `json:"history_preview_chars,omitempty"`
+	MemoryHygieneBeforeContext bool   `json:"memory_hygiene_before_context,omitempty"`
+	MemoryHygieneAction        string `json:"memory_hygiene_action,omitempty"`
+	MemoryHygieneMinSeverity   string `json:"memory_hygiene_min_severity,omitempty"`
+	MemoryHygieneMaxFindings   int    `json:"memory_hygiene_max_findings,omitempty"`
 }
 
 // AgentLoopConfig Agent Loop 配置
@@ -803,6 +823,73 @@ type FallbackEntry struct {
 }
 
 // DefaultConfig 返回默认配置
+
+// DefaultContextBudgetConfig 返回与改动前硬编码一致的预算比例。
+func DefaultContextBudgetConfig() ContextBudgetConfig {
+	return ContextBudgetConfig{
+		SystemRatio:     0.15,
+		MemoryRatio:     0.10,
+		RAGRatio:        0.20,
+		HistoryRatio:    0.25,
+		ToolResultRatio: 0.30,
+		ReservedRatio:   0.25,
+		SystemFloor:     256,
+		MemoryFloor:     128,
+		RAGFloor:        256,
+		HistoryFloor:    256,
+		ToolResultFloor: 256,
+	}
+}
+
+// normalizeContextBudget 把零值和非法值回落到默认，并把五类比例缩放到和为 1。
+func normalizeContextBudget(in ContextBudgetConfig) ContextBudgetConfig {
+	def := DefaultContextBudgetConfig()
+	out := in
+	out.SystemRatio = budgetRatioOr(in.SystemRatio, def.SystemRatio)
+	out.MemoryRatio = budgetRatioOr(in.MemoryRatio, def.MemoryRatio)
+	out.RAGRatio = budgetRatioOr(in.RAGRatio, def.RAGRatio)
+	out.HistoryRatio = budgetRatioOr(in.HistoryRatio, def.HistoryRatio)
+	out.ToolResultRatio = budgetRatioOr(in.ToolResultRatio, def.ToolResultRatio)
+	if in.ReservedRatio <= 0 || in.ReservedRatio >= 1 {
+		out.ReservedRatio = def.ReservedRatio
+	}
+	out.SystemFloor = budgetFloorOr(in.SystemFloor, def.SystemFloor)
+	out.MemoryFloor = budgetFloorOr(in.MemoryFloor, def.MemoryFloor)
+	out.RAGFloor = budgetFloorOr(in.RAGFloor, def.RAGFloor)
+	out.HistoryFloor = budgetFloorOr(in.HistoryFloor, def.HistoryFloor)
+	out.ToolResultFloor = budgetFloorOr(in.ToolResultFloor, def.ToolResultFloor)
+
+	sum := out.SystemRatio + out.MemoryRatio + out.RAGRatio + out.HistoryRatio + out.ToolResultRatio
+	if sum <= 0 {
+		return def
+	}
+	if sum != 1 {
+		out.SystemRatio /= sum
+		out.MemoryRatio /= sum
+		out.RAGRatio /= sum
+		out.HistoryRatio /= sum
+		out.ToolResultRatio /= sum
+	}
+	return out
+}
+
+func budgetRatioOr(value, fallback float64) float64 {
+	if value <= 0 || value > 1 {
+		return fallback
+	}
+	return value
+}
+
+func budgetFloorOr(value, fallback int) int {
+	if value < 0 {
+		return fallback
+	}
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
 func DefaultConfig() *Config {
 	home, _ := os.UserHomeDir()
 	return &Config{
@@ -921,6 +1008,7 @@ func DefaultConfig() *Config {
 			TokensPerMinute:   100000,
 			BurstSize:         10,
 		},
+		ContextBudget: DefaultContextBudgetConfig(),
 		Context: ContextConfig{
 			MaxHistoryTurns:                  50,
 			MaxContextTokens:                 8000,
@@ -1445,6 +1533,7 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Context.MemoryHygieneMaxFindings <= 0 {
 		cfg.Context.MemoryHygieneMaxFindings = def.Context.MemoryHygieneMaxFindings
 	}
+	cfg.ContextBudget = normalizeContextBudget(cfg.ContextBudget)
 
 	normalizeForegroundConfig(&cfg.Agent.Foreground)
 	if cfg.Agent.MaxIterations <= 0 {
@@ -2042,6 +2131,17 @@ func (m *Manager) Get() *Config {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return cloneConfig(m.config)
+}
+
+// SetConfig replaces the in-memory config. Tests use it to inject a
+// budget without writing the user's config file.
+func (m *Manager) SetConfig(cfg *Config) {
+	if m == nil || cfg == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.config = cloneConfig(cfg)
 }
 
 // Set 修改配置项
