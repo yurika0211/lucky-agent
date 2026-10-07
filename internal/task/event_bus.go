@@ -1,6 +1,9 @@
 package task
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type EventBus struct {
 	store Store
@@ -17,6 +20,33 @@ func (b *EventBus) Emit(event Event) error {
 	return b.store.AppendEvent(event)
 }
 
+func eventMetadata(record Record) map[string]string {
+	meta := map[string]string{}
+	for key, value := range record.Metadata {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		meta[key] = value
+	}
+	if description := strings.TrimSpace(record.Description); description != "" {
+		meta["description"] = description
+	}
+	if title := strings.TrimSpace(record.Metadata["title"]); title != "" {
+		meta["title"] = title
+	}
+	sessionID := strings.TrimSpace(record.Metadata["session_id"])
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(record.Metadata["owner_session_id"])
+	}
+	if sessionID != "" {
+		meta["session_id"] = sessionID
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
+}
+
 func (b *EventBus) Created(record Record) error {
 	return b.Emit(Event{
 		Type:     EventCreated,
@@ -25,6 +55,7 @@ func (b *EventBus) Created(record Record) error {
 		Status:   record.Status,
 		Mode:     record.Mode,
 		Message:  record.Description,
+		Metadata: eventMetadata(record),
 	})
 }
 
@@ -35,6 +66,7 @@ func (b *EventBus) Started(record Record) error {
 		ParentID: record.ParentID,
 		Status:   StatusRunning,
 		Mode:     record.Mode,
+		Metadata: eventMetadata(record),
 	})
 }
 
@@ -46,6 +78,7 @@ func (b *EventBus) Completed(record Record, message string) error {
 		Status:   StatusCompleted,
 		Mode:     record.Mode,
 		Message:  message,
+		Metadata: eventMetadata(record),
 	})
 }
 
@@ -57,5 +90,6 @@ func (b *EventBus) Failed(record Record, errText string) error {
 		Status:   StatusFailed,
 		Mode:     record.Mode,
 		Error:    errText,
+		Metadata: eventMetadata(record),
 	})
 }

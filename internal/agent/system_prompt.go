@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yurika0211/luckyagent/internal/prompt"
 	"github.com/yurika0211/luckyagent/internal/session"
@@ -265,10 +266,11 @@ func (a *Agent) buildToolInventoryPromptBlock(toolNames []string) string {
 		if desc == "" {
 			lines = append(lines, "- "+name)
 		} else {
-			lines = append(lines, fmt.Sprintf("- %s: %s", name, utils.Truncate(desc, 180)))
+			lines = append(lines, fmt.Sprintf("- %s: %s", name, utils.Truncate(desc, 80)))
 		}
 		count++
-		if count >= 20 {
+		if count >= 24 {
+			lines = append(lines, fmt.Sprintf("- … %d more tools are callable; use the tool schema rather than guessing.", len(toolNames)-count))
 			break
 		}
 	}
@@ -281,27 +283,7 @@ func (a *Agent) buildToolInventoryPromptBlock(toolNames []string) string {
 func (a *Agent) buildSkillPolicyPromptBlock() string {
 	defaultPolicy := `Skill-routing policy:
 
-Treat a skill as a reusable workflow, not as decoration.
-
-Use a skill when:
-- the task clearly matches a known workflow,
-- the skill can reduce ad-hoc reasoning,
-- the task has multiple steps or domain-specific handling that benefits from structure.
-
-Before using a skill:
-1. confirm that the task actually matches it,
-2. read the skill first,
-3. extract the relevant workflow,
-4. execute the workflow instead of merely paraphrasing it.
-
-Do not use a skill when:
-- direct execution is shorter and safer,
-- the skill is only loosely related,
-- the skill would add ceremony without reducing uncertainty or effort.
-
-If multiple skills seem relevant:
-- choose the one that most directly matches the user’s real goal,
-- avoid stacking multiple skills unless they serve clearly different roles.`
+A skill is a reusable workflow. Use one only when the task clearly matches it. Read it with skill_read before following it. Skip it when a direct tool call is shorter. If several match, pick the one closest to the user's goal.`
 
 	loader := getPromptLoader()
 	return loader.LoadOrDefault("skill_policy.md", defaultPolicy)
@@ -479,27 +461,29 @@ func (a *Agent) buildSkillsPromptBlock() string {
 		return ""
 	}
 
-	lines := make([]string, 0, min(8, len(skills))+1)
-	lines = append(lines, "Available skills:")
-	count := 0
+	names := make([]string, 0, len(skills))
+	seen := make(map[string]struct{}, len(skills))
 	for _, s := range skills {
-		if s == nil || strings.TrimSpace(s.Name) == "" {
+		if s == nil {
 			continue
 		}
-		summary := routeFriendlySkillSummary(s)
-		if summary == "" {
+		name := strings.TrimSpace(s.Name)
+		if name == "" {
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("- %s: %s", s.Name, summary))
-		count++
-		if count >= 100 {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+		if len(names) >= 120 {
 			break
 		}
 	}
-	if count == 0 {
+	if len(names) == 0 {
 		return ""
 	}
-	return strings.Join(lines, "\n")
+	return "Available skills: " + strings.Join(names, ", ") + ".\nRead a matching skill with skill_read before following it. Do not guess a workflow from the name alone."
 }
 
 func routeFriendlySkillSummary(s *tool.SkillInfo) string {
@@ -538,17 +522,11 @@ func (a *Agent) buildLuckyAgentManualPrompt(sess *session.Session) string {
 		if content == "" {
 			return ""
 		}
-		if len(content) > 20000 {
-			head := int(float64(len(content)) * 0.7)
-			tail := int(float64(len(content)) * 0.2)
-			if head+tail > len(content) {
-				head = len(content)
-				tail = 0
-			}
-			content = strings.TrimSpace(content[:head] + "\n\n[... omitted ...]\n\n" + content[len(content)-tail:])
+		content = compactPromptExcerpt(content, 1800)
+		if content == "" {
+			return ""
 		}
-
-		return fmt.Sprintf("LuckyAgent manual (%s):\n%s", base, content)
+		return fmt.Sprintf("LuckyAgent manual (%s, excerpt):\n%s\nRead the full manual from the memory vault when a task depends on a rule that is not in this excerpt.", base, content)
 	})
 }
 
@@ -580,9 +558,29 @@ func (a *Agent) buildContextFilesPrompt(sess *session.Session) string {
 		if content == "" {
 			return ""
 		}
-		content = utils.CompactMarkdownForPrompt(content, 20000, func(s string) int { return len([]rune(s)) }, utils.MarkdownBudgetOptions{})
-		return fmt.Sprintf("Context file (%s):\n%s", base, content)
+		content = compactPromptExcerpt(content, 1600)
+		if content == "" {
+			return ""
+		}
+		return fmt.Sprintf("Project context (%s, excerpt):\n%s", base, content)
 	})
+}
+
+func compactPromptExcerpt(content string, limit int) string {
+	content = strings.TrimSpace(content)
+	if limit <= 0 || utf8.RuneCountInString(content) <= limit {
+		return content
+	}
+	runes := []rune(content)
+	cut := limit
+	if cut > len(runes) {
+		cut = len(runes)
+	}
+	excerpt := strings.TrimSpace(string(runes[:cut]))
+	if breakAt := strings.LastIndex(excerpt, "\n"); breakAt > limit/2 {
+		excerpt = strings.TrimSpace(excerpt[:breakAt])
+	}
+	return excerpt + "\n[... excerpt truncated ...]"
 }
 
 func cachedPromptBlock(path string, kind string, build func(base string, raw string) string) string {

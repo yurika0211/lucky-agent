@@ -107,7 +107,7 @@ func TestLegacyMarkdownMigratesOnSave(t *testing.T) {
 	legacy.format = FormatLegacyMD
 	legacy.AddMessage("user", "old")
 	legacy.AddMessage("assistant", "reply")
-	if err := legacy.saveLegacyMarkdown(dir, "legacy-1", "old", legacy.CreatedAt, legacy.UpdatedAt, ShellContext{}, legacy.GetMessages()); err != nil {
+	if err := legacy.saveLegacyMarkdown(dir, "legacy-1", "old", "", false, legacy.CreatedAt, legacy.UpdatedAt, ShellContext{}, legacy.GetMessages()); err != nil {
 		t.Fatalf("seed legacy: %v", err)
 	}
 	// meta for list

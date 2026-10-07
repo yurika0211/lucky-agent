@@ -70,6 +70,8 @@ type Session struct {
 	loadMu    sync.Mutex
 	ID        string
 	Title     string
+	Pinned    bool
+	Project   string
 	Messages  []provider.Message
 	CreatedAt time.Time
 	UpdatedAt time.Time
@@ -174,6 +176,29 @@ func (s *Session) SetTitle(title string) {
 	defer s.mu.Unlock()
 	s.Title = strings.TrimSpace(title)
 	s.UpdatedAt = time.Now()
+}
+
+// SetPinned marks the session for list pinning without rewriting messages.
+func (s *Session) SetPinned(pinned bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Pinned = pinned
+	s.UpdatedAt = time.Now()
+}
+
+// SetProject assigns a display project. Empty clears the grouping.
+func (s *Session) SetProject(project string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.Project = strings.TrimSpace(project)
+	s.UpdatedAt = time.Now()
+}
+
+// Organization returns the list fields that are stored beside the transcript.
+func (s *Session) Organization() (pinned bool, project string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.Pinned, s.Project
 }
 
 // NewSession 创建新会话
@@ -688,6 +713,8 @@ func (s *Session) Save() error {
 	persisted := s.persistedCount
 	needsRewrite := s.needsFullRewrite
 	title := s.Title
+	pinned := s.Pinned
+	project := s.Project
 	createdAt := s.CreatedAt
 	updatedAt := s.UpdatedAt
 	id := s.ID
@@ -724,7 +751,7 @@ func (s *Session) Save() error {
 		legacyPath := filepath.Join(dir, id+".md")
 		_ = os.Remove(legacyPath)
 	default:
-		if err := s.saveLegacyMarkdown(dir, id, title, createdAt, updatedAt, shell, messages); err != nil {
+		if err := s.saveLegacyMarkdown(dir, id, title, project, pinned, createdAt, updatedAt, shell, messages); err != nil {
 			return err
 		}
 		byteSize = fileByteSize(filepath.Join(dir, id+".md"))
@@ -741,6 +768,8 @@ func (s *Session) Save() error {
 	meta := sessionMetadata{
 		ID:           id,
 		Title:        title,
+		Pinned:       pinned,
+		Project:      project,
 		MessageCount: len(messages),
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
@@ -758,10 +787,12 @@ func (s *Session) Save() error {
 	return nil
 }
 
-func (s *Session) saveLegacyMarkdown(dir, id, title string, createdAt, updatedAt time.Time, shell ShellContext, messages []provider.Message) error {
+func (s *Session) saveLegacyMarkdown(dir, id, title, project string, pinned bool, createdAt, updatedAt time.Time, shell ShellContext, messages []provider.Message) error {
 	data := sessionData{
 		ID:           id,
 		Title:        title,
+		Pinned:       pinned,
+		Project:      project,
 		Messages:     messages,
 		CreatedAt:    createdAt,
 		UpdatedAt:    updatedAt,
@@ -786,6 +817,8 @@ func (s *Session) saveLegacyMarkdown(dir, id, title string, createdAt, updatedAt
 type sessionData struct {
 	ID           string             `json:"id"`
 	Title        string             `json:"title"`
+	Pinned       bool               `json:"pinned,omitempty"`
+	Project      string             `json:"project,omitempty"`
 	Messages     []provider.Message `json:"messages"`
 	CreatedAt    time.Time          `json:"created_at"`
 	UpdatedAt    time.Time          `json:"updated_at"`
@@ -795,6 +828,8 @@ type sessionData struct {
 type sessionMetadata struct {
 	ID           string       `json:"id"`
 	Title        string       `json:"title"`
+	Pinned       bool         `json:"pinned,omitempty"`
+	Project      string       `json:"project,omitempty"`
 	MessageCount int          `json:"message_count"`
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
@@ -811,6 +846,8 @@ func sessionMetadataPath(dir, id string) string {
 type SessionInfo struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
+	Pinned       bool      `json:"pinned,omitempty"`
+	Project      string    `json:"project,omitempty"`
 	MessageCount int       `json:"message_count"`
 	ByteSize     int64     `json:"byte_size,omitempty"`
 	Format       string    `json:"format,omitempty"`
@@ -978,6 +1015,8 @@ func (m *Manager) newSessionStub(meta sessionMetadata, format string) *Session {
 	return &Session{
 		ID:             meta.ID,
 		Title:          meta.Title,
+		Pinned:         meta.Pinned,
+		Project:        meta.Project,
 		Messages:       nil,
 		CreatedAt:      meta.CreatedAt,
 		UpdatedAt:      meta.UpdatedAt,
@@ -1390,7 +1429,7 @@ func (m *Manager) ListInfo() []SessionInfo {
 		if format == "" {
 			format = FormatLegacyMD
 		}
-		id, title, count := s.ID, s.Title, s.messageCountLocked()
+		id, title, pinned, project, count := s.ID, s.Title, s.Pinned, s.Project, s.messageCountLocked()
 		created, updated, dir := s.CreatedAt, s.UpdatedAt, s.dir
 		s.mu.RUnlock()
 		byteSize := int64(0)
@@ -1403,6 +1442,8 @@ func (m *Manager) ListInfo() []SessionInfo {
 		infos = append(infos, SessionInfo{
 			ID:           id,
 			Title:        title,
+			Pinned:       pinned,
+			Project:      project,
 			MessageCount: count,
 			ByteSize:     byteSize,
 			Format:       format,
@@ -1412,6 +1453,9 @@ func (m *Manager) ListInfo() []SessionInfo {
 	}
 
 	sort.Slice(infos, func(i, j int) bool {
+		if infos[i].Pinned != infos[j].Pinned {
+			return infos[i].Pinned
+		}
 		return infos[i].UpdatedAt.After(infos[j].UpdatedAt)
 	})
 
@@ -1428,40 +1472,48 @@ func (m *Manager) Search(query string) []SessionInfo {
 
 	for _, s := range m.sessions {
 		s.mu.RLock()
-		// 搜索标题
-		if strings.Contains(strings.ToLower(s.Title), lowerQuery) {
-			results = append(results, SessionInfo{
-				ID:           s.ID,
-				Title:        s.Title,
-				MessageCount: s.messageCountLocked(),
-				CreatedAt:    s.CreatedAt,
-				UpdatedAt:    s.UpdatedAt,
-			})
-			s.mu.RUnlock()
-			continue
+		info := SessionInfo{
+			ID:           s.ID,
+			Title:        s.Title,
+			Pinned:       s.Pinned,
+			Project:      s.Project,
+			MessageCount: s.messageCountLocked(),
+			CreatedAt:    s.CreatedAt,
+			UpdatedAt:    s.UpdatedAt,
 		}
-
-		// 搜索消息内容
-		for _, msg := range s.Messages {
-			if strings.Contains(strings.ToLower(msg.Content), lowerQuery) {
-				results = append(results, SessionInfo{
-					ID:           s.ID,
-					Title:        s.Title,
-					MessageCount: s.messageCountLocked(),
-					CreatedAt:    s.CreatedAt,
-					UpdatedAt:    s.UpdatedAt,
-				})
-				break
+		matched := strings.Contains(strings.ToLower(s.Title), lowerQuery) ||
+			strings.Contains(strings.ToLower(s.Project), lowerQuery) ||
+			strings.Contains(strings.ToLower(s.ID), lowerQuery)
+		if !matched {
+			for _, msg := range s.Messages {
+				if strings.Contains(strings.ToLower(msg.Content), lowerQuery) {
+					matched = true
+					break
+				}
 			}
 		}
 		s.mu.RUnlock()
+		if matched {
+			results = append(results, info)
+		}
 	}
 
 	sort.Slice(results, func(i, j int) bool {
+		if results[i].Pinned != results[j].Pinned {
+			return results[i].Pinned
+		}
 		return results[i].UpdatedAt.After(results[j].UpdatedAt)
 	})
 
 	return results
+}
+
+// SaveMetadata writes title, pin, and project without rewriting the transcript.
+func (s *Session) SaveMetadata() error {
+	if err := s.loadMessages(); err != nil {
+		return err
+	}
+	return s.Save()
 }
 
 // Delete 删除会话

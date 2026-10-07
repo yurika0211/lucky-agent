@@ -88,7 +88,7 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 			models = s.agent.ListModels(kind)
 			source = "catalog"
 		} else {
-			models = mergeRefreshedChatModels(s.agent.ListModels(kind), refreshed, kind)
+			models = mergeRefreshedChatModels(s.agent.ListModels(kind), append(refreshed, s.agent.CompactModelsFromChatDiscovery(refreshed)...), kind)
 			source = "provider"
 		}
 	} else {
@@ -117,7 +117,7 @@ func mergeRefreshedChatModels(catalog []agent.ModelRef, discovered []agent.Model
 	}
 	kept := make([]agent.ModelRef, 0, len(catalog)+len(discovered))
 	for _, model := range catalog {
-		if model.Kind == config.ModelKindChat {
+		if model.Kind == config.ModelKindChat || model.Kind == config.ModelKindCompact {
 			continue
 		}
 		kept = append(kept, model)

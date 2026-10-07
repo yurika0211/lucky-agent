@@ -214,7 +214,13 @@ func (h *Hub) Run() {
 		case msg := <-h.broadcast:
 			var failed []*Client
 			h.mu.RLock()
-			if sess, ok := h.sessions[msg.SessionID]; ok {
+			if msg.SessionID == "" {
+				for _, client := range h.clients {
+					if !client.TrySend(msg) {
+						failed = append(failed, client)
+					}
+				}
+			} else if sess, ok := h.sessions[msg.SessionID]; ok {
 				for clientID := range sess {
 					if client, ok := h.clients[clientID]; ok {
 						if !client.TrySend(msg) {
@@ -321,6 +327,19 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	go client.writePump()
 	go client.readPump()
+}
+
+// Broadcast sends one message to every connected client. An empty session id
+// is the fan-out key used by the hub loop.
+func (h *Hub) Broadcast(msg *Message) {
+	if h == nil || msg == nil {
+		return
+	}
+	msg.SessionID = ""
+	select {
+	case h.broadcast <- msg:
+	case <-h.ctx.Done():
+	}
 }
 
 // SendToSession broadcasts a message to a session.

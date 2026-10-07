@@ -27,6 +27,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/server/health"
 	"github.com/yurika0211/luckyagent/internal/session"
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 	"github.com/yurika0211/luckyagent/internal/telemetry"
 	"github.com/yurika0211/luckyagent/internal/tool"
 	"github.com/yurika0211/luckyagent/internal/websocket"
@@ -272,6 +273,23 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	wsHandler := websocket.NewAgentHandler(a)
 	wsHub := websocket.NewHub(wsHandler, websocket.DefaultHubConfig())
 	wsHandler.SetEventSink(wsHub.SendToSession)
+	if a != nil {
+		if store, ok := a.TaskStore().(*taskstore.FileStore); ok {
+			store.Observe(func(event taskstore.Event) {
+				broadcastTaskEvent(wsHub, event)
+			})
+		}
+		a.SetSessionEventSink(func(sessionID, content string) {
+			msg, err := websocket.NewMessage(websocket.TypeStreamEnd, sessionID, websocket.StreamEndData{
+				FullResponse: content,
+				Iterations:   1,
+			})
+			if err != nil {
+				return
+			}
+			wsHub.SendToSession(sessionID, msg)
+		})
+	}
 	wsHandler.Start()
 	go wsHub.Run()
 
@@ -311,6 +329,44 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		telemetryOn:     telemetryOn,
 		telemetryStop:   telemetryStop,
 	}
+}
+
+func broadcastTaskEvent(hub *websocket.Hub, event taskstore.Event) {
+	if hub == nil || event.TaskID == "" {
+		return
+	}
+	sessionID := ""
+	description := ""
+	if event.Metadata != nil {
+		sessionID = strings.TrimSpace(event.Metadata["session_id"])
+		if sessionID == "" {
+			sessionID = strings.TrimSpace(event.Metadata["owner_session_id"])
+		}
+		description = strings.TrimSpace(event.Metadata["description"])
+		if description == "" {
+			description = strings.TrimSpace(event.Metadata["title"])
+		}
+	}
+	msg, err := websocket.NewMessage(websocket.TypeTaskEvent, sessionID, websocket.TaskEventData{
+		Type:        string(event.Type),
+		TaskID:      event.TaskID,
+		ParentID:    event.ParentID,
+		Status:      string(event.Status),
+		Mode:        string(event.Mode),
+		Message:     event.Message,
+		Progress:    event.Progress,
+		ChildID:     event.ChildID,
+		Error:       event.Error,
+		SessionID:   sessionID,
+		Description: description,
+	})
+	if err != nil {
+		return
+	}
+	// Task progress is not bound to one chat socket. Every connected app
+	// should see it, then decide whether to notify.
+	msg.SessionID = ""
+	hub.Broadcast(msg)
 }
 
 func setupTelemetryFromEnv() (bool, func(context.Context) error) {
@@ -1055,6 +1111,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		type sessionInfo struct {
 			ID           string `json:"id"`
 			Title        string `json:"title"`
+			Pinned       bool   `json:"pinned,omitempty"`
+			Project      string `json:"project,omitempty"`
 			MessageCount int    `json:"message_count"`
 			ByteSize     int64  `json:"byte_size,omitempty"`
 			Format       string `json:"format,omitempty"`
@@ -1071,6 +1129,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			infos = append(infos, sessionInfo{
 				ID:           sess.ID,
 				Title:        sess.Title,
+				Pinned:       sess.Pinned,
+				Project:      sess.Project,
 				MessageCount: sess.MessageCount,
 				ByteSize:     sess.ByteSize,
 				Format:       sess.Format,
@@ -1144,7 +1204,19 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		s.handleSessionSubresource(w, r, sess, parts[1:])
 		return
 	}
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodPatch:
+		s.patchSession(w, r, sess)
+		return
+	case http.MethodDelete:
+		if err := s.agent.Sessions().Delete(sess.ID); err != nil {
+			s.sendError(w, "delete session failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusOK, map[string]any{"id": id, "deleted": true})
+		return
+	case http.MethodGet:
+	default:
 		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
 		return
 	}
@@ -1182,15 +1254,18 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 	messages := s.historyMessagesWithOptions(rawMessages, includeFull, previewChars)
 
+	pinned, project := sess.Organization()
 	payload := map[string]interface{}{
-		"id":               sess.ID,
-		"title":            sess.Title,
-		"message_count":    total,
-		"format":           sess.Format(),
-		"byte_size":        sess.ByteSize(),
-		"created_at":       sess.CreatedAt.Format(time.RFC3339),
-		"updated_at":       sess.UpdatedAt.Format(time.RFC3339),
-		"messages":         messages,
+		"id":                sess.ID,
+		"title":             sess.Title,
+		"pinned":            pinned,
+		"project":           project,
+		"message_count":     total,
+		"format":            sess.Format(),
+		"byte_size":         sess.ByteSize(),
+		"created_at":        sess.CreatedAt.Format(time.RFC3339),
+		"updated_at":        sess.UpdatedAt.Format(time.RFC3339),
+		"messages":          messages,
 		"content_truncated": !includeFull,
 	}
 
@@ -1208,6 +1283,50 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.sendJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) patchSession(w http.ResponseWriter, r *http.Request, sess *session.Session) {
+	var body struct {
+		Title   *string `json:"title"`
+		Pinned  *bool   `json:"pinned"`
+		Project *string `json:"project"`
+	}
+	if err := jsonAPI.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+		return
+	}
+	if body.Title == nil && body.Pinned == nil && body.Project == nil {
+		s.sendError(w, "no session fields to update", http.StatusBadRequest, "")
+		return
+	}
+	if body.Title != nil {
+		title := strings.TrimSpace(*body.Title)
+		if title == "" {
+			s.sendError(w, "title is required", http.StatusBadRequest, "")
+			return
+		}
+		sess.SetTitle(title)
+	}
+	if body.Pinned != nil {
+		sess.SetPinned(*body.Pinned)
+	}
+	if body.Project != nil {
+		sess.SetProject(*body.Project)
+	}
+	if err := sess.SaveMetadata(); err != nil {
+		s.sendError(w, "save session failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+	pinned, project := sess.Organization()
+	s.sendJSON(w, http.StatusOK, map[string]any{
+		"id":            sess.ID,
+		"title":         sess.Title,
+		"pinned":        pinned,
+		"project":       project,
+		"message_count": sess.MessageCount(),
+		"created_at":    sess.CreatedAt.Format(time.RFC3339),
+		"updated_at":    sess.UpdatedAt.Format(time.RFC3339),
+	})
 }
 
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request, sess *session.Session, parts []string) {

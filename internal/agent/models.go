@@ -89,6 +89,44 @@ func (a *Agent) RefreshChatModels(ctx context.Context) ([]ModelRef, error) {
 	return a.chatModelsFromDiscovery(selection.ID, endpoint, discovered), nil
 }
 
+// CompactModelsFromChatDiscovery copies a live chat-model list into the compact
+// group. Compact uses the same endpoint and does not make a second provider call.
+func (a *Agent) CompactModelsFromChatDiscovery(chatModels []ModelRef) []ModelRef {
+	if a == nil || a.cfg == nil {
+		return nil
+	}
+	current := ""
+	if selected, ok := a.cfg.Get().ModelSelection(config.ModelKindCompact); ok {
+		current = selected.ID
+	}
+	refs := make([]ModelRef, 0, len(chatModels)+1)
+	seen := map[string]struct{}{}
+	for _, model := range chatModels {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+		model.Kind = config.ModelKindCompact
+		model.Current = id == current
+		refs = append(refs, model)
+	}
+	if current != "" {
+		if _, ok := seen[current]; !ok {
+			endpoint := a.cfg.Get().ModelEndpoint(config.ModelKindCompact)
+			refs = append(refs, ModelRef{
+				ID:       current,
+				Kind:     config.ModelKindCompact,
+				Provider: endpoint.Provider,
+				APIBase:  endpoint.APIBase,
+				Protocol: endpoint.Protocol,
+				Current:  true,
+			})
+		}
+	}
+	return refs
+}
+
 func (a *Agent) chatModelsFromDiscovery(currentID string, endpoint config.ModelEndpointConfig, discovered []provider.ModelInfo) []ModelRef {
 	result := make([]ModelRef, 0, len(discovered)+1)
 	seen := map[string]struct{}{}
@@ -332,7 +370,7 @@ func (a *Agent) validateModelKind(cfg *config.Config, kind config.ModelKind, mod
 		return nil, fmt.Errorf("model %q is not configured for %s", modelID, kind)
 	}
 
-	if kind != config.ModelKindChat {
+	if kind != config.ModelKindChat && kind != config.ModelKindCompact {
 		return nil, nil
 	}
 	if catalog := a.Catalog(); catalog != nil {
@@ -370,12 +408,15 @@ func modelKindsForInfo(cfg *config.Config, info provider.ModelInfo) []config.Mod
 		}
 		return kinds
 	}
-	return []config.ModelKind{config.ModelKindChat}
+	return []config.ModelKind{config.ModelKindChat, config.ModelKindCompact}
 }
 
 func modelAllowsKind(info provider.ModelInfo, kind config.ModelKind) bool {
+	if kind != config.ModelKindChat && kind != config.ModelKindCompact {
+		return false
+	}
 	if !info.Discovered || len(info.Kinds) == 0 {
-		return kind == config.ModelKindChat
+		return true
 	}
 	for _, raw := range info.Kinds {
 		if strings.EqualFold(raw, string(kind)) {

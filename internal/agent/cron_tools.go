@@ -243,6 +243,14 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	if metadata == nil {
 		metadata = map[string]string{}
 	}
+	sessionID := strings.TrimSpace(metadata["session_id"])
+	platformHint := strings.ToLower(strings.TrimSpace(metadata["platform"]))
+	if sessionID != "" && (platformHint == "" || platformHint == "android" || platformHint == "app") {
+		if err := a.deliverCronToSession(sessionID, message); err != nil {
+			return err
+		}
+		return nil
+	}
 	hasExplicitTarget := firstCronMetadataValue(metadata, "platform", "chatID", "chat_id") != ""
 	if a.msgGateway == nil {
 		if hasExplicitTarget {
@@ -253,7 +261,6 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	platform := strings.TrimSpace(metadata["platform"])
 	chatID := firstCronMetadataValue(metadata, "chatID", "chat_id")
 	replyToMsgID := firstCronMetadataValue(metadata, "replyToMsgID", "reply_to_message_id")
-	sessionID := strings.TrimSpace(metadata["session_id"])
 	if platform == "" || chatID == "" {
 		target := a.pickRecentChatTarget()
 		if platform == "" {
@@ -309,6 +316,26 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	}
 	if err := gw.Send(sendCtx, chatID, message); err != nil {
 		return fmt.Errorf("send via %s to %s: %w", platform, chatID, err)
+	}
+	return nil
+}
+
+func (a *Agent) deliverCronToSession(sessionID, message string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	message = strings.TrimSpace(message)
+	if a == nil || a.sessions == nil || sessionID == "" || message == "" {
+		return nil
+	}
+	sess, ok := a.sessions.Get(sessionID)
+	if !ok || sess == nil {
+		return fmt.Errorf("android session %q not found", sessionID)
+	}
+	sess.AddMessage("assistant", message)
+	if err := sess.Save(); err != nil {
+		return fmt.Errorf("save android session %s: %w", sessionID, err)
+	}
+	if a.sessionEvents != nil {
+		a.sessionEvents(sessionID, message)
 	}
 	return nil
 }

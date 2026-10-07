@@ -32,6 +32,7 @@ const (
 	TypeCompact     MessageType = "compact"      // 会话上下文压缩进度
 	TypeApproval    MessageType = "approval"     // 需要用户批准或补充输入
 	TypeStatus      MessageType = "status"       // 状态更新
+	TypeTaskEvent   MessageType = "task_event"   // 子代理和后台任务进度
 	TypeError       MessageType = "error"        // 错误消息
 	TypePong        MessageType = "pong"         // 心跳 pong
 )
@@ -159,6 +160,21 @@ type CompactData struct {
 type StatusData struct {
 	State   string `json:"state"` // "thinking" | "executing" | "idle" | "error"
 	Message string `json:"message,omitempty"`
+}
+
+// TaskEventData is a stored task event pushed to connected clients.
+type TaskEventData struct {
+	Type        string  `json:"type"`
+	TaskID      string  `json:"task_id"`
+	ParentID    string  `json:"parent_id,omitempty"`
+	Status      string  `json:"status,omitempty"`
+	Mode        string  `json:"mode,omitempty"`
+	Message     string  `json:"message,omitempty"`
+	Progress    float64 `json:"progress,omitempty"`
+	ChildID     string  `json:"child_id,omitempty"`
+	Error       string  `json:"error,omitempty"`
+	SessionID   string  `json:"session_id,omitempty"`
+	Description string  `json:"description,omitempty"`
 }
 
 // ErrorData 错误消息数据

@@ -20,8 +20,9 @@ const (
 )
 
 type FileStore struct {
-	mu   sync.RWMutex
-	root string
+	mu        sync.RWMutex
+	root      string
+	observers []EventObserver
 }
 
 func NewFileStore(root string) (*FileStore, error) {
@@ -33,6 +34,16 @@ func NewFileStore(root string) (*FileStore, error) {
 		return nil, fmt.Errorf("create task store: %w", err)
 	}
 	return &FileStore{root: root}, nil
+}
+
+// Observe registers a listener for events written after this call.
+func (s *FileStore) Observe(observer EventObserver) {
+	if s == nil || observer == nil {
+		return
+	}
+	s.mu.Lock()
+	s.observers = append(s.observers, observer)
+	s.mu.Unlock()
 }
 
 func (s *FileStore) Root() string {
@@ -178,20 +189,30 @@ func (s *FileStore) AppendEvent(event Event) error {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if err := os.MkdirAll(s.taskDir(event.TaskID), 0o700); err != nil {
-		return err
-	}
-	f, err := os.OpenFile(filepath.Join(s.taskDir(event.TaskID), eventsFileName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	observers, err := s.appendEventLocked(event, data)
+	s.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		return err
+	for _, observer := range observers {
+		observer(event)
 	}
 	return nil
+}
+
+func (s *FileStore) appendEventLocked(event Event, data []byte) ([]EventObserver, error) {
+	if err := os.MkdirAll(s.taskDir(event.TaskID), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(filepath.Join(s.taskDir(event.TaskID), eventsFileName), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return nil, err
+	}
+	return append([]EventObserver(nil), s.observers...), nil
 }
 
 func (s *FileStore) Events(taskID string) ([]Event, error) {

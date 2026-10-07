@@ -65,13 +65,19 @@ func TestBuildSystemPromptIncludesSoulSkillsAndPlatformHints(t *testing.T) {
 		t.Fatalf("expected skills block in prompt, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "svg-export") {
-		t.Fatalf("expected skill summary in prompt, got %q", prompt)
+		t.Fatalf("expected skill name in prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "generated SVG artifact") {
+		t.Fatalf("skill summary should stay out of the standing prompt, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "Telegram") {
 		t.Fatalf("expected telegram platform hint in prompt, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "Project operating rules.") {
 		t.Fatalf("expected AGENTS.md content in prompt, got %q", prompt)
+	}
+	if strings.Contains(prompt, "LuckyAgent manual (AGENTS.md):\n") && !strings.Contains(prompt, "excerpt") {
+		t.Fatalf("standing manual should be an excerpt, got %q", prompt)
 	}
 	for _, want := range []string{
 		"Computer-use execution protocol",
@@ -207,7 +213,7 @@ func TestBuildSystemPromptIncludesLuckyAgentManual(t *testing.T) {
 	}
 
 	prompt := a.buildSystemPrompt(sess)
-	if !strings.Contains(prompt, "LuckyAgent manual (AGENTS.md):") {
+	if !strings.Contains(prompt, "LuckyAgent manual (AGENTS.md, excerpt):") {
 		t.Fatalf("expected manual marker in prompt, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "Convergence rule: stop once the success condition is satisfied.") {
@@ -257,7 +263,7 @@ func TestBuildSystemPromptIncludesLowercaseAgentsContext(t *testing.T) {
 	}
 
 	prompt := a.buildSystemPrompt(sess)
-	if !strings.Contains(prompt, "Context file (agents.md):") {
+	if !strings.Contains(prompt, "Project context (agents.md, excerpt):") {
 		t.Fatalf("expected lowercase agents.md marker in prompt, got %q", prompt)
 	}
 	if !strings.Contains(prompt, "Lowercase project operating rules.") {

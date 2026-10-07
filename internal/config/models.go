@@ -16,6 +16,7 @@ const (
 	ModelKindImage         ModelKind = "image"
 	ModelKindTTS           ModelKind = "tts"
 	ModelKindReranker      ModelKind = "reranker"
+	ModelKindCompact       ModelKind = "compact"
 )
 
 var modelKinds = []ModelKind{
@@ -26,6 +27,7 @@ var modelKinds = []ModelKind{
 	ModelKindImage,
 	ModelKindTTS,
 	ModelKindReranker,
+	ModelKindCompact,
 }
 
 // ModelKinds returns the stable, supported model purposes.
@@ -41,7 +43,7 @@ func ParseModelKind(value string) (ModelKind, error) {
 			return kind, nil
 		}
 	}
-	return "", fmt.Errorf("unknown model kind %q; supported kinds: chat, vision, embedding, transcription, image, tts, reranker", value)
+	return "", fmt.Errorf("unknown model kind %q; supported kinds: chat, vision, embedding, transcription, image, tts, reranker, compact", value)
 }
 
 // ModelEndpointConfig stores credentials and transport settings independently
@@ -101,7 +103,7 @@ func normalizeModels(cfg *Config) {
 		}
 		if _, exists := cfg.Models.Endpoints[kind]; !exists {
 			endpoint := legacyEndpoint(cfg, kind)
-			if kind != ModelKindChat && kind != ModelKindReranker {
+			if kind != ModelKindChat && kind != ModelKindReranker && kind != ModelKindCompact {
 				chat := cfg.Models.Endpoints[ModelKindChat]
 				if endpoint.APIBase == "" {
 					endpoint.APIBase = chat.APIBase
@@ -187,6 +189,8 @@ func legacyModelSelection(cfg *Config, kind ModelKind) ModelSelection {
 		selection.ID = cfg.ImageGeneration.Model
 	case ModelKindTTS:
 		selection.ID = cfg.TTS.Model
+	case ModelKindCompact:
+		selection.ID = cfg.Context.CompactModel
 	}
 	return selection
 }
@@ -210,6 +214,13 @@ func legacyEndpoint(cfg *Config, kind ModelKind) ModelEndpointConfig {
 		return ModelEndpointConfig{Provider: cfg.ImageGeneration.Provider, APIKey: cfg.ImageGeneration.APIKey, APIBase: cfg.ImageGeneration.APIBase}
 	case ModelKindTTS:
 		return ModelEndpointConfig{Provider: cfg.TTS.Provider, APIKey: cfg.TTS.APIKey, APIBase: cfg.TTS.APIBase}
+	case ModelKindCompact:
+		return ModelEndpointConfig{
+			Provider: cfg.LlmProvider.Name,
+			APIKey:   cfg.LlmProvider.APIKey,
+			APIBase:  cfg.LlmProvider.BaseURL,
+			Protocol: cfg.LlmProvider.Protocol,
+		}
 	default:
 		return ModelEndpointConfig{}
 	}
@@ -253,6 +264,8 @@ func syncLegacyModels(cfg *Config) {
 			cfg.TTS.Provider = endpoint.Provider
 			cfg.TTS.APIKey = endpoint.APIKey
 			cfg.TTS.APIBase = endpoint.APIBase
+		case ModelKindCompact:
+			cfg.Context.CompactModel = id
 		}
 	}
 }

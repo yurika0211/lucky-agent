@@ -148,6 +148,8 @@ curl http://127.0.0.1:9090/api/v1/chat/sync \
 | `GET` | `/api/v1/sessions` | List sessions |
 | `POST` | `/api/v1/sessions` | Create a session |
 | `GET` | `/api/v1/sessions/{id}` | Get a session (paged history + optional truncation) |
+| `PATCH` | `/api/v1/sessions/{id}` | Rename, pin, or set the project |
+| `DELETE` | `/api/v1/sessions/{id}` | Delete the session and its files |
 | `POST` | `/api/v1/sessions/{id}/compact` | Compact a session |
 | `GET` | `/api/v1/sessions/{id}/compact/latest` | Get latest compact trace |
 
@@ -159,7 +161,15 @@ List query parameters:
 | `limit` | Maximum results, capped by server |
 | `offset` | Pagination offset |
 
-List items include `format` (`legacy_md` or `segment_v1`) and `byte_size` when known.
+List items include `format` (`legacy_md` or `segment_v1`) and `byte_size` when known. `pinned` is true for pinned sessions. `project` is the display group; empty means ungrouped. Pinned sessions sort before the rest. Search `q` also matches title, id, and project.
+
+Patch body fields are optional, but at least one is required:
+
+```json
+{"title":"新名字","pinned":true,"project":"luckyagent"}
+```
+
+An empty `title` is rejected. An empty `project` clears the group. Delete returns `{"id":"...","deleted":true}`.
 
 Get-session query parameters:
 
@@ -506,6 +516,11 @@ and submits them as a single turn. `data.action` is `on`, `off`, `status`, or
 instead of starting a run. The server replies with `type: "status"` and
 `data.state: "lucky"`. `off` enqueues one chat run built from the collected
 segments. Collection state is in memory for the current server process.
+
+Server push `type: "task_event"` is sent to every connected client when a task
+event is stored. `data` carries `type`, `task_id`, `parent_id`, `status`,
+`mode`, `message`, `progress`, `session_id`, and `description`. A scheduled
+message delivered into a session is still `type: "stream_end"` with no run id.
 
 ## Soul Templates
 

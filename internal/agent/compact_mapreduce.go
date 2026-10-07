@@ -7,6 +7,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/contextx"
 	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/provider"
@@ -106,6 +107,9 @@ func (a *Agent) resolveCompactProvider(turnProvider providerSnapshot) providerSn
 		return turnProvider
 	}
 	model := strings.TrimSpace(cfg.Context.CompactModel)
+	if selected, ok := cfg.ModelSelection(config.ModelKindCompact); ok && strings.TrimSpace(selected.ID) != "" {
+		model = strings.TrimSpace(selected.ID)
+	}
 	if model == "" {
 		return turnProvider
 	}

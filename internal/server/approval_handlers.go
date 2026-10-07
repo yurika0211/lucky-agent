@@ -52,6 +52,9 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 			}
 			approvals = filtered
 		}
+		if approvals == nil {
+			approvals = []tool.PendingApproval{}
+		}
 		s.sendJSON(w, http.StatusOK, approvalsResponse{Approvals: approvals, Count: len(approvals)})
 	case http.MethodPost:
 		var req approvalResolutionRequest

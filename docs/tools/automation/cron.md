@@ -47,7 +47,7 @@ cron 任务可以按 shell 模式执行命令，也可以按 agent 模式执行 
 | `platform` | 否 | 通知平台，例如 telegram。 |
 | `chat_id` | 否 | 通知目标 chat ID。 |
 | `reply_to_message_id` | 否 | 回复目标消息 ID。 |
-| `session_id` | 否 | agent 模式使用的会话 ID。 |
+| `session_id` | 否 | agent 模式使用的会话 ID。带上后，任务结果会写成这个会话的助手消息，并推给正在看这个会话的安卓 App。`platform=android` 时只发到这个会话。 |
 
 `cron` 会根据 `action` 调用对应 handler。
 

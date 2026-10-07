@@ -136,6 +136,7 @@ type Agent struct {
 	hitl          *HITLGate               // 本地工具审批和 ask_user 等待
 	hooks         *hook.Runner            // 工具执行前后的 hook 运行器
 	msgGateway    *gateway.GatewayManager // 消息平台网关
+	sessionEvents func(sessionID, content string)
 	mcpClient     *tool.MCPClient         // MCP 客户端
 	delegate      *tool.DelegateManager   // 子代理委派管理器
 	contextWin    *contextx.ContextWindow // 上下文窗口管理器
@@ -4112,6 +4113,20 @@ func (a *Agent) Gateway() *tool.Gateway {
 // MsgGateway 返回消息平台网关管理器 (v0.6.0)
 func (a *Agent) MsgGateway() *gateway.GatewayManager {
 	return a.msgGateway
+}
+
+// LoadSkills 从目录加载 Skill 插件。
+//
+// The whole body runs under skillLoadMu so two concurrent reloads cannot
+// interleave. skillMu is taken only for the final field swap and is never held
+// across a call into SkillRegistry or tool.Registry.
+// SetSessionEventSink receives assistant text that should appear in a chat
+// session even when no WebSocket client started the run. Cron delivery uses it.
+func (a *Agent) SetSessionEventSink(sink func(sessionID, content string)) {
+	if a == nil {
+		return
+	}
+	a.sessionEvents = sink
 }
 
 // LoadSkills 从目录加载 Skill 插件。

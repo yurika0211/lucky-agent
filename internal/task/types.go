@@ -120,6 +120,10 @@ type Event struct {
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
+// EventObserver receives a task event after it is stored. Implementations must
+// not block the writer and must not call back into the store.
+type EventObserver func(event Event)
+
 type Store interface {
 	Create(record Record) (Record, error)
 	Update(record Record) error
