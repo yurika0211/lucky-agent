@@ -25,22 +25,12 @@ type MarkdownProps = {
  * re-running the remark/rehype/KaTeX pipeline over every settled message would
  * dominate that frame. Only the message whose text actually changed re-parses.
  */
-const remarkPlugins = [remarkGfm, remarkMath];
-
-const rehypePlugins = [
-  [rehypeKatex, {
-    throwOnError: false,
-    errorColor: 'var(--err)',
-    strict: false,
-  }] as const,
-];
-
 export const Markdown = memo(function Markdown({ source }: MarkdownProps) {
   return (
     <div className="markdown-body">
       <ReactMarkdown
-        remarkPlugins={remarkPlugins}
-        rehypePlugins={rehypePlugins}
+        remarkPlugins={[remarkGfm, remarkMath]}
+        rehypePlugins={[[rehypeKatex, { throwOnError: false, errorColor: 'var(--err)', strict: false }]]}
         components={components}
       >
         {source || ''}
