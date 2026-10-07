@@ -1543,6 +1543,15 @@ func TestSet_ContextAutoCompactOptions(t *testing.T) {
 	if err := mgr.Set("context.auto_compact_reserved_summary_tokens", "900"); err != nil {
 		t.Fatalf("set auto_compact_reserved_summary_tokens: %v", err)
 	}
+	if err := mgr.Set("context.compact_model", "gpt-4.1-mini"); err != nil {
+		t.Fatalf("set compact_model: %v", err)
+	}
+	if err := mgr.Set("context.compact_max_chunk_tokens", "9000"); err != nil {
+		t.Fatalf("set compact_max_chunk_tokens: %v", err)
+	}
+	if err := mgr.Set("context.compact_max_parallel", "3"); err != nil {
+		t.Fatalf("set compact_max_parallel: %v", err)
+	}
 
 	cfg := mgr.Get()
 	if !cfg.Context.AutoCompact {
@@ -1565,6 +1574,15 @@ func TestSet_ContextAutoCompactOptions(t *testing.T) {
 	}
 	if cfg.Context.AutoCompactReservedSummaryTokens != 900 {
 		t.Fatalf("unexpected auto compact reserved tokens: %d", cfg.Context.AutoCompactReservedSummaryTokens)
+	}
+	if cfg.Context.CompactModel != "gpt-4.1-mini" {
+		t.Fatalf("unexpected compact model: %q", cfg.Context.CompactModel)
+	}
+	if cfg.Context.CompactMaxChunkTokens != 9000 {
+		t.Fatalf("unexpected compact max chunk tokens: %d", cfg.Context.CompactMaxChunkTokens)
+	}
+	if cfg.Context.CompactMaxParallel != 3 {
+		t.Fatalf("unexpected compact max parallel: %d", cfg.Context.CompactMaxParallel)
 	}
 }
 

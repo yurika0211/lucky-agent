@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	appheartbeat "github.com/yurika0211/luckyagent/internal/agent/heartbeat"
 	"github.com/yurika0211/luckyagent/internal/autonomy"
@@ -1869,9 +1868,12 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		}
 	} else {
 		var err error
-		summary, err = a.generateCompactSummaryWithProvider(ctx, compactInput, turnProvider)
+		summary, summarySource, err = a.generateCompactSummaryWithProvider(ctx, compactInput, turnProvider)
 		if err != nil {
 			return nil, err
+		}
+		if strings.TrimSpace(summarySource) == "" {
+			summarySource = "llm"
 		}
 	}
 	if validation := validateCompactSummary(summary, compactInput); !validation.Valid {
@@ -1997,46 +1999,15 @@ func selectCompactSegmentInput(raw []provider.Message, est *contextx.TokenEstima
 	return append([]provider.Message(nil), raw[:cut]...), append([]provider.Message(nil), raw[cut:]...)
 }
 
-func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.Message) (string, error) {
+func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.Message) (string, string, error) {
 	return a.generateCompactSummaryWithProvider(ctx, messages, a.providerSnapshotForTurn(""))
 }
 
-func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot) (string, error) {
-	transcript := compactTranscript(messages)
-	if strings.TrimSpace(transcript) == "" {
-		return "", fmt.Errorf("compact session: no textual content to summarize")
-	}
-	prompt := "Summarize the conversation below so another LuckyAgent instance can continue the current task.\n" +
-		"Output plain text only under these headings:\n" +
-		"Current user goal:\nCompleted work:\nPending work:\nKey files and functions:\nCommands and test results:\nUser constraints:\nUncertain facts:\n" +
-		"Rules:\n" +
-		"- Preserve exact file paths, commands, config keys, errors, decisions, and unresolved items.\n" +
-		"- Do not invent commands, test results, files, or user preferences.\n" +
-		"- Do not include generic advice or commentary.\n" +
-		"- Do not request or use tools; this compaction must only produce text.\n" +
-		"- If the transcript notes older lines were omitted, focus on the retained recent evidence.\n\n" +
-		"Conversation:\n" + transcript
-	sumCtx, cancel := compactSummaryContext(ctx)
-	defer cancel()
-	if !turnProvider.valid() {
-		return "", fmt.Errorf("compact session: provider is not initialized")
-	}
-	logger.Debug("compact summary request",
-		"messages", len(messages),
-		"transcript_runes", utf8.RuneCountInString(transcript),
-		"timeout", compactSummaryTimeout.String(),
-	)
-	resp, err := turnProvider.provider.Chat(sumCtx, []provider.Message{
-		{Role: "system", Content: "You are a compaction agent. Tool use is not allowed. Produce only a factual text summary for future context."},
-		{Role: "user", Content: prompt},
-	})
-	if err != nil {
-		return "", fmt.Errorf("compact session: generate summary: %w", err)
-	}
-	if resp == nil || strings.TrimSpace(resp.Content) == "" {
-		return "", fmt.Errorf("compact session: empty summary")
-	}
-	return strings.TrimSpace(resp.Content), nil
+// generateCompactSummaryWithProvider summarizes compactInput. Long ranges are
+// sliced on user-turn boundaries, summarized concurrently, then merged.
+// context.compact_model selects the summarizer model when set.
+func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot) (string, string, error) {
+	return a.generateMapReduceCompactSummary(ctx, messages, turnProvider)
 }
 
 func estimateProviderMessages(est *contextx.TokenEstimator, messages []provider.Message) int {
