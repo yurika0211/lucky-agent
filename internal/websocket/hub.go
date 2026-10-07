@@ -22,6 +22,9 @@ type Client struct {
 	Hub        *Hub
 	Send       chan *Message
 	LastActive time.Time
+	writeWait  time.Duration
+	pongWait   time.Duration
+	pingPeriod time.Duration
 
 	sendMu sync.Mutex
 	closed bool
@@ -80,6 +83,9 @@ type Hub struct {
 	broadcast  chan *Message
 	handler    MessageHandler
 	upgrader   websocket.Upgrader
+	writeWait  time.Duration
+	pongWait   time.Duration
+	pingPeriod time.Duration
 	stats      HubStats
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -118,8 +124,8 @@ type HubConfig struct {
 func DefaultHubConfig() HubConfig {
 	return HubConfig{
 		WriteWait:       10 * time.Second,
-		PongWait:        60 * time.Second,
-		PingPeriod:      54 * time.Second,
+		PongWait:        90 * time.Second,
+		PingPeriod:      20 * time.Second,
 		MaxMessageSize:  64 * 1024,
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
@@ -129,6 +135,22 @@ func DefaultHubConfig() HubConfig {
 // NewHub constructs a websocket hub.
 func NewHub(handler MessageHandler, cfg HubConfig) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
+	defaults := DefaultHubConfig()
+	if cfg.WriteWait <= 0 {
+		cfg.WriteWait = defaults.WriteWait
+	}
+	if cfg.PongWait <= 0 {
+		cfg.PongWait = defaults.PongWait
+	}
+	if cfg.PingPeriod <= 0 || cfg.PingPeriod >= cfg.PongWait {
+		cfg.PingPeriod = cfg.PongWait * 9 / 10
+		if cfg.PingPeriod > 20*time.Second {
+			cfg.PingPeriod = 20 * time.Second
+		}
+		if cfg.PingPeriod <= 0 || cfg.PingPeriod >= cfg.PongWait {
+			cfg.PingPeriod = cfg.PongWait / 2
+		}
+	}
 	return &Hub{
 		clients:    make(map[string]*Client),
 		sessions:   make(map[string]map[string]bool),
@@ -136,6 +158,9 @@ func NewHub(handler MessageHandler, cfg HubConfig) *Hub {
 		unregister: make(chan *Client),
 		broadcast:  make(chan *Message, 256),
 		handler:    handler,
+		writeWait:  cfg.WriteWait,
+		pongWait:   cfg.PongWait,
+		pingPeriod: cfg.PingPeriod,
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  cfg.ReadBufferSize,
 			WriteBufferSize: cfg.WriteBufferSize,
@@ -316,6 +341,9 @@ func (h *Hub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Hub:        h,
 		Send:       make(chan *Message, 256),
 		LastActive: time.Now(),
+		writeWait:  h.writeWait,
+		pongWait:   h.pongWait,
+		pingPeriod: h.pingPeriod,
 	}
 
 	select {
@@ -392,11 +420,15 @@ func (c *Client) readPump() {
 		c.Conn.Close()
 	}()
 
-	c.Conn.SetReadLimit(64 * 1024)
-	c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.Conn.SetReadLimit(c.readLimit())
+	c.extendReadDeadline()
+	c.Conn.SetPingHandler(func(payload string) error {
+		c.extendReadDeadline()
+		deadline := time.Now().Add(c.writeTimeout())
+		return c.Conn.WriteControl(websocket.PongMessage, []byte(payload), deadline)
+	})
 	c.Conn.SetPongHandler(func(string) error {
-		c.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
-		c.LastActive = time.Now()
+		c.extendReadDeadline()
 		return nil
 	})
 
@@ -423,7 +455,7 @@ func (c *Client) readPump() {
 			continue
 		}
 
-		c.LastActive = time.Now()
+		c.extendReadDeadline()
 
 		if msg.Type == TypePing {
 			pong, _ := NewMessage(TypePong, c.SessionID, nil)
@@ -451,7 +483,7 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) writePump() {
-	ticker := time.NewTicker(54 * time.Second)
+	ticker := time.NewTicker(c.pingInterval())
 	defer func() {
 		ticker.Stop()
 		c.Conn.Close()
@@ -460,7 +492,7 @@ func (c *Client) writePump() {
 	for {
 		select {
 		case msg, ok := <-c.Send:
-			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			c.Conn.SetWriteDeadline(time.Now().Add(c.writeTimeout()))
 			if !ok {
 				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
@@ -478,10 +510,40 @@ func (c *Client) writePump() {
 			}
 
 		case <-ticker.C:
-			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+			c.Conn.SetWriteDeadline(time.Now().Add(c.writeTimeout()))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
 			}
 		}
 	}
+}
+
+func (c *Client) extendReadDeadline() {
+	wait := 90 * time.Second
+	if c != nil && c.pongWait > 0 {
+		wait = c.pongWait
+	}
+	if c == nil || c.Conn == nil {
+		return
+	}
+	_ = c.Conn.SetReadDeadline(time.Now().Add(wait))
+	c.LastActive = time.Now()
+}
+
+func (c *Client) writeTimeout() time.Duration {
+	if c != nil && c.writeWait > 0 {
+		return c.writeWait
+	}
+	return 10 * time.Second
+}
+
+func (c *Client) pingInterval() time.Duration {
+	if c != nil && c.pingPeriod > 0 {
+		return c.pingPeriod
+	}
+	return 20 * time.Second
+}
+
+func (c *Client) readLimit() int64 {
+	return 64 * 1024
 }

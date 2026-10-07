@@ -411,11 +411,11 @@ func TestDefaultHubConfig(t *testing.T) {
 	if cfg.WriteWait != 10*time.Second {
 		t.Errorf("expected WriteWait 10s, got %v", cfg.WriteWait)
 	}
-	if cfg.PongWait != 60*time.Second {
-		t.Errorf("expected PongWait 60s, got %v", cfg.PongWait)
+	if cfg.PongWait != 90*time.Second {
+		t.Errorf("expected PongWait 90s, got %v", cfg.PongWait)
 	}
-	if cfg.PingPeriod != 54*time.Second {
-		t.Errorf("expected PingPeriod 54s, got %v", cfg.PingPeriod)
+	if cfg.PingPeriod != 20*time.Second {
+		t.Errorf("expected PingPeriod 20s, got %v", cfg.PingPeriod)
 	}
 	if cfg.MaxMessageSize != 64*1024 {
 		t.Errorf("expected MaxMessageSize 64KB, got %d", cfg.MaxMessageSize)
