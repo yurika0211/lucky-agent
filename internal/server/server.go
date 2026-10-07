@@ -1664,6 +1664,7 @@ func (s *Server) handleSoul(w http.ResponseWriter, r *http.Request) {
 
 	soul := s.agent.Soul()
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"name":          soul.DisplayName(),
 		"system_prompt": soul.SystemPrompt(),
 	})
 }

@@ -78,6 +78,73 @@ func (s *Soul) SystemPrompt() string {
 	return strings.TrimSpace(s.Content)
 }
 
+// DisplayName returns the persona name. It prefers an Identity "Name:" line,
+// then the first bold name in the opening paragraphs. Empty means unnamed.
+func (s *Soul) DisplayName() string {
+	if s == nil {
+		return ""
+	}
+	content := strings.ReplaceAll(s.Content, "\r\n", "\n")
+	if name := identityField(content, "Name"); name != "" {
+		return name
+	}
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if name := firstBoldName(trimmed); name != "" {
+			return name
+		}
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "##") {
+			break
+		}
+	}
+	return ""
+}
+
+func identityField(content, field string) string {
+	lines := strings.Split(content, "\n")
+	inIdentity := false
+	prefix := "- " + field + ":"
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "## ") {
+			inIdentity = strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(trimmed, "##")), "Identity")
+			continue
+		}
+		if !inIdentity || !strings.HasPrefix(trimmed, prefix) {
+			continue
+		}
+		value := strings.TrimSpace(strings.TrimPrefix(trimmed, prefix))
+		if cut := strings.IndexAny(value, "（("); cut > 0 {
+			value = strings.TrimSpace(value[:cut])
+		}
+		return strings.Trim(value, "*_` ")
+	}
+	return ""
+}
+
+func firstBoldName(line string) string {
+	start := strings.Index(line, "**")
+	if start < 0 {
+		return ""
+	}
+	rest := line[start+2:]
+	end := strings.Index(rest, "**")
+	if end <= 0 {
+		return ""
+	}
+	name := strings.TrimSpace(rest[:end])
+	if cut := strings.IndexAny(name, "（("); cut > 0 {
+		name = strings.TrimSpace(name[:cut])
+	}
+	if name == "" || strings.Contains(name, "\n") {
+		return ""
+	}
+	return name
+}
+
 // Reload 重新加载 SOUL.md
 func (s *Soul) Reload() error {
 	if s.FilePath == "" {

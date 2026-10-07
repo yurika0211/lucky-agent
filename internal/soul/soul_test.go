@@ -21,6 +21,23 @@ func TestSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestDisplayName(t *testing.T) {
+	if got := Default().DisplayName(); got != "LuckyAgent" {
+		t.Fatalf("default name = %q", got)
+	}
+	persona := &Soul{Content: "# SOUL\n\n你是 **柳濑小汐**（Yanase Kozue）。\n\n## Identity\n\n- Name: 柳濑小汐\n- Aliases: 小汐\n"}
+	if got := persona.DisplayName(); got != "柳濑小汐" {
+		t.Fatalf("persona name = %q", got)
+	}
+	boldOnly := &Soul{Content: "你是 **小汐**。\n"}
+	if got := boldOnly.DisplayName(); got != "小汐" {
+		t.Fatalf("bold name = %q", got)
+	}
+	if got := (&Soul{Content: "没有名字"}).DisplayName(); got != "" {
+		t.Fatalf("unnamed = %q", got)
+	}
+}
+
 func TestLoadAndReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	path := filepath.Join(tmpDir, "SOUL.md")

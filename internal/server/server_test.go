@@ -336,6 +336,16 @@ func TestHandleSoul(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode soul: %v", err)
+	}
+	if _, ok := resp["name"]; !ok {
+		t.Fatal("expected name in soul response")
+	}
+	if _, ok := resp["system_prompt"]; !ok {
+		t.Fatal("expected system_prompt in soul response")
+	}
 }
 
 func TestHandleSessions(t *testing.T) {

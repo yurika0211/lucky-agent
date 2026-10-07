@@ -336,7 +336,7 @@ Sensitive values, including API keys, are never returned.
 | --- | --- | --- |
 | `GET` | `/api/v1/tools` | List available tools |
 | `GET` | `/api/v1/stats` | Server statistics |
-| `GET` | `/api/v1/soul` | Current SOUL information |
+| `GET` | `/api/v1/soul` | Current SOUL information. `name` is the persona display name parsed from the Identity `Name:` line, then from the first bold name. `system_prompt` is the full SOUL text. |
 | `GET` | `/api/v1/proactive/status?limit=5` | Proactive runtime status |
 | `GET` | `/api/v1/health/live` | Liveness check |
 | `GET` | `/api/v1/health/ready` | Readiness check |
