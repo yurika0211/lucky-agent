@@ -2475,7 +2475,6 @@ func (a *Agent) ChatWithSessionStreamInput(ctx context.Context, sessionID string
 	if strings.TrimSpace(loopCfg.Source) == "" {
 		loopCfg.Source = "cli"
 	}
-	loopCfg.AutoApprove = true
 	return a.ChatWithSessionStreamInputWithLoopConfig(ctx, sessionID, input, loopCfg)
 }
 

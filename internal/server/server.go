@@ -363,6 +363,7 @@ func (s *Server) Start() error {
 		{path: "/api/v1/models/switch", handler: s.handleModelSwitch},
 		{path: "/api/v1/models/profiles", handler: s.handleModelProfiles},
 		{path: "/api/v1/approvals", handler: s.handleApprovals},
+		{path: "/api/v1/approvals/resolve", handler: s.handleApprovals},
 		{path: "/api/v1/chat", handler: s.handleChat},
 		{path: "/api/v1/chat/sync", handler: s.handleChatSync},
 		{path: "/api/v1/sessions", handler: s.handleSessions},
