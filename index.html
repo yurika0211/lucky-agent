@@ -1616,7 +1616,7 @@
             kind: 'core',
             x: 50,
             y: 48,
-            summary: 'lh serve 启动 HTTP API 服务。部署是否成功，先看 /api/v1/health。',
+            summary: 'lh serve 启动 HTTP API 服务。lh qr 会同时签发一把 24 小时临时 key，并在终端显示手机扫码用的二维码。API 重启后这把 key 立即失效。部署是否成功，先看 /api/v1/health。',
             points: [
               '本机调试可监听 127.0.0.1:9090。',
               '容器或外部访问通常要监听 0.0.0.0:9090。',
@@ -1817,7 +1817,7 @@
             ],
             related: ['overview', 'source', 'api', 'telegram', 'napcat'],
             commands: [
-              { label: '常用命令', body: 'lh init\nlh config list\nlh config get provider\nlh config set model gpt-5.4-mini\nlh chat\nlh chat "Summarize this repository"\nlh serve\nlh msg-gateway start --platform telegram\nlh msg-gateway start --platform qqofficial\nlh msg-gateway start --platform napcat\nlh rag index ./docs\nlh rag search "deployment"' }
+              { label: '常用命令', body: 'lh init\nlh config list\nlh config get provider\nlh config set model gpt-5.4-mini\nlh chat\nlh chat "Summarize this repository"\nlh serve\nlh qr\nlh msg-gateway start --platform telegram\nlh msg-gateway start --platform qqofficial\nlh msg-gateway start --platform napcat\nlh rag index ./docs\nlh rag search "deployment"' }
             ]
           }
         ],

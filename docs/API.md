@@ -54,7 +54,7 @@ Authorization: Bearer <key>
 
 Query-string API keys are not accepted.
 
-If `server.api_keys` is empty, authentication is disabled.
+If `server.api_keys` is empty, only localhost is accepted. A key issued by `lh qr` is also accepted. That key lives in the API process memory, defaults to 24 hours, and expires immediately when the API process restarts. It is not written to `config.json`.
 
 ## Common Response Shape
 

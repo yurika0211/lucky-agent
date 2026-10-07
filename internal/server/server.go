@@ -75,6 +75,9 @@ type Server struct {
 	workflowEngine *workflow.WorkflowEngine
 	telemetryOn    bool
 	telemetryStop  func(context.Context) error
+
+	// QR pairing keys live only in this process. A restart drops them.
+	pairing *pairingStore
 }
 
 // ServerConfig API Server 配置
@@ -328,6 +331,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		workflowEngine:  workflowEngine,
 		telemetryOn:     telemetryOn,
 		telemetryStop:   telemetryStop,
+		pairing:         newPairingStore(),
 	}
 }
 
@@ -1804,8 +1808,21 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// 无配置 API Key 则仅允许本地访问
+		// 从 Header 获取 API Key（不再支持 query string，防止日志泄露）
+		apiKey := r.Header.Get("X-API-Key")
+		if apiKey == "" {
+			apiKey = r.Header.Get("Authorization")
+			if strings.HasPrefix(apiKey, "Bearer ") {
+				apiKey = strings.TrimPrefix(apiKey, "Bearer ")
+			}
+		}
+
+		// 无配置 API Key 则仅允许本地访问。扫码签发的临时 key 仍可从局域网进入。
 		if len(s.config.APIKeys) == 0 {
+			if s.pairingKeyValid(apiKey) {
+				next.ServeHTTP(w, r)
+				return
+			}
 			ip := requestRemoteIP(r.RemoteAddr)
 			if ip != "127.0.0.1" && ip != "::1" && ip != "localhost" {
 				logger.Warn("auth rejected non-local request without api keys",
@@ -1814,20 +1831,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 					"remote_addr", r.RemoteAddr,
 				)
 				s.sendError(w, "api key required (no keys configured, localhost only)", http.StatusUnauthorized,
-					"configure api_keys in server config or access from localhost")
+					"configure api_keys in server config, scan lh qr, or access from localhost")
 				return
 			}
 			next.ServeHTTP(w, r)
 			return
-		}
-
-		// 从 Header 获取 API Key（不再支持 query string，防止日志泄露）
-		apiKey := r.Header.Get("X-API-Key")
-		if apiKey == "" {
-			apiKey = r.Header.Get("Authorization")
-			if strings.HasPrefix(apiKey, "Bearer ") {
-				apiKey = strings.TrimPrefix(apiKey, "Bearer ")
-			}
 		}
 
 		if apiKey == "" {
@@ -1841,7 +1849,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// 常量时间比较，防止 timing attack
-		valid := false
+		valid := s.pairingKeyValid(apiKey)
 		for _, k := range s.config.APIKeys {
 			if subtle.ConstantTimeCompare([]byte(k), []byte(apiKey)) == 1 {
 				valid = true

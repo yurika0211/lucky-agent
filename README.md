@@ -193,6 +193,7 @@ lh config set model gpt-5.4-mini
 lh chat
 lh chat "Summarize this repository"
 lh serve
+lh qr
 lh tui
 lh msg-gateway start --platform telegram
 lh msg-gateway start --platform qqofficial

@@ -1184,10 +1184,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-	return s.Stop()
+	return waitForServeStop(s)
 }
 
 func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
