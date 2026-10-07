@@ -34,6 +34,14 @@ type Bubble = ChatMessage & {
   tool?: ToolStep;
   /** Round this step belongs to (role === 'reasoning'), used to merge in the real content once it arrives. */
   round?: number;
+  approval?: {
+    requestId: string;
+    provider: string;
+    kind: 'approval' | 'input';
+    tool?: string;
+    prompt?: string;
+    status: 'pending' | 'resolved' | 'failed';
+  };
 };
 
 /**
@@ -564,6 +572,7 @@ export function App() {
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [attachments, setAttachments] = useState<Pending[]>([]);
+  const [approvalDrafts, setApprovalDrafts] = useState<Record<string, string>>({});
   const [renamingSession, setRenamingSession] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
   const wsRef = useRef<WebSocket | null>(null);
@@ -1132,6 +1141,28 @@ export function App() {
         });
         break;
       }
+      case 'approval': {
+        const requestId = String(payload.request_id || '');
+        const kind = String(payload.kind || 'approval') === 'input' ? 'input' : 'approval';
+        const toolName = String(payload.tool || '');
+        const prompt = String(payload.prompt || payload.reason || payload.summary || '需要你确认后才能继续');
+        const title = kind === 'input' ? '需要你补充信息' : `需要确认${toolName ? `：${toolName}` : ''}`;
+        const id = pushBubble('approval', title, prompt, 'pending');
+        setMessages((prev) => prev.map((item) => (item.id === id ? {
+          ...item,
+          approval: {
+            requestId,
+            provider: String(payload.provider || 'runtime'),
+            kind,
+            tool: toolName,
+            prompt,
+            status: 'pending',
+          },
+        } : item)));
+        setSocketState('running');
+        pushActivity('status', title, prompt);
+        break;
+      }
       case 'tool_call': {
         const name = String(payload.name || 'tool');
         const stepId = String(payload.step_id || '');
@@ -1216,6 +1247,33 @@ export function App() {
         pushActivity('status', msg.type, preview(payload));
         break;
     }
+  }
+
+  function resolveApproval(id: string, decision: string) {
+    const bubble = messages.find((item) => item.id === id);
+    const approval = bubble?.approval;
+    if (!approval || approval.status !== 'pending') return;
+    const input = (approvalDrafts[id] || '').trim();
+    if (approval.kind === 'input' && decision === 'submit' && !input) return;
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      pushActivity('error', 'Not connected', '无法提交确认。');
+      return;
+    }
+    wsRef.current.send(JSON.stringify({
+      type: 'approval_response',
+      data: {
+        request_id: approval.requestId,
+        provider: approval.provider || 'runtime',
+        decision,
+        input: approval.kind === 'input' ? input : undefined,
+      },
+    }));
+    setMessages((prev) => prev.map((item) => (item.id === id && item.approval ? {
+      ...item,
+      meta: decision,
+      approval: { ...item.approval, status: 'resolved' },
+    } : item)));
+    pushActivity('status', '已提交确认', `${decision}${input ? `: ${input}` : ''}`);
   }
 
   function sendMessage() {
@@ -1846,6 +1904,36 @@ export function App() {
                             {!tool?.args && !tool?.output ? <p className="muted">No payload reported.</p> : null}
                           </div>
                         </details>
+                      );
+                    }
+
+                    if (msg.role === 'approval' && msg.approval) {
+                      const pending = msg.approval.status === 'pending';
+                      return (
+                        <div className="turn approval-card" key={msg.id}>
+                          <div className="approval-title">{msg.title}</div>
+                          <p>{msg.body}</p>
+                          {msg.approval.kind === 'input' && pending ? (
+                            <textarea
+                              className="approval-input"
+                              value={approvalDrafts[msg.id] || ''}
+                              placeholder="填写后提交"
+                              onChange={(event) => setApprovalDrafts((prev) => ({ ...prev, [msg.id]: event.target.value }))}
+                            />
+                          ) : null}
+                          {pending ? (
+                            <div className="approval-actions">
+                              {msg.approval.kind === 'input' ? (
+                                <button type="button" className="mini-button" onClick={() => resolveApproval(msg.id, 'submit')}>提交</button>
+                              ) : (
+                                <button type="button" className="mini-button" onClick={() => resolveApproval(msg.id, 'allow')}>允许</button>
+                              )}
+                              <button type="button" className="mini-button" onClick={() => resolveApproval(msg.id, 'deny')}>拒绝</button>
+                            </div>
+                          ) : (
+                            <div className="approval-done">已提交：{msg.meta}</div>
+                          )}
+                        </div>
                       );
                     }
 

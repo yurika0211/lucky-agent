@@ -53,6 +53,25 @@ func filesystemPolicyFromOptional(policies []FilesystemPolicy) FilesystemPolicy 
 	return policies[0]
 }
 
+// AskUserTool asks the human for missing information and waits for a reply.
+// The agent loop intercepts this name before the handler runs.
+func AskUserTool() *Tool {
+	return &Tool{
+		Name:         "ask_user",
+		Description:  "Ask the user a clear question and wait for their reply when required information, a choice, or a confirmation text is missing. Do not guess secrets, paths, credentials, or preferences. Call this instead of stalling.",
+		Category:     CatBuiltin,
+		Source:       "builtin",
+		Permission:   PermAuto,
+		ParallelSafe: false,
+		Parameters: map[string]Param{
+			"prompt": {Type: "string", Description: "The exact question or form prompt to show the user.", Required: true},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			return "", fmt.Errorf("ask_user must be handled by the agent runtime")
+		},
+	}
+}
+
 func TerminalTool() *Tool {
 	return &Tool{
 		Name:         "terminal",

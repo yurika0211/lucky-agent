@@ -50,6 +50,9 @@ type ApprovalInfo struct {
 	Action    string
 	Reason    string
 	FrameID   string
+	Kind      string
+	Prompt    string
+	SessionID string
 }
 
 // ObservationInfo is safe computer-use frame metadata (no local file path).
@@ -123,6 +126,9 @@ func mapEvent(ev agent.ChatEvent) Event {
 			Action:    ev.Approval.Action,
 			Reason:    ev.Approval.Reason,
 			FrameID:   ev.Approval.FrameID,
+			Kind:      ev.Approval.Kind,
+			Prompt:    ev.Approval.Prompt,
+			SessionID: ev.Approval.SessionID,
 		}
 	}
 	if ev.Observation != nil {

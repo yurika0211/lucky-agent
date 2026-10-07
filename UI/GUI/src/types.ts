@@ -234,7 +234,7 @@ export type WsPayload = {
 export type ChatMessage = {
   id: string;
   /** `reasoning` and `tool_call` are live turn steps rendered inline in the thread. */
-  role: 'user' | 'assistant' | 'tool' | 'system' | 'error' | 'reasoning' | 'tool_call';
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'error' | 'reasoning' | 'tool_call' | 'approval';
   title: string;
   body: string;
   meta?: string;

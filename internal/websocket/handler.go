@@ -31,6 +31,7 @@ type agentRuntime interface {
 	ChatWithSessionStreamInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (<-chan agent.ChatEvent, error)
 	Sessions() *session.Manager
 	Tools() *tool.Registry
+	RespondApprovalWithInput(ctx context.Context, providerName, approvalID, decision, input string) (tool.PendingApproval, error)
 }
 
 type runtimeConfigProvider interface {
@@ -140,6 +141,8 @@ func (h *AgentHandler) HandleMessage(client *Client, msg *Message) {
 		h.handleLucky(client, msg)
 	case TypeCancel:
 		h.handleCancel(client, msg)
+	case TypeApprovalResponse:
+		h.handleApprovalResponse(client, msg)
 	case TypeReconnect:
 		h.HandleReconnect(client, msg)
 	case TypeStreamAck:
@@ -148,6 +151,40 @@ func (h *AgentHandler) HandleMessage(client *Client, msg *Message) {
 	default:
 		logger.Warn("unknown message type", "type", msg.Type, "client_id", client.ID)
 	}
+}
+
+func (h *AgentHandler) handleApprovalResponse(client *Client, msg *Message) {
+	var data ApprovalResponseData
+	if err := msg.ParseData(&data); err != nil {
+		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{Code: "INVALID_DATA", Message: "invalid approval response: " + err.Error()})
+		client.TrySend(errMsg)
+		return
+	}
+	if h.agent == nil {
+		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{Code: "UNAVAILABLE", Message: "agent unavailable"})
+		client.TrySend(errMsg)
+		return
+	}
+	resolved, err := h.agent.RespondApprovalWithInput(context.Background(), data.Provider, data.RequestID, data.Decision, data.Input)
+	if err != nil {
+		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{Code: "APPROVAL_FAILED", Message: "resolve approval failed: " + err.Error()})
+		client.TrySend(errMsg)
+		return
+	}
+	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
+		State:   "approval_resolved",
+		Message: resolved.Summary,
+	})
+	client.TrySend(status)
+}
+
+func firstNonEmptyWS(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 // HandleReconnect replays events after the supplied cursor. Without a usable
@@ -709,6 +746,27 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 				Round:   evt.Round,
 				Stage:   "content",
 			})
+			msg.ParentID = parentID
+			h.emit(client, client.SessionID, runID, msg)
+
+		case agent.ChatEventApprovalRequired:
+			data := ApprovalRequestData{
+				Provider: "runtime",
+				Summary:  evt.Content,
+				Tool:     evt.Name,
+				Kind:     "approval",
+			}
+			if evt.Approval != nil {
+				data.RequestID = evt.Approval.RequestID
+				data.Tool = firstNonEmptyWS(evt.Approval.Tool, evt.Name)
+				data.Action = evt.Approval.Action
+				data.Reason = evt.Approval.Reason
+				data.Prompt = evt.Approval.Prompt
+				if evt.Approval.Kind != "" {
+					data.Kind = evt.Approval.Kind
+				}
+			}
+			msg, _ := NewMessage(TypeApproval, client.SessionID, data)
 			msg.ParentID = parentID
 			h.emit(client, client.SessionID, runID, msg)
 

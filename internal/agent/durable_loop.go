@@ -418,7 +418,12 @@ func (a *Agent) executeDurablePending(ctx context.Context, sess *session.Session
 				if hit {
 					executed.Output = cached
 				} else {
-					executed, toolErr = a.executeToolWithSessionDetailedContext(ctx, pending.Call.Name, executeArgs, cfg.AutoApprove, sess, cfg.Source, input.RoutingText)
+					execCtx := ctx
+					if cfg.emit != nil {
+						emit := cfg.emit
+						execCtx = withHITLEmitter(ctx, func(event ChatEvent) { emit(ctx, event) })
+					}
+					executed, toolErr = a.executeToolWithSessionDetailedContext(execCtx, pending.Call.Name, executeArgs, cfg.AutoApprove, sess, cfg.Source, input.RoutingText)
 				}
 				if toolErr != nil {
 					executed.Output = fmt.Sprintf("Error: %v", toolErr)

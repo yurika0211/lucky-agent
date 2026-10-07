@@ -132,6 +132,7 @@ type Agent struct {
 	tools         *tool.Registry
 	toolServices  *tool.Services
 	gateway       *tool.Gateway           // 统一工具网关
+	hitl          *HITLGate               // 本地工具审批和 ask_user 等待
 	hooks         *hook.Runner            // 工具执行前后的 hook 运行器
 	msgGateway    *gateway.GatewayManager // 消息平台网关
 	mcpClient     *tool.MCPClient         // MCP 客户端
@@ -1272,6 +1273,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		tools:               supportRT.tools,
 		toolServices:        supportRT.toolServices,
 		gateway:             supportRT.toolGateway,
+		hitl:                newHITLGate(),
 		hooks:               hook.NewRunner(buildHookRuntimeConfig(c)),
 		msgGateway:          gateway.NewGatewayManager(),
 		mcpClient:           supportRT.mcpClient,
@@ -2091,6 +2093,9 @@ type ApprovalEvent struct {
 	Action    string `json:"action,omitempty"`
 	Reason    string `json:"reason,omitempty"`
 	FrameID   string `json:"frame_id,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Prompt    string `json:"prompt,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 }
 
 // ChatEventType 事件类型
@@ -2515,6 +2520,9 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 		}
 		a.applyIntentToolGating(&loopCfg, routingText)
 		a.applyVisionToolPolicy(&loopCfg, turnProvider)
+		ctx = withHITLEmitter(ctx, func(event ChatEvent) {
+			sendForegroundEvent(ctx, events, event)
+		})
 		logger.Info("agent stream loop started",
 			"session_id", sessionID,
 			"provider", turnProvider.name(),
@@ -3861,6 +3869,56 @@ func (a *Agent) TemplateManager() *soul.TemplateManager {
 // Tools 返回工具注册表
 func (a *Agent) Tools() *tool.Registry {
 	return a.tools
+}
+
+// PendingApprovals returns runtime HITL waits plus external coding-agent
+// permission requests in a provider-neutral shape for HTTP/mobile/GUI surfaces.
+func (a *Agent) PendingApprovals() []tool.PendingApproval {
+	if a == nil {
+		return nil
+	}
+	var out []tool.PendingApproval
+	if a.hitl != nil {
+		out = append(out, a.hitl.list()...)
+	}
+	if a.toolServices != nil {
+		out = append(out, a.toolServices.PendingApprovals()...)
+	}
+	return out
+}
+
+// RespondApproval resolves a pending approval. provider "runtime" (or empty)
+// targets the local agent HITL gate; "codex"/"grok" target external bridges.
+func (a *Agent) RespondApproval(ctx context.Context, providerName, approvalID, decision string) (tool.PendingApproval, error) {
+	return a.RespondApprovalWithInput(ctx, providerName, approvalID, decision, "")
+}
+
+// ResolvePendingText matches a chat reply to a pending runtime HITL request.
+// handled is false when the text should continue as a normal user turn.
+func (a *Agent) ResolvePendingText(sessionID, text string) (tool.PendingApproval, bool, error) {
+	if a == nil || a.hitl == nil {
+		return tool.PendingApproval{}, false, nil
+	}
+	return a.hitl.ResolveText(sessionID, text)
+}
+
+// RespondApprovalWithInput resolves a pending approval or user-input request.
+func (a *Agent) RespondApprovalWithInput(ctx context.Context, providerName, approvalID, decision, input string) (tool.PendingApproval, error) {
+	if a == nil {
+		return tool.PendingApproval{}, fmt.Errorf("approval services are unavailable")
+	}
+	_ = ctx
+	providerName = strings.ToLower(strings.TrimSpace(providerName))
+	if providerName == "" || providerName == hitlProviderRuntime || providerName == "agent" || providerName == "local" {
+		if a.hitl == nil {
+			return tool.PendingApproval{}, fmt.Errorf("runtime hitl gate is unavailable")
+		}
+		return a.hitl.Resolve(approvalID, decision, input)
+	}
+	if a.toolServices == nil {
+		return tool.PendingApproval{}, fmt.Errorf("approval services are unavailable")
+	}
+	return a.toolServices.RespondApproval(ctx, providerName, approvalID, decision)
 }
 
 // Catalog 返回模型目录

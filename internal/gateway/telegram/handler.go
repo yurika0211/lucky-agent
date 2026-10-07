@@ -1703,6 +1703,9 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 	}
 
 	h.bindSessionFromReplyAnchor(msg)
+	if handled, err := h.tryResolvePendingApproval(ctx, msg); handled || err != nil {
+		return err
+	}
 	input := h.buildUserTurnInput(ctx, msg.Text, msg.Attachments)
 	if msg.ReplyTo != nil {
 		input = h.withReplyAnchorContext(input, msg)
@@ -1715,6 +1718,27 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 
 	// Group chats: only respond if mentioned or replied to (already filtered by adapter)
 	return h.dispatchChatAsync(ctx, msg, input)
+}
+
+func (h *Handler) tryResolvePendingApproval(ctx context.Context, msg *gateway.Message) (bool, error) {
+	if h == nil || msg == nil || strings.TrimSpace(msg.Text) == "" || len(msg.Attachments) > 0 {
+		return false, nil
+	}
+	resolver, ok := h.chatService().(interface {
+		ResolvePendingText(sessionID, text string) (tool.PendingApproval, bool, error)
+	})
+	if !ok || resolver == nil {
+		return false, nil
+	}
+	sessionID := h.getSessionID(msg.Chat.ID)
+	resolved, handled, err := resolver.ResolvePendingText(sessionID, msg.Text)
+	if !handled {
+		return false, nil
+	}
+	if err != nil {
+		return true, h.sendLuckyNotice(ctx, msg, "没能处理这次确认："+err.Error())
+	}
+	return true, h.sendLuckyNotice(ctx, msg, "已收到："+resolved.Summary)
 }
 
 func (h *Handler) bindSessionFromReplyAnchor(msg *gateway.Message) bool {
@@ -2253,6 +2277,50 @@ func (h *Handler) flushRoundProgressWithEmitter(ctx context.Context, msg *gatewa
 	appendProgressHistory(progressHistory, progress)
 }
 
+func formatGatewayApprovalPrompt(evt agent.ChatEvent) string {
+	kind := "approval"
+	requestID := ""
+	prompt := strings.TrimSpace(evt.Content)
+	toolName := strings.TrimSpace(evt.Name)
+	if evt.Approval != nil {
+		if evt.Approval.Kind != "" {
+			kind = evt.Approval.Kind
+		}
+		requestID = strings.TrimSpace(evt.Approval.RequestID)
+		if text := strings.TrimSpace(evt.Approval.Prompt); text != "" {
+			prompt = text
+		} else if text := strings.TrimSpace(evt.Approval.Reason); text != "" {
+			prompt = text
+		}
+		if toolName == "" {
+			toolName = strings.TrimSpace(evt.Approval.Tool)
+		}
+	}
+	if prompt == "" {
+		prompt = "需要你确认后才能继续"
+	}
+	var b strings.Builder
+	if kind == "input" {
+		b.WriteString("📝 需要你补充信息\n")
+		b.WriteString(prompt)
+		b.WriteString("\n\n直接回复内容即可。")
+	} else {
+		b.WriteString("🔐 需要你确认后才能继续\n")
+		if toolName != "" {
+			b.WriteString("工具: ")
+			b.WriteString(toolName)
+			b.WriteString("\n")
+		}
+		b.WriteString(prompt)
+		b.WriteString("\n\n回复「允许」或「拒绝」。")
+	}
+	if requestID != "" {
+		b.WriteString("\n编号: ")
+		b.WriteString(requestID)
+	}
+	return b.String()
+}
+
 func formatTelegramProgressSummary(progress string) string {
 	card := renderTelegramSummaryCard(progress)
 	if strings.TrimSpace(card) == "" {
@@ -2650,6 +2718,9 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 					}
 				}
 
+			case agent.ChatEventApprovalRequired:
+				emitProgress(formatGatewayApprovalPrompt(evt))
+
 			case agent.ChatEventToolCall:
 				toolCallCount++
 				toolTraceSteps = append(toolTraceSteps, telegramToolTraceStep{
@@ -2838,6 +2909,9 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 					// 兼容旧模式：在同一条消息里更新思考前缀
 					sender.SetThinking(evt.Content)
 				}
+
+			case agent.ChatEventApprovalRequired:
+				emitProgress(formatGatewayApprovalPrompt(evt))
 
 			case agent.ChatEventToolCall:
 				toolCallCount++

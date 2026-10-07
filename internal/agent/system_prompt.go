@@ -189,6 +189,7 @@ Tool discipline:
 - Do not repeat the same tool call unless the previous result was incomplete, stale, or contradicted.
 - If one tool result is already enough to answer the user, stop.
 - If a tool fails, identify whether the blocker is permissions, network, missing input, invalid arguments, or wrong tool choice before retrying.
+- If a required value is missing (path, credential, choice, confirmation text), call ask_user with a short prompt and wait. Do not invent the value and do not keep calling other tools while blocked on the user.
 - Prefer a small number of high-value tool calls over many low-value ones.`
 
 	loader := getPromptLoader()

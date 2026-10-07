@@ -15,9 +15,10 @@ type MessageType string
 
 const (
 	// 客户端 → 服务端
-	TypeChat      MessageType = "chat"       // 聊天消息
-	TypeLucky     MessageType = "lucky"      // 多段消息收集：on/off/status/cancel
-	TypeCancel    MessageType = "cancel"     // 取消进行中的 agent run
+	TypeChat             MessageType = "chat"              // 聊天消息
+	TypeLucky            MessageType = "lucky"             // 多段消息收集：on/off/status/cancel
+	TypeCancel           MessageType = "cancel"            // 取消进行中的 agent run
+	TypeApprovalResponse MessageType = "approval_response" // 批准/拒绝/补充输入
 	TypeStreamAck MessageType = "stream_ack" // 流式确认
 	TypePing      MessageType = "ping"       // 心跳 ping
 	TypeReconnect MessageType = "reconnect"  // 断线重连
@@ -29,6 +30,7 @@ const (
 	TypeToolCall    MessageType = "tool_call"    // 工具调用通知
 	TypeToolResult  MessageType = "tool_result"  // 工具调用结果
 	TypeCompact     MessageType = "compact"      // 会话上下文压缩进度
+	TypeApproval    MessageType = "approval"     // 需要用户批准或补充输入
 	TypeStatus      MessageType = "status"       // 状态更新
 	TypeError       MessageType = "error"        // 错误消息
 	TypePong        MessageType = "pong"         // 心跳 pong
@@ -63,6 +65,26 @@ type LuckyData struct {
 // CancelData 取消进行中的 agent run。空 session_id 表示当前连接绑定的 session。
 type CancelData struct {
 	SessionID string `json:"session_id,omitempty"`
+}
+
+// ApprovalResponseData is the client's decision for a pending HITL request.
+type ApprovalResponseData struct {
+	RequestID string `json:"request_id"`
+	Provider  string `json:"provider,omitempty"` // runtime | codex | grok
+	Decision  string `json:"decision"`           // allow | deny | cancel | submit
+	Input     string `json:"input,omitempty"`
+}
+
+// ApprovalRequestData is pushed when the agent is waiting on the user.
+type ApprovalRequestData struct {
+	RequestID string `json:"request_id"`
+	Provider  string `json:"provider,omitempty"`
+	Kind      string `json:"kind,omitempty"` // approval | input
+	Tool      string `json:"tool,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+	Prompt    string `json:"prompt,omitempty"`
+	Summary   string `json:"summary,omitempty"`
 }
 
 // StreamChunkData 流式输出块数据

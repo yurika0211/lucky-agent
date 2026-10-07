@@ -88,6 +88,10 @@ func (s *stubAgentRuntime) ChatWithSessionStream(ctx context.Context, sessionID,
 	return ch, nil
 }
 
+func (s *stubAgentRuntime) RespondApprovalWithInput(ctx context.Context, providerName, approvalID, decision, input string) (tool.PendingApproval, error) {
+	return tool.PendingApproval{Provider: providerName, ID: approvalID}, nil
+}
+
 func (s *stubAgentRuntime) ChatWithSessionInput(ctx context.Context, sessionID string, input agent.UserTurnInput) (string, error) {
 	if s.chatInputFn != nil {
 		return s.chatInputFn(ctx, sessionID, input)

@@ -342,6 +342,12 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 		defer snapshot.Close()
 	}
 	ctx = sandbox.WithSnapshot(ctx, snapshot)
+	if loopCfg.emit != nil {
+		emit := loopCfg.emit
+		ctx = withHITLEmitter(ctx, func(event ChatEvent) {
+			emit(ctx, event)
+		})
+	}
 	a.applySandboxToolPolicy(&loopCfg, snapshot)
 	if strings.TrimSpace(loopCfg.Source) == "" {
 		loopCfg.Source = "cli"

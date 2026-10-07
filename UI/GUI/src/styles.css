@@ -883,6 +883,36 @@ svg {
   animation: rise 220ms ease both;
 }
 
+.approval-card {
+  flex-direction: column;
+  gap: 8px;
+  max-width: 640px;
+  padding: 14px 16px;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 16px;
+  background: var(--surface, #fff);
+}
+
+.approval-title {
+  font-weight: 600;
+}
+
+.approval-input {
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.approval-done {
+  color: var(--text-3, #6d675e);
+  font-size: 13px;
+}
+
 @keyframes rise {
   from {
     opacity: 0;
