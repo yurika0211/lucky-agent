@@ -1968,9 +1968,21 @@ svg {
 }
 
 .markdown-body hr {
+  height: 0;
   margin: 1.4em 0;
   border: 0;
   border-top: 1px solid var(--line);
+}
+
+.markdown-body .katex {
+  font-size: 1.05em;
+}
+
+/* $ \displaystyle ... $ stays in the line, but uses display metrics. */
+.markdown-body .katex .displaystyle {
+  display: inline-block;
+  margin: 0.15em 0.12em;
+  vertical-align: middle;
 }
 
 .markdown-body .katex-display {
