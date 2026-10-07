@@ -750,7 +750,7 @@ chatEvents:
 			}
 			event = next
 		}
-		data, _ := jsonAPI.Marshal(map[string]interface{}{
+		frame := map[string]interface{}{
 			"type":        chatEventTypeString(event.Type),
 			"content":     event.Content,
 			"session_id":  sessionID,
@@ -760,7 +760,11 @@ chatEvents:
 			"observation": event.Observation,
 			"approval":    event.Approval,
 			"error":       event.Err,
-		})
+		}
+		if event.Compact != nil {
+			frame["compact"] = event.Compact
+		}
+		data, _ := jsonAPI.Marshal(frame)
 
 		if err := writeFrame(fmt.Sprintf("data: %s\n\n", data)); err != nil {
 			return
@@ -1307,6 +1311,7 @@ func compactSessionAPIResponse(result *agent.CompactSessionResult) map[string]in
 		"summary_source":       result.SummarySource,
 		"dry_run":              result.DryRun,
 		"backup":               result.Backup,
+		"display":              agent.CompactDisplay(result),
 	}
 }
 
@@ -1889,6 +1894,8 @@ func chatEventTypeString(t agent.ChatEventType) string {
 		return "observation"
 	case agent.ChatEventApprovalRequired:
 		return "approval_required"
+	case agent.ChatEventCompact:
+		return "compact"
 	default:
 		return "unknown"
 	}

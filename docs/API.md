@@ -189,6 +189,28 @@ Compact request body:
 }
 ```
 
+Compact response includes token estimates, `summary_source`, and a client-oriented
+`display` object (`title`, `subtitle`, `message`).
+
+During streaming chat (`POST /api/v1/chat` SSE or WebSocket), automatic compact
+emits events with `type: "compact"` and a payload:
+
+```json
+{
+  "phase": "start|progress|done|failed|degraded",
+  "trigger": "auto",
+  "message": "Compressing conversation context…",
+  "pre_token_estimate": 12000,
+  "post_token_estimate": 900,
+  "dropped_messages": 40,
+  "retained_messages": 12,
+  "summary_source": "llm-mapreduce",
+  "boundary_id": "compact-…"
+}
+```
+
+WebSocket message type is also `"compact"` with the same fields under `data`.
+
 ### Session storage CLI
 
 Runtime session hygiene (not HTTP):

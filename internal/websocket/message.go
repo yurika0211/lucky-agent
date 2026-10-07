@@ -27,6 +27,7 @@ const (
 	TypeReasoning   MessageType = "reasoning"    // 推理/思考摘要
 	TypeToolCall    MessageType = "tool_call"    // 工具调用通知
 	TypeToolResult  MessageType = "tool_result"  // 工具调用结果
+	TypeCompact     MessageType = "compact"      // 会话上下文压缩进度
 	TypeStatus      MessageType = "status"       // 状态更新
 	TypeError       MessageType = "error"        // 错误消息
 	TypePong        MessageType = "pong"         // 心跳 pong
@@ -105,6 +106,25 @@ type ToolResultData struct {
 	StepID      string               `json:"step_id,omitempty"`
 	Visibility  string               `json:"visibility,omitempty"` // "visible" | "compact" | "hidden"
 	Attachments []gateway.Attachment `json:"attachments,omitempty"`
+}
+
+// CompactData is session context compaction progress for client UI.
+// phase: start | progress | done | failed | degraded
+type CompactData struct {
+	Phase               string `json:"phase"`
+	Trigger             string `json:"trigger,omitempty"`
+	Message             string `json:"message,omitempty"`
+	BoundaryID          string `json:"boundary_id,omitempty"`
+	SummarySource       string `json:"summary_source,omitempty"`
+	Chunk               int    `json:"chunk,omitempty"`
+	Chunks              int    `json:"chunks,omitempty"`
+	PreTokenEstimate    int    `json:"pre_token_estimate,omitempty"`
+	PostTokenEstimate   int    `json:"post_token_estimate,omitempty"`
+	DroppedMessages     int    `json:"dropped_messages,omitempty"`
+	RetainedMessages    int    `json:"retained_messages,omitempty"`
+	RestoredAttachments int    `json:"restored_attachments,omitempty"`
+	Model               string `json:"model,omitempty"`
+	Error               string `json:"error,omitempty"`
 }
 
 // StatusData 状态更新数据

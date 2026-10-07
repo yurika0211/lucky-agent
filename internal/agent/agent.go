@@ -1812,6 +1812,8 @@ type CompactSessionOptions struct {
 	DryRun            bool
 	RetainRecentTurns int
 	TargetTailTokens  int
+	// OnProgress reports compact phases to streaming clients (SSE/WebSocket).
+	OnProgress func(CompactProgress)
 }
 
 // CompactSession summarizes raw session history since the latest compact
@@ -1858,18 +1860,29 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		return nil, fmt.Errorf("compact session: retained tail leaves no complete messages to compact")
 	}
 	preTokens := estimateProviderMessages(est, compactInput)
+	emitCompactProgress(opts, CompactProgress{
+		Phase:            "start",
+		Trigger:          trigger,
+		Message:          fmt.Sprintf("Compressing conversation context… (%d messages, ~%d tokens)", len(compactInput), preTokens),
+		PreTokenEstimate: preTokens,
+		DroppedMessages:  len(compactInput),
+		RetainedMessages: len(retained),
+	})
 	summarySource := "llm"
 	var summary string
 	if opts.ForceLocal {
 		summarySource = "local"
 		summary = generateLocalCompactSummary(compactInput, est)
 		if strings.TrimSpace(summary) == "" {
-			return nil, fmt.Errorf("compact session: local summary is empty")
+			err := fmt.Errorf("compact session: local summary is empty")
+			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
+			return nil, err
 		}
 	} else {
 		var err error
-		summary, summarySource, err = a.generateCompactSummaryWithProvider(ctx, compactInput, turnProvider)
+		summary, summarySource, err = a.generateCompactSummaryWithProvider(ctx, compactInput, turnProvider, opts)
 		if err != nil {
+			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error(), PreTokenEstimate: preTokens})
 			return nil, err
 		}
 		if strings.TrimSpace(summarySource) == "" {
@@ -1877,7 +1890,9 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		}
 	}
 	if validation := validateCompactSummary(summary, compactInput); !validation.Valid {
-		return nil, fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
+		err := fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
+		emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
+		return nil, err
 	}
 	postTokens := est.Estimate(summary)
 	attachments := buildPostCompactAttachments(sess, raw, est)
@@ -1913,14 +1928,18 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		var err error
 		backup, err = sess.CreateBackup(trigger)
 		if err != nil {
-			return nil, fmt.Errorf("compact session: create pre-compaction backup: %w", err)
+			err = fmt.Errorf("compact session: create pre-compaction backup: %w", err)
+			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
+			return nil, err
 		}
 		sess.AddCompactBoundary(meta)
 		if err := sess.Save(); err != nil {
-			return nil, fmt.Errorf("compact session: save boundary: %w", err)
+			err = fmt.Errorf("compact session: save boundary: %w", err)
+			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
+			return nil, err
 		}
 	}
-	return &CompactSessionResult{
+	result := &CompactSessionResult{
 		BoundaryID:          boundaryID,
 		Trigger:             trigger,
 		Summary:             summary,
@@ -1937,7 +1956,13 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		SummarySource:       summarySource,
 		DryRun:              opts.DryRun,
 		Backup:              backup,
-	}, nil
+	}
+	phase := "done"
+	if strings.Contains(summarySource, "local") && strings.Contains(trigger, "degraded") {
+		phase = "degraded"
+	}
+	emitCompactProgress(opts, compactProgressFromResult(phase, "", result))
+	return result, nil
 }
 
 func selectCompactSegmentInput(raw []provider.Message, est *contextx.TokenEstimator, retainTurns, targetTailTokens int) ([]provider.Message, []provider.Message) {
@@ -2000,14 +2025,14 @@ func selectCompactSegmentInput(raw []provider.Message, est *contextx.TokenEstima
 }
 
 func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.Message) (string, string, error) {
-	return a.generateCompactSummaryWithProvider(ctx, messages, a.providerSnapshotForTurn(""))
+	return a.generateCompactSummaryWithProvider(ctx, messages, a.providerSnapshotForTurn(""), CompactSessionOptions{})
 }
 
 // generateCompactSummaryWithProvider summarizes compactInput. Long ranges are
 // sliced on user-turn boundaries, summarized concurrently, then merged.
 // context.compact_model selects the summarizer model when set.
-func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot) (string, string, error) {
-	return a.generateMapReduceCompactSummary(ctx, messages, turnProvider)
+func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions) (string, string, error) {
+	return a.generateMapReduceCompactSummary(ctx, messages, turnProvider, opts)
 }
 
 func estimateProviderMessages(est *contextx.TokenEstimator, messages []provider.Message) int {
@@ -2038,6 +2063,7 @@ type ChatEvent struct {
 	Round       int    // 所属轮次（Type=ChatEventReasoningContent 时使用）
 	Observation *ObservationEvent
 	Approval    *ApprovalEvent
+	Compact     *CompactProgress     // session compact progress (Type=ChatEventCompact)
 	Usage       *provider.TokenUsage // aggregate provider usage for ChatEventDone
 	CreatedAt   *time.Time           // server timestamp of the final assistant message
 	Err         error
@@ -2080,6 +2106,7 @@ const (
 	ChatEventObservation                           // 🖼️ computer observation
 	ChatEventApprovalRequired                      // 🔐 approval required
 	ChatEventReasoningContent                      // 🧠 真实推理摘要内容
+	ChatEventCompact                               // 📦 session context compact progress
 )
 
 // StreamMode 流式输出模式
@@ -2473,8 +2500,10 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 
 		sanitizeLoopConfig(&loopCfg)
 		a.applySandboxToolPolicy(&loopCfg, snapshot)
+		// Stream path always exposes emit so auto-compact progress reaches clients.
+		loopCfg.emit = func(eventCtx context.Context, event ChatEvent) { sendForegroundEvent(eventCtx, events, event) }
+		loopCfg.eventContext = ctx
 		if a.useForeground(sess, loopCfg) {
-			loopCfg.emit = func(eventCtx context.Context, event ChatEvent) { sendForegroundEvent(eventCtx, events, event) }
 			result, err := a.runForeground(ctx, sess, input, loopCfg, turnProvider)
 			if err != nil {
 				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventError, Err: err})
@@ -2509,7 +2538,7 @@ func (a *Agent) ChatWithSessionStreamInputWithLoopConfig(ctx context.Context, se
 
 		buildOpts := defaultContextBuildOptions()
 		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
-		a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider)
+		a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider, compactProgressEmitter(loopCfg))
 		messages := a.buildContextMessagesForInputWithProvider(ctx, sess, input, buildOpts, turnProvider)
 		sess.AddProviderMessage(input.Message)
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)

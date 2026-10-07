@@ -1102,6 +1102,7 @@ func TestChatEventTypeString(t *testing.T) {
 		{agent.ChatEventContent, "content"},
 		{agent.ChatEventDone, "done"},
 		{agent.ChatEventError, "error"},
+		{agent.ChatEventCompact, "compact"},
 		{99, "unknown"}, // Unknown
 	}
 

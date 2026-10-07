@@ -147,7 +147,7 @@ func TestGenerateMapReduceCompactSummaryParallelChunks(t *testing.T) {
 		provider:   cp,
 	}
 	snap := providerSnapshot{provider: cp, model: "test-model"}
-	summary, source, err := a.generateMapReduceCompactSummary(context.Background(), raw, snap)
+	summary, source, err := a.generateMapReduceCompactSummary(context.Background(), raw, snap, CompactSessionOptions{})
 	if err != nil {
 		t.Fatalf("generateMapReduceCompactSummary: %v", err)
 	}

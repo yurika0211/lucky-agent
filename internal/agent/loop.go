@@ -479,7 +479,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 	memoryGate := a.buildMemoryToolGate(routingText, turnInput.Scope, loopCfg.DisabledTools)
 
 	// 构建初始消息
-	a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider)
+	a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider, compactProgressEmitter(loopCfg))
 	buildOpts := defaultContextBuildOptions()
 	buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 	messages := a.buildContextMessagesForInputWithProvider(ctx, sess, turnInput, buildOpts, turnProvider)

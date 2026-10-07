@@ -639,6 +639,39 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 			msg.ParentID = parentID
 			h.emit(client, client.SessionID, runID, msg)
 
+		case agent.ChatEventCompact:
+			data := CompactData{Phase: "progress", Message: evt.Content}
+			if evt.Compact != nil {
+				data = CompactData{
+					Phase:               evt.Compact.Phase,
+					Trigger:             evt.Compact.Trigger,
+					Message:             evt.Compact.Message,
+					BoundaryID:          evt.Compact.BoundaryID,
+					SummarySource:       evt.Compact.SummarySource,
+					Chunk:               evt.Compact.Chunk,
+					Chunks:              evt.Compact.Chunks,
+					PreTokenEstimate:    evt.Compact.PreTokenEstimate,
+					PostTokenEstimate:   evt.Compact.PostTokenEstimate,
+					DroppedMessages:     evt.Compact.DroppedMessages,
+					RetainedMessages:    evt.Compact.RetainedMessages,
+					RestoredAttachments: evt.Compact.RestoredAttachments,
+					Model:               evt.Compact.Model,
+					Error:               evt.Compact.Error,
+				}
+				if data.Message == "" {
+					data.Message = evt.Content
+				}
+				if data.Phase == "" {
+					data.Phase = evt.Name
+				}
+			}
+			if data.Phase == "" {
+				data.Phase = "progress"
+			}
+			msg, _ := NewMessage(TypeCompact, client.SessionID, data)
+			msg.ParentID = parentID
+			h.emit(client, client.SessionID, runID, msg)
+
 		case agent.ChatEventDone:
 			emitRoundProgress(max(currentRound, 1))
 			if evt.Content != "" {

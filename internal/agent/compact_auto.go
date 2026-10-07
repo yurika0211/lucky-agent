@@ -46,14 +46,17 @@ func (a *Agent) maybeRollSession(sess *session.Session) {
 const maxAutoCompactFailures = 3
 
 func (a *Agent) maybeAutoCompactSession(ctx context.Context, sess *session.Session, routingText string, ephemeral bool) {
-	a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, ephemeral, a.providerSnapshotForTurn(routingText))
+	a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, ephemeral, a.providerSnapshotForTurn(routingText), nil)
 }
 
 // maybeAutoCompactSessionWithProvider keeps automatic compaction on the same
 // provider snapshot as the surrounding turn. Without this, a concurrent model
 // switch could make the pre-loop compaction call use a different provider than
 // the actual loop.
-func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *session.Session, routingText string, ephemeral bool, turnProvider providerSnapshot) {
+//
+// onProgress is optional; when set (streaming chat), clients receive compact
+// start/progress/done events for UI display.
+func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *session.Session, routingText string, ephemeral bool, turnProvider providerSnapshot, onProgress func(CompactProgress)) {
 	if !a.shouldAutoCompactSession(sess, routingText, ephemeral) {
 		return
 	}
@@ -87,10 +90,12 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 		}
 	}
 
-	result, err := a.compactSessionWithProvider(compactCtx, sess, "auto", CompactSessionOptions{
+	opts := CompactSessionOptions{
 		RetainRecentTurns: cfg.AutoCompactRetainTurns,
 		TargetTailTokens:  targetTailTokens,
-	}, turnProvider)
+		OnProgress:        onProgress,
+	}
+	result, err := a.compactSessionWithProvider(compactCtx, sess, "auto", opts, turnProvider)
 	if err != nil {
 		a.recordAutoCompactFailure(sess.ID)
 		logger.Warn("auto compact failed", "session_id", sess.ID, "error", err)
@@ -105,6 +110,7 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 			ForceLocal:        true,
 			RetainRecentTurns: cfg.AutoCompactRetainTurns,
 			TargetTailTokens:  targetTailTokens,
+			OnProgress:        onProgress,
 		}, turnProvider)
 		if degErr != nil {
 			logger.Warn("auto compact local degrade failed", "session_id", sess.ID, "error", degErr)
@@ -135,6 +141,18 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 		"pre_tokens", result.PreTokenEstimate,
 		"post_tokens", result.PostTokenEstimate,
 	)
+}
+
+// compactProgressEmitter adapts LoopConfig.emit into CompactSessionOptions.OnProgress.
+func compactProgressEmitter(loopCfg LoopConfig) func(CompactProgress) {
+	if loopCfg.emit == nil {
+		return nil
+	}
+	return func(progress CompactProgress) {
+		emitCompactChatEvent(func(event ChatEvent) {
+			loopCfg.emit(loopCfg.eventContext, event)
+		}, progress)
+	}
 }
 
 func (a *Agent) shouldAutoCompactSession(sess *session.Session, routingText string, ephemeral bool) bool {

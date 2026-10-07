@@ -141,7 +141,7 @@ func (a *Agent) resolveCompactProvider(turnProvider providerSnapshot) providerSn
 
 // generateMapReduceCompactSummary slices long ranges, summarizes chunks in
 // parallel, then merges. Returns summary text and source label (llm or llm-mapreduce).
-func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot) (string, string, error) {
+func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions) (string, string, error) {
 	if len(messages) == 0 {
 		return "", "", fmt.Errorf("compact session: no textual content to summarize")
 	}
@@ -157,6 +157,13 @@ func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []
 	maxChunkTokens, maxParallel := a.compactConfigLimits()
 	chunks := sliceCompactInputChunks(messages, est, maxChunkTokens)
 	if len(chunks) <= 1 {
+		emitCompactProgress(opts, CompactProgress{
+			Phase:   "progress",
+			Message: "Summarizing conversation context…",
+			Model:   compactProvider.model,
+			Chunk:   1,
+			Chunks:  1,
+		})
 		summary, err := a.chatCompactSummaryOnce(ctx, compactProvider, messages, compactSegmentPromptKind)
 		if err != nil {
 			return "", "", err
@@ -170,6 +177,12 @@ func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []
 		"max_chunk_tokens", maxChunkTokens,
 		"model", compactProvider.model,
 	)
+	emitCompactProgress(opts, CompactProgress{
+		Phase:   "progress",
+		Message: fmt.Sprintf("Compressing context in %d parallel chunks…", len(chunks)),
+		Chunks:  len(chunks),
+		Model:   compactProvider.model,
+	})
 
 	type chunkResult struct {
 		index   int
@@ -187,6 +200,13 @@ func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			emitCompactProgress(opts, CompactProgress{
+				Phase:   "progress",
+				Message: fmt.Sprintf("Compressing context · chunk %d/%d", i+1, len(chunks)),
+				Chunk:   i + 1,
+				Chunks:  len(chunks),
+				Model:   compactProvider.model,
+			})
 			summary, err := a.chatCompactSummaryOnce(ctx, compactProvider, chunks[i], compactSegmentPromptKind)
 			source := "llm"
 			if err != nil {
@@ -225,6 +245,12 @@ func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []
 		segmentSummaries = append(segmentSummaries, fmt.Sprintf("### Segment %d/%d\n%s", i+1, len(chunks), strings.TrimSpace(r.summary)))
 	}
 
+	emitCompactProgress(opts, CompactProgress{
+		Phase:   "progress",
+		Message: fmt.Sprintf("Merging %d compact segments…", len(segmentSummaries)),
+		Chunks:  len(chunks),
+		Model:   compactProvider.model,
+	})
 	merged, err := a.chatCompactMergeOnce(ctx, compactProvider, segmentSummaries)
 	if err != nil {
 		logger.Warn("compact merge LLM failed, trying local merge", "error", err, "segments", len(segmentSummaries))
