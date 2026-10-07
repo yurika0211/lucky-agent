@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	appheartbeat "github.com/yurika0211/luckyagent/internal/agent/heartbeat"
 	"github.com/yurika0211/luckyagent/internal/autonomy"
@@ -1724,6 +1725,7 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 
 	// 保存会话
 	_ = sess.Save()
+	a.maybeRollSession(sess)
 
 	// 自动记忆：将对话存为短期记忆（去重 + 智能分类 + 截断）。计数和
 	// 维护 cadence 由 memory runtime 持有。
@@ -1834,6 +1836,11 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	if strings.TrimSpace(trigger) == "" {
 		trigger = "manual"
 	}
+	// Shrink giant inline tool dumps before estimating or summarizing so the
+	// compact request itself does not re-send multi-megabyte bodies.
+	if err := sess.ExternalizeLargeMessages(); err != nil {
+		logger.Warn("compact session: externalize large messages", "session_id", sess.ID, "error", err)
+	}
 	all := sess.GetMessages()
 	if len(all) == 0 {
 		return nil, fmt.Errorf("compact session: no messages to compact")
@@ -1841,14 +1848,6 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	_, raw, covered := session.CompactSegments(all)
 	if len(raw) == 0 {
 		return nil, fmt.Errorf("compact session: nothing to compact after latest boundary")
-	}
-	var backup *session.BackupInfo
-	if !opts.DryRun {
-		var err error
-		backup, err = sess.CreateBackup(trigger)
-		if err != nil {
-			return nil, fmt.Errorf("compact session: create pre-compaction backup: %w", err)
-		}
 	}
 
 	est := a.contextEst
@@ -1905,7 +1904,15 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		"attachments": meta.Attachments,
 		"policy":      meta.PolicyVersion,
 	}))
+	// Backup only after a valid summary exists so timed-out LLM calls do not
+	// copy multi-megabyte sessions for a boundary that will never be written.
+	var backup *session.BackupInfo
 	if !opts.DryRun {
+		var err error
+		backup, err = sess.CreateBackup(trigger)
+		if err != nil {
+			return nil, fmt.Errorf("compact session: create pre-compaction backup: %w", err)
+		}
 		sess.AddCompactBoundary(meta)
 		if err := sess.Save(); err != nil {
 			return nil, fmt.Errorf("compact session: save boundary: %w", err)
@@ -2006,13 +2013,19 @@ func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages
 		"- Preserve exact file paths, commands, config keys, errors, decisions, and unresolved items.\n" +
 		"- Do not invent commands, test results, files, or user preferences.\n" +
 		"- Do not include generic advice or commentary.\n" +
-		"- Do not request or use tools; this compaction must only produce text.\n\n" +
+		"- Do not request or use tools; this compaction must only produce text.\n" +
+		"- If the transcript notes older lines were omitted, focus on the retained recent evidence.\n\n" +
 		"Conversation:\n" + transcript
-	sumCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	sumCtx, cancel := compactSummaryContext(ctx)
 	defer cancel()
 	if !turnProvider.valid() {
 		return "", fmt.Errorf("compact session: provider is not initialized")
 	}
+	logger.Debug("compact summary request",
+		"messages", len(messages),
+		"transcript_runes", utf8.RuneCountInString(transcript),
+		"timeout", compactSummaryTimeout.String(),
+	)
 	resp, err := turnProvider.provider.Chat(sumCtx, []provider.Message{
 		{Role: "system", Content: "You are a compaction agent. Tool use is not allowed. Produce only a factual text summary for future context."},
 		{Role: "user", Content: prompt},
@@ -2024,36 +2037,6 @@ func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages
 		return "", fmt.Errorf("compact session: empty summary")
 	}
 	return strings.TrimSpace(resp.Content), nil
-}
-
-func compactTranscript(messages []provider.Message) string {
-	var b strings.Builder
-	for _, msg := range messages {
-		if session.IsCompactBoundary(msg) {
-			continue
-		}
-		content := strings.TrimSpace(msg.Content)
-		if content == "" && len(msg.ToolCalls) == 0 {
-			continue
-		}
-		role := strings.ToUpper(strings.TrimSpace(msg.Role))
-		if role == "" {
-			role = "MESSAGE"
-		}
-		b.WriteString(role)
-		if msg.Name != "" {
-			b.WriteString("(" + msg.Name + ")")
-		}
-		b.WriteString(": ")
-		if content != "" {
-			b.WriteString(truncate(content, 1200))
-		}
-		if len(msg.ToolCalls) > 0 {
-			b.WriteString(fmt.Sprintf(" [tool_calls=%d]", len(msg.ToolCalls)))
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
 }
 
 func estimateProviderMessages(est *contextx.TokenEstimator, messages []provider.Message) int {

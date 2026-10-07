@@ -33,6 +33,15 @@ type historyToolAttachmentPayload struct {
 }
 
 func (s *Server) historyMessages(messages []provider.Message) []sessionHistoryMessage {
+	return s.historyMessagesWithOptions(messages, true, 0)
+}
+
+// historyMessagesWithOptions builds API history payloads. When includeFull is
+// false, each message body is capped at previewChars (runes).
+func (s *Server) historyMessagesWithOptions(messages []provider.Message, includeFull bool, previewChars int) []sessionHistoryMessage {
+	if previewChars <= 0 {
+		previewChars = 4000
+	}
 	result := make([]sessionHistoryMessage, 0, len(messages))
 	for _, message := range messages {
 		item := sessionHistoryMessage{
@@ -70,9 +79,33 @@ func (s *Server) historyMessages(messages []provider.Message) []sessionHistoryMe
 				item.Attachments = appendUniqueHistoryAttachments(item.Attachments, attachment)
 			}
 		}
+		if !includeFull {
+			item.Content = truncateHistoryContent(item.Content, previewChars)
+			item.ReasoningContent = truncateHistoryContent(item.ReasoningContent, previewChars/2)
+		}
 		result = append(result, item)
 	}
 	return result
+}
+
+func truncateHistoryContent(text string, maxChars int) string {
+	if maxChars <= 0 || text == "" {
+		return text
+	}
+	runes := []rune(text)
+	if len(runes) <= maxChars {
+		return text
+	}
+	marker := fmt.Sprintf("\n\n...[truncated %d chars; pass include=full for complete body]...", len(runes)-maxChars)
+	keep := maxChars - len([]rune(marker))
+	if keep < 64 {
+		keep = maxChars
+		if keep > len(runes) {
+			keep = len(runes)
+		}
+		return string(runes[:keep])
+	}
+	return string(runes[:keep]) + marker
 }
 
 func (s *Server) attachmentsFromResponse(raw string) (string, []gateway.Attachment) {

@@ -343,6 +343,21 @@ type ContextConfig struct {
 	AutoCompactCooldownTurns         int     `json:"auto_compact_cooldown_turns,omitempty"`
 	AutoCompactRetainTurns           int     `json:"auto_compact_retain_turns,omitempty"`
 	AutoCompactReservedSummaryTokens int     `json:"auto_compact_reserved_summary_tokens,omitempty"`
+	// CompactModel is the chat model id used only for session compaction.
+	// Empty keeps the turn/default chat model.
+	CompactModel string `json:"compact_model,omitempty"`
+	// CompactMaxChunkTokens caps each parallel map chunk before merge.
+	// Long compact ranges are sliced on user-turn boundaries.
+	CompactMaxChunkTokens int `json:"compact_max_chunk_tokens,omitempty"`
+	// CompactMaxParallel is the max concurrent chunk-summary LLM calls.
+	CompactMaxParallel int `json:"compact_max_parallel,omitempty"`
+	// Session storage hygiene: soft limits trigger in-place roll (same session id).
+	SessionAutoRoll        bool  `json:"session_auto_roll,omitempty"`
+	SessionMaxMessages     int   `json:"session_max_messages,omitempty"`
+	SessionMaxBytes        int64 `json:"session_max_bytes,omitempty"`
+	SessionRollRetainTurns int   `json:"session_roll_retain_turns,omitempty"`
+	// HistoryPreviewChars caps each message body on GET /sessions/{id} unless include=full.
+	HistoryPreviewChars int `json:"history_preview_chars,omitempty"`
 	MemoryHygieneBeforeContext       bool    `json:"memory_hygiene_before_context,omitempty"`
 	MemoryHygieneAction              string  `json:"memory_hygiene_action,omitempty"`
 	MemoryHygieneMinSeverity         string  `json:"memory_hygiene_min_severity,omitempty"`
@@ -916,6 +931,14 @@ func DefaultConfig() *Config {
 			AutoCompactCooldownTurns:         8,
 			AutoCompactRetainTurns:           6,
 			AutoCompactReservedSummaryTokens: 1200,
+			CompactModel:                     "",
+			CompactMaxChunkTokens:            12000,
+			CompactMaxParallel:               4,
+			SessionAutoRoll:                  true,
+			SessionMaxMessages:               8000,
+			SessionMaxBytes:                  64 * 1024 * 1024,
+			SessionRollRetainTurns:           12,
+			HistoryPreviewChars:              4000,
 			MemoryHygieneBeforeContext:       false,
 			MemoryHygieneAction:              "quarantine",
 			MemoryHygieneMinSeverity:         "high",
@@ -1394,6 +1417,24 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.Context.AutoCompactReservedSummaryTokens <= 0 {
 		cfg.Context.AutoCompactReservedSummaryTokens = def.Context.AutoCompactReservedSummaryTokens
+	}
+	if cfg.Context.CompactMaxChunkTokens <= 0 {
+		cfg.Context.CompactMaxChunkTokens = def.Context.CompactMaxChunkTokens
+	}
+	if cfg.Context.CompactMaxParallel <= 0 {
+		cfg.Context.CompactMaxParallel = def.Context.CompactMaxParallel
+	}
+	if cfg.Context.SessionMaxMessages < 0 {
+		cfg.Context.SessionMaxMessages = def.Context.SessionMaxMessages
+	}
+	if cfg.Context.SessionMaxBytes < 0 {
+		cfg.Context.SessionMaxBytes = def.Context.SessionMaxBytes
+	}
+	if cfg.Context.SessionRollRetainTurns <= 0 {
+		cfg.Context.SessionRollRetainTurns = def.Context.SessionRollRetainTurns
+	}
+	if cfg.Context.HistoryPreviewChars <= 0 {
+		cfg.Context.HistoryPreviewChars = def.Context.HistoryPreviewChars
 	}
 	if strings.TrimSpace(cfg.Context.MemoryHygieneAction) == "" {
 		cfg.Context.MemoryHygieneAction = def.Context.MemoryHygieneAction
@@ -2802,6 +2843,34 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Context.AutoCompactReservedSummaryTokens = n
+	case "context.compact_model":
+		m.config.Context.CompactModel = strings.TrimSpace(value)
+	case "context.compact_max_chunk_tokens":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.CompactMaxChunkTokens = n
+	case "context.compact_max_parallel":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.CompactMaxParallel = n
+	case "context.session_auto_roll":
+		m.config.Context.SessionAutoRoll = parseBool(value)
+	case "context.session_max_messages":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.SessionMaxMessages = n
+	case "context.session_max_bytes":
+		var n int64
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.SessionMaxBytes = n
+	case "context.session_roll_retain_turns":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.SessionRollRetainTurns = n
+	case "context.history_preview_chars":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Context.HistoryPreviewChars = n
 	case "context.memory_hygiene_before_context":
 		m.config.Context.MemoryHygieneBeforeContext = parseBool(value)
 	case "context.memory_hygiene_action":

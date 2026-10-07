@@ -469,6 +469,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 			if saveErr := sess.Save(); saveErr != nil {
 				logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
 			}
+			a.maybeRollSession(sess)
 		}
 	}
 	loopState := newLoopRuntimeState()
@@ -589,6 +590,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 			if saveErr := sess.Save(); saveErr != nil {
 				logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
 			}
+			a.maybeRollSession(sess)
 		}
 		return result, fmt.Errorf("memory gate did not produce final synthesis")
 	}
@@ -602,6 +604,7 @@ func (a *Agent) runLoopWithProviderSnapshot(ctx context.Context, sess *session.S
 		if saveErr := sess.Save(); saveErr != nil {
 			logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
 		}
+		a.maybeRollSession(sess)
 	}
 
 	return result, fmt.Errorf("max iterations (%d) reached", loopCfg.MaxIterations)

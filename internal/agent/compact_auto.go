@@ -2,12 +2,46 @@ package agent
 
 import (
 	"context"
+	"time"
 
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
 )
+
+// maybeRollSession archives older turns in-place when soft limits are exceeded.
+// Session id stays the same so gateways keep their binding.
+func (a *Agent) maybeRollSession(sess *session.Session) {
+	if a == nil || sess == nil {
+		return
+	}
+	cfg := a.autoCompactConfig()
+	if !cfg.SessionAutoRoll {
+		return
+	}
+	if !sess.NeedsRoll(cfg.SessionMaxMessages, cfg.SessionMaxBytes) {
+		return
+	}
+	retain := cfg.SessionRollRetainTurns
+	if retain <= 0 {
+		retain = 12
+	}
+	result, err := sess.Roll(retain)
+	if err != nil {
+		logger.Warn("session auto roll failed", "session_id", sess.ID, "error", err)
+		return
+	}
+	if !result.Rolled {
+		return
+	}
+	logger.Info("session auto rolled",
+		"session_id", sess.ID,
+		"dropped", result.Dropped,
+		"retained", result.Retained,
+		"archive", result.ArchivePath,
+	)
+}
 
 const maxAutoCompactFailures = 3
 
@@ -42,13 +76,52 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 	if targetTailTokens <= 0 {
 		targetTailTokens = 1
 	}
-	result, err := a.compactSessionWithProvider(ctx, sess, "auto", CompactSessionOptions{
+	// Prefer a full summarizer budget over a nearly-expired turn deadline.
+	// Explicit cancel still fails fast inside compactSummaryContext.
+	compactCtx := ctx
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining > 0 && remaining < compactSummaryTimeout {
+				compactCtx = context.WithoutCancel(ctx)
+			}
+		}
+	}
+
+	result, err := a.compactSessionWithProvider(compactCtx, sess, "auto", CompactSessionOptions{
 		RetainRecentTurns: cfg.AutoCompactRetainTurns,
 		TargetTailTokens:  targetTailTokens,
 	}, turnProvider)
 	if err != nil {
 		a.recordAutoCompactFailure(sess.ID)
 		logger.Warn("auto compact failed", "session_id", sess.ID, "error", err)
+		// Degrade: local summary without the provider. Keeps the session usable
+		// when the model call times out on a huge history. Local path does not
+		// need the provider or a live parent deadline.
+		degradeCtx := context.Background()
+		if ctx != nil && ctx.Err() == nil {
+			degradeCtx = context.WithoutCancel(ctx)
+		}
+		degraded, degErr := a.compactSessionWithProvider(degradeCtx, sess, "auto-degraded", CompactSessionOptions{
+			ForceLocal:        true,
+			RetainRecentTurns: cfg.AutoCompactRetainTurns,
+			TargetTailTokens:  targetTailTokens,
+		}, turnProvider)
+		if degErr != nil {
+			logger.Warn("auto compact local degrade failed", "session_id", sess.ID, "error", degErr)
+			return
+		}
+		a.resetAutoCompactFailure(sess.ID)
+		logger.Info("auto compact degraded to local summary",
+			"session_id", sess.ID,
+			"boundary_id", degraded.BoundaryID,
+			"from_message", degraded.FromMessage,
+			"to_message", degraded.ToMessage,
+			"dropped_messages", degraded.DroppedMessages,
+			"retained_messages", degraded.RetainedMessages,
+			"pre_tokens", degraded.PreTokenEstimate,
+			"post_tokens", degraded.PostTokenEstimate,
+			"summary_source", degraded.SummarySource,
+		)
 		return
 	}
 	a.resetAutoCompactFailure(sess.ID)

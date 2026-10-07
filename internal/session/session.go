@@ -77,6 +77,14 @@ type Session struct {
 	// ShellContext 持久化 shell 环境（跨工具调用保持）
 	ShellContext ShellContext
 
+	// format is FormatSegmentV1 (default for new sessions) or FormatLegacyMD.
+	format string
+	// persistedCount is how many leading messages are already on disk for
+	// segment_v1 append-only writes.
+	persistedCount int
+	// needsFullRewrite forces a full jsonl rewrite (message removal/reorder).
+	needsFullRewrite bool
+
 	// v0.44.0: 懒加载支持
 	messagesLoaded bool // 是否已加载完整消息
 	messageCount   int  // 元数据中的消息数量（未加载时使用）
@@ -177,14 +185,27 @@ func NewSession(id, dir string) *Session {
 		CreatedAt:      now,
 		UpdatedAt:      now,
 		dir:            dir,
+		format:         FormatSegmentV1,
 		messagesLoaded: true,
 	}
+}
+
+// Format returns the on-disk format (legacy_md or segment_v1).
+func (s *Session) Format() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.format == "" {
+		return FormatLegacyMD
+	}
+	return s.format
 }
 
 // AddProviderMessage 添加完整 provider 消息（保留 tool_calls / tool_call_id 等结构化字段）
 func (s *Session) AddProviderMessage(msg provider.Message) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if msg.CreatedAt == nil {
 		now := time.Now().UTC()
 		msg.CreatedAt = &now
@@ -195,6 +216,17 @@ func (s *Session) AddProviderMessage(msg provider.Message) {
 	}
 
 	// 确保消息已加载
+	if !s.messagesLoaded {
+		s.Messages = make([]provider.Message, 0)
+		s.messagesLoaded = true
+	}
+	s.mu.Unlock()
+
+	// Blob I/O outside the session mutex; externalize before appending.
+	_ = s.externalizeLargeContent(&msg)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !s.messagesLoaded {
 		s.Messages = make([]provider.Message, 0)
 		s.messagesLoaded = true
@@ -279,6 +311,7 @@ func (s *Session) UndoLatestCompactBoundary(keepAfter bool) (CompactMetadata, er
 	meta, _ := ParseCompactMetadata(s.Messages[last])
 	s.Messages = append(s.Messages[:last], s.Messages[last+1:]...)
 	s.messageCount = len(s.Messages)
+	s.needsFullRewrite = true
 	s.invalidatePageCacheLocked()
 	s.UpdatedAt = time.Now()
 	return meta, nil
@@ -517,7 +550,20 @@ func (s *Session) GetMessagesPage(limit, offset int) ([]provider.Message, int, b
 	if keep <= maxPageCacheMessages {
 		keep = maxPageCacheMessages
 	}
-	tail, total, err := readSessionTail(filepath.Join(s.dir, s.ID+".md"), keep)
+
+	s.mu.RLock()
+	format := s.format
+	s.mu.RUnlock()
+
+	var tail []provider.Message
+	var total int
+	var err error
+	switch format {
+	case FormatSegmentV1:
+		tail, total, err = readMessagesJSONLTail(s.messagesJSONLPath(), keep)
+	default:
+		tail, total, err = readSessionTail(filepath.Join(s.dir, s.ID+".md"), keep)
+	}
 	if err != nil {
 		// Preserve the historical behavior for malformed or externally-created
 		// sessions: fall back to the normal loader, which treats them as empty.
@@ -616,7 +662,8 @@ func (s *Session) messageCountLocked() int {
 	return s.messageCount
 }
 
-// Save 保存会话到磁盘 (Markdown + JSON code fence)
+// Save 保存会话到磁盘。新会话默认 segment_v1（jsonl append + blobs）；
+// 仍为 legacy_md 的旧会话在首次 Save 时迁移到 segment_v1。
 func (s *Session) Save() error {
 	// A metadata-only session must not be overwritten with an empty messages
 	// array when a caller updates its title or shell context.
@@ -630,8 +677,21 @@ func (s *Session) Save() error {
 		return fmt.Errorf("create session dir: %w", err)
 	}
 
-	s.mu.RLock()
+	s.mu.Lock()
+	if s.format == "" || s.format == FormatLegacyMD {
+		s.format = FormatSegmentV1
+		s.needsFullRewrite = true
+		s.persistedCount = 0
+	}
 	messages := append([]provider.Message(nil), s.Messages...)
+	format := s.format
+	persisted := s.persistedCount
+	needsRewrite := s.needsFullRewrite
+	title := s.Title
+	createdAt := s.CreatedAt
+	updatedAt := s.UpdatedAt
+	id := s.ID
+	dir := s.dir
 	env := map[string]string(nil)
 	if s.ShellContext.Env != nil {
 		env = make(map[string]string, len(s.ShellContext.Env))
@@ -639,52 +699,54 @@ func (s *Session) Save() error {
 			env[k] = v
 		}
 	}
-	data := sessionData{
-		ID:        s.ID,
-		Title:     s.Title,
-		Messages:  messages,
-		CreatedAt: s.CreatedAt,
-		UpdatedAt: s.UpdatedAt,
-		ShellContext: ShellContext{
-			Cwd: s.ShellContext.Cwd,
-			Env: env,
-		},
-	}
-	dir := s.dir
-	id := s.ID
-	s.mu.RUnlock()
+	shell := ShellContext{Cwd: s.ShellContext.Cwd, Env: env}
+	s.mu.Unlock()
 
-	jsonData, err := json.Marshal(data)
-	if err != nil {
-		return fmt.Errorf("marshal session: %w", err)
+	if err := s.externalizeMessages(messages); err != nil {
+		return fmt.Errorf("externalize session blobs: %w", err)
 	}
 
-	var b strings.Builder
-	b.Grow(len(jsonData) + 72)
-	b.WriteString("# LuckyAgent Session\n\n")
-	b.WriteString("自动生成，请勿手动编辑 JSON 块。\n\n")
-	b.WriteString("```json\n")
-	b.Write(jsonData)
-	b.WriteString("\n```\n")
-
-	path := filepath.Join(dir, id+".md")
-	if err := utils.WriteFileAtomic(path, []byte(b.String()), 0600); err != nil {
-		return err
+	var byteSize int64
+	switch format {
+	case FormatSegmentV1:
+		if needsRewrite || persisted > len(messages) {
+			if err := s.rewriteMessagesJSONL(messages); err != nil {
+				return fmt.Errorf("rewrite segment messages: %w", err)
+			}
+		} else if persisted < len(messages) {
+			if err := s.appendMessagesJSONL(messages[persisted:]); err != nil {
+				return fmt.Errorf("append segment messages: %w", err)
+			}
+		}
+		byteSize = segmentStorageBytes(s.sessionRootDir())
+		// Drop legacy single-file body after a successful segment write so
+		// loadFromDisk does not register the same id twice.
+		legacyPath := filepath.Join(dir, id+".md")
+		_ = os.Remove(legacyPath)
+	default:
+		if err := s.saveLegacyMarkdown(dir, id, title, createdAt, updatedAt, shell, messages); err != nil {
+			return err
+		}
+		byteSize = fileByteSize(filepath.Join(dir, id+".md"))
 	}
 
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("stat session: %w", err)
-	}
+	s.mu.Lock()
+	s.Messages = messages
+	s.messageCount = len(messages)
+	s.persistedCount = len(messages)
+	s.needsFullRewrite = false
+	s.format = format
+	s.mu.Unlock()
+
 	meta := sessionMetadata{
-		ID:           data.ID,
-		Title:        data.Title,
-		MessageCount: len(data.Messages),
-		CreatedAt:    data.CreatedAt,
-		UpdatedAt:    data.UpdatedAt,
-		ByteSize:     info.Size(),
-		Format:       "legacy_md",
-		ShellContext: data.ShellContext,
+		ID:           id,
+		Title:        title,
+		MessageCount: len(messages),
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+		ByteSize:     byteSize,
+		Format:       format,
+		ShellContext: shell,
 	}
 	metaData, err := json.Marshal(meta)
 	if err != nil {
@@ -694,6 +756,30 @@ func (s *Session) Save() error {
 		return fmt.Errorf("write session metadata: %w", err)
 	}
 	return nil
+}
+
+func (s *Session) saveLegacyMarkdown(dir, id, title string, createdAt, updatedAt time.Time, shell ShellContext, messages []provider.Message) error {
+	data := sessionData{
+		ID:           id,
+		Title:        title,
+		Messages:     messages,
+		CreatedAt:    createdAt,
+		UpdatedAt:    updatedAt,
+		ShellContext: shell,
+	}
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("marshal session: %w", err)
+	}
+	var b strings.Builder
+	b.Grow(len(jsonData) + 72)
+	b.WriteString("# LuckyAgent Session\n\n")
+	b.WriteString("自动生成，请勿手动编辑 JSON 块。\n\n")
+	b.WriteString("```json\n")
+	b.Write(jsonData)
+	b.WriteString("\n```\n")
+	path := filepath.Join(dir, id+".md")
+	return utils.WriteFileAtomic(path, []byte(b.String()), 0600)
 }
 
 // sessionData 是内部序列化格式
@@ -726,6 +812,8 @@ type SessionInfo struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
 	MessageCount int       `json:"message_count"`
+	ByteSize     int64     `json:"byte_size,omitempty"`
+	Format       string    `json:"format,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -767,6 +855,76 @@ func (m *Manager) loadFromDisk() error {
 		return fmt.Errorf("read sessions dir: %w", err)
 	}
 
+	seen := make(map[string]struct{})
+
+	// Prefer segment_v1 sessions discovered via meta sidecars or data dirs.
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(name, ".meta.json") {
+			id := strings.TrimSuffix(name, ".meta.json")
+			if id == "" || strings.HasPrefix(id, ".") {
+				continue
+			}
+			metaPath := filepath.Join(m.dir, name)
+			data, readErr := os.ReadFile(metaPath)
+			if readErr != nil {
+				continue
+			}
+			var meta sessionMetadata
+			if json.Unmarshal(data, &meta) != nil || meta.ID == "" {
+				meta.ID = id
+			}
+			if meta.ID == "" {
+				meta.ID = id
+			}
+			format := meta.Format
+			if format == "" {
+				if _, err := os.Stat(filepath.Join(m.dir, id, messagesJSONLName)); err == nil {
+					format = FormatSegmentV1
+				} else if _, err := os.Stat(filepath.Join(m.dir, id+".md")); err == nil {
+					format = FormatLegacyMD
+				} else {
+					continue
+				}
+			}
+			if format == FormatSegmentV1 {
+				if meta.MessageCount == 0 {
+					if n, err := countMessagesJSONL(filepath.Join(m.dir, id, messagesJSONLName)); err == nil {
+						meta.MessageCount = n
+					}
+				}
+				m.sessions[meta.ID] = m.newSessionStub(meta, FormatSegmentV1)
+				seen[meta.ID] = struct{}{}
+			}
+			continue
+		}
+		if entry.IsDir() && !strings.HasPrefix(name, ".") {
+			jsonl := filepath.Join(m.dir, name, messagesJSONLName)
+			if _, err := os.Stat(jsonl); err != nil {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			meta, metaOK := readSessionMetadataLoose(m.dir, name)
+			if !metaOK {
+				n, _ := countMessagesJSONL(jsonl)
+				meta = sessionMetadata{
+					ID:           name,
+					MessageCount: n,
+					Format:       FormatSegmentV1,
+					UpdatedAt:    time.Now(),
+					CreatedAt:    time.Now(),
+				}
+			}
+			if meta.ID == "" {
+				meta.ID = name
+			}
+			m.sessions[meta.ID] = m.newSessionStub(meta, FormatSegmentV1)
+			seen[meta.ID] = struct{}{}
+		}
+	}
+
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".md") {
 			continue
@@ -774,6 +932,9 @@ func (m *Manager) loadFromDisk() error {
 
 		path := filepath.Join(m.dir, entry.Name())
 		id := strings.TrimSuffix(entry.Name(), ".md")
+		if _, ok := seen[id]; ok {
+			continue
+		}
 		meta, metaOK := readSessionMetadata(m.dir, id, path)
 		if !metaOK {
 			// Legacy installations do not have sidecars yet. The streaming
@@ -788,28 +949,58 @@ func (m *Manager) loadFromDisk() error {
 				MessageCount: count,
 				CreatedAt:    sd.CreatedAt,
 				UpdatedAt:    sd.UpdatedAt,
-				Format:       "legacy_md",
+				Format:       FormatLegacyMD,
 			}
 		}
 		if meta.ID == "" {
 			meta.ID = id
 		}
-
-		s := &Session{
-			ID:             meta.ID,
-			Title:          meta.Title,
-			Messages:       nil, // 不加载消息，按需加载
-			CreatedAt:      meta.CreatedAt,
-			UpdatedAt:      meta.UpdatedAt,
-			dir:            m.dir,
-			ShellContext:   meta.ShellContext,
-			messagesLoaded: false,
-			messageCount:   meta.MessageCount,
+		if meta.Format == FormatSegmentV1 {
+			// Meta claims segment but we already skipped if registered; treat as segment.
+			m.sessions[meta.ID] = m.newSessionStub(meta, FormatSegmentV1)
+			seen[meta.ID] = struct{}{}
+			continue
 		}
-		m.sessions[s.ID] = s
+		m.sessions[meta.ID] = m.newSessionStub(meta, FormatLegacyMD)
+		seen[meta.ID] = struct{}{}
 	}
 
 	return nil
+}
+
+func (m *Manager) newSessionStub(meta sessionMetadata, format string) *Session {
+	if format == "" {
+		format = meta.Format
+	}
+	if format == "" {
+		format = FormatLegacyMD
+	}
+	return &Session{
+		ID:             meta.ID,
+		Title:          meta.Title,
+		Messages:       nil,
+		CreatedAt:      meta.CreatedAt,
+		UpdatedAt:      meta.UpdatedAt,
+		dir:            m.dir,
+		ShellContext:   meta.ShellContext,
+		format:         format,
+		messagesLoaded: false,
+		messageCount:   meta.MessageCount,
+		persistedCount: meta.MessageCount,
+	}
+}
+
+func readSessionMetadataLoose(dir, id string) (sessionMetadata, bool) {
+	metaPath := sessionMetadataPath(dir, id)
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return sessionMetadata{}, false
+	}
+	var meta sessionMetadata
+	if err := json.Unmarshal(data, &meta); err != nil || meta.ID == "" {
+		return sessionMetadata{}, false
+	}
+	return meta, true
 }
 
 // loadMessages 懒加载 session 的完整消息
@@ -825,35 +1016,90 @@ func (s *Session) loadMessagesLocked() error {
 		s.mu.RUnlock()
 		return nil
 	}
+	format := s.format
 	s.mu.RUnlock()
 
-	path := filepath.Join(s.dir, s.ID+".md")
 	var messages []provider.Message
-	sd, _, err := readSessionFile(path, func(msg provider.Message) error {
-		messages = append(messages, msg)
-		return nil
-	})
-	sd.Messages = messages
-	if err != nil {
-		if os.IsNotExist(err) {
-			sd.Messages = []provider.Message{}
+	var title string
+	var createdAt, updatedAt time.Time
+	var shell ShellContext
+
+	switch format {
+	case FormatSegmentV1:
+		path := s.messagesJSONLPath()
+		loaded, err := readAllMessagesJSONL(path)
+		if err != nil {
+			messages = s.loadLegacyMessagesBestEffort()
+		} else if len(loaded) == 0 {
+			// Mid-migrate or empty segment: prefer legacy body if present.
+			if legacy := s.loadLegacyMessagesBestEffort(); len(legacy) > 0 {
+				messages = legacy
+			} else {
+				messages = loaded
+			}
 		} else {
-			// Keep the historical behavior for malformed files: callers get an
-			// empty loaded session rather than a nil slice.
-			sd.Messages = []provider.Message{}
+			messages = loaded
+		}
+		if meta, ok := readSessionMetadataLoose(s.dir, s.ID); ok {
+			title = meta.Title
+			createdAt = meta.CreatedAt
+			updatedAt = meta.UpdatedAt
+			shell = meta.ShellContext
+		}
+	default:
+		path := filepath.Join(s.dir, s.ID+".md")
+		var loaded []provider.Message
+		sd, _, err := readSessionFile(path, func(msg provider.Message) error {
+			loaded = append(loaded, msg)
+			return nil
+		})
+		if err != nil {
+			messages = []provider.Message{}
+		} else {
+			messages = loaded
+			title = sd.Title
+			createdAt = sd.CreatedAt
+			updatedAt = sd.UpdatedAt
+			shell = sd.ShellContext
 		}
 	}
 
 	s.mu.Lock()
-	s.Messages = sd.Messages
+	if title != "" {
+		s.Title = title
+	}
+	if !createdAt.IsZero() {
+		s.CreatedAt = createdAt
+	}
+	if !updatedAt.IsZero() {
+		s.UpdatedAt = updatedAt
+	}
+	if shell.Cwd != "" || shell.Env != nil {
+		s.ShellContext = shell
+	}
+	s.Messages = messages
 	if s.Messages == nil {
 		s.Messages = make([]provider.Message, 0)
 	}
 	s.messageCount = len(s.Messages)
+	s.persistedCount = len(s.Messages)
 	s.messagesLoaded = true
 	s.invalidatePageCacheLocked()
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *Session) loadLegacyMessagesBestEffort() []provider.Message {
+	path := filepath.Join(s.dir, s.ID+".md")
+	var messages []provider.Message
+	_, _, err := readSessionFile(path, func(msg provider.Message) error {
+		messages = append(messages, msg)
+		return nil
+	})
+	if err != nil {
+		return []provider.Message{}
+	}
+	return messages
 }
 
 func readSessionMetadata(dir, id, sessionPath string) (sessionMetadata, bool) {
@@ -1140,14 +1386,29 @@ func (m *Manager) ListInfo() []SessionInfo {
 	infos := make([]SessionInfo, 0, len(m.sessions))
 	for _, s := range m.sessions {
 		s.mu.RLock()
-		infos = append(infos, SessionInfo{
-			ID:           s.ID,
-			Title:        s.Title,
-			MessageCount: s.messageCountLocked(),
-			CreatedAt:    s.CreatedAt,
-			UpdatedAt:    s.UpdatedAt,
-		})
+		format := s.format
+		if format == "" {
+			format = FormatLegacyMD
+		}
+		id, title, count := s.ID, s.Title, s.messageCountLocked()
+		created, updated, dir := s.CreatedAt, s.UpdatedAt, s.dir
 		s.mu.RUnlock()
+		byteSize := int64(0)
+		switch format {
+		case FormatSegmentV1:
+			byteSize = segmentStorageBytes(filepath.Join(dir, id))
+		default:
+			byteSize = fileByteSize(filepath.Join(dir, id+".md"))
+		}
+		infos = append(infos, SessionInfo{
+			ID:           id,
+			Title:        title,
+			MessageCount: count,
+			ByteSize:     byteSize,
+			Format:       format,
+			CreatedAt:    created,
+			UpdatedAt:    updated,
+		})
 	}
 
 	sort.Slice(infos, func(i, j int) bool {
@@ -1217,6 +1478,7 @@ func (m *Manager) Delete(id string) error {
 	path := filepath.Join(s.dir, s.ID+".md")
 	os.Remove(path)                             // 忽略错误，文件可能不存在
 	os.Remove(sessionMetadataPath(s.dir, s.ID)) // 旁路元数据同样可选
+	os.RemoveAll(filepath.Join(s.dir, s.ID))    // segment_v1 data dir
 
 	delete(m.sessions, id)
 	return nil

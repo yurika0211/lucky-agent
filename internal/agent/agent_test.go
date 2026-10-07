@@ -2084,6 +2084,41 @@ func TestMaybeAutoCompactSessionSkipsShortSession(t *testing.T) {
 	}
 }
 
+func TestMaybeAutoCompactSessionDegradesToLocalOnProviderFailure(t *testing.T) {
+	cfg, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	_ = cfg.Set("context.auto_compact", "true")
+	_ = cfg.Set("context.max_context_tokens", "50")
+	_ = cfg.Set("context.auto_compact_threshold", "0.1")
+	_ = cfg.Set("context.auto_compact_min_messages", "2")
+	_ = cfg.Set("context.auto_compact_cooldown_turns", "1")
+
+	sess := session.NewSession("auto-compact-degrade", t.TempDir())
+	sess.AddMessage("user", strings.Repeat("Fix internal/agent/context_planner.go and run go test ./internal/agent. ", 20))
+	sess.AddToolMessage("terminal", "go test ./internal/agent failed: context deadline exceeded during prior compact")
+	a := &Agent{
+		cfg:                 cfg,
+		provider:            &staticChatProvider{name: "static", err: fmt.Errorf("context deadline exceeded")},
+		contextEst:          contextx.NewTokenEstimator(4096),
+		autoCompactFailures: make(map[string]int),
+	}
+
+	a.maybeAutoCompactSession(context.Background(), sess, "continue", false)
+
+	trace, ok := sess.LatestCompactTrace()
+	if !ok {
+		t.Fatal("expected degraded auto compact boundary")
+	}
+	if trace.Trigger != "auto-degraded" || trace.SummarySource != "local" {
+		t.Fatalf("unexpected degrade trace: %+v", trace)
+	}
+	if a.autoCompactFailureCount(sess.ID) != 0 {
+		t.Fatalf("successful degrade should reset failure count, got %d", a.autoCompactFailureCount(sess.ID))
+	}
+}
+
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
 func TestAgent_Tools(t *testing.T) {

@@ -147,7 +147,7 @@ curl http://127.0.0.1:9090/api/v1/chat/sync \
 | --- | --- | --- |
 | `GET` | `/api/v1/sessions` | List sessions |
 | `POST` | `/api/v1/sessions` | Create a session |
-| `GET` | `/api/v1/sessions/{id}` | Get a session |
+| `GET` | `/api/v1/sessions/{id}` | Get a session (paged history + optional truncation) |
 | `POST` | `/api/v1/sessions/{id}/compact` | Compact a session |
 | `GET` | `/api/v1/sessions/{id}/compact/latest` | Get latest compact trace |
 
@@ -158,6 +158,19 @@ List query parameters:
 | `q` | Search sessions |
 | `limit` | Maximum results, capped by server |
 | `offset` | Pagination offset |
+
+List items include `format` (`legacy_md` or `segment_v1`) and `byte_size` when known.
+
+Get-session query parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `limit` | Page size (newest-first paging). Without `limit`, full message list is returned. |
+| `offset` | Messages skipped from the newest end |
+| `include=full` or `full=1` | Return full message bodies. Default truncates each body to `context.history_preview_chars` (default 4000 runes). |
+| `all=1` | Legacy full history helper used by some clients |
+
+Response extras: `format`, `byte_size`, `content_truncated` (true when bodies were capped).
 
 Create request body:
 
@@ -175,6 +188,26 @@ Compact request body:
   "force_local": true
 }
 ```
+
+### Session storage CLI
+
+Runtime session hygiene (not HTTP):
+
+```bash
+lh session list
+lh session migrate <id>          # segment_v1 + blob externalize
+lh session migrate --all
+lh session gc <id>               # drop unreferenced blobs
+lh session gc --all
+lh session export <id> -o out.md # human-readable markdown
+lh session roll <id> [--force]   # archive older turns, keep recent
+lh session compact <id>
+```
+
+Related config keys under `context`:
+
+- `session_auto_roll`, `session_max_messages`, `session_max_bytes`, `session_roll_retain_turns`
+- `history_preview_chars`
 
 ## Tasks
 

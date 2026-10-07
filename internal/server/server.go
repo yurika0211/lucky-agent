@@ -1050,6 +1050,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 			ID           string `json:"id"`
 			Title        string `json:"title"`
 			MessageCount int    `json:"message_count"`
+			ByteSize     int64  `json:"byte_size,omitempty"`
+			Format       string `json:"format,omitempty"`
 			CreatedAt    string `json:"created_at"`
 			UpdatedAt    string `json:"updated_at"`
 		}
@@ -1064,6 +1066,8 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 				ID:           sess.ID,
 				Title:        sess.Title,
 				MessageCount: sess.MessageCount,
+				ByteSize:     sess.ByteSize,
+				Format:       sess.Format,
 				CreatedAt:    sess.CreatedAt.Format(time.RFC3339),
 				UpdatedAt:    sess.UpdatedAt.Format(time.RFC3339),
 			})
@@ -1157,15 +1161,31 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 		rawMessages = sess.GetMessages()
 		total = len(rawMessages)
 	}
-	messages := s.historyMessages(rawMessages)
+	includeFull := false
+	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("include"))); v == "full" || strings.Contains(v, "full") {
+		includeFull = true
+	}
+	if v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("full"))); v == "1" || v == "true" || v == "yes" {
+		includeFull = true
+	}
+	previewChars := 4000
+	if s.agent != nil && s.agent.Config() != nil {
+		if n := s.agent.Config().Get().Context.HistoryPreviewChars; n > 0 {
+			previewChars = n
+		}
+	}
+	messages := s.historyMessagesWithOptions(rawMessages, includeFull, previewChars)
 
 	payload := map[string]interface{}{
-		"id":            sess.ID,
-		"title":         sess.Title,
-		"message_count": total,
-		"created_at":    sess.CreatedAt.Format(time.RFC3339),
-		"updated_at":    sess.UpdatedAt.Format(time.RFC3339),
-		"messages":      messages,
+		"id":               sess.ID,
+		"title":            sess.Title,
+		"message_count":    total,
+		"format":           sess.Format(),
+		"byte_size":        sess.ByteSize(),
+		"created_at":       sess.CreatedAt.Format(time.RFC3339),
+		"updated_at":       sess.UpdatedAt.Format(time.RFC3339),
+		"messages":         messages,
+		"content_truncated": !includeFull,
 	}
 
 	// Without a limit the whole history is returned, as before. With one, page

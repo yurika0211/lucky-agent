@@ -17,6 +17,7 @@ Primary entry points:
 - `lh serve`: HTTP API server.
 - `lh msg-gateway start`: external chat gateways.
 - `lh rag`: RAG index/search/stats commands.
+- `lh session`: list/migrate/gc/export/roll/compact session storage.
 - `lh config`, `lh soul`, `lh dashboard`, and `lh tui`: runtime management
   surfaces.
 
