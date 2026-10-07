@@ -762,6 +762,8 @@ func (h *AgentHandler) streamChatRun(ctx context.Context, client *Client, data C
 				data.Action = evt.Approval.Action
 				data.Reason = evt.Approval.Reason
 				data.Prompt = evt.Approval.Prompt
+				data.Secure = evt.Approval.Secure
+				data.Fields = evt.Approval.Fields
 				if evt.Approval.Kind != "" {
 					data.Kind = evt.Approval.Kind
 				}
@@ -1352,6 +1354,8 @@ func classifyToolVisibility(reg *tool.Registry, name string) string {
 
 	lower := strings.ToLower(name)
 	switch {
+	case lower == "request_credential":
+		return "hidden"
 	case lower == "skill_read",
 		lower == "remember",
 		lower == "recall",

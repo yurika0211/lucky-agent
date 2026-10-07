@@ -2300,6 +2300,15 @@ func formatGatewayApprovalPrompt(evt agent.ChatEvent) string {
 		prompt = "需要你确认后才能继续"
 	}
 	var b strings.Builder
+	if kind == "credential" {
+		b.WriteString("🔒 需要填写凭据，但这个聊天通道不能安全接收密钥。\n")
+		b.WriteString("请在本机 CLI、GUI 或安卓客户端的掩码表单里填写。不要把密钥回复到聊天里。")
+		if requestID != "" {
+			b.WriteString("\n编号: ")
+			b.WriteString(requestID)
+		}
+		return b.String()
+	}
 	if kind == "input" {
 		b.WriteString("📝 需要你补充信息\n")
 		b.WriteString(prompt)

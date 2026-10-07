@@ -83,7 +83,7 @@ go run ./cmd/la credential add openai-main --kind llm_api_key
 go run ./cmd/la config set models.endpoints.chat.credential_ref openai-main
 ```
 
-凭据值通过 TTY 隐藏输入，保存在 `~/.luckyagent/runtime/credentials.db` 中；配置文件只保存引用。`credential list` 只显示凭据元数据，`credential remove <id>` 删除凭据。
+凭据值通过 TTY 隐藏输入，保存在 `~/.luckyagent/runtime/credentials.db` 中；配置文件只保存引用。`credential list` 只显示凭据元数据，`credential remove <id>` 删除凭据。模型调用 `request_credential` 时，客户端弹出掩码表单，明文不进入模型上下文。
 
 如需在回答末尾显示工具来源引用，可开启自动引用尾注（默认关闭）：
 

@@ -37,9 +37,10 @@ type Bubble = ChatMessage & {
   approval?: {
     requestId: string;
     provider: string;
-    kind: 'approval' | 'input';
+    kind: 'approval' | 'input' | 'credential';
     tool?: string;
     prompt?: string;
+    secure?: boolean;
     status: 'pending' | 'resolved' | 'failed';
   };
 };
@@ -1143,10 +1144,11 @@ export function App() {
       }
       case 'approval': {
         const requestId = String(payload.request_id || '');
-        const kind = String(payload.kind || 'approval') === 'input' ? 'input' : 'approval';
+        const rawKind = String(payload.kind || 'approval');
+        const kind = rawKind === 'credential' ? 'credential' : rawKind === 'input' ? 'input' : 'approval';
         const toolName = String(payload.tool || '');
         const prompt = String(payload.prompt || payload.reason || payload.summary || '需要你确认后才能继续');
-        const title = kind === 'input' ? '需要你补充信息' : `需要确认${toolName ? `：${toolName}` : ''}`;
+        const title = kind === 'credential' ? '填写凭据' : kind === 'input' ? '需要你补充信息' : `需要确认${toolName ? `：${toolName}` : ''}`;
         const id = pushBubble('approval', title, prompt, 'pending');
         setMessages((prev) => prev.map((item) => (item.id === id ? {
           ...item,
@@ -1156,6 +1158,7 @@ export function App() {
             kind,
             tool: toolName,
             prompt,
+            secure: kind === 'credential' || payload.secure === true,
             status: 'pending',
           },
         } : item)));
@@ -1254,7 +1257,7 @@ export function App() {
     const approval = bubble?.approval;
     if (!approval || approval.status !== 'pending') return;
     const input = (approvalDrafts[id] || '').trim();
-    if (approval.kind === 'input' && decision === 'submit' && !input) return;
+    if ((approval.kind === 'input' || approval.kind === 'credential') && decision === 'submit' && !input) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       pushActivity('error', 'Not connected', '无法提交确认。');
       return;
@@ -1265,7 +1268,7 @@ export function App() {
         request_id: approval.requestId,
         provider: approval.provider || 'runtime',
         decision,
-        input: approval.kind === 'input' ? input : undefined,
+        input: approval.kind === 'input' || approval.kind === 'credential' ? input : undefined,
       },
     }));
     setMessages((prev) => prev.map((item) => (item.id === id && item.approval ? {
@@ -1273,7 +1276,11 @@ export function App() {
       meta: decision,
       approval: { ...item.approval, status: 'resolved' },
     } : item)));
-    pushActivity('status', '已提交确认', `${decision}${input ? `: ${input}` : ''}`);
+    const echoed = approval.kind === 'credential' ? '' : input;
+    pushActivity('status', '已提交确认', `${decision}${echoed ? `: ${echoed}` : ''}`);
+    if (approval.kind === 'credential') {
+      setApprovalDrafts((prev) => ({ ...prev, [id]: '' }));
+    }
   }
 
   function sendMessage() {
@@ -1913,17 +1920,33 @@ export function App() {
                         <div className="turn approval-card" key={msg.id}>
                           <div className="approval-title">{msg.title}</div>
                           <p>{msg.body}</p>
-                          {msg.approval.kind === 'input' && pending ? (
-                            <textarea
-                              className="approval-input"
-                              value={approvalDrafts[msg.id] || ''}
-                              placeholder="填写后提交"
-                              onChange={(event) => setApprovalDrafts((prev) => ({ ...prev, [msg.id]: event.target.value }))}
-                            />
+                          {(msg.approval.kind === 'input' || msg.approval.kind === 'credential') && pending ? (
+                            msg.approval.kind === 'credential' ? (
+                              <input
+                                className="approval-input approval-secret"
+                                type="password"
+                                autoComplete="off"
+                                value={approvalDrafts[msg.id] || ''}
+                                placeholder="输入后只保存在本机加密库"
+                                onChange={(event) => setApprovalDrafts((prev) => ({ ...prev, [msg.id]: event.target.value }))}
+                              />
+                            ) : (
+                              <textarea
+                                className="approval-input"
+                                value={approvalDrafts[msg.id] || ''}
+                                placeholder="填写后提交"
+                                onChange={(event) => setApprovalDrafts((prev) => ({ ...prev, [msg.id]: event.target.value }))}
+                              />
+                            )
+                          ) : null}
+                          {msg.approval.kind === 'credential' && pending ? (
+                            <p className="approval-done">明文不会发给模型，也不会出现在聊天记录里。</p>
                           ) : null}
                           {pending ? (
                             <div className="approval-actions">
-                              {msg.approval.kind === 'input' ? (
+                              {msg.approval.kind === 'credential' ? (
+                                <button type="button" className="mini-button" onClick={() => resolveApproval(msg.id, 'submit')}>保存凭据</button>
+                              ) : msg.approval.kind === 'input' ? (
                                 <button type="button" className="mini-button" onClick={() => resolveApproval(msg.id, 'submit')}>提交</button>
                               ) : (
                                 <button type="button" className="mini-button" onClick={() => resolveApproval(msg.id, 'allow')}>允许</button>

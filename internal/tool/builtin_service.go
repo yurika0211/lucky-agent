@@ -44,6 +44,7 @@ func (s *BuiltinToolService) RegisterTools(r *Registry) {
 	}
 	r.Register(TerminalTool())
 	r.Register(AskUserTool())
+	r.Register(RequestCredentialTool())
 	r.Register(FileReadTool(s.filesystemPolicy))
 	r.Register(DocumentReadTool(s.filesystemPolicy))
 	r.Register(FileWriteTool())

@@ -903,6 +903,11 @@ svg {
   resize: vertical;
 }
 
+.approval-secret {
+  min-height: 40px;
+  resize: none;
+}
+
 .approval-actions {
   display: flex;
   gap: 8px;

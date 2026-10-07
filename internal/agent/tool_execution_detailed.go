@@ -76,8 +76,11 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 
 	// ask_user always waits for the host even when AutoApprove is on: the
 	// model is explicitly requesting free-form human input.
-	if a.canonicalToolName(name) == "ask_user" {
+	switch a.canonicalToolName(name) {
+	case "ask_user":
 		return a.executeAskUserHITL(ctx, sessionID, args)
+	case "request_credential":
+		return a.executeRequestCredentialHITL(ctx, sessionID, scrubCredentialArgs(args))
 	}
 
 	if allowed, meta, gateErr := a.gateToolApproval(ctx, sessionID, name, args, autoApprove); !allowed {
@@ -330,6 +333,22 @@ func toolApprovalReason(name string, args map[string]any) string {
 		return "path: " + strings.TrimSpace(path)
 	}
 	return name
+}
+
+func scrubCredentialArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	cleaned := make(map[string]any, len(args))
+	for key, value := range args {
+		switch strings.ToLower(strings.TrimSpace(key)) {
+		case "value", "secret", "password", "token", "api_key", "apikey", "credential":
+			continue
+		default:
+			cleaned[key] = value
+		}
+	}
+	return cleaned
 }
 
 func stringsTrimSpace(value string) string {

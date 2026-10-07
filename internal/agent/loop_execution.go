@@ -654,8 +654,29 @@ func approvalEventFromMetadata(metadata map[string]any, toolName string) *Approv
 		e.Action, _ = m["action"].(string)
 		e.Reason, _ = m["reason"].(string)
 		e.FrameID, _ = m["frame_id"].(string)
+		e.Kind, _ = m["kind"].(string)
+		e.Prompt, _ = m["prompt"].(string)
+		if secure, ok := m["secure"].(bool); ok {
+			e.Secure = secure
+		}
+		e.Fields = credentialFieldsFromForm(m)
 	}
 	return e
+}
+
+func credentialFieldsFromForm(form map[string]any) map[string]string {
+	fields := map[string]string{}
+	for _, key := range []string{"id", "credential_kind", "scope", "bind"} {
+		value, _ := form[key].(string)
+		value = strings.TrimSpace(value)
+		if value != "" {
+			fields[key] = value
+		}
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
 }
 
 const chatEventMemoryTraceName = "__memory_trace"

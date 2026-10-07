@@ -2,10 +2,13 @@ package lhcmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/session"
@@ -63,6 +66,20 @@ func runChatStreamInput(ctx context.Context, a *agent.Agent, sess *session.Sessi
 	return &chatStreamResult{Response: finalResponse}, nil
 }
 
+func readHiddenHITL(label string) ([]byte, error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return nil, fmt.Errorf("credential form requires an interactive TTY")
+	}
+	fmt.Fprint(os.Stderr, label)
+	value, err := term.ReadPassword(fd)
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return nil, fmt.Errorf("read credential form: %w", err)
+	}
+	return bytes.TrimSpace(value), nil
+}
+
 func promptHITL(event agent.ChatEvent) error {
 	kind := "approval"
 	requestID := ""
@@ -83,6 +100,30 @@ func promptHITL(event agent.ChatEvent) error {
 		}
 	}
 	fmt.Println()
+	if kind == "credential" {
+		if prompt == "" {
+			prompt = "填写凭据"
+		}
+		fmt.Printf("🔒 %s\n", prompt)
+		secret, err := readHiddenHITL("凭据值: ")
+		if err != nil {
+			return err
+		}
+		defer clearBytes(secret)
+		if requestID == "" {
+			return fmt.Errorf("approval request is missing an id")
+		}
+		if hitlResolver == nil {
+			return fmt.Errorf("approval resolver is unavailable")
+		}
+		decision := "submit"
+		if len(secret) == 0 {
+			decision = "cancel"
+		}
+		err = hitlResolver(requestID, decision, string(secret))
+		clearBytes(secret)
+		return err
+	}
 	if kind == "input" {
 		if prompt == "" {
 			prompt = "请补充信息"

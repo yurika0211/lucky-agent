@@ -76,19 +76,38 @@ func pendingToAPI(p *hitlPending) tool.PendingApproval {
 		{ID: "deny", Label: "拒绝", Kind: "deny"},
 		{ID: "cancel", Label: "取消", Kind: "cancel"},
 	}
-	if p.Kind == hitlKindInput {
+	switch p.Kind {
+	case hitlKindInput:
 		opts = []tool.ApprovalOption{
 			{ID: "submit", Label: "提交", Kind: "submit"},
+			{ID: "cancel", Label: "取消", Kind: "cancel"},
+		}
+	case hitlKindCredential:
+		opts = []tool.ApprovalOption{
+			{ID: "submit", Label: "保存凭据", Kind: "submit"},
 			{ID: "cancel", Label: "取消", Kind: "cancel"},
 		}
 	}
 	summary := strings.TrimSpace(p.Summary)
 	if summary == "" {
-		if p.Kind == hitlKindInput {
+		switch p.Kind {
+		case hitlKindInput:
 			summary = "需要你补充信息"
-		} else {
+		case hitlKindCredential:
+			summary = "需要你在安全表单填写凭据"
+		default:
 			summary = "需要批准工具调用: " + p.Tool
 		}
+	}
+	params := map[string]any{
+		"kind":   p.Kind,
+		"tool":   p.Tool,
+		"action": p.Action,
+		"prompt": p.Prompt,
+		"args":   p.Args,
+	}
+	if p.Kind == hitlKindCredential {
+		params["secure"] = true
 	}
 	return tool.PendingApproval{
 		Provider:  hitlProviderRuntime,
@@ -97,13 +116,7 @@ func pendingToAPI(p *hitlPending) tool.PendingApproval {
 		SessionID: p.SessionID,
 		Reason:    p.Reason,
 		Summary:   summary,
-		Params: map[string]any{
-			"kind":   p.Kind,
-			"tool":   p.Tool,
-			"action": p.Action,
-			"prompt": p.Prompt,
-			"args":   p.Args,
-		},
+		Params:    params,
 		Options:   opts,
 		CreatedAt: p.CreatedAt,
 	}
@@ -250,6 +263,7 @@ func interpretHITLReply(kind, text string) (decision, input string, ok bool) {
 	if kind == hitlKindInput {
 		return "submit", trimmed, true
 	}
+	// Credential values must come from the masked form, never from a chat reply.
 	return "", "", false
 }
 

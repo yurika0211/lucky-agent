@@ -126,4 +126,7 @@ func TestInterpretHITLReply(t *testing.T) {
 	if !ok || decision != "submit" || input != "用这个目录" {
 		t.Fatalf("input parse: %q %q %v", decision, input, ok)
 	}
+	if _, _, ok = interpretHITLReply(hitlKindCredential, "sk-from-chat"); ok {
+		t.Fatal("chat text must not submit a credential form")
+	}
 }

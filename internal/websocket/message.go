@@ -19,9 +19,9 @@ const (
 	TypeLucky            MessageType = "lucky"             // 多段消息收集：on/off/status/cancel
 	TypeCancel           MessageType = "cancel"            // 取消进行中的 agent run
 	TypeApprovalResponse MessageType = "approval_response" // 批准/拒绝/补充输入
-	TypeStreamAck MessageType = "stream_ack" // 流式确认
-	TypePing      MessageType = "ping"       // 心跳 ping
-	TypeReconnect MessageType = "reconnect"  // 断线重连
+	TypeStreamAck        MessageType = "stream_ack"        // 流式确认
+	TypePing             MessageType = "ping"              // 心跳 ping
+	TypeReconnect        MessageType = "reconnect"         // 断线重连
 
 	// 服务端 → 客户端
 	TypeStreamChunk MessageType = "stream_chunk" // 流式输出块
@@ -78,14 +78,16 @@ type ApprovalResponseData struct {
 
 // ApprovalRequestData is pushed when the agent is waiting on the user.
 type ApprovalRequestData struct {
-	RequestID string `json:"request_id"`
-	Provider  string `json:"provider,omitempty"`
-	Kind      string `json:"kind,omitempty"` // approval | input
-	Tool      string `json:"tool,omitempty"`
-	Action    string `json:"action,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	Prompt    string `json:"prompt,omitempty"`
-	Summary   string `json:"summary,omitempty"`
+	RequestID string            `json:"request_id"`
+	Provider  string            `json:"provider,omitempty"`
+	Kind      string            `json:"kind,omitempty"` // approval | input | credential
+	Tool      string            `json:"tool,omitempty"`
+	Action    string            `json:"action,omitempty"`
+	Reason    string            `json:"reason,omitempty"`
+	Prompt    string            `json:"prompt,omitempty"`
+	Summary   string            `json:"summary,omitempty"`
+	Secure    bool              `json:"secure,omitempty"`
+	Fields    map[string]string `json:"fields,omitempty"`
 }
 
 // StreamChunkData 流式输出块数据

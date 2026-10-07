@@ -2120,14 +2120,16 @@ type ObservationEvent struct {
 }
 
 type ApprovalEvent struct {
-	RequestID string `json:"request_id,omitempty"`
-	Tool      string `json:"tool,omitempty"`
-	Action    string `json:"action,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	FrameID   string `json:"frame_id,omitempty"`
-	Kind      string `json:"kind,omitempty"`
-	Prompt    string `json:"prompt,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
+	RequestID string            `json:"request_id,omitempty"`
+	Tool      string            `json:"tool,omitempty"`
+	Action    string            `json:"action,omitempty"`
+	Reason    string            `json:"reason,omitempty"`
+	FrameID   string            `json:"frame_id,omitempty"`
+	Kind      string            `json:"kind,omitempty"`
+	Prompt    string            `json:"prompt,omitempty"`
+	SessionID string            `json:"session_id,omitempty"`
+	Secure    bool              `json:"secure,omitempty"`
+	Fields    map[string]string `json:"fields,omitempty"`
 }
 
 // ChatEventType 事件类型
