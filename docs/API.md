@@ -495,6 +495,13 @@ WebSocket URL:
 ws://127.0.0.1:9090/api/v1/ws?session=<session-id>
 ```
 
+Client message `type: "lucky"` collects several chat messages for one session
+and submits them as a single turn. `data.action` is `on`, `off`, `status`, or
+`cancel`. While collection is active, ordinary `chat` messages are stored
+instead of starting a run. The server replies with `type: "status"` and
+`data.state: "lucky"`. `off` enqueues one chat run built from the collected
+segments. Collection state is in memory for the current server process.
+
 ## Soul Templates
 
 | Method | Path | Description |

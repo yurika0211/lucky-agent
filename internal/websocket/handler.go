@@ -16,6 +16,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/gateway"
+	luckycollector "github.com/yurika0211/luckyagent/internal/gateway/collector"
 	"github.com/yurika0211/luckyagent/internal/logger"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
@@ -63,6 +64,7 @@ type AgentHandler struct {
 	runners   map[string]*sessionRunner
 	store     *runStore
 	eventSink func(string, *Message)
+	lucky     *luckycollector.Lucky
 	started   bool
 	mu        sync.Mutex
 }
@@ -79,6 +81,7 @@ func NewAgentHandler(a agentRuntime) *AgentHandler {
 		done:    make(map[string]chan struct{}),
 		runners: make(map[string]*sessionRunner),
 		store:   newRunStore(storeRoot),
+		lucky:   luckycollector.NewLucky(),
 	}
 }
 
@@ -133,6 +136,8 @@ func (h *AgentHandler) HandleMessage(client *Client, msg *Message) {
 	switch msg.Type {
 	case TypeChat:
 		h.handleChat(client, msg)
+	case TypeLucky:
+		h.handleLucky(client, msg)
 	case TypeCancel:
 		h.handleCancel(client, msg)
 	case TypeReconnect:
@@ -235,6 +240,113 @@ func (h *AgentHandler) handleCancel(client *Client, msg *Message) {
 }
 
 // handleChat 处理聊天消息
+func (h *AgentHandler) luckyCollector() *luckycollector.Lucky {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.lucky == nil {
+		h.lucky = luckycollector.NewLucky()
+	}
+	return h.lucky
+}
+
+func luckySessionKey(sessionID string) string {
+	return "websocket|session:" + strings.TrimSpace(sessionID)
+}
+
+func (h *AgentHandler) emitLucky(client *Client, parentID, text string) {
+	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{State: "lucky", Message: text})
+	status.ParentID = parentID
+	status.ID = ""
+	status.EventID = ""
+	h.emit(client, client.SessionID, "", status)
+}
+
+func (h *AgentHandler) handleLucky(client *Client, msg *Message) {
+	var data LuckyData
+	if len(msg.Data) > 0 {
+		if err := msg.ParseData(&data); err != nil {
+			errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{Code: "INVALID_DATA", Message: fmt.Sprintf("invalid lucky data: %v", err)})
+			client.TrySend(errMsg)
+			return
+		}
+	}
+	sessionID := strings.TrimSpace(msg.SessionID)
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(client.SessionID)
+	}
+	if sessionID == "" {
+		errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{Code: "INVALID_DATA", Message: "lucky requires a session id"})
+		client.TrySend(errMsg)
+		return
+	}
+	key := luckySessionKey(sessionID)
+	collector := h.luckyCollector()
+	switch luckycollector.ParseLuckyAction(data.Action) {
+	case luckycollector.LuckyActionOn:
+		status, err := collector.Start(key)
+		if errors.Is(err, luckycollector.ErrAlreadyActive) {
+			h.emitLucky(client, msg.ID, fmt.Sprintf("Lucky 已经在收集中：当前 %d 段，附件 %d 个。发送 /lucky off 提交，/lucky cancel 放弃。", status.SegmentCount, status.AttachmentCount))
+			return
+		}
+		if err != nil {
+			h.emitLucky(client, msg.ID, "Lucky 开启失败："+err.Error())
+			return
+		}
+		h.emitLucky(client, msg.ID, "Lucky 已开启。接下来发送的多段消息会先被收集；发送 /lucky off 后再统一交给 agent。")
+	case luckycollector.LuckyActionStatus:
+		status := collector.Status(key)
+		if !status.Active {
+			h.emitLucky(client, msg.ID, "Lucky 未开启。发送 /lucky on 开始收集多段消息。")
+			return
+		}
+		h.emitLucky(client, msg.ID, fmt.Sprintf("Lucky 正在收集：%d 段，附件 %d 个。发送 /lucky off 提交，/lucky cancel 放弃。", status.SegmentCount, status.AttachmentCount))
+	case luckycollector.LuckyActionCancel:
+		status, ok := collector.Cancel(key)
+		if !ok {
+			h.emitLucky(client, msg.ID, "当前没有正在进行的 Lucky 收集。")
+			return
+		}
+		h.emitLucky(client, msg.ID, fmt.Sprintf("已取消 Lucky 收集，丢弃 %d 段消息和 %d 个附件。", status.SegmentCount, status.AttachmentCount))
+	case luckycollector.LuckyActionOff:
+		batch, err := collector.Finish(key)
+		if errors.Is(err, luckycollector.ErrInactive) {
+			h.emitLucky(client, msg.ID, "当前没有正在进行的 Lucky 收集。发送 /lucky on 开始。")
+			return
+		}
+		if errors.Is(err, luckycollector.ErrEmptyBatch) {
+			h.emitLucky(client, msg.ID, "没有收集到消息，已退出 Lucky 收集模式。")
+			return
+		}
+		if err != nil {
+			h.emitLucky(client, msg.ID, "Lucky 提交失败："+err.Error())
+			return
+		}
+		h.emitLucky(client, msg.ID, fmt.Sprintf("Lucky 已提交 %d 段消息。", len(batch.Segments)))
+		input := batch.UserTurnInput()
+		chat := &Message{
+			Type:      TypeChat,
+			SessionID: sessionID,
+			ID:        msg.ID,
+			Data: mustChatData(ChatData{
+				Message:     input.RoutingText,
+				Stream:      true,
+				Attachments: batch.Attachments(),
+			}),
+		}
+		h.handleChat(client, chat)
+	default:
+		h.emitLucky(client, msg.ID, "用法：/lucky on | /lucky off | /lucky status | /lucky cancel")
+	}
+}
+
+func mustChatData(data ChatData) json.RawMessage {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return json.RawMessage(`{}`)
+	}
+	return raw
+}
+
 func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 	var data ChatData
 	if err := msg.ParseData(&data); err != nil {
@@ -255,6 +367,9 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 	if run.id == "" {
 		run.id = generateID()
 		run.parentID = run.id
+	}
+	if h.collectLuckyChat(client, msg, data) {
+		return
 	}
 	persisted := persistedRun{
 		ID:          run.id,
@@ -290,6 +405,31 @@ func (h *AgentHandler) handleChat(client *Client, msg *Message) {
 	if !wasBusy {
 		h.startNext(client.SessionID)
 	}
+}
+
+func (h *AgentHandler) collectLuckyChat(client *Client, msg *Message, data ChatData) bool {
+	sessionID := strings.TrimSpace(client.SessionID)
+	if sessionID == "" {
+		return false
+	}
+	collector := h.luckyCollector()
+	key := luckySessionKey(sessionID)
+	if !collector.Status(key).Active {
+		return false
+	}
+	segment := &gateway.Message{
+		ID:          msg.ID,
+		Text:        data.Message,
+		Chat:        gateway.Chat{ID: sessionID, Type: gateway.ChatPrivate},
+		Attachments: data.Attachments,
+	}
+	status, err := collector.Append(key, segment)
+	if err != nil {
+		h.emitLucky(client, msg.ID, "这段没有送进 Lucky 收集："+err.Error())
+		return true
+	}
+	h.emitLucky(client, msg.ID, fmt.Sprintf("已收集第 %d 段，附件 %d 个。发送 /lucky off 后一次提交。", status.SegmentCount, status.AttachmentCount))
+	return true
 }
 
 func (h *AgentHandler) startNext(sessionID string) {

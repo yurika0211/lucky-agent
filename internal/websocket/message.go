@@ -16,6 +16,7 @@ type MessageType string
 const (
 	// 客户端 → 服务端
 	TypeChat      MessageType = "chat"       // 聊天消息
+	TypeLucky     MessageType = "lucky"      // 多段消息收集：on/off/status/cancel
 	TypeCancel    MessageType = "cancel"     // 取消进行中的 agent run
 	TypeStreamAck MessageType = "stream_ack" // 流式确认
 	TypePing      MessageType = "ping"       // 心跳 ping
@@ -52,6 +53,11 @@ type ChatData struct {
 	MaxIter     int                  `json:"max_iterations,omitempty"`
 	ProfileID   string               `json:"profile_id,omitempty"`
 	Attachments []gateway.Attachment `json:"attachments,omitempty"`
+}
+
+// LuckyData 控制当前 session 的多段消息收集。
+type LuckyData struct {
+	Action string `json:"action"`
 }
 
 // CancelData 取消进行中的 agent run。空 session_id 表示当前连接绑定的 session。
