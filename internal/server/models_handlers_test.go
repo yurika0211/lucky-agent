@@ -60,6 +60,51 @@ func TestHandleConfigCanonicalRoundTripAndVisionMode(t *testing.T) {
 	}
 }
 
+func TestHandleModelsRefreshQueriesProvider(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer sk-test" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"provider-live"}]}`))
+	}))
+	defer upstream.Close()
+
+	a := createTestAgent(t)
+	if err := a.Config().Set("provider", "openai-compatible"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Config().Set("api_base", upstream.URL+"/v1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Config().Set("model", "provider-live"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.ApplyRuntimeConfig(a.Config().Get()); err != nil {
+		t.Fatal(err)
+	}
+	s := New(a, DefaultServerConfig())
+
+	plain := httptest.NewRecorder()
+	s.handleModels(plain, httptest.NewRequest(http.MethodGet, "/api/v1/models", nil))
+	if plain.Code != http.StatusOK || !strings.Contains(plain.Body.String(), "gpt-3.5-turbo") {
+		t.Fatalf("plain list = %d %s", plain.Code, plain.Body.String())
+	}
+
+	refreshed := httptest.NewRecorder()
+	s.handleModels(refreshed, httptest.NewRequest(http.MethodGet, "/api/v1/models?refresh=1", nil))
+	if refreshed.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d %s", refreshed.Code, refreshed.Body.String())
+	}
+	if !strings.Contains(refreshed.Body.String(), "provider-live") || strings.Contains(refreshed.Body.String(), "gpt-3.5-turbo") {
+		t.Fatalf("refresh body = %s", refreshed.Body.String())
+	}
+	if !strings.Contains(refreshed.Body.String(), `"source":"provider"`) {
+		t.Fatalf("source missing: %s", refreshed.Body.String())
+	}
+}
+
 func TestHandleModelSwitchPersistsTypedSelection(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())

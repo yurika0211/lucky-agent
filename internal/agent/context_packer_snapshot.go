@@ -20,7 +20,9 @@ type ContextPackerSnapshot struct {
 // agent loop, without calling the model. It is intended for benchmarks and
 // diagnostics.
 func (a *Agent) BuildContextPackerSnapshot(ctx context.Context, sess *session.Session, input UserTurnInput) ContextPackerSnapshot {
-	planner := newContextPlanner(a, defaultContextBuildOptions())
+	options := defaultContextBuildOptions()
+	options.ReadOnly = true
+	planner := newContextPlanner(a, options)
 	messages := planner.BuildInput(ctx, sess, input)
 	report := planner.buildContextReport(messages)
 

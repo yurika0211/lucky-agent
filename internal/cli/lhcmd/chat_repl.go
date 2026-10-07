@@ -516,7 +516,7 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 			return handleServeCommand(arg, ctx.agent), false
 		},
 		"/context": func(ctx replCommandContext, arg string) (bool, bool) {
-			return handleContextCommand(arg, ctx.agent), false
+			return handleContextCommand(arg, ctx.agent, currentSessionFrom(ctx.currentSession)), false
 		},
 		"/rag": func(ctx replCommandContext, arg string) (bool, bool) {
 			return handleRAGCommand(arg, ctx.agent), false
@@ -1143,8 +1143,34 @@ func handleServeCommand(arg string, a *agent.Agent) bool {
 	return true
 }
 
+func currentSessionFrom(current **session.Session) *session.Session {
+	if current == nil {
+		return nil
+	}
+	return *current
+}
+
+func printContextInspect(a *agent.Agent, sess *session.Session, message string) {
+	if a == nil {
+		return
+	}
+	inspected := a.InspectContext(context.Background(), agent.ContextInspectRequest{
+		Session: sess,
+		Message: message,
+	})
+	usage := inspected.Usage
+	fmt.Println("📊 当前上下文估算:")
+	fmt.Printf("  总 Token:       %d / %d (%.0f%%)\n", usage.TotalTokens, usage.AvailableTokens, usage.Ratio*100)
+	fmt.Printf("  剩余:           %d · %d 条消息 · %s\n", usage.HeadroomTokens, usage.MessageCount, usage.Estimate)
+	order := []string{"system", "history", "memory", "rag", "tool_result", "user"}
+	for _, name := range order {
+		bucket := usage.Buckets[name]
+		fmt.Printf("  %-12s %d tokens · %d msgs\n", name+":", bucket.Tokens, bucket.Messages)
+	}
+}
+
 // handleContextCommand 处理 /context 命令
-func handleContextCommand(arg string, a *agent.Agent) bool {
+func handleContextCommand(arg string, a *agent.Agent, sess *session.Session) bool {
 	cw := a.ContextWindow()
 	cfg := cw.Config()
 
@@ -1160,6 +1186,7 @@ func handleContextCommand(arg string, a *agent.Agent) bool {
 		fmt.Printf("  最大对话轮数:   %d\n", cfg.MaxConversationTurns)
 		fmt.Printf("  记忆预算:       %d tokens\n", cfg.MemoryBudget)
 		fmt.Printf("  摘要阈值:       %.0f%%\n", cfg.SummarizeThreshold*100)
+		printContextInspect(a, sess, "")
 		return true
 	}
 

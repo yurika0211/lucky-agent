@@ -77,7 +77,9 @@ Common routes include:
   `GET /api/v1/rag/stats`, `/api/v1/rag/store`.
 - `/api/v1/rag/stream/*` for stream indexer watch, scan, start, stop, queue,
   status, and process operations.
-- `/api/v1/context` and `/api/v1/context/fit` for context inspection.
+- `GET /api/v1/context` for the context window. `inspect=1` adds the
+  assembled composition and local token length. `POST /api/v1/context/fit`
+  trims caller-supplied messages.
 - `POST /api/v1/config/reload` to safely reload configuration for later requests.
 - `/api/v1/health/live`, `/ready`, `/detail`, and `/api/v1/metrics`.
 - `/api/v1/ws` and `/api/v1/ws/stats`.

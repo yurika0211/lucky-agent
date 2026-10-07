@@ -16,6 +16,11 @@ type ModelInfo struct {
 	ContextWindow int      `json:"context_window"`  // 上下文窗口大小
 	CostPer1kIn   float64  `json:"cost_per_1k_in"`  // 输入每 1k token 价格 (USD)
 	CostPer1kOut  float64  `json:"cost_per_1k_out"` // 输出每 1k token 价格 (USD)
+	// Discovered marks a model returned by the current endpoint's model list.
+	Discovered bool `json:"discovered,omitempty"`
+	// Kinds limits where a discovered model may be selected. Empty means the
+	// static catalog default.
+	Kinds []string `json:"kinds,omitempty"`
 }
 
 // ModelCatalog 管理可用模型列表
@@ -68,6 +73,27 @@ func (mc *ModelCatalog) Register(model ModelInfo) {
 	mc.mu.Lock()
 	defer mc.mu.Unlock()
 	mc.models[model.ID] = &model
+}
+
+// RegisterDiscovered keeps a provider-listed model without wiping capability
+// metadata already known for the same ID.
+func (mc *ModelCatalog) RegisterDiscovered(model ModelInfo) {
+	if mc == nil || strings.TrimSpace(model.ID) == "" {
+		return
+	}
+	mc.mu.Lock()
+	defer mc.mu.Unlock()
+	existing, ok := mc.models[model.ID]
+	if !ok {
+		mc.models[model.ID] = &model
+		return
+	}
+	if strings.TrimSpace(model.DisplayName) != "" && (existing.DisplayName == "" || existing.DisplayName == existing.ID) {
+		existing.DisplayName = model.DisplayName
+	}
+	if existing.Provider == "" {
+		existing.Provider = model.Provider
+	}
 }
 
 // Get 获取模型信息

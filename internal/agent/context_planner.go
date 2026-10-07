@@ -28,6 +28,12 @@ type contextBuildOptions struct {
 	HistoryRecent  int
 	HistoryMiddle  int
 	DisabledTools  []string
+	// ReadOnly skips memory hygiene, activation feedback, and the context
+	// cache. Inspection must not change durable state or poison a later turn.
+	ReadOnly bool
+	// OmitUserMessage keeps an empty inspect from appending the placeholder
+	// user turn that Normalize invents when no text was supplied.
+	OmitUserMessage bool
 }
 
 /*
@@ -138,14 +144,14 @@ BuildInput 根据结构化用户输入、会话和预算生成最终上下文消
 func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, input UserTurnInput) []provider.Message {
 	input = input.Normalize()
 	routingText := input.RoutingText
-	if p.agent != nil {
+	if p.agent != nil && !p.options.ReadOnly {
 		p.agent.runContextMemoryHygieneHook()
 	}
 	hasStructuredParts := len(input.Message.ContentParts) > 0
 	if hasStructuredParts && !p.supportsImageContentParts() {
 		input.Message = stripContentParts(input.Message)
 	}
-	allowCache := !hasStructuredParts
+	allowCache := !hasStructuredParts && !p.options.ReadOnly
 
 	if allowCache {
 		if key, ok := p.cacheKey(sess, routingText); ok && p.agent != nil && p.agent.contextCache != nil {
@@ -204,24 +210,34 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	}
 
 	if p.agent == nil {
-		return append(messages, p.buildAttachmentMessages(ctx, input)...)
+		messages = append(messages, p.buildAttachmentMessages(ctx, input)...)
+		if !p.options.OmitUserMessage {
+			messages = append(messages, input.Message)
+		}
+		return messages
 	}
 
 	// 拼接附件解析完成后的内容
 	attachmentMsgs := p.buildAttachmentMessages(ctx, input)
 	provisional := append(append([]provider.Message(nil), messages...), attachmentMsgs...)
-	provisional = append(provisional, provider.Message{
-		Role:    "user",
-		Content: routingText,
-	})
-	provisional = p.agent.fitContextWindow(provisional)
-	if n := len(provisional); n > 0 {
-		last := provisional[n-1]
-		if last.Role == "user" && strings.TrimSpace(last.Content) == routingText {
-			provisional = provisional[:n-1]
-		}
+	if !p.options.OmitUserMessage {
+		provisional = append(provisional, provider.Message{
+			Role:    "user",
+			Content: routingText,
+		})
 	}
-	messages = append(provisional, input.Message)
+	provisional = p.agent.fitContextWindow(provisional)
+	if !p.options.OmitUserMessage {
+		if n := len(provisional); n > 0 {
+			last := provisional[n-1]
+			if last.Role == "user" && strings.TrimSpace(last.Content) == routingText {
+				provisional = provisional[:n-1]
+			}
+		}
+		messages = append(provisional, input.Message)
+	} else {
+		messages = provisional
+	}
 
 	report := p.buildContextReport(messages)
 	if allowCache {
@@ -696,6 +712,9 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScop
 }
 
 func (p *contextPlanner) recordMemoryContextFeedback(query string, results []memory.Entry) {
+	if p == nil || p.options.ReadOnly {
+		return
+	}
 	if p.agent == nil || p.agent.memory == nil || len(results) == 0 {
 		return
 	}

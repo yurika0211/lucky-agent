@@ -185,6 +185,108 @@ func TestHandleContextIncludesCompactTraceForSession(t *testing.T) {
 	}
 }
 
+func TestHandleContextInspectOmitsUsageByDefault(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/context", nil)
+	w := httptest.NewRecorder()
+	s.handleContext(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := resp["usage"]; ok {
+		t.Fatalf("default context response included usage: %+v", resp["usage"])
+	}
+	if _, ok := resp["sections"]; ok {
+		t.Fatalf("default context response included sections")
+	}
+}
+
+func TestHandleContextInspectReturnsUsageAndSections(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	sess := a.Sessions().Ensure("inspect-context")
+	sess.AddMessage("user", "history stays in the history bucket")
+	sess.AddMessage("assistant", "ack")
+	beforeMessages := sess.MessageCount()
+	beforeMemory := 0
+	if a.Memory() != nil {
+		beforeMemory = a.Memory().Count()
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/context?session_id=inspect-context&inspect=1&message=continue+the+context+api", nil)
+	w := httptest.NewRecorder()
+	s.handleContext(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	usage, ok := resp["usage"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("usage missing: %+v", resp)
+	}
+	if usage["estimate"] != "local" {
+		t.Fatalf("estimate = %#v", usage["estimate"])
+	}
+	buckets, _ := usage["buckets"].(map[string]interface{})
+	history, _ := buckets["history"].(map[string]interface{})
+	if tokens, _ := history["tokens"].(float64); tokens <= 0 {
+		t.Fatalf("history bucket = %+v", history)
+	}
+	sections, ok := resp["sections"].([]interface{})
+	if !ok || len(sections) == 0 {
+		t.Fatalf("sections = %#v", resp["sections"])
+	}
+	last, _ := sections[len(sections)-1].(map[string]interface{})
+	if last["role"] != "user" || last["label"] != "user" {
+		t.Fatalf("last section = %+v", last)
+	}
+	if _, hasContent := last["content"]; hasContent {
+		t.Fatalf("content returned without include_messages: %+v", last)
+	}
+	if sess.MessageCount() != beforeMessages {
+		t.Fatalf("inspect changed messages: before=%d after=%d", beforeMessages, sess.MessageCount())
+	}
+	if a.Memory() != nil && a.Memory().Count() != beforeMemory {
+		t.Fatalf("inspect changed memory: before=%d after=%d", beforeMemory, a.Memory().Count())
+	}
+
+	again := httptest.NewRequest(http.MethodGet, "/api/v1/context?session_id=inspect-context&inspect=1&message=continue+the+context+api", nil)
+	againW := httptest.NewRecorder()
+	s.handleContext(againW, again)
+	if againW.Code != http.StatusOK {
+		t.Fatalf("second inspect status %d", againW.Code)
+	}
+	if sess.MessageCount() != beforeMessages {
+		t.Fatalf("second inspect changed messages")
+	}
+}
+
+func TestHandleContextUnknownSession(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+	before := a.Sessions().Count()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/context?session_id=missing-session&inspect=1", nil)
+	w := httptest.NewRecorder()
+	s.handleContext(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if a.Sessions().Count() != before {
+		t.Fatalf("unknown session created a session: before=%d after=%d", before, a.Sessions().Count())
+	}
+}
+
 func TestHandleContextMethodNotAllowed(t *testing.T) {
 	a := createTestAgent(t)
 	s := New(a, DefaultServerConfig())

@@ -337,14 +337,19 @@ Sensitive values, including API keys, are never returned.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/api/v1/context` | Context window configuration |
-| `POST` | `/api/v1/context/fit` | Fit messages into context window |
+| `GET` | `/api/v1/context` | Context window configuration. `inspect=1` adds the assembled composition and a local token estimate |
+| `POST` | `/api/v1/context/fit` | Fit caller-supplied messages into the context window. This does not assemble the live planner context |
 
 `GET /api/v1/context` accepts:
 
 | Parameter | Description |
 | --- | --- |
-| `session_id` | Include latest compact trace for the session when available |
+| `session_id` | Use this session's history and include its latest compact trace. Unknown ids return 404 and do not create a session |
+| `inspect` | `1`, `true`, or `yes` adds `usage` and `sections`. Omitted responses stay config-only |
+| `message` | Hypothetical next user message. Empty inspects the context already on hand and does not append a user turn |
+| `include_messages` | `1` copies full section text into `sections[].content`. The default returns a 160-character `preview` |
+
+`usage` is a local planner estimate, not billed provider usage. `usage.ratio` is `total_tokens / available_tokens`. Buckets are `system`, `history`, `memory`, `rag`, `tool_result`, and `user`. Inspection does not write memory, session messages, or the context cache.
 
 Fit request body:
 

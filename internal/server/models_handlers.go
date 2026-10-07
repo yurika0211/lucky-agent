@@ -77,7 +77,24 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		kind = &parsed
 	}
 	providerName := strings.TrimSpace(r.URL.Query().Get("provider"))
-	models := s.agent.ListModels(kind)
+	refresh := modelRefreshRequested(r)
+	var models []agent.ModelRef
+	var discoveryError string
+	var source string
+	if refresh {
+		refreshed, err := s.agent.RefreshChatModels(r.Context())
+		if err != nil {
+			discoveryError = err.Error()
+			models = s.agent.ListModels(kind)
+			source = "catalog"
+		} else {
+			models = mergeRefreshedChatModels(s.agent.ListModels(kind), refreshed, kind)
+			source = "provider"
+		}
+	} else {
+		models = s.agent.ListModels(kind)
+		source = "catalog"
+	}
 	if providerName != "" {
 		filtered := models[:0]
 		for _, model := range models {
@@ -87,7 +104,35 @@ func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
 		}
 		models = filtered
 	}
-	s.sendJSON(w, http.StatusOK, map[string]any{"models": models, "count": len(models)})
+	payload := map[string]any{"models": models, "count": len(models), "source": source}
+	if discoveryError != "" {
+		payload["error"] = discoveryError
+	}
+	s.sendJSON(w, http.StatusOK, payload)
+}
+
+func mergeRefreshedChatModels(catalog []agent.ModelRef, discovered []agent.ModelRef, kind *config.ModelKind) []agent.ModelRef {
+	if kind != nil && *kind != config.ModelKindChat {
+		return catalog
+	}
+	kept := make([]agent.ModelRef, 0, len(catalog)+len(discovered))
+	for _, model := range catalog {
+		if model.Kind == config.ModelKindChat {
+			continue
+		}
+		kept = append(kept, model)
+	}
+	kept = append(kept, discovered...)
+	return kept
+}
+
+func modelRefreshRequested(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("refresh"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handleModelSwitch(w http.ResponseWriter, r *http.Request) {

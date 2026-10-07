@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -58,6 +59,110 @@ func (a *Agent) CurrentModel(kind config.ModelKind) (ModelRef, bool) {
 		}
 	}
 	return ref, true
+}
+
+// RefreshChatModels asks the current chat endpoint which model IDs this key
+// can list. The result is registered on the live catalog and remembered so a
+// later config apply does not drop it. This does not call a generation API.
+func (a *Agent) RefreshChatModels(ctx context.Context) ([]ModelRef, error) {
+	if a == nil || a.cfg == nil {
+		return nil, fmt.Errorf("agent configuration is unavailable")
+	}
+	cfg := config.Clone(a.cfg.Get())
+	if err := resolveConfiguredCredentials(a.cfg.HomeDir(), cfg); err != nil {
+		return nil, err
+	}
+	endpoint := cfg.ModelEndpoint(config.ModelKindChat)
+	selection, _ := cfg.ModelSelection(config.ModelKindChat)
+	discovery := a.modelDiscoveryClient()
+	discovered, err := discovery.Discover(ctx, provider.ModelDiscoveryConfig{
+		Provider:     endpoint.Provider,
+		APIKey:       endpoint.APIKey,
+		APIBase:      endpoint.APIBase,
+		Model:        selection.ID,
+		ExtraHeaders: endpoint.ExtraHeaders,
+	}, true)
+	if err != nil {
+		return nil, err
+	}
+	a.rememberDiscoveredModels(config.ModelKindChat, endpoint, discovered)
+	return a.chatModelsFromDiscovery(selection.ID, endpoint, discovered), nil
+}
+
+func (a *Agent) chatModelsFromDiscovery(currentID string, endpoint config.ModelEndpointConfig, discovered []provider.ModelInfo) []ModelRef {
+	result := make([]ModelRef, 0, len(discovered)+1)
+	seen := map[string]struct{}{}
+	for _, model := range discovered {
+		id := strings.TrimSpace(model.ID)
+		if id == "" {
+			continue
+		}
+		seen[id] = struct{}{}
+		result = append(result, ModelRef{
+			ID:          id,
+			Kind:        config.ModelKindChat,
+			Provider:    firstNonEmptyModel(model.Provider, endpoint.Provider),
+			DisplayName: model.DisplayName,
+			APIBase:     endpoint.APIBase,
+			Protocol:    endpoint.Protocol,
+			Current:     id == currentID,
+		})
+	}
+	if currentID != "" {
+		if _, ok := seen[currentID]; !ok {
+			result = append(result, ModelRef{
+				ID:       currentID,
+				Kind:     config.ModelKindChat,
+				Provider: endpoint.Provider,
+				APIBase:  endpoint.APIBase,
+				Protocol: endpoint.Protocol,
+				Current:  true,
+			})
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Current != result[j].Current {
+			return result[i].Current
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result
+}
+
+func firstNonEmptyModel(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func (a *Agent) modelDiscoveryClient() *provider.ModelDiscovery {
+	if a.modelDiscovery == nil {
+		a.modelDiscovery = provider.NewModelDiscovery()
+	}
+	return a.modelDiscovery
+}
+
+func (a *Agent) rememberDiscoveredModels(kind config.ModelKind, endpoint config.ModelEndpointConfig, models []provider.ModelInfo) {
+	if a == nil || len(models) == 0 {
+		return
+	}
+	a.providerMu.Lock()
+	defer a.providerMu.Unlock()
+	if a.catalog == nil {
+		a.catalog = provider.NewModelCatalog()
+	}
+	providerName := strings.TrimSpace(endpoint.Provider)
+	for _, model := range models {
+		if strings.TrimSpace(model.Provider) == "" {
+			model.Provider = providerName
+		}
+		model.Discovered = true
+		model.Kinds = []string{string(kind)}
+		a.catalog.RegisterDiscovered(model)
+	}
 }
 
 // ListModels lists catalog models alongside each currently selected non-chat
@@ -157,7 +262,7 @@ func (a *Agent) SwitchModelKind(kind config.ModelKind, modelID string, opts Swit
 	}
 	next := config.Clone(current)
 	endpoint := config.ModelEndpointConfig{Provider: strings.TrimSpace(opts.Provider)}
-	if endpoint.Provider == "" && modelInfo != nil {
+	if endpoint.Provider == "" && modelInfo != nil && !modelInfo.Discovered {
 		endpoint.Provider = modelInfo.Provider
 	}
 	if err := next.SetModelSelection(kind, modelID, endpoint); err != nil {
@@ -232,7 +337,7 @@ func (a *Agent) validateModelKind(cfg *config.Config, kind config.ModelKind, mod
 	}
 	if catalog := a.Catalog(); catalog != nil {
 		info, err := catalog.Get(modelID)
-		if err == nil {
+		if err == nil && modelAllowsKind(*info, kind) {
 			return info, nil
 		}
 	}
@@ -249,5 +354,33 @@ func modelKindsForInfo(cfg *config.Config, info provider.ModelInfo) []config.Mod
 		}
 		return append([]config.ModelKind(nil), custom.Kinds...)
 	}
+	if info.Discovered {
+		if len(info.Kinds) == 0 {
+			return []config.ModelKind{config.ModelKindChat}
+		}
+		kinds := make([]config.ModelKind, 0, len(info.Kinds))
+		for _, raw := range info.Kinds {
+			parsed, err := config.ParseModelKind(raw)
+			if err == nil {
+				kinds = append(kinds, parsed)
+			}
+		}
+		if len(kinds) == 0 {
+			return []config.ModelKind{config.ModelKindChat}
+		}
+		return kinds
+	}
 	return []config.ModelKind{config.ModelKindChat}
+}
+
+func modelAllowsKind(info provider.ModelInfo, kind config.ModelKind) bool {
+	if !info.Discovered || len(info.Kinds) == 0 {
+		return kind == config.ModelKindChat
+	}
+	for _, raw := range info.Kinds {
+		if strings.EqualFold(raw, string(kind)) {
+			return true
+		}
+	}
+	return false
 }

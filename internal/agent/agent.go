@@ -120,7 +120,8 @@ type Agent struct {
 	providerMu       sync.RWMutex           // protects the default provider/model selection
 	registry         *provider.Registry     // provider 注册表
 	catalog          *provider.ModelCatalog // 模型目录
-	tokenStore       *provider.TokenStore   // token 存储
+	modelDiscovery   *provider.ModelDiscovery
+	tokenStore       *provider.TokenStore // token 存储
 	memory           *memory.Store
 	// shortTerm is retained only for source compatibility with older in-package
 	// tests/callers. New agents leave it nil; production conversation state is
@@ -1031,6 +1032,13 @@ func (a *Agent) ApplyRuntimeConfig(c *config.Config) error {
 		return err
 	}
 	nextCatalog := provider.NewModelCatalog()
+	if a.catalog != nil {
+		for _, model := range a.catalog.List() {
+			if model.Discovered {
+				nextCatalog.RegisterDiscovered(model)
+			}
+		}
+	}
 	for _, custom := range c.CustomModels {
 		if strings.TrimSpace(custom.ID) == "" {
 			continue

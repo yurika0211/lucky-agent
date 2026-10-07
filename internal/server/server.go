@@ -1600,7 +1600,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"POST /api/v1/chat/sync  — 同步聊天",
 			"POST /api/v1/config/reload — 重载后续请求的配置",
 			"GET|PUT /api/v1/config — 读取或更新脱敏配置",
-			"GET /api/v1/models — 按类型或 provider 列出模型",
+			"GET /api/v1/models — 列出模型。refresh=1 用当前 chat key 查询供应商",
 			"POST /api/v1/models/switch — 切换并保存指定类型模型",
 			"GET  /api/v1/ws         — WebSocket 实时通信",
 			"GET  /api/v1/ws/stats   — WebSocket 统计",

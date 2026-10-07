@@ -2,11 +2,13 @@ package server
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/contextx"
 	"github.com/yurika0211/luckyagent/internal/rag"
+	"github.com/yurika0211/luckyagent/internal/session"
 )
 
 // ===== v0.13.0: Context Window API =====
@@ -31,15 +33,48 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 		"memory_budget":          cfg.MemoryBudget,
 		"summarize_threshold":    cfg.SummarizeThreshold,
 	}
-	if sessionID := r.URL.Query().Get("session_id"); sessionID != "" {
-		if sess, ok := s.agent.Sessions().Get(sessionID); ok {
-			if trace, ok := sess.LatestCompactTrace(); ok {
-				resp["compact_trace"] = trace
-			}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	var sess *session.Session
+	if sessionID != "" {
+		found, ok := s.agent.Sessions().Get(sessionID)
+		if !ok {
+			s.sendError(w, "session not found", http.StatusNotFound, sessionID)
+			return
 		}
+		sess = found
+		if trace, ok := sess.LatestCompactTrace(); ok {
+			resp["compact_trace"] = trace
+		}
+	}
+	if contextInspectRequested(r) {
+		inspected := s.agent.InspectContext(r.Context(), agent.ContextInspectRequest{
+			Session:         sess,
+			Message:         r.URL.Query().Get("message"),
+			IncludeMessages: includeContextMessages(r),
+		})
+		resp["usage"] = inspected.Usage
+		resp["sections"] = inspected.Sections
 	}
 
 	s.sendJSON(w, http.StatusOK, resp)
+}
+
+func contextInspectRequested(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("inspect"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func includeContextMessages(r *http.Request) bool {
+	switch strings.ToLower(strings.TrimSpace(r.URL.Query().Get("include_messages"))) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 // handleContextFit 上下文裁剪接口
