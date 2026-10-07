@@ -55,16 +55,15 @@ func SanitizeToolProtocolOutput(input string) string {
 			}
 			continue
 		}
+		// Generic Markdown fences are user content. Only explicit protocol
+		// markers should enter this branch and set protocolSeen.
 		if toolProtocolToRe.MatchString(trimmed) ||
 			toolProtocolJSONRe.MatchString(trimmed) ||
 			strings.Contains(lower, "<tool_call>") ||
 			strings.Contains(lower, "</tool_call>") ||
 			strings.Contains(lower, "tool_calls>") ||
 			strings.Contains(lower, "<｜｜dsml｜｜") ||
-			strings.Contains(lower, "<||dsml||") ||
-			trimmed == "```" ||
-			strings.HasPrefix(lower, "```json") ||
-			strings.HasPrefix(lower, "```tool") {
+			strings.Contains(lower, "<||dsml||") {
 			protocolSeen = true
 			removed++
 			continue
@@ -94,6 +93,12 @@ isLikelyProtocolFragment 判断一行文本是否像工具协议残片。
 func isLikelyProtocolFragment(line string) bool {
 	lower := strings.ToLower(strings.TrimSpace(line))
 	if lower == "" {
+		return false
+	}
+	// Markdown separators are valid user content. They used to be removed
+	// after any protocol marker because the punctuation matcher treats `---`
+	// as a protocol fragment.
+	if lower == "---" {
 		return false
 	}
 	if toolProtocolPunctRe.MatchString(lower) {
