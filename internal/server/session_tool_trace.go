@@ -3,6 +3,7 @@ package server
 import (
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"
@@ -21,10 +22,10 @@ func (s *Server) handleSessionToolTrace(w http.ResponseWriter, r *http.Request, 
 	if s.agent != nil && s.agent.Config() != nil {
 		templates = s.agent.Config().Get().ToolTrace.Templates
 	}
-	records := sessionToolTraceRecords(sess.GetMessages(), templates)
+	allRecords := sessionToolTraceRecords(sess.GetMessages(), templates)
 	successes := 0
 	failures := 0
-	for _, record := range records {
+	for _, record := range allRecords {
 		if record.Success {
 			successes++
 		} else {
@@ -32,18 +33,69 @@ func (s *Server) handleSessionToolTrace(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	rate := 0.0
-	if len(records) > 0 {
-		rate = float64(successes) / float64(len(records))
+	if len(allRecords) > 0 {
+		rate = float64(successes) / float64(len(allRecords))
 	}
+	limit := boundedQueryInt(r, "limit", defaultToolTraceLimit, 1, maxToolTraceLimit)
+	offset := boundedQueryInt(r, "offset", 0, 0, 1_000_000)
+	start, end := tracePageBounds(len(allRecords), limit, offset)
+	records := truncateTraceRecords(allRecords[start:end])
 
 	s.sendJSON(w, http.StatusOK, map[string]any{
 		"session_id":   sess.ID,
 		"tools":        records,
-		"total_calls":  len(records),
+		"total_calls":  len(allRecords),
 		"successes":    successes,
 		"failures":     failures,
 		"success_rate": rate,
+		"limit":        limit,
+		"offset":       offset,
+		"returned":     len(records),
+		"has_more":     start > 0,
 	})
+}
+
+func tracePageBounds(total, limit, offset int) (int, int) {
+	if total <= 0 || offset >= total {
+		return total, total
+	}
+	end := total - offset
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	return start, end
+}
+
+const (
+	traceArgumentMaxChars   = 4096
+	traceResultMaxChars     = 4096
+	traceAnnotationMaxChars = 1024
+	traceErrorMaxChars      = 1024
+)
+
+func truncateTraceRecords(records []tool.TraceRecord) []tool.TraceRecord {
+	result := make([]tool.TraceRecord, len(records))
+	for i, record := range records {
+		record.Arguments = truncateTraceText(record.Arguments, traceArgumentMaxChars)
+		record.Result = truncateTraceText(record.Result, traceResultMaxChars)
+		record.Annotation = truncateTraceText(record.Annotation, traceAnnotationMaxChars)
+		record.Error = truncateTraceText(record.Error, traceErrorMaxChars)
+		result[i] = record
+	}
+	return result
+}
+
+func truncateTraceText(text string, maxChars int) string {
+	if maxChars <= 0 || utf8.RuneCountInString(text) <= maxChars {
+		return text
+	}
+	marker := "\n...[truncated]"
+	keep := maxChars - utf8.RuneCountInString(marker)
+	if keep < 0 {
+		keep = 0
+	}
+	return string([]rune(text)[:keep]) + marker
 }
 
 func sessionToolTraceRecords(messages []provider.Message, templateSets ...map[string]string) []tool.TraceRecord {

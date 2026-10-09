@@ -37,10 +37,12 @@ import (
 var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 
 const (
-	defaultSessionsLimit = 50
-	maxSessionsLimit     = 200
-	defaultHistoryLimit  = 60
-	maxHistoryLimit      = 500
+	defaultSessionsLimit  = 50
+	maxSessionsLimit      = 200
+	defaultHistoryLimit   = 60
+	maxHistoryLimit       = 500
+	defaultToolTraceLimit = 100
+	maxToolTraceLimit     = 200
 )
 
 // Server 是 LuckyAgent 的 HTTP API Server

@@ -150,6 +150,7 @@ curl http://127.0.0.1:9090/api/v1/chat/sync \
 | `GET` | `/api/v1/sessions/{id}` | Get a session (paged history + optional truncation) |
 | `PATCH` | `/api/v1/sessions/{id}` | Rename, pin, or set the project |
 | `DELETE` | `/api/v1/sessions/{id}` | Delete the session and its files |
+| `GET` | `/api/v1/sessions/{id}/tools` | Get a bounded, paged tool trace for a session |
 | `POST` | `/api/v1/sessions/{id}/compact` | Compact a session |
 | `GET` | `/api/v1/sessions/{id}/compact/latest` | Get latest compact trace |
 
@@ -181,6 +182,17 @@ Get-session query parameters:
 | `all=1` | Legacy full history helper used by some clients |
 
 Response extras: `format`, `byte_size`, `content_truncated` (true when bodies were capped).
+
+Tool-trace query parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `limit` | Number of newest tool calls to return; defaults to 100 and is capped at 200 |
+| `offset` | Tool calls skipped from the newest end |
+
+Tool trace responses include `total_calls`, `returned`, `has_more`, `limit`, and
+`offset`. Arguments, results, annotations, and errors are truncated before
+serialization so a single tool output cannot create an unbounded response.
 
 Create request body:
 
