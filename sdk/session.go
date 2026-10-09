@@ -29,6 +29,7 @@ type Session struct {
 	MessageCount int
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	WorkingDir   string
 	Messages     []Message
 }
 

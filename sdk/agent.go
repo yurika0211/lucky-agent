@@ -220,6 +220,7 @@ func (a *Agent) GetSession(sessionID string) (*Session, error) {
 		MessageCount: sess.MessageCount(),
 		CreatedAt:    sess.CreatedAt,
 		UpdatedAt:    sess.UpdatedAt,
+		WorkingDir:   sess.GetCwd(),
 		Messages:     outMsgs,
 	}, nil
 }
