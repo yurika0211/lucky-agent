@@ -40,6 +40,9 @@ type Config struct {
 	// MaxTokens overrides the default generation cap when > 0.
 	MaxTokens int
 
+	// MaxContextTokens overrides the maximum assembled context window when > 0.
+	MaxContextTokens int
+
 	// Temperature overrides the default sampling temperature when > 0.
 	// Leave 0 to keep the runtime default.
 	Temperature float64
@@ -108,6 +111,9 @@ func (c Config) applyTo(mgr *config.Manager) error {
 	if c.MaxTokens > 0 {
 		base.MaxTokens = c.MaxTokens
 		base.Limits.MaxTokens = c.MaxTokens
+	}
+	if c.MaxContextTokens > 0 {
+		base.Context.MaxContextTokens = c.MaxContextTokens
 	}
 	if c.Temperature > 0 {
 		base.Temperature = c.Temperature
