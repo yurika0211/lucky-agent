@@ -14,7 +14,8 @@
 //   - Chat: Chat, ChatSession, ChatStream, ChatSessionStream,
 //     ChatWithInput, ChatSessionWithInput, ChatStreamWithInput, ChatSessionStreamWithInput
 //   - Sessions: NewSession, NewSessionWithTitle, ListSessions, GetSession,
-//     RenameSession, DeleteSession, CompactSession
+//     RenameSession, SetSessionWorkingDir, SessionWorkingDir, DeleteSession,
+//     CompactSession
 //   - Memory: Remember, RememberLongTerm, Recall
 //   - RAG: IndexText, IndexFile, IndexDirectory, SearchRAG, RemoveDocument,
 //     ListDocuments, RAGStats

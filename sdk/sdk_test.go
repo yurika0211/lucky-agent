@@ -228,6 +228,74 @@ func TestRenameSession(t *testing.T) {
 	}
 }
 
+func TestSessionWorkingDir(t *testing.T) {
+	workDir := t.TempDir()
+	home := t.TempDir()
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:  home,
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+		APIKey:   "test-key-not-used",
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer agent.Close()
+
+	sid, err := agent.NewSessionWithTitle("working-dir")
+	if err != nil {
+		t.Fatalf("NewSessionWithTitle: %v", err)
+	}
+	if err := agent.SetSessionWorkingDir(sid, workDir); err != nil {
+		t.Fatalf("SetSessionWorkingDir: %v", err)
+	}
+	got, err := agent.SessionWorkingDir(sid)
+	if err != nil {
+		t.Fatalf("SessionWorkingDir: %v", err)
+	}
+	if got != workDir {
+		t.Fatalf("working dir=%q want %q", got, workDir)
+	}
+	snapshot, err := agent.GetSession(sid)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if snapshot.WorkingDir != workDir {
+		t.Fatalf("snapshot working dir=%q want %q", snapshot.WorkingDir, workDir)
+	}
+
+	if err := agent.SetSessionWorkingDir(sid, filepath.Join(workDir, "missing")); err == nil {
+		t.Fatal("expected missing directory error")
+	}
+	file := filepath.Join(workDir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := agent.SetSessionWorkingDir(sid, file); err == nil {
+		t.Fatal("expected non-directory error")
+	}
+	if err := agent.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	reopened, err := sdk.New(sdk.Config{
+		HomeDir:  home,
+		Provider: "openai",
+		Model:    "gpt-5.4-mini",
+		APIKey:   "test-key-not-used",
+	})
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer reopened.Close()
+	persisted, err := reopened.SessionWorkingDir(sid)
+	if err != nil {
+		t.Fatalf("SessionWorkingDir after reopen: %v", err)
+	}
+	if persisted != workDir {
+		t.Fatalf("persisted working dir=%q want %q", persisted, workDir)
+	}
+}
+
 func TestCurrentAndListModels(t *testing.T) {
 	agent, err := sdk.New(sdk.Config{
 		HomeDir:  t.TempDir(),

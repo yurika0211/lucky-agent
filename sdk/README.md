@@ -32,7 +32,7 @@ out, err := agent.Chat(ctx, "hello")
 |------|-----|
 | Lifecycle | `New`, `Close`, `HomeDir` |
 | Chat | `Chat`, `ChatSession`, `ChatStream`, `ChatSessionStream`, `ChatWithInput`, `ChatSessionWithInput`, `ChatStreamWithInput`, `ChatSessionStreamWithInput` |
-| Sessions | `NewSession`, `NewSessionWithTitle`, `ListSessions`, `GetSession`, `RenameSession`, `DeleteSession`, `CompactSession` |
+| Sessions | `NewSession`, `NewSessionWithTitle`, `ListSessions`, `GetSession`, `RenameSession`, `SetSessionWorkingDir`, `SessionWorkingDir`, `DeleteSession`, `CompactSession` |
 | Memory | `Remember`, `RememberLongTerm`, `Recall` |
 | RAG | `IndexText`, `IndexFile`, `IndexDirectory`, `SearchRAG`, `RemoveDocument`, `ListDocuments`, `RAGStats` |
 | Tools | `RegisterTool`, `UnregisterTool`, `EnableTool`, `DisableTool`, `ListTools` |
@@ -47,6 +47,25 @@ Streaming `Event` values may carry optional `Approval`, `Observation`, and `Usag
 - `AutoApprove` — auto-approve gated tools inside the host process
 - `DisableTools` — disable builtins after bootstrap (e.g. `terminal`)
 - `LoadExisting` — load previous HomeDir settings, then apply overrides
+
+### Set a session working directory
+
+Shell-aware tools use the session working directory. Embedders that provide a
+repository or project workspace can set it before the first turn:
+
+```go
+sessionID, err := agent.NewSessionWithTitle("repository review")
+if err != nil {
+	return err
+}
+if err := agent.SetSessionWorkingDir(sessionID, "/srv/repositories/example"); err != nil {
+	return err
+}
+reply, err := agent.ChatSession(ctx, sessionID, "审查当前仓库")
+```
+
+The directory must exist. `GetSession` exposes the value as `WorkingDir`, and
+`SessionWorkingDir` reads it without loading the full transcript.
 
 ### Register a host tool
 
