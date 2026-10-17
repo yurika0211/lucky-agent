@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	compactlib "github.com/yurika0211/luckyagent-tools/compact"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/utils"
 )
@@ -38,13 +39,7 @@ type CompactMetadata struct {
 	Attachments         []CompactAttachment `json:"attachments,omitempty"`
 }
 
-type CompactAttachment struct {
-	Kind     string `json:"kind"`
-	Source   string `json:"source,omitempty"`
-	Content  string `json:"content"`
-	Priority int    `json:"priority,omitempty"`
-	Tokens   int    `json:"tokens,omitempty"`
-}
+type CompactAttachment = compactlib.Attachment
 
 type CompactTrace struct {
 	BoundaryID          string    `json:"boundary_id"`

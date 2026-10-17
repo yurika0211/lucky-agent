@@ -80,7 +80,7 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 		targetTailTokens = 1
 	}
 	// Prefer a full summarizer budget over a nearly-expired turn deadline.
-	// Explicit cancel still fails fast inside compactSummaryContext.
+	// Explicit cancel still fails fast inside the compaction engine.
 	compactCtx := ctx
 	if ctx != nil {
 		if deadline, ok := ctx.Deadline(); ok {

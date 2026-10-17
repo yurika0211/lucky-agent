@@ -21,6 +21,15 @@ The new modules do not import LuckyAgent or instantiate an Agent.
 | `internal/channelapp/websocket` | Agent run execution, cancellation and approval integration; run records/replay come from the API module |
 | `internal/apiapp` | Agent/domain operations, storage/configuration policy and resource lifecycle assembly; shared resource parsing/rendering lives in `luckyagent-api/resources` |
 | `api/grpc` | Application gRPC implementation and protocol aliases |
+| `internal/workflow` | Compatibility aliases for `luckyagent-tools/workflow` and `luckyagent-api/workflow` |
+
+The workflow DAG kernel is owned by the tool module; its optional Gin request
+handlers are owned by the API module. Host action registration and the existing
+net/http application route assembly remain host-owned. Transport handlers do
+not instantiate an Agent or choose its configuration. During joint development
+use matching local module checkouts. Merge tools, update and merge API, then
+update host dependencies to downloadable commit versions or release tags and
+verify with `GOWORK=off`.
 
 This extraction moves reusable transport implementations. It does not describe
 all code formerly under `gateway` and `server` as transport: domain operations
@@ -39,19 +48,18 @@ public tool-runtime ports, with callbacks for host-owned installation policy
 and orchestrator session creation. `internal/apiapp/resource_controller.go` is
 the assembly point; it normalizes an absent Agent before interface injection.
 
-The local, ignored `go.work` expects the two module checkouts next to LuckyAgent:
+Use a local, ignored `go.work` with all four module roots (adjust these paths to
+the actual checkout locations):
 
 ```bash
 go work init . ../luckyagent-gateway ../luckyagent-api ../luckyagent-tools
-go work edit -replace=github.com/yurika0211/luckyagent-gateway@v0.2.1=../luckyagent-gateway
-go work edit -replace=github.com/yurika0211/luckyagent-api@v0.2.1=../luckyagent-api
-go work edit -replace=github.com/yurika0211/luckyagent-tools@v0.2.1=../luckyagent-tools
 ```
 
-These workspace replacements keep unpublished versions local. The committed
-`go.mod` contains no local replacement. After both repositories and release tags
-exist, verify the released modules with `GOWORK=off` from a clean checkout before
-treating publication as done.
+Workspace module selection keeps local changes together. The committed
+`go.mod` contains no local replacement and pins the merged tools/API commits
+as Go pseudo-versions. Downstream builds can download those versions without
+workspace checkouts. Verify with `GOWORK=off` when upgrading to new commits or
+release tags.
 
 Validation:
 

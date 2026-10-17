@@ -18,6 +18,7 @@ import (
 	"github.com/yurika0211/luckyagent-tools/autonomy"
 	codexruntime "github.com/yurika0211/luckyagent-tools/codex"
 	"github.com/yurika0211/luckyagent-tools/collab"
+	compactlib "github.com/yurika0211/luckyagent-tools/compact"
 	"github.com/yurika0211/luckyagent-tools/computer"
 	"github.com/yurika0211/luckyagent-tools/cron"
 	grokruntime "github.com/yurika0211/luckyagent-tools/grok"
@@ -2022,62 +2023,11 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 }
 
 func selectCompactSegmentInput(raw []provider.Message, est *contextx.TokenEstimator, retainTurns, targetTailTokens int) ([]provider.Message, []provider.Message) {
+	input, tail := compactlib.SelectInput(toCompactMessages(raw), compactEstimator(est), retainTurns, targetTailTokens)
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	if retainTurns <= 0 && targetTailTokens <= 0 {
-		return append([]provider.Message(nil), raw...), nil
-	}
-
-	turnStarts := make([]int, 0, len(raw)/2+1)
-	for i, msg := range raw {
-		if msg.Role == "user" {
-			turnStarts = append(turnStarts, i)
-		}
-	}
-	turnStarts = append(turnStarts, len(raw))
-
-	protectedStart := 0
-	if retainTurns > 0 && len(turnStarts) > 1 {
-		userTurns := len(turnStarts) - 1
-		if userTurns > retainTurns {
-			protectedStart = turnStarts[userTurns-retainTurns]
-		}
-	}
-
-	cut := protectedStart
-	if targetTailTokens > 0 {
-		cut = -1
-		for _, candidate := range turnStarts {
-			if candidate > protectedStart {
-				break
-			}
-			if estimateProviderMessages(est, raw[candidate:]) <= targetTailTokens {
-				cut = candidate
-				break
-			}
-		}
-		// A single protected turn can exceed the target. In that case retention
-		// is soft: advance only at complete user-turn boundaries.
-		if cut < 0 {
-			for _, candidate := range turnStarts {
-				if candidate <= protectedStart {
-					continue
-				}
-				if estimateProviderMessages(est, raw[candidate:]) <= targetTailTokens {
-					cut = candidate
-					break
-				}
-			}
-		}
-	}
-	if cut < 0 {
-		cut = len(raw)
-	}
-	if cut <= 0 {
-		return nil, append([]provider.Message(nil), raw...)
-	}
-	return append([]provider.Message(nil), raw[:cut]...), append([]provider.Message(nil), raw[cut:]...)
+	return append([]provider.Message(nil), raw[:len(input)]...), append([]provider.Message(nil), raw[len(raw)-len(tail):]...)
 }
 
 func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.Message) (string, string, error) {
@@ -2096,11 +2046,8 @@ func estimateProviderMessages(est *contextx.TokenEstimator, messages []provider.
 		return 0
 	}
 	total := 0
-	for _, msg := range messages {
-		total += est.Estimate(msg.Content) + 4
-		if msg.ReasoningContent != "" {
-			total += est.Estimate(msg.ReasoningContent)
-		}
+	for _, message := range messages {
+		total += compactlib.EstimateMessage(est, message.Content, message.ReasoningContent)
 	}
 	return total
 }

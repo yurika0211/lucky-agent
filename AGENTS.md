@@ -77,6 +77,13 @@ Important context behavior:
   parsing/rendering and WebSocket run replay live in the API module.
 - `internal/channelapp/telegram`, `qqofficial`, `websocket`: host command,
   session, approval and run-execution policy.
+- `luckyagent-tools/{hitl,skillroute,execpolicy,compact,workflow}`: reusable
+  approval waits, skill matching, per-call constraints, text-only compaction
+  and DAG execution. Host adapters retain presentation, model/credential
+  selection, automatic compaction policy and session persistence. These
+  packages do not import the host or API/gateway modules.
+- `internal/workflow`: compatibility aliases for the tool-module DAG engine
+  and the API module's optional Gin workflow handlers.
 - `github.com/yurika0211/luckyagent-gateway`: platform protocols and neutral turn
   contracts. `github.com/yurika0211/luckyagent-api`: HTTP/SSE/WebSocket/gRPC
   transport and protocol. These modules must never import the LuckyAgent runtime.

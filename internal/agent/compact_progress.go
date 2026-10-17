@@ -3,26 +3,13 @@ package agent
 import (
 	"fmt"
 	"strings"
+
+	compactlib "github.com/yurika0211/luckyagent-tools/compact"
 )
 
 // CompactProgress is a client-visible progress update for session compaction.
 // It is carried on ChatEventCompact and mapped to SSE/WebSocket "compact" events.
-type CompactProgress struct {
-	Phase               string `json:"phase"` // start | progress | done | failed | degraded
-	Trigger             string `json:"trigger,omitempty"`
-	Message             string `json:"message,omitempty"`
-	BoundaryID          string `json:"boundary_id,omitempty"`
-	SummarySource       string `json:"summary_source,omitempty"`
-	Chunk               int    `json:"chunk,omitempty"`
-	Chunks              int    `json:"chunks,omitempty"`
-	PreTokenEstimate    int    `json:"pre_token_estimate,omitempty"`
-	PostTokenEstimate   int    `json:"post_token_estimate,omitempty"`
-	DroppedMessages     int    `json:"dropped_messages,omitempty"`
-	RetainedMessages    int    `json:"retained_messages,omitempty"`
-	RestoredAttachments int    `json:"restored_attachments,omitempty"`
-	Model               string `json:"model,omitempty"`
-	Error               string `json:"error,omitempty"`
-}
+type CompactProgress = compactlib.Progress
 
 // CompactDisplay builds a short UI-facing title/subtitle for compact results.
 func CompactDisplay(result *CompactSessionResult) map[string]string {

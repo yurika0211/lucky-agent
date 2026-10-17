@@ -70,9 +70,9 @@ require (
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	github.com/yurika0211/luckyagent-api v0.2.1
+	github.com/yurika0211/luckyagent-api v0.2.2-0.20261017170822-e471a6af13ba
 	github.com/yurika0211/luckyagent-gateway v0.2.2
-	github.com/yurika0211/luckyagent-tools v0.2.2
+	github.com/yurika0211/luckyagent-tools v0.2.3-0.20261017170624-31ef6846a434
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
