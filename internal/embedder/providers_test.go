@@ -18,6 +18,134 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+func TestOpenAIEmbedder_EnvironmentModelIsResolvedAtConstruction(t *testing.T) {
+	const model = "text-embedding-3-large"
+	t.Setenv("EMBEDDING_MODEL_NAME", model)
+	t.Setenv("EMBEDDING_MODEL_KEY", "test-key")
+	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
+
+	var requestModel string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req embeddingRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		requestModel = req.Model
+
+		body, err := json.Marshal(embeddingResponse{
+			Data:   []embeddingData{{Index: 0, Embedding: make([]float64, 3072), Object: "embedding"}},
+			Model:  req.Model,
+			Object: "list",
+		})
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb.client = client
+	t.Setenv("EMBEDDING_MODEL_NAME", "text-embedding-3-small")
+	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello"})
+	if err != nil {
+		t.Fatalf("EmbedBatch returned error: %v", err)
+	}
+	if requestModel != model {
+		t.Errorf("request model = %q, want %q", requestModel, model)
+	}
+	if emb.Model() != model {
+		t.Errorf("Model() = %q, want %q", emb.Model(), model)
+	}
+	if emb.Dimension() != 3072 {
+		t.Errorf("Dimension() = %d, want 3072", emb.Dimension())
+	}
+	if len(vecs) != 1 {
+		t.Fatalf("returned %d vectors, want 1", len(vecs))
+	}
+	if len(vecs[0]) != emb.Dimension() {
+		t.Errorf("returned vector dimension = %d, want %d", len(vecs[0]), emb.Dimension())
+	}
+}
+
+func TestOpenAIEmbedder_EmbedBatchRejectsResponseDimensionMismatch(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body, err := json.Marshal(embeddingResponse{
+			Data:   []embeddingData{{Index: 0, Embedding: []float64{0.1, 0.2}, Object: "embedding"}},
+			Model:  "text-embedding-3-large",
+			Object: "list",
+		})
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{
+		APIKey:    "test-key",
+		Model:     "text-embedding-3-large",
+		BaseURL:   "https://example.test/v1",
+		Dimension: 3,
+	})
+	emb.client = client
+	_, err := emb.EmbedBatch(context.Background(), []string{"hello"})
+	if err == nil || !strings.Contains(err.Error(), "embedding dimension mismatch for input 0: got 2, want 3") {
+		t.Fatalf("expected a response dimension mismatch error, got %v", err)
+	}
+}
+
+func TestOpenAIEmbedder_EmbedBatchRequestsConfiguredV3Dimension(t *testing.T) {
+	const dimension = 1024
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var req embeddingRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if req.Dimensions != dimension {
+			t.Fatalf("request dimensions = %d, want %d", req.Dimensions, dimension)
+		}
+
+		body, err := json.Marshal(embeddingResponse{
+			Data:   []embeddingData{{Index: 0, Embedding: make([]float64, dimension), Object: "embedding"}},
+			Model:  req.Model,
+			Object: "list",
+		})
+		if err != nil {
+			t.Fatalf("marshal response: %v", err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(body)),
+		}, nil
+	})}
+
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{
+		APIKey:    "test-key",
+		Model:     "text-embedding-3-large",
+		BaseURL:   "https://example.test/v1",
+		Dimension: dimension,
+	})
+	emb.client = client
+	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello"})
+	if err != nil {
+		t.Fatalf("EmbedBatch returned error: %v", err)
+	}
+	if len(vecs) != 1 {
+		t.Fatalf("returned %d vectors, want 1", len(vecs))
+	}
+	if len(vecs[0]) != dimension {
+		t.Fatalf("returned vector dimension = %d, want %d", len(vecs[0]), dimension)
+	}
+}
+
 func TestOpenAIEmbedder_EmbedBatch(t *testing.T) {
 	client := &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -69,7 +197,7 @@ func TestOpenAIEmbedder_EmbedBatch(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL_KEY", "test-key")
 	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
 
-	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{Dimension: 3})
 	emb.client = client
 	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello", "world"})
 	if err != nil {
@@ -124,7 +252,7 @@ func TestOpenAIEmbedder_EmbedBatch_RetriesOn429(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
 	t.Setenv("EMBEDDING_MODEL_MAX_RETRIES", "2")
 
-	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{Dimension: 2})
 	emb.client = client
 	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello"})
 	if err != nil {
@@ -171,7 +299,7 @@ func TestOpenAIEmbedder_EmbedBatch_RetriesOnTransportTimeout(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
 	t.Setenv("EMBEDDING_MODEL_MAX_RETRIES", "2")
 
-	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{Dimension: 1})
 	emb.client = client
 	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello"})
 	if err != nil {
@@ -218,7 +346,7 @@ func TestOpenAIEmbedder_EmbedBatch_RetriesOnEOF(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
 	t.Setenv("EMBEDDING_MODEL_MAX_RETRIES", "2")
 
-	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	emb := NewOpenAIEmbedder(OpenAIEmbedderConfig{Dimension: 2})
 	emb.client = client
 	vecs, err := emb.EmbedBatch(context.Background(), []string{"hello"})
 	if err != nil {

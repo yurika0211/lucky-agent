@@ -188,6 +188,30 @@ func TestOpenAIEmbedderDefaults(t *testing.T) {
 	}
 }
 
+func TestOpenAIEmbedderEnvironmentModelSetsRAGFingerprint(t *testing.T) {
+	t.Setenv("EMBEDDING_MODEL_NAME", "text-embedding-3-large")
+
+	emb := embedder.NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{})
+	manager, err := NewRAGManagerWithSQLite(emb, DefaultRAGConfig(), filepath.Join(t.TempDir(), "rag.db"))
+	if err != nil {
+		t.Fatalf("create RAG manager: %v", err)
+	}
+	defer manager.CloseStore()
+
+	store := manager.SQLiteStore()
+	if store.Dimension() != 3072 {
+		t.Fatalf("store dimension = %d, want 3072", store.Dimension())
+	}
+
+	var fingerprint string
+	if err := store.DB().QueryRow(`SELECT value FROM store_meta WHERE key = 'embedding_fingerprint'`).Scan(&fingerprint); err != nil {
+		t.Fatalf("read embedding fingerprint: %v", err)
+	}
+	if fingerprint != "openai|text-embedding-3-large|3072" {
+		t.Errorf("embedding fingerprint = %q, want openai|text-embedding-3-large|3072", fingerprint)
+	}
+}
+
 func TestIndexerUsesEmbedBatch(t *testing.T) {
 	store := NewVectorStore(8)
 	emb := &batchCountingEmbedder{dim: 8}
