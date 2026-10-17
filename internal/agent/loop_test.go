@@ -569,3 +569,31 @@ func TestNegatedWriteDoesNotDropLaterRead(t *testing.T) {
 		t.Fatalf("later file_read dropped, got %v", got)
 	}
 }
+
+func TestEnglishNegationDoesNotDropLaterRequiredTool(t *testing.T) {
+	reg := tool.NewRegistry()
+	for _, name := range []string{"terminal", "file_read", "file_write"} {
+		reg.Register(&tool.Tool{Name: name, Enabled: true})
+	}
+	a := &Agent{tools: reg}
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "period after another tool", input: "Don't use terminal. Must call file_read"},
+		{name: "period before use", input: "Never call file_write. Use file_read."},
+		{name: "implicit sentence boundary", input: "Do not call file_write. call file_read"},
+		{name: "same tool mentioned twice", input: "Don't use file_read. Now call file_read for real."},
+		{name: "comma boundary", input: "Never call file_write, use file_read"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := a.extractRequiredToolNames(tt.input)
+			if len(got) != 1 || got[0] != "file_read" {
+				t.Fatalf("expected file_read only, got %v", got)
+			}
+		})
+	}
+}

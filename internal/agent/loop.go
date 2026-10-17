@@ -1419,7 +1419,7 @@ func isExplicitRequiredToolMention(input string, pos int, name string) bool {
 		end = len(input)
 	}
 	window := input[start:end]
-	if toolMentionNegated(window, name) {
+	if toolMentionNegated(input, pos) {
 		return false
 	}
 	lower := strings.ToLower(window)
@@ -1438,18 +1438,11 @@ func isExplicitRequiredToolMention(input string, pos int, name string) bool {
 	}
 	// "调用一次 file_read" keeps the verb in the same clause without gluing
 	// it to the tool name.
-	return clauseRequestsTool(window, name)
+	return clauseRequestsTool(input, pos)
 }
 
-func clauseRequestsTool(window, name string) bool {
-	idx := strings.Index(window, name)
-	if idx < 0 {
-		idx = strings.Index(strings.ToLower(window), strings.ToLower(name))
-	}
-	if idx < 0 {
-		return false
-	}
-	clause := strings.ToLower(clauseBeforeTool(window[:idx]))
+func clauseRequestsTool(input string, pos int) bool {
+	clause := strings.ToLower(clauseBeforeTool(toolMentionContext(input, pos)))
 	if clause == "" {
 		return false
 	}
@@ -1465,15 +1458,8 @@ func clauseRequestsTool(window, name string) bool {
 // forbids the tool. Only the text between the previous sentence boundary and
 // the tool name counts, so an earlier "不要解释" cannot drop a later
 // "调用 file_read".
-func toolMentionNegated(window, name string) bool {
-	idx := strings.Index(window, name)
-	if idx < 0 {
-		idx = strings.Index(strings.ToLower(window), strings.ToLower(name))
-	}
-	if idx < 0 {
-		return false
-	}
-	clause := clauseBeforeTool(window[:idx])
+func toolMentionNegated(input string, pos int) bool {
+	clause := clauseBeforeTool(toolMentionContext(input, pos))
 	if clause == "" {
 		return false
 	}
@@ -1491,11 +1477,25 @@ func toolMentionNegated(window, name string) bool {
 	return false
 }
 
+func toolMentionContext(input string, pos int) string {
+	if pos < 0 {
+		return ""
+	}
+	if pos > len(input) {
+		pos = len(input)
+	}
+	start := pos - 64
+	if start < 0 {
+		start = 0
+	}
+	return input[start:pos]
+}
+
 func clauseBeforeTool(before string) string {
 	cut := 0
 	for i, r := range before {
 		switch r {
-		case '。', '\n', '；', ';', '!', '！', '？', '?':
+		case '。', '\n', '；', ';', '.', ',', '!', '！', '？', '?':
 			cut = i + utf8.RuneLen(r)
 		}
 	}
