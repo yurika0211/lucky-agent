@@ -1,5 +1,7 @@
 # LuckyAgent Multi-Agent Analysis
 
+> 2026-10-18 仓库拆分更新：本文保留历史分析。原 `internal/collab` 和普通委派管理已迁入独立 `luckyagent-orchestrator` 模块；工具入口由 `luckyagent-tools` 适配。当前包路径、持久化边界与联调方法见[独立编排模块](../orchestration-module.md)。
+
 ## 结论
 
 LuckyAgent 当前已经具备三层 multi-agent 能力，但它们还不是同一个统一调度系统：

@@ -1,7 +1,7 @@
 package autonomy
 
 import (
-	runtime "github.com/yurika0211/luckyagent-tools/autonomy"
+	runtime "github.com/yurika0211/luckyagent-orchestrator/autonomy"
 	"github.com/yurika0211/luckyagent/internal/turn"
 )
 

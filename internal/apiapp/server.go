@@ -18,9 +18,9 @@ import (
 
 	jsoniter "github.com/json-iterator/go"
 	transport "github.com/yurika0211/luckyagent-api"
-	"github.com/yurika0211/luckyagent-tools/collab"
+	"github.com/yurika0211/luckyagent-orchestrator/collab"
+	taskstore "github.com/yurika0211/luckyagent-orchestrator/task"
 	"github.com/yurika0211/luckyagent-tools/memory"
-	taskstore "github.com/yurika0211/luckyagent-tools/task"
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/gateway"
 	"github.com/yurika0211/luckyagent/internal/logger"

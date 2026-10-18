@@ -237,7 +237,8 @@ internal/server          API 构造兼容入口
 internal/apiapp          API 业务与运行时组装
 internal/gateway         消息平台兼容入口
 internal/channelapp      网关业务与 Agent 接入
-luckyagent-tools         公共工具、任务引擎与能力接口（独立模块）
+luckyagent-tools         公共工具、工具适配与能力接口（独立模块）
+luckyagent-orchestrator  委派、多 Agent 编排、autonomy 与任务存储（独立模块）
 luckyagent-gateway       平台协议与回复展示（独立模块）
 luckyagent-api           HTTP/WS/gRPC、资源处理与重连存储（独立模块）
 docker-compose.yml       开发环境 Compose

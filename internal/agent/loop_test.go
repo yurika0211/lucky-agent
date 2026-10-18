@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	taskstore "github.com/yurika0211/luckyagent-tools/task"
+	taskstore "github.com/yurika0211/luckyagent-orchestrator/task"
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	taskstore "github.com/yurika0211/luckyagent-tools/task"
+	taskstore "github.com/yurika0211/luckyagent-orchestrator/task"
 )
 
 func (a *Agent) appendRunningTaskNotice(response string) string {

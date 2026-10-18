@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyagent-tools/collab"
-	taskstore "github.com/yurika0211/luckyagent-tools/task"
+	"github.com/yurika0211/luckyagent-orchestrator/collab"
+	taskstore "github.com/yurika0211/luckyagent-orchestrator/task"
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/tool"

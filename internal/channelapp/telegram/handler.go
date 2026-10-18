@@ -19,9 +19,9 @@ import (
 	"sync"
 	"time"
 
+	taskstore "github.com/yurika0211/luckyagent-orchestrator/task"
 	"github.com/yurika0211/luckyagent-tools/cron"
 	"github.com/yurika0211/luckyagent-tools/memory"
-	taskstore "github.com/yurika0211/luckyagent-tools/task"
 	"github.com/yurika0211/luckyagent/internal/agent"
 	"github.com/yurika0211/luckyagent/internal/cli/profile"
 	"github.com/yurika0211/luckyagent/internal/config"

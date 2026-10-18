@@ -10,8 +10,10 @@ LuckyAgent embeds this Go module in process and supplies application services.
 | `luckyagent-tools/sandbox` | Execution snapshots and shell/path boundaries |
 | `luckyagent-tools/opencli` | Shared OpenCLI configuration shape |
 | `luckyagent-tools/textutil` | Shared text/HTML/URL formatting |
-| `luckyagent-tools` runtime services | Memory/RAG argument handling, delegation, scheduling, media/computer tools, temporary credential execution and Codex/Grok bridges |
-| `luckyagent-tools/{task,collab,cron,autonomy}` | Optional generic engines, storage and injected execution callbacks |
+| `luckyagent-tools` runtime services | Memory/RAG argument handling, delegation/autonomy tool adapters, scheduling tools, media/computer tools, temporary credential execution and Codex/Grok bridges |
+| `luckyagent-tools/{task,collab,autonomy}` | Deprecated aliases to the independent orchestration module |
+| `luckyagent-tools/cron` | Generic scheduled job engine |
+| `luckyagent-orchestrator/{delegate,task,collab,autonomy}` | Delegation, task storage, collaboration and durable execution engines with injected callbacks |
 | `luckyagent-tools/{memory,rag,credentials,chat}` | Neutral ports, shared values and validation |
 | `luckyagent-tools/{computer,multimodal,codex,grok}` | Optional providers and external clients |
 | `luckyagent-tools/{approval,hitl}` | Shared approval values and runtime-scoped input/approval waits |
@@ -46,14 +48,15 @@ Create an ignored workspace when editing the execution components across
 repositories (replace the paths with the actual checkouts):
 
 ```bash
-go work init . /path/to/luckyagent-tools /path/to/luckyagent-api /path/to/luckyagent-gateway
+go work init . /path/to/luckyagent-tools /path/to/luckyagent-api /path/to/luckyagent-gateway /path/to/luckyagent-orchestrator
 ```
 
-The committed `go.mod` pins merged tools/API commits as downloadable Go
-pseudo-versions and has no local `replace`. Normal checkouts can build with
-`GOWORK=off`; a workspace is only needed for local changes across repositories.
+The committed `go.mod` pins published tool/API commits and orchestrator `v0.1.0`
+without a local `replace`. Normal checkouts build with `GOWORK=off`; a workspace
+is optional for joint development. See [the orchestration module](orchestration-module.md)
+for dependency ownership and publication order.
 New execution packages are not in tools v0.2.2/API v0.2.1. For future changes,
-merge tools first, update/merge API, then update the host requirements to the
+publish orchestrator first, merge tools, update/merge API, then update the host requirements to the
 merged commits or newer release tags. Approval rendering, model/credential selection,
 automatic compaction policy, session persistence and actual dispatch remain
 host-owned. Shared compaction DTO aliases keep existing JSON fields unchanged.
@@ -73,8 +76,9 @@ go test -p 2 ./...
 GOWORK=off go test -mod=readonly -p 2 ./...
 ```
 
-All 552 original tool/search test entrypoints are retained exactly once across
-the two repositories. Generic MCP tests no longer create an unused host
+Original tool/search tests are retained with their owning implementations.
+Orchestration engine tests now live in the orchestrator repository, while tool
+adapter tests remain in tools. Generic MCP tests no longer create an unused host
 configuration manager. The standalone module additionally checks its import
 boundary and executes its embedding example.
 

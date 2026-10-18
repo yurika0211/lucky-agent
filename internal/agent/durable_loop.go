@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyagent-tools/autonomy"
+	"github.com/yurika0211/luckyagent-orchestrator/autonomy"
 	"github.com/yurika0211/luckyagent/internal/contextx"
 	"github.com/yurika0211/luckyagent/internal/provider"
 	"github.com/yurika0211/luckyagent/internal/session"

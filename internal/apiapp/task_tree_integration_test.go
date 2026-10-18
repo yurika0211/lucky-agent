@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	taskstore "github.com/yurika0211/luckyagent-tools/task"
+	taskstore "github.com/yurika0211/luckyagent-orchestrator/task"
 )
 
 func TestTaskTreeRetainsOldDescendantsAndTheirResults(t *testing.T) {

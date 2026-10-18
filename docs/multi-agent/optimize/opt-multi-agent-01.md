@@ -1,5 +1,7 @@
 # opt-multi-agent-01
 
+> 2026-10-18 仓库拆分更新：本文为历史优化方案，所述 `internal/collab` 等路径已迁入独立 `luckyagent-orchestrator` 模块。迁移保留原有调度行为；不能据本文目标推断各链路已统一。当前职责与接入方式见[独立编排模块](../../orchestration-module.md)。
+
 ## 目标
 
 优化 LuckyAgent multi-agent（多代理：把任务拆给多个执行体协作完成）系统，让它从“多套可用能力并存”升级为“统一任务状态、统一事件、可恢复、可审计、可控成本、可学习”的生产级编排层。

@@ -67,10 +67,17 @@ Important context behavior:
   host credential adapter; `internal/toolapp` opens/closes the encrypted store
   per call and keeps real-backend integration tests.
 - `github.com/yurika0211/luckyagent-tools`: tool contracts, registry, generic
-  builtins, Skills, MCP, search and reusable runtime services. Optional task,
-  collaboration, cron/autonomy, computer/media and coding-agent engines live in
-  its public subpackages. Agent execution, Aestus/RAG persistence, credentials
+  builtins, Skills, MCP, search and reusable runtime services. Optional cron,
+  computer/media and coding-agent engines live in its public subpackages.
+  Task/collaboration/autonomy engines now belong to
+  `github.com/yurika0211/luckyagent-orchestrator`; the old tools subpackage paths
+  are compatibility aliases. Agent execution, Aestus/RAG persistence, credentials
   and provider selection remain host-owned. It never imports LuckyAgent.
+- `github.com/yurika0211/luckyagent-orchestrator/{delegate,task,collab,autonomy}`:
+  independent scheduling engines with host-injected execution and workspace
+  policy. Foreground durable turns also consume autonomy persistence; keep
+  foreground storage isolated from background dispatch. See
+  `docs/orchestration-module.md` for local setup and release order.
 - `internal/server`, `internal/gateway/*`, `internal/websocket`: thin compatibility
   bindings to the extracted modules and host application packages.
 - `internal/apiapp`: HTTP API domain operations and runtime assembly; resource

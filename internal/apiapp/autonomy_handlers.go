@@ -4,7 +4,7 @@ import (
 	"github.com/yurika0211/luckyagent-api/resources"
 	"net/http"
 
-	"github.com/yurika0211/luckyagent-tools/autonomy"
+	"github.com/yurika0211/luckyagent-orchestrator/autonomy"
 )
 
 func (s *Server) handleAutonomyDashboard(w http.ResponseWriter, r *http.Request) {

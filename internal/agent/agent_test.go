@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyagent-tools/autonomy"
+	"github.com/yurika0211/luckyagent-orchestrator/autonomy"
 	"github.com/yurika0211/luckyagent-tools/cron"
 	"github.com/yurika0211/luckyagent-tools/memory"
 	"github.com/yurika0211/luckyagent-tools/multimodal"

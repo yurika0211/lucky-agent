@@ -1,5 +1,17 @@
 # Multi-Agent Collaboration Guide
 
+The execution engines are maintained in the independent
+`luckyagent-orchestrator` module: `collab` owns team orchestration and planning,
+`delegate` owns ordinary child tasks, `autonomy` owns background workers and
+durable queues, and `task` owns records/events/policy. Tools and HTTP adapters
+remain in their existing SDKs; the host injects real Agent execution. See
+[module boundaries and local setup](../orchestration-module.md).
+
+This guide describes the HTTP collaboration path. The chat `subagent` tool
+continues to execute one child callback and records its selected mode as
+metadata. Its `mode=autonomy_queue` does not enqueue background work; use the
+`autonomy` tool's `add` action for that path.
+
 LuckyAgent exposes collaboration tasks through `POST /api/v1/agents/delegate`.
 The request `mode` accepts exactly four values: `auto`, `parallel`, `pipeline`,
 and `debate`. `mdp` is not an execution mode and is rejected with a `400`

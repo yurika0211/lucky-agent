@@ -27,7 +27,7 @@ The workflow DAG kernel is owned by the tool module; its optional Gin request
 handlers are owned by the API module. Host action registration and the existing
 net/http application route assembly remain host-owned. Transport handlers do
 not instantiate an Agent or choose its configuration. During joint development
-use matching local module checkouts. Merge tools, update and merge API, then
+use matching local module checkouts. Publish orchestrator, merge tools, update and merge API, then
 update host dependencies to downloadable commit versions or release tags and
 verify with `GOWORK=off`.
 
@@ -44,22 +44,25 @@ the platform adapter.
 
 `luckyagent-api/resources` owns task/tree/feedback, approvals, cron, autonomy,
 Skill lifecycle/installation and collaboration request controllers. It consumes
-public tool-runtime ports, with callbacks for host-owned installation policy
+public orchestration/tool ports, with callbacks for host-owned installation policy
 and orchestrator session creation. `internal/apiapp/resource_controller.go` is
 the assembly point; it normalizes an absent Agent before interface injection.
 
-Use a local, ignored `go.work` with all four module roots (adjust these paths to
+Task, collaboration and autonomy engines are owned by the independent
+`luckyagent-orchestrator` module. See [orchestration boundaries](orchestration-module.md).
+
+Use a local, ignored `go.work` with all five module roots (adjust these paths to
 the actual checkout locations):
 
 ```bash
-go work init . ../luckyagent-gateway ../luckyagent-api ../luckyagent-tools
+go work init . ../luckyagent-gateway ../luckyagent-api ../luckyagent-tools ../luckyagent-orchestrator
 ```
 
 Workspace module selection keeps local changes together. The committed
-`go.mod` contains no local replacement and pins the merged tools/API commits
-as Go pseudo-versions. Downstream builds can download those versions without
-workspace checkouts. Verify with `GOWORK=off` when upgrading to new commits or
-release tags.
+`go.mod` contains no local replacement and pins published tools/API commits
+as Go pseudo-versions alongside orchestrator `v0.1.0`. Downstream builds use
+downloadable dependencies with `GOWORK=off`; the workspace is optional for
+joint development.
 
 Validation:
 
