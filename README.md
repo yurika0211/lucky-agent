@@ -186,6 +186,7 @@ lh rag search "deployment"
 - [独立工具模块与宿主适配](docs/tool-module.md)
 - [Agent 核心与可执行入口](docs/core-modules.md)
 - [共享应用服务及宿主适配](docs/application-services.md)
+- [运行时请求与恢复选项](docs/runtime-request-recovery.md)：WebSocket 恢复、可选缓存 key 与 X11 截图回退
 - [Codex App Server 集成](docs/codex-app-server.md)
 - [Grok agent 集成](docs/grok-agent.md)
 - [记忆系统](docs/memory_system.md)

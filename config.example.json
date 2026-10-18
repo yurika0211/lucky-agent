@@ -19,6 +19,7 @@
         "protocol": "chat_completions",
         "reasoning_summary": "detailed",
         "reasoning_effort": "auto",
+        "prompt_cache_key": "",
         "extra_headers": {
           "User-Agent": "luckyagent"
         }
@@ -113,7 +114,8 @@
       "api_key": "",
       "credential_ref": "",
       "api_base": "https://api.openai.com/v1",
-      "model": "gpt-5.4-mini"
+      "model": "gpt-5.4-mini",
+      "prompt_cache_key": ""
     }
   ],
   "web_search": {

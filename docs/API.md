@@ -617,6 +617,12 @@ instead of starting a run. The server replies with `type: "status"` and
 `data.state: "lucky"`. `off` enqueues one chat run built from the collected
 segments. Collection state is in memory for the current server process.
 
+On startup, durable run recovery scans session IDs and queued/running run
+metadata without retaining all stored event histories. Event replay still
+loads a session lazily through the existing reconnect path. Run fields,
+attachments, event JSON and reconnect cursors are unchanged. See
+[runtime request and recovery options](runtime-request-recovery.md).
+
 Server push `type: "task_event"` is sent to every connected client when a task
 event is stored. `data` carries `type`, `task_id`, `parent_id`, `status`,
 `mode`, `message`, `progress`, `session_id`, and `description`. A scheduled

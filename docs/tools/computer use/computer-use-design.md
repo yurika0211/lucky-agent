@@ -5,6 +5,16 @@
 > 参考资料：`luckyAgent：如何实现computer use能力.md`  
 > 最后核对代码：2026-09-05
 
+## 2026-10-18 实现补充
+
+Computer 后端现由独立的 `luckyagent-tools/computer` 维护。X11 截图优先用
+ImageMagick `import`；命令缺失或失败时，在本地 DISPLAY 上尝试原生 GetImage。
+原生路径有五秒超时、取消处理和图像大小上限。输入和窗口定位仍依赖 `xdotool`；
+远程 DISPLAY 仍需 ImageMagick。WSLg 使用独立后端，不会因 X11 截图失败而自动
+切换到 Windows 桌面。详见[运行时请求与恢复选项](../../runtime-request-recovery.md)。
+
+以下内容保留为早期设计记录，其中 `internal/*` 路径不代表当前模块归属。
+
 ## 1. 结论
 
 LuckyAgent 应当把 computer use（模型观察屏幕并驱动鼠标、键盘）实现为一组有状态的内置工具，而不是把一个平台相关的 `ComputerAdapter` 直接挂到 `Agent` 上。
