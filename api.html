@@ -493,7 +493,7 @@ POST /api/v1/tasks/{id}/cancel
           </article>
         </section>
 
-        <section id="realtime" data-search="websocket reconnect request_conflict persist_failed lucky grpc">
+        <section id="realtime" data-search="websocket reconnect request_conflict persist_failed lucky grpc duration_ms tool_result">
           <h2>WebSocket 与 gRPC</h2>
           <article class="endpoint" id="ws">
             <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/ws</span></div>
@@ -508,6 +508,7 @@ POST /api/v1/tasks/{id}/cancel
               <tr><td>重连</td><td><code>type:"reconnect"</code>，<code>data.last_message_id</code> 填最后实际收到的事件。服务端有界重放并去重。客户端也要按 <code>event_id</code> 去重。恢复失败是 <code>RECOVERY_FAILED</code>。</td></tr>
             </table>
             <p><code>type:"lucky"</code> 先收集同一会话的多条消息，<code>data.action</code> 为 <code>on</code>、<code>off</code>、<code>status</code> 或 <code>cancel</code>。收集期间普通聊天先存储，<code>off</code> 时合并成一轮。收集状态只在当前进程内存里。</p>
+            <p><code>tool_result</code> 的 <code>data.duration_ms</code> 是这次工具调用的墙钟毫秒，和会话 tool message 上的字段相同。SSE 的 <code>observe</code> 帧也带这个字段。0 或省略表示这次没有测量。还在运行的工具没有结果事件，也不补造耗时。超时、失败、沙箱拒绝和缺少可执行文件仍带已测量的耗时。</p>
             <p>任务入库后向所有连接推送 <code>type:"task_event"</code>，<code>data</code> 含 <code>type</code>、<code>task_id</code>、<code>parent_id</code>、<code>status</code>、<code>mode</code>、<code>message</code>、<code>progress</code>、<code>session_id</code>、<code>description</code>。定时消息进入会话时仍是没有 run id 的 <code>stream_end</code>。</p>
             <div class="note">运行记录保存在运行目录的 JSON 快照和增量 JSONL journal。两者都要备份。旧二进制不能读取新 journal 在最后一个快照之后的条目。保留期 7 天，活跃工作会留下。请求去重不能让进程崩溃后的外部工具副作用变成事务。<code>GET /api/v1/ws/stats</code> 返回 Hub 统计。</div>
           </article>

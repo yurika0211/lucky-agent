@@ -374,7 +374,7 @@ func (a *Agent) continueAfterStreamMemoryGate(
 		)
 	}
 	for _, execResult := range executed {
-		emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata)
+		emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata, execResult.Duration)
 		stored := observedToolMessage(state.runID, execResult, execResult.Result)
 		messages = append(messages, observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)))
 		if sess != nil {

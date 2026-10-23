@@ -874,6 +874,8 @@ a session lazily through the existing reconnect path. Run fields,
 attachments, event JSON and reconnect cursors are unchanged. See
 [runtime request and recovery options](runtime-request-recovery.md).
 
+`tool_result` carries the finished call's `duration_ms` in milliseconds. The same value is on the SSE `observe` frame. Zero or an omitted field means the producer did not measure that call. A running tool has no result event and no invented duration. Timeout, failure, sandbox refusal and a missing executable still carry the measured wall clock. This matches the `duration_ms` stored on the session tool message.
+
 Server push `type: "task_event"` is sent to every connected client when a task
 event is stored. `data` carries `type`, `task_id`, `parent_id`, `status`,
 `mode`, `message`, `progress`, `session_id`, and `description`. A scheduled
