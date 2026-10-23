@@ -778,12 +778,13 @@ func emitChatToolCallEvents(events chan<- ChatEvent, toolCalls []provider.ToolCa
 	}
 }
 
-func emitChatToolResultEvent(events chan<- ChatEvent, toolName, result string, metadata map[string]any) {
+func emitChatToolResultEvent(events chan<- ChatEvent, toolName, result string, metadata map[string]any, duration time.Duration) {
 	events <- ChatEvent{
-		Type:    ChatEventToolResult,
-		Name:    toolName,
-		Result:  result,
-		Content: fmt.Sprintf("📋 %s → %s", toolName, result),
+		Type:     ChatEventToolResult,
+		Name:     toolName,
+		Result:   result,
+		Duration: duration,
+		Content:  fmt.Sprintf("📋 %s → %s", toolName, result),
 	}
 	if memoryTracePayload, ok := marshalMemoryTracePayload(metadata); ok {
 		events <- ChatEvent{

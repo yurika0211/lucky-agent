@@ -613,7 +613,7 @@ func (a *Agent) executeDurablePending(ctx context.Context, sess *session.Session
 		if err := save(); err != nil {
 			return err
 		}
-		emitForeground(cfg, ChatEvent{Type: ChatEventToolResult, Name: msg.Name, Result: executed.Output})
+		emitForeground(cfg, ChatEvent{Type: ChatEventToolResult, Name: msg.Name, Result: executed.Output, Duration: executed.Duration})
 		if cfg.emit != nil {
 			emitObservationEvents(func(event ChatEvent) { emitForeground(cfg, event) }, executedToolCall{ToolCall: pending.Call, Metadata: executed.Metadata, Observations: executed.Observations})
 		}
