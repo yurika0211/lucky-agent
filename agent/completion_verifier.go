@@ -143,7 +143,7 @@ func (v completionVerifier) verify(ctx context.Context, input completionReviewIn
 		return nil, 0, err
 	}
 	if resp == nil {
-		return nil, 0, fmt.Errorf("verifier returned no response")
+		return nil, 0, fmt.Errorf("%w: verifier returned no response", errVerifierRetryable)
 	}
 	text := strings.TrimSpace(resp.Content)
 	if strings.HasPrefix(text, "```") {
@@ -153,14 +153,14 @@ func (v completionVerifier) verify(ctx context.Context, input completionReviewIn
 	}
 	var review durableVerification
 	if err := json.Unmarshal([]byte(text), &review); err != nil || len(resp.ToolCalls) != 0 || strings.EqualFold(resp.FinishReason, "length") {
-		return nil, resp.TokensUsed, fmt.Errorf("verifier returned an invalid assessment")
+		return nil, resp.TokensUsed, fmt.Errorf("%w: verifier returned an invalid assessment", errVerifierRetryable)
 	}
 	if (review.Status != "complete" && review.Status != "continue" && review.Status != "blocked") || strings.TrimSpace(review.Reason) == "" || len(review.Evidence) == 0 {
-		return nil, resp.TokensUsed, fmt.Errorf("verifier assessment lacks status, reason or evidence")
+		return nil, resp.TokensUsed, fmt.Errorf("%w: verifier assessment lacks status, reason or evidence", errVerifierRetryable)
 	}
 	for _, item := range review.Evidence {
 		if strings.TrimSpace(item) == "" {
-			return nil, resp.TokensUsed, fmt.Errorf("verifier evidence is empty")
+			return nil, resp.TokensUsed, fmt.Errorf("%w: verifier evidence is empty", errVerifierRetryable)
 		}
 	}
 	if review.Status == "complete" {
