@@ -30,6 +30,9 @@ type ChatEvent struct {
 	Name        string // 工具名（Type=EventToolCall 时）
 	Args        string // 工具参数
 	Result      string // 工具结果
+	// Duration is the finished tool call's wall clock. It is set only on
+	// ChatEventToolResult. Zero means the call was not measured.
+	Duration time.Duration
 	Round       int    // 所属轮次（Type=ChatEventReasoningContent 时使用）
 	Observation *ObservationEvent
 	Approval    *ApprovalEvent
@@ -914,7 +917,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 				if state.memoryGate != nil {
 					state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 				}
-				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata)
+				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata, execResult.Duration)
 				emitChatObservationEvents(events, execResult)
 				messages = append(messages, observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)))
 				if sess != nil {
@@ -1141,7 +1144,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			if state.memoryGate != nil {
 				state.memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 			}
-			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata)
+			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata, execResult.Duration)
 			emitChatObservationEvents(events, execResult)
 			messages = append(messages, observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)))
 			if sess != nil {
