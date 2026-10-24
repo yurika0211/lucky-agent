@@ -406,6 +406,11 @@ func modelStallLimit(cfg LoopConfig) int {
 // checkpoint is intact, so the next slice retries instead of blocking.
 var errIncompleteSummary = errors.New("progress summary is incomplete")
 
+// errVerifierRetryable marks a completion review that produced no usable
+// assessment. The recorded operations are untouched, so the next slice retries
+// instead of asking a person to intervene.
+var errVerifierRetryable = errors.New("completion review was inconclusive")
+
 // durableTransientErrorMarkers lists upstream failures that leave the
 // checkpoint usable. They are retried by the next slice instead of opening a
 // manual intervention ticket.
@@ -427,7 +432,7 @@ func durableProviderError(ctx context.Context, err error) error {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return ctx.Err()
 	}
-	if errors.Is(err, errIncompleteSummary) {
+	if errors.Is(err, errIncompleteSummary) || errors.Is(err, errVerifierRetryable) {
 		return autonomy.ErrYield
 	}
 	// Authentication and malformed requests need intervention, not retries.

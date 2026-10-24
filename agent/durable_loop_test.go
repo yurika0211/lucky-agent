@@ -540,3 +540,21 @@ func TestDurableShellAwareStartedOperationStillBlocks(t *testing.T) {
 		t.Fatalf("shell-aware operation was replayed: calls=%d err=%v", calls, err)
 	}
 }
+
+func TestDurableInconclusiveReviewYieldsInsteadOfBlocking(t *testing.T) {
+	a, sess, _, _, cfg := durableHarness(t, durableCheckpoint{Candidate: "finished"})
+	reviews := 0
+	a.provider = &durableScriptProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if strings.HasPrefix(messages[0].Content, "Review whether") {
+			reviews++
+			// A review that is not valid JSON cannot decide anything. The
+			// recorded operations are unaffected, so the task continues.
+			return &provider.Response{Content: "looks fine to me"}, nil
+		}
+		return &provider.Response{Content: "finished"}, nil
+	}}
+	_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if !errors.Is(err, autonomy.ErrYield) {
+		t.Fatalf("inconclusive review blocked instead of yielding: reviews=%d err=%v", reviews, err)
+	}
+}

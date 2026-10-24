@@ -553,6 +553,7 @@ memory gate did not produce final synthesis
 | 429、5xx、连接重置 | `ErrYield`，下一段重试。 |
 | 401/403/400/404 | `ErrBlocked`，需要人处理凭据或请求格式。 |
 | 进度摘要暂时不完整 | `ErrYield`，下一段重新压缩。 |
+| 完成校验没有得到可用结论 | `ErrYield`，已落盘的操作记录不变。 |
 | 同一工具签名反复返回相同结果 | 记一次 `no_progress`，达到 `RepeatToolCallLimit` 后 `ErrBlocked`。 |
 | 有 `started` 但结果未知的写入、shell 或需审批操作 | `ErrBlocked`，先人工核对副作用。 |
 | 有 `started` 但结果未知的只读操作 | 恢复时直接重放，不生成人工核对工单。 |
