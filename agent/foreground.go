@@ -77,6 +77,11 @@ func (a *Agent) openForeground(sess *session.Session) (*autonomy.TaskQueue, erro
 				if op.State != "started" {
 					continue
 				}
+				// A read-only operation has no side effect to reconcile, so
+				// recovery replays it instead of blocking the task.
+				if a.durableReadOnlyTool(op.Name) {
+					continue
+				}
 				err = q.Block(task.ID, "中断操作 "+op.ID+" 没有确认结果，需先核对")
 				break
 			}

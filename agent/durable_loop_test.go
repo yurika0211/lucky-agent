@@ -505,3 +505,38 @@ func TestDurableAuthFailuresStillBlock(t *testing.T) {
 		})
 	}
 }
+
+func TestDurableReadOnlyStartedOperationIsReplayed(t *testing.T) {
+	a, sess, q, _, cfg := durableHarness(t, pendingCheckpoint())
+	calls := 0
+	a.tools.Register(&tool.Tool{
+		Name: "perform_operation", Permission: tool.PermAuto, ParallelSafe: true,
+		Handler: func(map[string]any) (string, error) { calls++; return "read-only evidence", nil },
+	})
+	// The process died after recording the intent but before the result.
+	if _, err := cfg.Execution.BeginOperation(turn.DurableOperation{ID: "step-1-1", Name: "perform_operation", Arguments: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	q = resumeDurableQueue(t, q, &cfg)
+	result, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if err != nil || !result.Verified || calls != 1 {
+		t.Fatalf("read-only operation was not replayed: calls=%d result=%+v err=%v", calls, result, err)
+	}
+}
+
+func TestDurableShellAwareStartedOperationStillBlocks(t *testing.T) {
+	a, sess, q, _, cfg := durableHarness(t, pendingCheckpoint())
+	calls := 0
+	a.tools.Register(&tool.Tool{
+		Name: "perform_operation", Permission: tool.PermAuto, ParallelSafe: true, ShellAware: true,
+		Handler: func(map[string]any) (string, error) { calls++; return "shell evidence", nil },
+	})
+	if _, err := cfg.Execution.BeginOperation(turn.DurableOperation{ID: "step-1-1", Name: "perform_operation", Arguments: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	q = resumeDurableQueue(t, q, &cfg)
+	_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if !errors.Is(err, autonomy.ErrBlocked) || calls != 0 {
+		t.Fatalf("shell-aware operation was replayed: calls=%d err=%v", calls, err)
+	}
+}

@@ -554,7 +554,8 @@ memory gate did not produce final synthesis
 | 401/403/400/404 | `ErrBlocked`，需要人处理凭据或请求格式。 |
 | 进度摘要暂时不完整 | `ErrYield`，下一段重新压缩。 |
 | 同一工具签名反复返回相同结果 | 记一次 `no_progress`，达到 `RepeatToolCallLimit` 后 `ErrBlocked`。 |
-| 有 `started` 但结果未知的操作 | `ErrBlocked`，先人工核对副作用。 |
+| 有 `started` 但结果未知的写入、shell 或需审批操作 | `ErrBlocked`，先人工核对副作用。 |
+| 有 `started` 但结果未知的只读操作 | 恢复时直接重放，不生成人工核对工单。 |
 
 `model_stalls` 和 `no_progress` 是两个独立计数。模型没有产出内容不代表工具没有新证据，把它算进 `no_progress` 会让几次空回复就变成需要人工介入的工单。两个计数在真正有产出时归零：拿到可用正文或发出工具调用时清 `model_stalls`，工具结果与上次不同时清 `no_progress`。
 

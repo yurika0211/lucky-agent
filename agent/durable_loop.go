@@ -481,6 +481,12 @@ func (a *Agent) executeDurablePending(ctx context.Context, sess *session.Session
 		var executed detailedToolExecutionResult
 		var toolErr error
 		executeArgs := pending.Call.Arguments
+		// A read-only call interrupted before its result was recorded has no
+		// side effect to reconcile, so recovery repeats it. Mutating, shell and
+		// approval-gated calls keep the human reconciliation path.
+		if op.State == "started" && a.durableReadOnlyTool(pending.Call.Name) {
+			op.State = "retry"
+		}
 		switch op.State {
 		case "started":
 			return fmt.Errorf("%w: operation %s (%s) started without a durable result; reconcile before resuming", autonomy.ErrBlocked, op.ID, op.Name)
@@ -640,15 +646,21 @@ func appendUnique(items []string, value string) []string {
 	return append(items, value)
 }
 
-// durableRepeatCanConverge reports whether a stable repeated result is usable
-// evidence. A read-only tool can be concluded from; a failed or mutating call
-// still needs the existing blocked recovery path.
-func (a *Agent) durableRepeatCanConverge(name string, toolErr error) bool {
-	if toolErr != nil || a == nil || a.Tools() == nil {
+// durableReadOnlyTool reports whether a tool has no side effect worth
+// reconciling. Recovery may safely repeat such a call.
+func (a *Agent) durableReadOnlyTool(name string) bool {
+	if a == nil || a.Tools() == nil {
 		return false
 	}
 	registered, ok := a.Tools().Get(a.canonicalToolName(name))
 	return ok && registered != nil && registered.ParallelSafe && !registered.ShellAware
+}
+
+// durableRepeatCanConverge reports whether a stable repeated result is usable
+// evidence. A read-only tool can be concluded from; a failed or mutating call
+// still needs the existing blocked recovery path.
+func (a *Agent) durableRepeatCanConverge(name string, toolErr error) bool {
+	return toolErr == nil && a.durableReadOnlyTool(name)
 }
 
 func (a *Agent) verifyDurableCandidate(ctx context.Context, goal string, criteria []string, cp *durableCheckpoint, cfg LoopConfig, snapshot providerSnapshot) (*durableVerification, int, error) {
