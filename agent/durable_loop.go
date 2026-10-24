@@ -46,6 +46,7 @@ type durableCheckpoint struct {
 	LastResultDigests  map[string]string     `json:"last_result_digests,omitempty"`
 	RepeatSignatures   []string              `json:"repeat_signatures,omitempty"`
 	NoProgress         int                   `json:"no_progress,omitempty"`
+	ModelStalls        int                   `json:"model_stalls,omitempty"`
 	Continuation       string                `json:"continuation,omitempty"`
 	Summary            string                `json:"summary,omitempty"`
 	SummarizedThrough  int                   `json:"summarized_through,omitempty"`
@@ -336,6 +337,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		}
 		if len(resp.ToolCalls) > 0 {
 			cp.Batch++
+			cp.ModelStalls = 0
 			msg := provider.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent, ToolCalls: resp.ToolCalls}
 			cp.Messages = append(cp.Messages, msg)
 			if sess != nil {
@@ -346,11 +348,20 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			for j, call := range resp.ToolCalls {
 				cp.Pending = append(cp.Pending, durablePendingCall{ID: fmt.Sprintf("step-%d-%d", cp.Batch, j+1), Call: call})
 			}
+		} else if strings.EqualFold(resp.FinishReason, "length") {
+			// A truncated reply is a stalled model turn, not a finished answer. Keep
+			// the partial text and ask for the rest instead of handing it to the
+			// completion review, which can only reject it.
+			cp.Continuation += resp.Content
+			cp.ModelStalls++
+			cp.Messages = append(cp.Messages,
+				provider.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent},
+				provider.Message{Role: "user", Content: lengthRecoveryPrompt})
 		} else {
-			answer := strings.TrimSpace(resp.Content)
+			answer := strings.TrimSpace(cp.Continuation + resp.Content)
 			cp.Continuation = ""
 			if answer == "" {
-				cp.NoProgress++
+				cp.ModelStalls++
 				cp.Messages = append(cp.Messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
 			} else if msg, blocked := artifactGuard.BlockMessage(answer); blocked {
 				cp.Messages = append(cp.Messages, provider.Message{Role: "assistant", Content: answer},
@@ -358,16 +369,55 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 				cp.NoProgress++
 			} else {
 				cp.Candidate, cp.Reasoning = answer, resp.ReasoningContent
+				cp.ModelStalls = 0
 			}
 		}
 		if err := save(); err != nil {
 			return result, err
+		}
+		// An unresponsive model is not a stalled tool loop. Once a slice has
+		// retried enough empty or truncated replies, hand the task to the next
+		// slice instead of asking a person to intervene.
+		if cp.ModelStalls >= modelStallLimit(cfg) {
+			return result, autonomy.ErrYield
 		}
 		if cp.NoProgress >= cfg.RepeatToolCallLimit {
 			return result, fmt.Errorf("%w: no new evidence after repeated attempts", autonomy.ErrBlocked)
 		}
 	}
 	return result, autonomy.ErrYield
+}
+
+// defaultModelStallLimit is used when the repeat limit is not configured.
+const defaultModelStallLimit = 3
+
+// modelStallLimit bounds how many consecutive replies without usable text one
+// slice tolerates. It reuses the repeat limit as a cadence but keeps its own
+// counter, so a model that returns nothing never consumes the evidence budget
+// that guards repeated tool calls.
+func modelStallLimit(cfg LoopConfig) int {
+	if cfg.RepeatToolCallLimit > 0 {
+		return cfg.RepeatToolCallLimit
+	}
+	return defaultModelStallLimit
+}
+
+// errIncompleteSummary marks a progress summary the model could not finish. The
+// checkpoint is intact, so the next slice retries instead of blocking.
+var errIncompleteSummary = errors.New("progress summary is incomplete")
+
+// durableTransientErrorMarkers lists upstream failures that leave the
+// checkpoint usable. They are retried by the next slice instead of opening a
+// manual intervention ticket.
+var durableTransientErrorMarkers = []string{
+	"api error 429:",
+	"api error 500:",
+	"api error 502:",
+	"api error 503:",
+	"api error 504:",
+	"connection reset",
+	"broken pipe",
+	"unexpected eof",
 }
 
 func durableProviderError(ctx context.Context, err error) error {
@@ -377,11 +427,20 @@ func durableProviderError(ctx context.Context, err error) error {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return ctx.Err()
 	}
+	if errors.Is(err, errIncompleteSummary) {
+		return autonomy.ErrYield
+	}
 	// Authentication and malformed requests need intervention, not retries.
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{"api error 400:", "api error 401:", "api error 403:", "api error 404:"} {
 		if strings.Contains(message, marker) {
 			return fmt.Errorf("%w: %v", autonomy.ErrBlocked, err)
+		}
+	}
+	// Throttling and transport failures are recoverable within the run budget.
+	for _, marker := range durableTransientErrorMarkers {
+		if strings.Contains(message, marker) {
+			return fmt.Errorf("%w: %v", autonomy.ErrYield, err)
 		}
 	}
 	return err
@@ -696,7 +755,7 @@ func (a *Agent) compactDurableCheckpoint(ctx context.Context, goal string, cp *d
 		return err
 	}
 	if resp == nil || len(resp.ToolCalls) > 0 || strings.TrimSpace(resp.Content) == "" || strings.EqualFold(resp.FinishReason, "length") {
-		return fmt.Errorf("progress summary is incomplete")
+		return errIncompleteSummary
 	}
 	p := newContextPlannerWithProvider(a, defaultContextBuildOptions(), snapshot)
 	cp.Summary, cp.SummarizedThrough = p.fitEvidenceToBudget(resp.Content, a.contextInputLimit()/5), cut
