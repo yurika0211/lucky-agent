@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" type="image/png" href="public/favicon.png" />
+  <title>LuckyAgent API 参考</title>
+  <meta name="description" content="LuckyAgent lh serve 的 HTTP、SSE 与 WebSocket 参考。包含鉴权、请求字段、响应和错误。" />
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Roboto+Mono:wght@400;500&display=swap');
+    :root {
+      --bg: #f4f1e8;
+      --bg-2: #ebe6da;
+      --panel: rgba(255,252,246,.86);
+      --panel-solid: #fffdf8;
+      --ink: #1c1915;
+      --muted: #6d675e;
+      --faint: #948d82;
+      --line: rgba(48,40,28,.12);
+      --line-strong: rgba(48,40,28,.22);
+      --accent: #1f7a72;
+      --accent-ink: #0f4f4a;
+      --accent-soft: rgba(31,122,114,.12);
+      --clay: #9a5b2d;
+      --code: #171b22;
+      --code-ink: #e7eee8;
+      --get: #1f7a72;
+      --post: #2d6f93;
+      --put: #8a5a18;
+      --patch: #6d4f92;
+      --delete: #9b4262;
+      --shadow: 0 24px 60px rgba(48,40,28,.08);
+      --radius: 22px;
+    }
+    .theme-dark {
+      --bg: #11131a;
+      --bg-2: #181b24;
+      --panel: rgba(24,27,36,.82);
+      --panel-solid: #1b1e29;
+      --ink: #e6e9f2;
+      --muted: #a3abbf;
+      --faint: #727b92;
+      --line: rgba(214,222,240,.12);
+      --line-strong: rgba(214,222,240,.22);
+      --accent: #49c2b6;
+      --accent-ink: #d8fff8;
+      --accent-soft: rgba(73,194,182,.14);
+      --clay: #e0a36a;
+      --code: #0d1016;
+      --code-ink: #dce6df;
+      --shadow: 0 24px 60px rgba(0,0,0,.32);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(900px 420px at 8% -10%, rgba(31,122,114,.16), transparent 60%),
+        radial-gradient(700px 380px at 100% 0%, rgba(154,91,45,.12), transparent 55%),
+        linear-gradient(180deg, var(--bg), var(--bg-2));
+      font-family: "DM Sans", "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+    a { color: inherit; }
+    button, input { font: inherit; }
+    .top {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      height: 64px; padding: 0 22px;
+      border-bottom: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 84%, transparent);
+      backdrop-filter: blur(16px);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; text-decoration: none; font-weight: 700; }
+    .mark { width: 28px; height: 28px; color: var(--accent); }
+    .nav-links, .actions { display: flex; align-items: center; gap: 8px; }
+    .chip, .icon-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      height: 34px; padding: 0 12px; border-radius: 999px;
+      border: 1px solid var(--line); background: var(--panel-solid); color: var(--muted);
+      text-decoration: none; cursor: pointer;
+    }
+    .icon-btn { width: 34px; justify-content: center; padding: 0; }
+    .shell { display: grid; grid-template-columns: 286px minmax(0, 920px); gap: 28px; max-width: 1280px; margin: 0 auto; padding: 28px 22px 80px; }
+    .side { position: sticky; top: 86px; align-self: start; max-height: calc(100vh - 108px); overflow: auto; padding-right: 6px; }
+    .search {
+      width: 100%; height: 40px; border-radius: 14px; border: 1px solid var(--line);
+      background: var(--panel-solid); color: var(--ink); padding: 0 12px; outline: none;
+    }
+    .search:focus { border-color: var(--accent); }
+    .side a { display: block; padding: 7px 10px; margin-top: 2px; border-radius: 10px; color: var(--muted); text-decoration: none; font-size: 13.5px; }
+    .side a.active, .side a:hover { background: var(--accent-soft); color: var(--ink); }
+    .side .label { margin: 18px 10px 6px; color: var(--faint); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+    .hero { padding: 8px 0 6px; }
+    .kicker { display: inline-flex; align-items: center; gap: 8px; color: var(--accent-ink); background: var(--accent-soft); border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 700; }
+    h1 { margin: 14px 0 8px; font-size: 48px; line-height: .98; letter-spacing: -.045em; }
+    .lede { max-width: 68ch; margin: 0; color: var(--muted); font-size: 17px; line-height: 1.7; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 22px; }
+    .stat { padding: 14px 16px; border: 1px solid var(--line); border-radius: 18px; background: var(--panel); }
+    .stat b { display: block; font-size: 15px; }
+    .stat span { color: var(--muted); font-size: 13px; line-height: 1.5; }
+    section { scroll-margin-top: 88px; margin-top: 42px; }
+    h2 { margin: 0 0 8px; font-size: 28px; letter-spacing: -.03em; }
+    .intro { margin: 0 0 14px; color: var(--muted); line-height: 1.7; }
+    .endpoint {
+      margin: 14px 0; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius);
+      background: var(--panel); box-shadow: var(--shadow);
+    }
+    .ep-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .verb { display: inline-flex; min-width: 62px; justify-content: center; border-radius: 999px; padding: 3px 8px; color: white; font-family: "Roboto Mono", monospace; font-size: 11px; font-weight: 700; letter-spacing: .04em; }
+    .GET { background: var(--get); } .POST { background: var(--post); } .PUT { background: var(--put); }
+    .PATCH { background: var(--patch); } .DELETE { background: var(--delete); }
+    .path { font-family: "Roboto Mono", monospace; font-size: 14px; font-weight: 500; }
+    .copy { margin-left: auto; border: 0; background: transparent; color: var(--faint); cursor: pointer; }
+    .endpoint p { color: var(--muted); line-height: 1.7; }
+    .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    pre, .field-table { border-radius: 16px; overflow: auto; }
+    pre { margin: 0; padding: 14px; background: var(--code); color: var(--code-ink); font-family: "Roboto Mono", monospace; font-size: 12.5px; line-height: 1.65; }
+    .pre-label, .table-label { margin: 12px 0 6px; color: var(--faint); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: color-mix(in srgb, var(--panel-solid) 70%, transparent); }
+    th, td { text-align: left; vertical-align: top; padding: 9px 10px; border-top: 1px solid var(--line); }
+    th { color: var(--faint); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+    code { font-family: "Roboto Mono", monospace; font-size: .92em; }
+    .note { margin-top: 12px; padding: 12px 14px; border-left: 3px solid var(--clay); border-radius: 12px; background: rgba(154,91,45,.08); color: var(--muted); line-height: 1.65; }
+    .hidden { display: none; }
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 1fr; }
+      .side { position: static; max-height: none; }
+      h1 { font-size: 36px; }
+      .stats, .cols { grid-template-columns: 1fr; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div x-data="apiDocs()" x-init="init()" :class="dark ? 'theme-dark' : ''">
+    <header class="top">
+      <a class="brand" href="./">
+        <svg class="mark" viewBox="0 0 34 34" fill="none" aria-hidden="true"><path d="M4 28L14 5L30 28H4Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M14 5V28M14 19L25 28" stroke="currentColor" stroke-width="2.2"/></svg>
+        <span>LuckyAgent API</span>
+      </a>
+      <nav class="nav-links">
+        <a class="chip" href="./">知识库</a>
+        <a class="chip" href="./download.html">下载</a>
+        <a class="chip" href="https://github.com/yurika0211/lucky-agent/blob/master/docs/API.md">字段源稿</a>
+      </nav>
+      <div class="actions">
+        <button class="icon-btn" @click="dark = !dark" :aria-label="dark ? '切换浅色' : '切换深色'" x-text="dark ? '浅' : '深'"></button>
+      </div>
+    </header>
+
+    <div class="shell">
+      <aside class="side">
+        <input class="search" type="search" x-model="query" placeholder="搜索路径、字段或错误码" />
+        <template x-for="group in filteredGroups()" :key="group.id">
+          <div>
+            <div class="label" x-text="group.title"></div>
+            <template x-for="item in group.items" :key="item.id">
+              <a :href="'#' + item.id" :class="active === item.id ? 'active' : ''" @click="active = item.id" x-text="item.title"></a>
+            </template>
+          </div>
+        </template>
+        <p class="intro" x-show="filteredGroups().length === 0">没有匹配的接口。</p>
+      </aside>
+
+      <main>
+        <header class="hero">
+          <span class="kicker">lh serve · /api/v1</span>
+          <h1>接口参考</h1>
+          <p class="lede">默认基址 <code>http://127.0.0.1:9090</code>。这页写调用时需要的方法、字段、响应和失败条件。没有 OpenAPI 或 Swagger。路由注册在 <code>luckyagent-api</code>，行为在 <code>luckyagent-app</code>。字段示例与仓库 <code>docs/API.md</code> 保持同一口径；两者不一致时以 handler 为准。</p>
+          <div class="stats">
+            <div class="stat"><b>鉴权</b><span>密钥放在头里。空密钥只允许本机回环。</span></div>
+            <div class="stat"><b>对话</b><span>SSE 不补发。可重试投递走 WebSocket。</span></div>
+            <div class="stat"><b>变更</b><span>插件和部分配置保存后要重启进程才进入运行时。</span></div>
+          </div>
+        </header>
+
+        <section id="contract" data-search="base url json 2mib 32mib content-type 415 multipart upload">
+          <h2>约定</h2>
+          <p class="intro">所有应用路由都在 <code>/api/v1</code>。<code>GET /</code> 只返回一份简短路由摘要，不是这页的替代。</p>
+          <div class="endpoint">
+            <div class="cols">
+              <div>
+                <div class="table-label">传输</div>
+                <table>
+                  <tr><th>项</th><th>规则</th></tr>
+                  <tr><td>JSON</td><td>默认 2 MiB，必须是一个完整 JSON 值。显式不支持的 <code>Content-Type</code> 返回 415。省略该头的旧客户端仍可使用。</td></tr>
+                  <tr><td>上传</td><td><code>POST /api/v1/uploads</code> 使用 multipart，单次请求上限 32 MiB。字段名是 <code>file</code> 或 <code>files</code>。</td></tr>
+                  <tr><td>密钥</td><td>查询字符串中的 API key 会被拒绝。响应不回传密钥、token、密码或额外请求头。</td></tr>
+                  <tr><td>关联</td><td>响应带 <code>X-Request-ID</code>。错误体里的 <code>request_id</code> 用同一个值。</td></tr>
+                </table>
+              </div>
+              <div>
+                <div class="pre-label">最小检查</div>
+                <pre>lh serve --addr 127.0.0.1:9090
+curl http://127.0.0.1:9090/api/v1/health/live
+curl http://127.0.0.1:9090/api/v1/health/ready</pre>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="auth" data-search="x-api-key authorization bearer 401 403 429 lh qr">
+          <h2>鉴权与错误</h2>
+          <p class="intro">配置了 <code>server.api_keys</code> 时，每个业务请求都要带密钥。未配置时，只有回环连接、回环 Host、同源或缺失的 Origin，且没有转发头，才允许无密钥访问。同机反向代理也要配置密钥。</p>
+          <div class="endpoint">
+            <div class="ep-head"><span class="path">请求头</span></div>
+            <pre>X-API-Key: &lt;key&gt;
+Authorization: Bearer &lt;key&gt;</pre>
+            <p><code>lh qr</code> 签发的临时 key 只在进程内存中，默认 24 小时，重启后失效，不写入 <code>config.json</code>。<code>GET/HEAD /</code>、<code>/health/live</code>、<code>/health/ready</code> 公开。<code>/health/detail</code> 走普通鉴权。</p>
+            <div class="pre-label">错误体</div>
+            <pre>{
+  "error": "message",
+  "code": 400,
+  "error_code": "invalid_request",
+  "request_id": "server-generated-id",
+  "details": "optional details"
+}</pre>
+            <table>
+              <tr><th>状态</th><th>含义</th></tr>
+              <tr><td>400</td><td>字段缺失、JSON 无效或业务校验失败。</td></tr>
+              <tr><td>401 / 403</td><td>缺少密钥 / 密钥无效。</td></tr>
+              <tr><td>404 / 405 / 409 / 410</td><td>资源不存在 / 方法不允许 / 冲突或版本过期 / 会话已被并发删除。</td></tr>
+              <tr><td>413 / 415 / 429</td><td>请求体过大 / 媒体类型不支持 / 超过每分钟配额。429 带 <code>Retry-After: 60</code>。</td></tr>
+              <tr><td>500 / 502 / 503 / 504</td><td>内部错误 / 上游连接失败 / 服务未初始化 / 操作超时。</td></tr>
+            </table>
+          </div>
+        </section>
+
+        <section id="chat" data-search="post chat sse stream session_id max_iterations auto_approve attachments">
+          <h2>聊天</h2>
+          <article class="endpoint" id="chat-stream">
+            <div class="ep-head"><span class="verb POST">POST</span><span class="path">/api/v1/chat</span><button class="copy" @click="copy('/api/v1/chat')">复制</button></div>
+            <p>SSE 流式对话。省略 <code>session_id</code> 会新建会话。传入的会话不存在时，在调用模型前返回 404。<code>max_iterations</code> 取 0 到 300，0 使用配置默认值。</p>
+            <div class="table-label">请求</div>
+            <table>
+              <tr><th>字段</th><th>说明</th></tr>
+              <tr><td><code>message</code></td><td>用户文本。插件命令写成 <code>/plugin:command args</code> 时，会在内置斜杠路由之前按原样展开。</td></tr>
+              <tr><td><code>session_id</code></td><td>可选。已有会话必须存在。</td></tr>
+              <tr><td><code>stream</code></td><td>这个端点本身就是 SSE。</td></tr>
+              <tr><td><code>max_iterations</code></td><td>0–300。</td></tr>
+              <tr><td><code>auto_approve</code></td><td>是否自动批准本轮工具。</td></tr>
+              <tr><td><code>metadata</code></td><td>调用方附加对象，例如 <code>{"source":"http"}</code>。</td></tr>
+              <tr><td><code>attachments</code></td><td>先用上传接口拿到附件对象，再放进这个数组。WebSocket 单帧上限 64 KiB，文件字节不要直接塞进消息。</td></tr>
+            </table>
+            <div class="pre-label">示例</div>
+            <pre>curl -N http://127.0.0.1:9090/api/v1/chat \
+  -H 'Content-Type: application/json' \
+  -H 'X-API-Key: &lt;key&gt;' \
+  -d '{"message":"hello","max_iterations":8}'</pre>
+            <div class="note">每个 SSE 帧保留事件类型和内容，并带 <code>run_id</code>、<code>event_id</code> 和 <code>id:</code>。失败帧含字符串 <code>error</code>、<code>error_code</code> 和 <code>status:"failed"</code>，后面不再跟成功的 <code>complete</code>。取消是 <code>type:"cancelled"</code>。只有完整结束的一轮才是 <code>complete</code> 且 <code>status:"completed"</code>。SSE 不重放持久游标，再次 POST 会开新一轮。</div>
+          </article>
+          <article class="endpoint" id="chat-sync">
+            <div class="ep-head"><span class="verb POST">POST</span><span class="path">/api/v1/chat/sync</span></div>
+            <p>同步返回整包。请求字段与流式接口相同。成功响应使用实际保存消息的会话，没有无会话回退。</p>
+            <div class="pre-label">响应</div>
+            <pre>{
+  "response": "assistant response",
+  "session_id": "session-id",
+  "iterations": 1,
+  "tokens_used": 0,
+  "tool_calls": [],
+  "duration": "1.2s"
+}</pre>
+          </article>
+        </section>
+
+        <section id="sessions" data-search="sessions tools duration_ms compact backups limit offset pinned project">
+          <h2>会话</h2>
+          <article class="endpoint" id="sessions-list">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/sessions</span><span class="verb POST">POST</span></div>
+            <p>列表支持 <code>q</code>、<code>limit</code>、<code>offset</code>。<code>q</code> 匹配标题、ID 和项目。置顶会话排在前面。条目含 <code>format</code>（<code>legacy_md</code> 或 <code>segment_v1</code>）、<code>byte_size</code>、<code>pinned</code>、<code>project</code>。</p>
+            <div class="pre-label">创建</div>
+            <pre>{"title":"可选标题"}</pre>
+          </article>
+          <article class="endpoint" id="sessions-one">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="verb PATCH">PATCH</span><span class="verb DELETE">DELETE</span><span class="path">/api/v1/sessions/{id}</span></div>
+            <table>
+              <tr><th>查询</th><th>说明</th></tr>
+              <tr><td><code>limit</code> / <code>offset</code></td><td>从最新消息向前分页。<code>offset</code> 是从末尾跳过的条数。不带 <code>limit</code> 时返回全部消息。</td></tr>
+              <tr><td><code>include=full</code> 或 <code>full=1</code></td><td>返回完整正文。默认按 <code>context.history_preview_chars</code> 截断，缺省 4000 个字符。</td></tr>
+              <tr><td><code>profile=1</code></td><td>附加 <code>agent_system_prompt</code>。</td></tr>
+            </table>
+            <p>响应含 <code>content_truncated</code>、<code>format</code>、<code>byte_size</code>。存储或解码失败返回 500，不会假装历史为空。句柄已被并发删除返回 410，未知 ID 返回 404。</p>
+            <div class="pre-label">修改，至少一个字段</div>
+            <pre>{"title":"新名字","pinned":true,"project":"luckyagent"}</pre>
+            <p>空 <code>title</code> 被拒绝。空 <code>project</code> 清除分组。改名和置顶只写元数据，不重写历史。删除返回 <code>{"id","deleted":true}</code>，并取消这个 Agent 拥有的在途 HTTP 和 WebSocket 工作。删除存储失败时不取消任务。</p>
+          </article>
+          <article class="endpoint" id="sessions-tools">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/sessions/{id}/tools</span></div>
+            <p>分页工具轨迹。<code>limit</code> 默认 100，上限 200。<code>offset</code> 从最新调用向前跳。<code>turn=first</code> 只取原始首轮；压缩已经盖住原始轮次时返回 410。</p>
+            <table>
+              <tr><th>响应字段</th><th>说明</th></tr>
+              <tr><td><code>tools[]</code></td><td><code>id</code>、<code>name</code>、<code>arguments</code>、<code>result</code>、<code>success</code>、<code>error</code>、<code>duration_ms</code>、<code>status</code>、<code>annotation</code>。</td></tr>
+              <tr><td><code>status</code></td><td><code>pending</code>、<code>completed</code>、<code>failed</code>。pending 只表示还没有记录结果。</td></tr>
+              <tr><td>汇总</td><td><code>total_calls</code>、<code>returned</code>、<code>has_more</code>、<code>successes</code>、<code>failures</code>、<code>pending_calls</code>、<code>success_rate</code>。</td></tr>
+            </table>
+            <div class="note">成功率和成功/失败计数只统计已有结果的调用。参数、结果和错误在序列化前截断。没有写入 <code>duration_ms</code> 的旧消息读出来是 0。轨迹不含未记录的内部推理。</div>
+          </article>
+          <article class="endpoint" id="sessions-more">
+            <div class="ep-head"><span class="path">备份与压缩</span></div>
+            <table>
+              <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+              <tr><td>GET</td><td><code>/sessions/{id}/backups</code></td><td>返回 <code>backups</code> 和 <code>count</code>。</td></tr>
+              <tr><td>POST</td><td><code>/sessions/{id}/backups/{backup}/restore</code></td><td>恢复后完整重写历史。响应含 <code>message_count</code>。</td></tr>
+              <tr><td>POST</td><td><code>/sessions/{id}/compact</code></td><td>体可含 <code>dry_run</code>、<code>force_local</code>。响应含 token 估计、<code>summary_source</code> 和 <code>display</code>。</td></tr>
+              <tr><td>GET</td><td><code>/sessions/{id}/compact/latest</code></td><td>没有记录时 404。</td></tr>
+            </table>
+            <p>流式对话中的自动压缩会发 <code>type:"compact"</code>，<code>phase</code> 为 <code>start</code>、<code>progress</code>、<code>done</code>、<code>failed</code> 或 <code>degraded</code>。WebSocket 把同样字段放在 <code>data</code> 里。</p>
+          </article>
+        </section>
+
+        <section id="commands" data-search="commands plugins starter review ok restart trust">
+          <h2>命令与插件</h2>
+          <article class="endpoint" id="commands-run">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="verb POST">POST</span><span class="path">/api/v1/commands</span></div>
+            <p>目录包含启动时加载的内置命令和已启用插件命令。GET 返回 <code>commands</code> 与 <code>count</code>。每项有 <code>name</code>、<code>usage</code>、<code>description</code>、<code>group</code>。插件项的 group 是 <code>plugins</code>，名称保持 <code>plugin:command</code> 的大小写和连字符。</p>
+            <div class="pre-label">执行</div>
+            <pre>{
+  "command": "starter:review",
+  "args": "UI/HTTP-API.go --Keep-Case",
+  "session_id": "optional-existing-session-id"
+}</pre>
+            <p>省略会话会新建。传入的会话不存在返回 404。成功和循环失败都可能是 HTTP 200，必须看 <code>ok</code>。带附件或每轮选项时改用 <code>/chat/sync</code>。</p>
+            <pre>{"command":"starter:review","ok":true,"output":"assistant response","session_id":"session-id"}</pre>
+          </article>
+          <article class="endpoint" id="plugins">
+            <div class="ep-head"><span class="path">/api/v1/plugins</span></div>
+            <table>
+              <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+              <tr><td>GET / POST</td><td><code>/plugins</code></td><td>列出或安装。安装体最多 16 KiB：<code>source</code> 必填，可选 <code>ref</code>、<code>subdir</code>、<code>trust</code>。</td></tr>
+              <tr><td>GET / DELETE</td><td><code>/plugins/{name}</code></td><td>详情为 <code>{plugin}</code>。删除保留不可变缓存，响应里 <code>plugin</code> 为 null。</td></tr>
+              <tr><td>POST</td><td><code>/plugins/{name}/enable</code></td><td>保存启用。可发送 <code>{}</code>。</td></tr>
+              <tr><td>POST</td><td><code>/plugins/{name}/disable</code></td><td>保存停用。</td></tr>
+              <tr><td>POST</td><td><code>/plugins/{name}/update</code></td><td>按已记录来源更新。体最多 4 KiB，只接受 <code>{"trust":false}</code>。</td></tr>
+            </table>
+            <div class="pre-label">清单中的一项</div>
+            <pre>{
+  "name": "starter",
+  "version": "1.0.0",
+  "source": "https://github.com/team/plugins.git",
+  "ref": "v1.0.0",
+  "revision": "resolved-commit",
+  "enabled": true,
+  "trusted": false,
+  "skills": ["review"],
+  "commands": ["review"],
+  "mcp_servers": [],
+  "hook_count": 0
+}</pre>
+            <div class="note">名称是 1–48 位小写 slug。本地目录指服务器文件系统。不受信任的 MCP 或 hook 插件安装后保持停用；纯提示词插件可以不授予执行信任就启用。Git 与复制限时 90 秒。安装返回 201。这些接口不执行插件，也不重启进程。清单响应带 <code>changes_require_restart: true</code>。损坏项仍可管理并带 <code>error</code>。索引损坏返回错误，不会假装清单为空。</div>
+          </article>
+        </section>
+
+        <section id="models" data-search="models effort config etag if-match patch clear_secrets schema reload">
+          <h2>模型与配置</h2>
+          <article class="endpoint" id="models-list">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/models</span></div>
+            <p>可选 <code>kind</code>、<code>provider</code>、<code>refresh=1</code>。响应含 <code>models</code>、<code>count</code>、<code>source</code>。发现失败时仍返回列表，并在 <code>error</code> 中说明。</p>
+          </article>
+          <article class="endpoint" id="models-effort">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="verb PUT">PUT</span><span class="path">/api/v1/models/effort</span></div>
+            <p>稳定选项是 <code>auto</code>、<code>none</code>、<code>minimal</code>、<code>low</code>、<code>medium</code>、<code>high</code>、<code>xhigh</code>。<code>auto</code> 不向上游传该参数。当前协议不是 OpenAI 或兼容端点时，<code>supported</code> 为 false。PUT 体是 <code>{"effort":"high"}</code>，会保存并作用于后续请求。上游仍可能按模型拒绝某个力度。</p>
+          </article>
+          <article class="endpoint" id="models-switch">
+            <div class="ep-head"><span class="verb POST">POST</span><span class="path">/api/v1/models/switch</span></div>
+            <pre>{"kind":"chat","model":"gpt-5.4-mini","provider":"openai"}</pre>
+            <p><code>GET/POST /api/v1/models/profiles</code> 列出或应用配置档。应用体是 <code>{"name":"profile-name"}</code>。单次请求里的 <code>profile_id</code> 没有定义，不要塞进聊天体。</p>
+          </article>
+          <article class="endpoint" id="config">
+            <div class="ep-head"><span class="path">/api/v1/config</span></div>
+            <table>
+              <tr><th>方法</th><th>行为</th></tr>
+              <tr><td>GET</td><td>返回脱敏后的运行配置，并带 <code>ETag</code>。</td></tr>
+              <tr><td>PUT</td><td>完整替换，上限 2 MiB。先 GET，再修改，再提交整份文档。被打码的空密钥保留原值。</td></tr>
+              <tr><td>PATCH</td><td>JSON Merge Patch。可直接提交补丁，或使用带并发控制的信封。</td></tr>
+              <tr><td>GET /schema</td><td>字段路径、类型、默认值、是否敏感、是否热更新。敏感默认值始终是 null。路径分组为 <code>hot</code>、<code>restart</code>、<code>unknown</code>。</td></tr>
+              <tr><td>POST /reload</td><td>不打断在途请求。无效配置被拒绝，原配置继续生效。响应列出已生效和仍需重启的组。</td></tr>
+            </table>
+            <div class="pre-label">带并发控制和清密钥的 PATCH</div>
+            <pre>{
+  "patch": {"server": {"progress_summary_with_llm": true}},
+  "if_match": "&lt;etag&gt;",
+  "clear_secrets": ["models.endpoints.chat.api_key"],
+  "dry_run": false
+}</pre>
+            <p>响应含脱敏 <code>config</code>、变更路径、<code>hot_reloaded</code>、<code>restart_required</code>、<code>applied</code>、<code>persisted</code> 和新 <code>version</code>。过期的 <code>If-Match</code> 返回 409。监听地址、鉴权、网关和启动期服务会保存，但要重启或重建服务。</p>
+          </article>
+        </section>
+
+        <section id="tools" data-search="tools skills mcp uploads artifacts connect refresh disconnect">
+          <h2>工具、技能、MCP 与上传</h2>
+          <article class="endpoint">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/tools</span></div>
+            <p>当前进程已注册、可供模型调用的工具。它不是会话里的调用轨迹；轨迹在 <code>/sessions/{id}/tools</code>。</p>
+          </article>
+          <article class="endpoint" id="skills">
+            <div class="ep-head"><span class="path">/api/v1/skills</span></div>
+            <table>
+              <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+              <tr><td>GET</td><td><code>/skills</code></td><td>技能列表。</td></tr>
+              <tr><td>GET / DELETE</td><td><code>/skills/{name}</code></td><td>详情或卸载。卸载也接受 POST，体可含 <code>{"purge":false}</code>。</td></tr>
+              <tr><td>POST</td><td><code>/skills/{name}/enable|disable|reload</code></td><td>状态机拒绝时返回 409，不是 400。</td></tr>
+              <tr><td>POST</td><td><code>/skills/{name}/rollback</code></td><td>回滚到已记录版本。</td></tr>
+              <tr><td>GET</td><td><code>/skills/{name}/versions</code></td><td>版本记录。</td></tr>
+              <tr><td>POST</td><td><code>/skills/install</code></td><td>准备安装。<code>install</code>、<code>installs</code>、<code>reload</code> 是保留路径。</td></tr>
+              <tr><td>POST</td><td><code>/skills/reload</code></td><td>重载全部，返回 <code>loaded</code> 和 <code>skills_dir</code>。</td></tr>
+            </table>
+          </article>
+          <article class="endpoint" id="mcp">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="verb POST">POST</span><span class="path">/api/v1/mcp/servers</span></div>
+            <p>只接受配置里已经声明的服务名。传输、命令和环境仍在配置中，不由这个接口改写。</p>
+            <pre>{"name":"filesystem","action":"connect"}</pre>
+            <p><code>action</code> 只能是 <code>connect</code>、<code>refresh</code>、<code>disconnect</code>。未知动作返回 400。连接失败返回 502。成功后返回最新 <code>servers</code> 状态。</p>
+          </article>
+          <article class="endpoint" id="uploads">
+            <div class="ep-head"><span class="verb POST">POST</span><span class="path">/api/v1/uploads</span></div>
+            <p>multipart 字段名是 <code>file</code>，多个文件可用 <code>files</code>。没有文件返回 400。文件按日期写到运行目录，响应含 <code>attachments</code> 和 <code>count</code>。把返回的附件对象放进聊天请求的 <code>attachments</code>。</p>
+            <p><code>GET /api/v1/artifacts</code> 读取已经生成或上传的产物。</p>
+          </article>
+        </section>
+
+        <section id="tasks" data-search="tasks autonomy cron approvals feedback cancel tree events trace">
+          <h2>任务、自治与审批</h2>
+          <article class="endpoint" id="tasks-list">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/tasks</span></div>
+            <p>查询参数 <code>source</code>、<code>status</code>、<code>parent_id</code>、<code>limit</code>。响应是 <code>{"tasks":[],"count":0}</code>。单个任务、树、事件、规划轨迹、结果和观察分别是：</p>
+            <pre>GET /api/v1/tasks/{id}
+GET /api/v1/tasks/{id}/tree
+GET /api/v1/tasks/{id}/events
+GET /api/v1/tasks/{id}/trace
+GET /api/v1/tasks/{id}/result
+GET /api/v1/tasks/{id}/observation</pre>
+            <div class="pre-label">反馈与取消</div>
+            <pre>POST /api/v1/tasks/{id}/feedback
+{"status":"completed","verified":true,"verifier":"user","user_feedback":"accepted","score":0.9,"recommended_next":"finalize"}
+
+POST /api/v1/tasks/{id}/cancel
+{"reason":"stop now"}</pre>
+            <div class="note">模型工具 <code>delegate_task</code> 创建的任务，不一定出现在 HTTP <code>/api/v1/agents/tasks</code>。查运行时任务用这里的 <code>/tasks</code>。</div>
+          </article>
+          <article class="endpoint">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/autonomy/dashboard</span></div>
+            <p>只读队列、worker、心跳和任务快照。可选 <code>state=ready|in_progress|blocked|done</code> 和 <code>limit</code>，默认上限 200。它不启动也不改变自治运行时。<code>GET /autonomy/tasks/{id}</code> 返回操作摘要和是否有检查点，不返回完整检查点载荷。<code>GET /api/v1/cron</code> 列出定时任务。创建、暂停、恢复和删除由 Agent 的 <code>AddCronJob</code> / <code>PauseCronJob</code> / <code>ResumeCronJob</code> / <code>RemoveCronJob</code> 提供，HTTP 写路由在 API 模块接线后开放。</p>
+          </article>
+          <article class="endpoint" id="approvals">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="verb POST">POST</span><span class="path">/api/v1/approvals</span></div>
+            <p>GET 可按 <code>provider</code>、<code>session_id</code> 过滤，返回 <code>approvals</code> 和 <code>count</code>。POST 与 <code>POST /approvals/resolve</code> 都解决一条审批。</p>
+            <pre>{"provider":"codex","approval_id":"a1","decision":"allow","input":"session-id"}</pre>
+            <p><code>provider</code>、<code>approval_id</code>、<code>decision</code> 都必填。值对客户端保持中立，Android 可以用同一张审批卡渲染。</p>
+          </article>
+        </section>
+
+        <section id="memory" data-search="memory recall context rag search index top_k mmr">
+          <h2>记忆、上下文与 RAG</h2>
+          <article class="endpoint" id="memory">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="verb POST">POST</span><span class="path">/api/v1/memory</span></div>
+            <p>GET 返回短、中、长期计数。POST 保存一条记忆。<code>content</code> 必填，<code>category</code> 缺省为 <code>user</code>。<code>long_term:true</code> 写入长期层。</p>
+            <pre>{"content":"Remember this","category":"project","long_term":false}</pre>
+            <p><code>GET /memory/recall?q=project</code> 召回，<code>q</code> 必填。还有 <code>GET /memory/recall/trace</code>、<code>/memory/stats</code>、<code>/memory/graph</code>。</p>
+          </article>
+          <article class="endpoint" id="context">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/context</span><span class="verb POST">POST</span><span class="path">/api/v1/context/fit</span></div>
+            <table>
+              <tr><th>查询</th><th>说明</th></tr>
+              <tr><td><code>session_id</code></td><td>使用该会话历史。未知 ID 返回 404，不创建会话。</td></tr>
+              <tr><td><code>inspect=1</code></td><td>附加 <code>usage</code> 和 <code>sections</code>。否则只返回配置。</td></tr>
+              <tr><td><code>message</code></td><td>假设的下一条用户消息。空值只检查手上的上下文。</td></tr>
+              <tr><td><code>include_messages=1</code></td><td>把完整段落放进 <code>sections[].content</code>。默认只给 160 字预览。</td></tr>
+            </table>
+            <p><code>usage</code> 是本地规划估计，不是供应商账单。<code>usage.ratio</code> 是 <code>total_tokens / available_tokens</code>。桶有 <code>system</code>、<code>project</code>、<code>history</code>、<code>memory</code>、<code>rag</code>、<code>tool_result</code>、<code>user</code>。检查不写记忆、会话或上下文缓存。</p>
+            <div class="pre-label">装入窗口</div>
+            <pre>{"messages":[{"role":"user","content":"hello","priority":1,"category":"chat"}],"strategy":"sliding_window"}</pre>
+            <p><code>strategy</code> 可以是 <code>oldest_first</code>、<code>low_priority_first</code>、<code>sliding_window</code>、<code>summarize</code>。这个接口不组装当前规划器的实时上下文。</p>
+          </article>
+          <article class="endpoint" id="rag">
+            <div class="ep-head"><span class="path">/api/v1/rag</span></div>
+            <div class="cols">
+              <div>
+                <div class="pre-label">索引</div>
+                <pre>POST /api/v1/rag/index
+{"source":"docs/API.md","title":"API","content":"...","dir":"docs"}</pre>
+                <p><code>dir</code> 索引目录，<code>content</code> 索引内联文本，<code>source</code> 索引单个文件。删除体是 <code>{"doc_id":"..."}</code>，方法为 DELETE。</p>
+              </div>
+              <div>
+                <div class="pre-label">检索</div>
+                <pre>POST /api/v1/rag/search
+{"query":"programming language","top_k":5,"min_score":0.1,"use_mmr":true,"mmr_lambda":0.5,"source":"optional"}</pre>
+              </div>
+            </div>
+            <p><code>GET /rag/stats</code> 和 <code>GET/POST /rag/store</code> 读取或操作持久存储。流式索引器必须已初始化，路径有 <code>/rag/stream/watch</code>、<code>scan</code>、<code>start</code>、<code>stop</code>、<code>status</code>、<code>index</code>、<code>queue</code>、<code>process</code>。watch 体是 <code>{"dir":"..."}</code>，立即索引体是 <code>{"path":"..."}</code>，处理队列体是 <code>{"batch":10}</code>。</p>
+          </article>
+        </section>
+
+        <section id="realtime" data-search="websocket reconnect request_conflict persist_failed lucky grpc">
+          <h2>WebSocket 与 gRPC</h2>
+          <article class="endpoint" id="ws">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/ws</span></div>
+            <pre>ws://127.0.0.1:9090/api/v1/ws?session=&lt;session-id&gt;</pre>
+            <p>升级请求使用与 HTTP 相同的鉴权头。为每次聊天选择稳定的请求 <code>id</code>。</p>
+            <table>
+              <tr><th>情况</th><th>结果</th></tr>
+              <tr><td>同一会话、同一 ID、同一输入</td><td>返回已接受的运行和已存储输出，不重复执行。</td></tr>
+              <tr><td>同一 ID、不同输入</td><td><code>REQUEST_CONFLICT</code>。</td></tr>
+              <tr><td>初始写入失败</td><td><code>PERSIST_FAILED</code>，不会排队。运行状态写入成功后才执行。</td></tr>
+              <tr><td>后续事件写入失败</td><td>同样报 <code>PERSIST_FAILED</code>，停止执行，不再发送成功输出。</td></tr>
+              <tr><td>重连</td><td><code>type:"reconnect"</code>，<code>data.last_message_id</code> 填最后实际收到的事件。服务端有界重放并去重。客户端也要按 <code>event_id</code> 去重。恢复失败是 <code>RECOVERY_FAILED</code>。</td></tr>
+            </table>
+            <p><code>type:"lucky"</code> 先收集同一会话的多条消息，<code>data.action</code> 为 <code>on</code>、<code>off</code>、<code>status</code> 或 <code>cancel</code>。收集期间普通聊天先存储，<code>off</code> 时合并成一轮。收集状态只在当前进程内存里。</p>
+            <p>任务入库后向所有连接推送 <code>type:"task_event"</code>，<code>data</code> 含 <code>type</code>、<code>task_id</code>、<code>parent_id</code>、<code>status</code>、<code>mode</code>、<code>message</code>、<code>progress</code>、<code>session_id</code>、<code>description</code>。定时消息进入会话时仍是没有 run id 的 <code>stream_end</code>。</p>
+            <div class="note">运行记录保存在运行目录的 JSON 快照和增量 JSONL journal。两者都要备份。旧二进制不能读取新 journal 在最后一个快照之后的条目。保留期 7 天，活跃工作会留下。请求去重不能让进程崩溃后的外部工具副作用变成事务。<code>GET /api/v1/ws/stats</code> 返回 Hub 统计。</div>
+          </article>
+          <article class="endpoint">
+            <div class="ep-head"><span class="path">gRPC</span></div>
+            <p><code>lh serve</code> 不监听 gRPC。嵌入方使用 <code>luckyagent-app/api/grpc</code> 的 <code>NewGRPCServer</code>，继承应用密钥和配额。Chat 使用真实会话。ChatStream 转发有效 UTF-8，并以一个终止的 Done 结束。错误和取消返回 gRPC 状态。<code>max_iterations</code> 仍是 0–300。非空 metadata 会被拒绝，因为它没有定义语义。</p>
+          </article>
+        </section>
+
+        <section id="ops" data-search="health gateways agents workflows embedders soul fc pprof">
+          <h2>健康、网关与其余资源</h2>
+          <article class="endpoint">
+            <table>
+              <tr><th>方法</th><th>路径</th><th>说明</th></tr>
+              <tr><td>GET</td><td><code>/health/live</code> <code>/health/ready</code></td><td>公开探针。Docker healthcheck 走容器内 <code>127.0.0.1:9090</code>。</td></tr>
+              <tr><td>GET</td><td><code>/health/detail</code></td><td>详细健康，需要普通鉴权。</td></tr>
+              <tr><td>GET</td><td><code>/metrics</code> <code>/stats</code></td><td>指标快照和服务统计。</td></tr>
+              <tr><td>GET</td><td><code>/proactive/status?limit=5</code></td><td>主动运行状态。</td></tr>
+              <tr><td>GET</td><td><code>/soul</code></td><td><code>name</code> 来自身份 <code>Name:</code> 行，否则取第一处粗体名。<code>system_prompt</code> 是全文。</td></tr>
+              <tr><td>GET / POST</td><td><code>/soul/templates</code> <code>/soul/templates/{id}</code></td><td>人格模板。</td></tr>
+              <tr><td>GET</td><td><code>/gateways</code></td><td>当前进程内的网关。</td></tr>
+              <tr><td>POST</td><td><code>/gateways/{name}/start</code></td><td>在 <code>lh serve</code> 进程内启动。已运行返回 409。不要同时再跑 <code>lh msg-gateway start</code>。其他通道发送 <code>{}</code> 即使用宿主配置。</td></tr>
+              <tr><td>GET / POST</td><td><code>/agents</code> 及 <code>register</code> <code>delegate</code> <code>tasks</code> <code>cancel</code></td><td>协作注册表。HTTP 委派和模型工具 <code>delegate_task</code> 的任务视图没有完全打通。</td></tr>
+              <tr><td>GET / POST</td><td><code>/workflows</code> <code>/workflow-instances</code></td><td>工作流定义和实例。</td></tr>
+              <tr><td>GET / POST</td><td><code>/embedders</code> <code>/register</code> <code>/switch</code></td><td>嵌入器列表、注册和切换。</td></tr>
+              <tr><td>GET / POST</td><td><code>/fc</code> <code>/fc/tools</code> <code>/fc/history</code></td><td>函数调用摘要、执行、工具和历史。</td></tr>
+            </table>
+            <div class="pre-label">函数调用执行体</div>
+            <pre>{"message":"Use available tools to inspect the repo","auto_approve":false,"max_iterations":8}</pre>
+            <p>pprof 不属于 <code>/api/v1</code>。设置 <code>LA_PPROF_ADDR=127.0.0.1:6060</code> 后，该地址才提供 <code>/debug/pprof/</code>、<code>/goroutine</code>、<code>/profile</code> 和 <code>/heap</code>。</p>
+          </article>
+          <p class="intro">核对日期 2026-10-23。字段来自公开包 v1.5.42 选中的 app <code>159015485c70</code> 与 api <code>5bc49550b485</code>，页面随主仓文档发布。Android 通过这些 HTTP 和 WebSocket 字段消费后端，不导入 Go 模块。</p>
+        </section>
+      </main>
+    </div>
+  </div>
+  <script>
+    function apiDocs() {
+      return {
+        dark: localStorage.getItem('la-theme') === 'dark',
+        query: '',
+        active: 'contract',
+        groups: [
+          { title: '约定', items: [{ id: 'contract', title: '基址与传输' }, { id: 'auth', title: '鉴权与错误' }] },
+          { title: '对话', items: [{ id: 'chat', title: '聊天' }, { id: 'sessions', title: '会话' }, { id: 'commands', title: '命令与插件' }] },
+          { title: '运行', items: [{ id: 'models', title: '模型与配置' }, { id: 'tools', title: '工具与上传' }, { id: 'tasks', title: '任务与审批' }, { id: 'memory', title: '记忆与 RAG' }] },
+          { title: '通道', items: [{ id: 'realtime', title: 'WebSocket' }, { id: 'ops', title: '健康与其余资源' }] }
+        ],
+        init() {
+          this.$watch('dark', (value) => localStorage.setItem('la-theme', value ? 'dark' : 'light'));
+          const mark = () => {
+            const nodes = [...document.querySelectorAll('main section')];
+            const found = nodes.findLast((node) => node.getBoundingClientRect().top < 120);
+            if (found) this.active = found.id;
+          };
+          document.addEventListener('scroll', mark, { passive: true });
+        },
+        filteredGroups() {
+          const q = this.query.trim().toLowerCase();
+          if (!q) return this.groups;
+          return this.groups.map((group) => ({
+            ...group,
+            items: group.items.filter((item) => {
+              const node = document.getElementById(item.id);
+              const text = ((node && node.dataset.search) || '') + ' ' + item.title;
+              return text.toLowerCase().includes(q) || item.title.toLowerCase().includes(q);
+            })
+          })).filter((group) => group.items.length);
+        },
+        async copy(value) {
+          try { await navigator.clipboard.writeText(value); } catch (err) { console.error(err); }
+        }
+      };
+    }
+  </script>
+</body>
+</html>
