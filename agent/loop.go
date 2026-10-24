@@ -1294,26 +1294,11 @@ func compactToolResultForContext(toolName, result string) string {
 	return truncateToolResultForContext(out, limit)
 }
 
+// truncateToolResultForContext keeps identifier-bearing lines and drops the most
+// redundant lines first, instead of cutting a fixed head and tail. The budget is
+// the per-tool rune limit described in compactToolResultForContext.
 func truncateToolResultForContext(out string, limit int) string {
-	if limit <= 0 {
-		return out
-	}
-	runes := []rune(out)
-	if len(runes) <= limit {
-		return out
-	}
-	marker := fmt.Sprintf(
-		"\n\n... (middle omitted for context: %d chars; do not rely on omitted details without another tool check) ...\n\n",
-		len(runes)-limit,
-	)
-	markerRunes := []rune(marker)
-	if len(markerRunes) >= limit {
-		return string(runes[:limit])
-	}
-	room := limit - len(markerRunes)
-	head := room * 2 / 3
-	tail := room - head
-	return string(runes[:head]) + marker + string(runes[len(runes)-tail:])
+	return compressToolResultLines(out, limit)
 }
 
 // extractRequiredToolNames 从用户输入中提取显式点名的工具（按出现顺序）。

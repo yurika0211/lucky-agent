@@ -18,5 +18,5 @@ func compactEstimator(est *contextx.TokenEstimator) compactlib.Estimator {
 }
 
 func compactTextOptions() compactlib.TextOptions {
-	return compactpkg.TextOptions(summarizeToolResult)
+	return compactpkg.TextOptions(transcriptToolSummary)
 }

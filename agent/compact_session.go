@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
@@ -33,6 +35,30 @@ type CompactSessionResult struct {
 }
 
 const compactSegmentPolicyVersion = "checkpoint-segments-v1"
+
+// compactRangeFingerprint identifies the messages a summary is about to cover.
+// A count check misses a rewrite that keeps the same number of messages.
+func compactRangeFingerprint(messages []provider.Message, from, to int) string {
+	if from < 0 {
+		from = 0
+	}
+	if to > len(messages) {
+		to = len(messages)
+	}
+	if from > to {
+		from = to
+	}
+	sum := sha256.New()
+	for _, message := range messages[from:to] {
+		sum.Write([]byte(message.Role))
+		sum.Write([]byte{0})
+		sum.Write([]byte(message.Content))
+		sum.Write([]byte{0})
+		sum.Write([]byte(message.ToolCallID))
+		sum.Write([]byte{0})
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
 
 type CompactSessionOptions struct {
 	ForceLocal        bool
@@ -83,6 +109,7 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		est = contextx.NewTokenEstimator(4096)
 	}
 	compactInput, retained := selectCompactSegmentInput(raw, est, opts.RetainRecentTurns, opts.TargetTailTokens)
+	coveredFingerprint := compactRangeFingerprint(raw, 0, len(compactInput))
 	if len(compactInput) == 0 {
 		return nil, fmt.Errorf("compact session: retained tail leaves no complete messages to compact")
 	}
@@ -156,6 +183,15 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		backup, err = sess.CreateBackup(trigger)
 		if err != nil {
 			err = fmt.Errorf("compact session: create pre-compaction backup: %w", err)
+			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
+			return nil, err
+		}
+		// A summary may only replace messages that are still recoverable. Re-read
+		// the session after the backup and refuse to write a boundary when the
+		// covered range moved underneath this compaction, so a boundary never
+		// replaces messages that now exist only as an earlier summary.
+		if _, reread, coveredAgain := session.CompactSegments(sess.GetMessages()); coveredAgain != covered || len(reread) < len(raw) || compactRangeFingerprint(reread, 0, len(compactInput)) != coveredFingerprint {
+			err := fmt.Errorf("compact session: raw messages changed during compaction; refusing to overwrite them with a summary")
 			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
 			return nil, err
 		}

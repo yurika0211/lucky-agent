@@ -357,11 +357,14 @@ func TestIsUsefulSearchEvidence(t *testing.T) {
 func TestCompactToolResultForContext(t *testing.T) {
 	long := "Results for: test\n\n" + strings.Repeat("x", 5000) + "TAIL-EVIDENCE"
 	got := compactToolResultForContext("web_search", long)
+	if len([]rune(got)) > 2400 {
+		t.Fatalf("web_search result exceeds its rune budget: %d", len([]rune(got)))
+	}
 	if len(got) >= len(long) {
 		t.Fatal("expected web_search result to be compacted")
 	}
-	if !strings.Contains(got, "middle omitted for context") {
-		t.Fatal("expected middle omission marker")
+	if !strings.Contains(got, "omitted for context") && !strings.Contains(got, "middle omitted for context") {
+		t.Fatal("expected an omission marker")
 	}
 	if !strings.Contains(got, "Results for: test") {
 		t.Fatal("expected head of result to be preserved")
