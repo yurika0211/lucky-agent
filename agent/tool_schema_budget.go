@@ -7,12 +7,28 @@ import (
 	"unicode"
 
 	"github.com/yurika0211/luckyagent-runtime/contextx"
+	"github.com/yurika0211/luckyagent-runtime/logger"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 )
+
+// corePreferredTools receive a score bonus when the catalog must be trimmed.
+// The bonus never excludes an enabled tool that still fits the schema budget.
+var corePreferredTools = []string{
+	"file_read", "file_list", "terminal", "web_search", "web_fetch",
+	"ask_user", "context_history_read", "skill_read",
+}
+
+type toolSchemaChoice struct {
+	index, cost, score int
+	name               string
+	required           bool
+}
 
 // Select complete schemas, preserving explicitly requested/forced tools and
 // the current tool round. Optional schemas use at most one third of the input
 // window; required schemas may borrow more while pinned context still fits.
+// Every enabled schema is eligible. Relevance and the core-tool bonus only
+// decide order once the full catalog no longer fits.
 func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Message, priorities []contextx.Message, opts provider.CallOptions, turnRequired []string) (provider.CallOptions, error) {
 	if b == nil || len(opts.Tools) == 0 {
 		return opts, nil
@@ -23,7 +39,7 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 			query.WriteString(msg.Content)
 			query.WriteByte('\n')
 		}
-		if priorities[i].Priority == contextx.PriorityCritical && msg.Role == "user" && !isTransientComputerObservation(msg) {
+		if i < len(priorities) && priorities[i].Priority == contextx.PriorityCritical && msg.Role == "user" && !isTransientComputerObservation(msg) {
 			query.WriteString(msg.Content)
 			for _, part := range msg.ContentParts {
 				if part.Type == "text" {
@@ -55,15 +71,15 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 		required[functionToolNameFromSchema(opts.Tools[0])] = struct{}{}
 	}
 	preferred, _ := a.intentAllowedTools(text)
-	for _, name := range []string{"file_read", "file_list", "terminal", "web_search", "web_fetch", "ask_user", "context_history_read", "skill_read"} {
-		if preferred == nil {
-			preferred = map[string]struct{}{}
-		}
+	if preferred == nil {
+		preferred = map[string]struct{}{}
+	}
+	for _, name := range corePreferredTools {
 		preferred[name] = struct{}{}
 	}
 	var pinned []provider.Message
 	for i, priority := range priorities {
-		if priority.Priority == contextx.PriorityCritical {
+		if priority.Priority == contextx.PriorityCritical && i < len(messages) {
 			pinned = append(pinned, messages[i])
 		}
 	}
@@ -75,11 +91,7 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 	if limit > available {
 		limit = available
 	}
-	type entry struct {
-		index, cost, score int
-		required           bool
-	}
-	entries := make([]entry, 0, len(opts.Tools))
+	entries := make([]toolSchemaChoice, 0, len(opts.Tools))
 	words := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
 	mandatory := 0
 	for i, schema := range opts.Tools {
@@ -101,7 +113,7 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 		if must {
 			mandatory += cost
 		}
-		entries = append(entries, entry{index: i, cost: cost, score: score, required: must})
+		entries = append(entries, toolSchemaChoice{index: i, cost: cost, score: score, name: name, required: must})
 	}
 	if mandatory > available {
 		return opts, fmt.Errorf("required tool schemas need about %d tokens but only %d remain in context input budget %d", mandatory, available, b.limit)
@@ -112,13 +124,19 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 	if estimateToolSchemas(b.est, opts.Tools) <= limit {
 		return opts, nil
 	}
+	// Required tools are pinned. Remaining enabled schemas are admitted from
+	// the smallest upward, so a score bonus cannot crowd one out. Leftover
+	// budget then keeps the highest-scoring schemas that still fit.
 	sort.SliceStable(entries, func(i, j int) bool {
 		if entries[i].required != entries[j].required {
 			return entries[i].required
 		}
-		return entries[i].score > entries[j].score
+		if entries[i].cost != entries[j].cost {
+			return entries[i].cost < entries[j].cost
+		}
+		return entries[i].index < entries[j].index
 	})
-	selected := make(map[int]bool)
+	selected := make(map[int]bool, len(entries))
 	used := 0
 	for _, item := range entries {
 		if item.required || used+item.cost <= limit {
@@ -126,9 +144,42 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 			used += item.cost
 		}
 	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].required != entries[j].required {
+			return entries[i].required
+		}
+		if entries[i].score != entries[j].score {
+			return entries[i].score > entries[j].score
+		}
+		return entries[i].index < entries[j].index
+	})
+	for _, item := range entries {
+		if selected[item.index] || used+item.cost > limit {
+			continue
+		}
+		selected[item.index] = true
+		used += item.cost
+	}
+	kept := make([]string, 0, len(selected))
+	dropped := make([]string, 0)
+	for _, item := range entries {
+		if selected[item.index] {
+			kept = append(kept, schemaChoiceLabel(item))
+			continue
+		}
+		dropped = append(dropped, schemaChoiceLabel(item))
+	}
 	if len(selected) == 0 {
 		return opts, fmt.Errorf("no tool schema fits the %d-token schema allocation within context input budget %d", limit, b.limit)
 	}
+	logger.Info("tool schema budget trimmed request",
+		"kept", len(selected),
+		"dropped", len(dropped),
+		"schema_tokens", used,
+		"schema_limit", limit,
+		"kept_tools", strings.Join(kept, ","),
+		"dropped_tools", strings.Join(dropped, ","),
+	)
 	tools := make([]map[string]any, 0, len(selected))
 	for i, schema := range opts.Tools {
 		if selected[i] {
@@ -138,4 +189,12 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 	opts.Tools = tools
 	opts.ToolChoice = normalizeToolChoiceForTools(opts.ToolChoice, tools)
 	return opts, nil
+}
+
+func schemaChoiceLabel(item toolSchemaChoice) string {
+	name := item.name
+	if name == "" {
+		name = fmt.Sprintf("#%d", item.index)
+	}
+	return fmt.Sprintf("%s:%d", name, item.cost)
 }
