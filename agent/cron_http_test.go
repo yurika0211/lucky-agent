@@ -37,6 +37,10 @@ func TestAddCronJobPauseResumeRemovePersists(t *testing.T) {
 	if !ok || job.Metadata["session_id"] != "sess-1" || job.Metadata["platform"] != "android" || job.Metadata["command"] != "总结昨日" || !job.DeleteAfterRun {
 		t.Fatalf("created job metadata = %+v ok=%v", job, ok)
 	}
+	if job.NextRun.IsZero() {
+		t.Fatal("delete_after_run cleared NextRun on create")
+	}
+	createdNextRun := job.NextRun
 	if err := a1.PauseCronJob("morning"); err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +60,9 @@ func TestAddCronJobPauseResumeRemovePersists(t *testing.T) {
 	restored, ok := a2.CronEngine().GetJob("morning")
 	if !ok || restored.Status != cron.StatusPaused || restored.Metadata["session_id"] != "sess-1" || !restored.DeleteAfterRun {
 		t.Fatalf("restored job = %+v ok=%v", restored, ok)
+	}
+	if restored.NextRun.IsZero() || !restored.NextRun.Equal(createdNextRun) {
+		t.Fatalf("restored NextRun = %s, want %s", restored.NextRun, createdNextRun)
 	}
 	if err := a2.ResumeCronJob("morning"); err != nil {
 		t.Fatal(err)
