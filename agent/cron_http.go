@@ -49,9 +49,9 @@ func (a *Agent) AddCronJob(id, name, description, mode, command string, metadata
 		return err
 	}
 	if metadataBool(meta, "delete_after_run") {
-		// GetJob returns a copy. RestoreJobState writes the stored job, so the
-		// flag survives save and restart.
-		if err := a.cronEngine.RestoreJobState(id, cron.RestoredJobState{DeleteAfterRun: true}); err != nil {
+		// RestoreJobState replaces counters, history, and NextRun. Only the
+		// flag should change; save and restart keep it from job metadata.
+		if err := a.cronEngine.SetDeleteAfterRun(id, true); err != nil {
 			_ = a.cronEngine.RemoveJob(id)
 			return err
 		}
