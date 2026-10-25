@@ -51,7 +51,7 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yuin/goldmark v1.3.5 // indirect
 	github.com/yurika0211/aestus v0.1.0 // indirect
-	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261025161000-2fb8b86095f3 // indirect
+	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261025180347-a5b824ab6bfc // indirect
 	github.com/yurika0211/luckyagent-api v0.2.3 // indirect
 	github.com/yurika0211/luckyagent-gateway v0.2.2 // indirect
 	github.com/yurika0211/luckyagent-orchestrator v0.1.1 // indirect
