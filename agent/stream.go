@@ -25,16 +25,16 @@ import (
 ChatEvent 描述面向上层流式 UI 的聊天事件。
 */
 type ChatEvent struct {
-	Type        ChatEventType
-	Content     string
-	TaskID      string // durable foreground task identifier, when available
-	Name        string // 工具名（Type=EventToolCall 时）
-	Args        string // 工具参数
-	Result      string // 工具结果
+	Type    ChatEventType
+	Content string
+	TaskID  string // durable foreground task identifier, when available
+	Name    string // 工具名（Type=EventToolCall 时）
+	Args    string // 工具参数
+	Result  string // 工具结果
 	// Duration is the finished tool call's wall clock. It is set only on
 	// ChatEventToolResult. Zero means the call was not measured.
-	Duration time.Duration
-	Round       int    // 所属轮次（Type=ChatEventReasoningContent 时使用）
+	Duration    time.Duration
+	Round       int // 所属轮次（Type=ChatEventReasoningContent 时使用）
 	Observation *ObservationEvent
 	Approval    *ApprovalEvent
 	Compact     *CompactProgress     // session compact progress (Type=ChatEventCompact)

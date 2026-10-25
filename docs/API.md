@@ -886,7 +886,16 @@ a session lazily through the existing reconnect path. Run fields,
 attachments, event JSON and reconnect cursors are unchanged. See
 [runtime request and recovery options](runtime-request-recovery.md).
 
-`tool_result` carries the finished call's `duration_ms` in milliseconds. The WebSocket handler reads `agent.ChatEvent.Duration` directly. Telegram and QQ read the same value after `ToTurnChatEvent` copies it onto `turn.ChatEvent`. The SSE `observe` frame is assembled by the app module from `agent.ChatEvent.Duration`; this repository does not assemble that frame. Zero or an omitted field means the producer did not measure that call. A running tool has no result event and no invented duration. Timeout, failure, sandbox refusal and a missing executable still carry the measured wall clock. This matches the `duration_ms` stored on the session tool message.
+Agent tool-result events expose `ChatEvent.Duration`, and the neutral turn adapter preserves it.
+Live WebSocket `tool_result.data.duration_ms`, SSE `observe.duration_ms`, and SDK duration
+require the matching API/app consumers; updating the Agent alone does not add those wire fields.
+The launcher-selected app in this PR does not yet include that consumer change.
+See [tool duration integration status](tool-duration-integration.md) before relying on live duration.
+When wired, milliseconds are obtained with `Duration.Milliseconds()` and match the session
+tool message. Zero can mean unmeasured or a measured call shorter than one millisecond;
+older payloads may omit the field. Running tools have no result duration. Failures retain
+their measured time, and completed-operation replay retains the recorded time rather than
+inventing a new execution duration.
 
 Server push `type: "task_event"` is sent to every connected client when a task
 event is stored. `data` carries `type`, `task_id`, `parent_id`, `status`,
