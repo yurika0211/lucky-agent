@@ -303,3 +303,64 @@ func TestCompactionCannotBypassRequestBudget(t *testing.T) {
 		t.Fatalf("compaction bypassed input budget: %v", err)
 	}
 }
+
+func TestSelectRequestToolsKeepsRelevantLargeSchemaAheadOfUnrelatedSmallOnes(t *testing.T) {
+	a := requestBudgetAgent(6000)
+	messages := []provider.Message{{Role: "user", Content: "Analyze spectroscopy measurements"}}
+	opts := provider.CallOptions{}
+	for i := 0; i < 100; i++ {
+		opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+			"name": fmt.Sprintf("unrelated_%d", i), "description": "Generic helper",
+		}})
+	}
+	opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+		"name": "spectral_analyzer", "description": strings.Repeat("Analyze spectroscopy measurements. ", 100),
+	}})
+	got, err := a.selectRequestTools(a.requestBudget(), messages, a.requestPriorities(messages), opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !toolNamesIn(got.Tools)["spectral_analyzer"] {
+		t.Fatal("cheap unrelated schemas crowded out the relevant enabled tool")
+	}
+	if cost := estimateToolSchemas(a.contextEst, got.Tools); cost > 2000 {
+		t.Fatalf("schema allocation exceeded: %d", cost)
+	}
+}
+
+func TestSelectRequestToolsBudgetFailuresAndRequiredBorrowing(t *testing.T) {
+	schema := func(name string, repeats int) map[string]any {
+		return map[string]any{"type": "function", "function": map[string]any{
+			"name": name, "description": strings.Repeat("schema details ", repeats),
+		}}
+	}
+	for _, tt := range []struct {
+		name, text, wantError string
+		tools                 []map[string]any
+		required              []string
+	}{
+		{"pinned input", strings.Repeat("pinned input ", 5000), "pinned instructions exceed", []map[string]any{schema("small", 1)}, nil},
+		{"required overflow", "continue", "required tool schemas need", []map[string]any{schema("huge", 5000), schema("small", 1)}, []string{"huge"}},
+		{"no optional fits", "continue", "no tool schema fits", []map[string]any{schema("one", 5000), schema("two", 5000)}, nil},
+		{"required borrows", "continue", "", []map[string]any{schema("required", 700), schema("optional", 1000)}, []string{"required"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := requestBudgetAgent(6000)
+			messages := []provider.Message{{Role: "user", Content: tt.text}}
+			got, err := a.selectRequestTools(a.requestBudget(), messages, a.requestPriorities(messages), provider.CallOptions{Tools: tt.tools}, tt.required)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil || !toolNamesIn(got.Tools)["required"] {
+				t.Fatalf("required schema lost: opts=%v err=%v", got, err)
+			}
+			cost := estimateToolSchemas(a.contextEst, got.Tools)
+			if cost <= 2000 || estimateProviderRequest(a.contextEst, messages, got.Tools) > 6000 {
+				t.Fatalf("fixture did not exercise safe borrowing: schema tokens=%d", cost)
+			}
+		})
+	}
+}

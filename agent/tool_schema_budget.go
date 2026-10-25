@@ -11,8 +11,8 @@ import (
 	"github.com/yurika0211/luckyagent-runtime/provider"
 )
 
-// corePreferredTools receive a score bonus when the catalog must be trimmed.
-// The bonus never excludes an enabled tool that still fits the schema budget.
+// Core tools break ties only after relevance and cost. A fixed-name preference
+// must not crowd out cheaper enabled tools when no task relevance is known.
 var corePreferredTools = []string{
 	"file_read", "file_list", "terminal", "web_search", "web_fetch",
 	"ask_user", "context_history_read", "skill_read",
@@ -22,6 +22,7 @@ type toolSchemaChoice struct {
 	index, cost, score int
 	name               string
 	required           bool
+	core               bool
 }
 
 // Select complete schemas, preserving explicitly requested/forced tools and
@@ -71,12 +72,7 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 		required[functionToolNameFromSchema(opts.Tools[0])] = struct{}{}
 	}
 	preferred, _ := a.intentAllowedTools(text)
-	if preferred == nil {
-		preferred = map[string]struct{}{}
-	}
-	for _, name := range corePreferredTools {
-		preferred[name] = struct{}{}
-	}
+	core := makeToolNameSet(corePreferredTools)
 	var pinned []provider.Message
 	for i, priority := range priorities {
 		if priority.Priority == contextx.PriorityCritical && i < len(messages) {
@@ -113,7 +109,8 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 		if must {
 			mandatory += cost
 		}
-		entries = append(entries, toolSchemaChoice{index: i, cost: cost, score: score, name: name, required: must})
+		_, isCore := core[name]
+		entries = append(entries, toolSchemaChoice{index: i, cost: cost, score: score, name: name, required: must, core: isCore})
 	}
 	if mandatory > available {
 		return opts, fmt.Errorf("required tool schemas need about %d tokens but only %d remain in context input budget %d", mandatory, available, b.limit)
@@ -124,15 +121,21 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 	if estimateToolSchemas(b.est, opts.Tools) <= limit {
 		return opts, nil
 	}
-	// Required tools are pinned. Remaining enabled schemas are admitted from
-	// the smallest upward, so a score bonus cannot crowd one out. Leftover
-	// budget then keeps the highest-scoring schemas that still fit.
+	// Admit relevant schemas first, then fill gaps with smaller peers. A
+	// smallest-first pass followed by a relevance pass never admits anything
+	// in its second pass: the remaining space is already too small.
 	sort.SliceStable(entries, func(i, j int) bool {
 		if entries[i].required != entries[j].required {
 			return entries[i].required
 		}
+		if entries[i].score != entries[j].score {
+			return entries[i].score > entries[j].score
+		}
 		if entries[i].cost != entries[j].cost {
 			return entries[i].cost < entries[j].cost
+		}
+		if entries[i].core != entries[j].core {
+			return entries[i].core
 		}
 		return entries[i].index < entries[j].index
 	})
@@ -143,22 +146,6 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 			selected[item.index] = true
 			used += item.cost
 		}
-	}
-	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].required != entries[j].required {
-			return entries[i].required
-		}
-		if entries[i].score != entries[j].score {
-			return entries[i].score > entries[j].score
-		}
-		return entries[i].index < entries[j].index
-	})
-	for _, item := range entries {
-		if selected[item.index] || used+item.cost > limit {
-			continue
-		}
-		selected[item.index] = true
-		used += item.cost
 	}
 	kept := make([]string, 0, len(selected))
 	dropped := make([]string, 0)
@@ -177,6 +164,8 @@ func (a *Agent) selectRequestTools(b *modelRequestBudget, messages []provider.Me
 		"dropped", len(dropped),
 		"schema_tokens", used,
 		"schema_limit", limit,
+	)
+	logger.Debug("tool schema budget choices",
 		"kept_tools", strings.Join(kept, ","),
 		"dropped_tools", strings.Join(dropped, ","),
 	)
