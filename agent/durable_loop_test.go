@@ -510,7 +510,7 @@ func TestDurableReadOnlyStartedOperationIsReplayed(t *testing.T) {
 	a, sess, q, _, cfg := durableHarness(t, pendingCheckpoint())
 	calls := 0
 	a.tools.Register(&tool.Tool{
-		Name: "perform_operation", Permission: tool.PermAuto, ParallelSafe: true,
+		Name: "perform_operation", Permission: tool.PermAuto, ParallelSafe: true, PolicySafe: true,
 		Handler: func(map[string]any) (string, error) { calls++; return "read-only evidence", nil },
 	})
 	// The process died after recording the intent but before the result.

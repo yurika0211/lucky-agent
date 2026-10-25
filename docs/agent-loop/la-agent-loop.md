@@ -562,6 +562,12 @@ memory gate did not produce final synthesis
 
 截断的回复不会被当成候选答案送去完成校验。它的正文累加进 `cp.Continuation`，并追问模型继续，避免已经产出的文字被丢弃。
 
+只有后续非空、未截断的正文才能形成候选答案；空回复不会把先前的半截答案提升为完成。
+恢复重放还需检查实际 action、动态审批和 permission override：`ParallelSafe` 仅表示可并发，
+不证明没有写副作用。只有已知检查动作或宿主显式声明 `PolicySafe` 的工具，且无需审批、
+非 shell、没有执行 hooks，才允许重放。memory remember、HTTP POST 等仍阻断等待核对。
+这里没有增加运行配置字段；宿主自动续跑及 orchestrator 的剩余工作仍由本 PR 列出的后续 issue 跟踪。
+
 `ErrYield` 不消耗重试预算，只消耗执行段数和总时长预算。预算用尽时才转成阻断，原因写在 `block_reason` 里。
 
 ## 当前边界

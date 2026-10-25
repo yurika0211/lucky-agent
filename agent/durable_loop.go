@@ -85,6 +85,9 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		}
 	}
 	cp.migrateResultDigests()
+	// Model stalls bound retries within one execution slice, not every later
+	// slice to a single attempt after a persisted stall count reaches the cap.
+	cp.ModelStalls = 0
 	if cp.Shell != nil && sess != nil {
 		sess.RestoreShellContext(*cp.Shell)
 	}
@@ -308,7 +311,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			return result, durableProviderError(ctx, err)
 		}
 		if resp == nil {
-			return result, fmt.Errorf("provider returned no response")
+			resp = &provider.Response{}
 		}
 		cp.Tokens += resp.TokensUsed
 		result.TokensUsed += resp.TokensUsed
@@ -338,6 +341,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		if len(resp.ToolCalls) > 0 {
 			cp.Batch++
 			cp.ModelStalls = 0
+			cp.Continuation = ""
 			msg := provider.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent, ToolCalls: resp.ToolCalls}
 			cp.Messages = append(cp.Messages, msg)
 			if sess != nil {
@@ -357,13 +361,15 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			cp.Messages = append(cp.Messages,
 				provider.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent},
 				provider.Message{Role: "user", Content: lengthRecoveryPrompt})
+		} else if strings.TrimSpace(resp.Content) == "" {
+			// A prior partial answer is not proof that the model finished.
+			// Keep it for a real continuation, never promote it on an empty reply.
+			cp.ModelStalls++
+			cp.Messages = append(cp.Messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
 		} else {
 			answer := strings.TrimSpace(cp.Continuation + resp.Content)
 			cp.Continuation = ""
-			if answer == "" {
-				cp.ModelStalls++
-				cp.Messages = append(cp.Messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
-			} else if msg, blocked := artifactGuard.BlockMessage(answer); blocked {
+			if msg, blocked := artifactGuard.BlockMessage(answer); blocked {
 				cp.Messages = append(cp.Messages, provider.Message{Role: "assistant", Content: answer},
 					provider.Message{Role: "user", Content: msg})
 				cp.NoProgress++
@@ -432,6 +438,9 @@ func durableProviderError(ctx context.Context, err error) error {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return ctx.Err()
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return autonomy.ErrYield
+	}
 	if errors.Is(err, errIncompleteSummary) || errors.Is(err, errVerifierRetryable) {
 		return autonomy.ErrYield
 	}
@@ -489,7 +498,7 @@ func (a *Agent) executeDurablePending(ctx context.Context, sess *session.Session
 		// A read-only call interrupted before its result was recorded has no
 		// side effect to reconcile, so recovery repeats it. Mutating, shell and
 		// approval-gated calls keep the human reconciliation path.
-		if op.State == "started" && a.durableReadOnlyTool(pending.Call.Name) {
+		if op.State == "started" && a.durableReplaySafeCall(pending.Call.Name, pending.Call.Arguments) {
 			op.State = "retry"
 		}
 		switch op.State {
@@ -651,21 +660,40 @@ func appendUnique(items []string, value string) []string {
 	return append(items, value)
 }
 
-// durableReadOnlyTool reports whether a tool has no side effect worth
-// reconciling. Recovery may safely repeat such a call.
-func (a *Agent) durableReadOnlyTool(name string) bool {
-	if a == nil || a.Tools() == nil {
+// ParallelSafe alone is not a replay guarantee: memory writes and HTTP POSTs
+// can also run concurrently. Require a known inspection action or the host's
+// explicit PolicySafe declaration, and never replay approval-gated calls.
+func (a *Agent) durableReplaySafeCall(name, arguments string) bool {
+	if a == nil || a.Tools() == nil || a.hooks.Enabled() {
 		return false
 	}
-	registered, ok := a.Tools().Get(a.canonicalToolName(name))
-	return ok && registered != nil && registered.ParallelSafe && !registered.ShellAware
+	name = a.canonicalToolName(name)
+	registered, ok := a.Tools().Get(name)
+	if !ok || registered == nil || !registered.Enabled || !registered.ParallelSafe || registered.ShellAware {
+		return false
+	}
+	var args map[string]any
+	if strings.TrimSpace(arguments) != "" {
+		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+			return false
+		}
+	}
+	permission, err := a.Tools().CheckPermission(name)
+	if err != nil || permission != tool.PermAuto || registered.EffectivePermission(args) != tool.PermAuto {
+		return false
+	}
+	return registered.PolicySafe || isExplorationTool(provider.ToolCall{Name: name, Arguments: arguments})
 }
 
 // durableRepeatCanConverge reports whether a stable repeated result is usable
 // evidence. A read-only tool can be concluded from; a failed or mutating call
 // still needs the existing blocked recovery path.
 func (a *Agent) durableRepeatCanConverge(name string, toolErr error) bool {
-	return toolErr == nil && a.durableReadOnlyTool(name)
+	if toolErr != nil || a == nil || a.Tools() == nil {
+		return false
+	}
+	registered, ok := a.Tools().Get(a.canonicalToolName(name))
+	return ok && registered != nil && registered.ParallelSafe && !registered.ShellAware
 }
 
 func (a *Agent) verifyDurableCandidate(ctx context.Context, goal string, criteria []string, cp *durableCheckpoint, cfg LoopConfig, snapshot providerSnapshot) (*durableVerification, int, error) {
