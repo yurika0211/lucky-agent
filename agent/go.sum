@@ -111,10 +111,10 @@ github.com/yurika0211/luckyagent-orchestrator v0.1.1 h1:NipscOmOyFeVe0OLD+of73kC
 github.com/yurika0211/luckyagent-orchestrator v0.1.1/go.mod h1:2+IqqxdSrq8S3+K7ADbml705RqSsWQMGEOfADJmNSJk=
 github.com/yurika0211/luckyagent-plugins v0.1.0 h1:YcwLLk92KEbF5p2dffMTYk4BN1VD0fkRymrycoTvO18=
 github.com/yurika0211/luckyagent-plugins v0.1.0/go.mod h1:EXtG1c3oNR6yoN1s+cOUY9Zm9ZhuKcm2139iwCEreVY=
-github.com/yurika0211/luckyagent-runtime v0.3.0 h1:wzdkN+yh3uR9w1t7LR2DZe0IishyvOrNMeBv6LR1CQI=
-github.com/yurika0211/luckyagent-runtime v0.3.0/go.mod h1:um1PXX5+TYzXe2AEZzOkHWU8gGeP/C9yO6RRhS+tmFk=
-github.com/yurika0211/luckyagent-tools v0.2.3 h1:0bPROdv1XTEu7A8WnBGKBuU2hc7QoBSrB1eEpoKo9Fg=
-github.com/yurika0211/luckyagent-tools v0.2.3/go.mod h1:KJC8R4l9teqT4BbFhprB7DVYcZDoC3MdNKVRp1jd/H0=
+github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261025155307-54def1957a16 h1:NV7pRfRMue7uOmB6tNRmynwhsQeqJ/CYQfM0sxQ+Ghs=
+github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261025155307-54def1957a16/go.mod h1:um1PXX5+TYzXe2AEZzOkHWU8gGeP/C9yO6RRhS+tmFk=
+github.com/yurika0211/luckyagent-tools v0.2.4-0.20261025155312-14ca32a46742 h1:+XhWwZ2RwGNOdJhKUINkm4wRxuJ5GVCM30IVSZMFL0w=
+github.com/yurika0211/luckyagent-tools v0.2.4-0.20261025155312-14ca32a46742/go.mod h1:KJC8R4l9teqT4BbFhprB7DVYcZDoC3MdNKVRp1jd/H0=
 go.mongodb.org/mongo-driver/v2 v2.5.0 h1:yXUhImUjjAInNcpTcAlPHiT7bIXhshCTL3jVBkF3xaE=
 go.mongodb.org/mongo-driver/v2 v2.5.0/go.mod h1:yOI9kBsufol30iFsl1slpdq1I0eHPzybRWdyYUs8K/0=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=

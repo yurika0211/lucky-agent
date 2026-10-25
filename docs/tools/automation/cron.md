@@ -31,6 +31,8 @@ cron 任务可以按 shell 模式执行命令，也可以按 agent 模式执行 
 
 这些工具的 `Category` 都是 `CatDelegate`，`Source` 都是 `builtin`。
 
+HTTP 创建、暂停、恢复和删除走 `Agent.AddCronJob`、`PauseCronJob`、`ResumeCronJob`、`RemoveCronJob`。它们复用 `buildCronTask`，并在变更后调用同一条 `saveCronJobs`。调用方必须传入已经解析好的 `cron.Schedule` 和非空 id；id 规则仍由工具层的 `buildCronJobID` 决定，Agent 不另造一套。metadata 至少保留 `session_id` 和 `platform`，结果才能回到原会话。
+
 ## cron 统一入口
 
 `cron` 参数：

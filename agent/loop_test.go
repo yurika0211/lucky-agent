@@ -552,3 +552,52 @@ func TestNegatedWriteDoesNotDropLaterRead(t *testing.T) {
 		t.Fatalf("later file_read dropped, got %v", got)
 	}
 }
+
+func TestEnglishNegationDoesNotDropLaterRequiredTool(t *testing.T) {
+	reg := tool.NewRegistry()
+	for _, name := range []string{"terminal", "file_read", "file_write", "current_time"} {
+		reg.Register(&tool.Tool{Name: name, Enabled: true})
+	}
+	a := &Agent{tools: reg}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{name: "period after another tool", input: "Don't use terminal. Must call file_read", expected: "file_read"},
+		{name: "period before use", input: "Never call file_write. Use file_read.", expected: "file_read"},
+		{name: "implicit sentence boundary", input: "Do not call file_write. call file_read", expected: "file_read"},
+		{name: "same tool mentioned twice", input: "Don't use file_read. Now call file_read for real.", expected: "file_read"},
+		{name: "comma does not end negation", input: "Never call file_write, use file_read. Must call current_time", expected: "current_time"},
+		{name: "comma keeps negation", input: "Don't call file_read, use file_write. Must call current_time", expected: "current_time"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := a.extractRequiredToolNames(tt.input)
+			if tt.expected == "" {
+				if len(got) != 0 {
+					t.Fatalf("expected no required tools, got %v", got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0] != tt.expected {
+				t.Fatalf("expected %s only, got %v", tt.expected, got)
+			}
+		})
+	}
+}
+
+func TestEnglishNegationSpansCommaSeparatedToolList(t *testing.T) {
+	reg := tool.NewRegistry()
+	for _, name := range []string{"file_read", "file_write"} {
+		reg.Register(&tool.Tool{Name: name, Enabled: true})
+	}
+	a := &Agent{tools: reg}
+
+	got := a.extractRequiredToolNames("Don't call file_read, file_write")
+	if len(got) != 0 {
+		t.Fatalf("comma-separated negated tool list must stay negated, got %v", got)
+	}
+}

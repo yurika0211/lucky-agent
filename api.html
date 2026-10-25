@@ -442,7 +442,7 @@ POST /api/v1/tasks/{id}/cancel
           </article>
           <article class="endpoint">
             <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/autonomy/dashboard</span></div>
-            <p>只读队列、worker、心跳和任务快照。可选 <code>state=ready|in_progress|blocked|done</code> 和 <code>limit</code>，默认上限 200。它不启动也不改变自治运行时。<code>GET /autonomy/tasks/{id}</code> 返回操作摘要和是否有检查点，不返回完整检查点载荷。<code>GET /api/v1/cron</code> 只读定时任务。</p>
+            <p>只读队列、worker、心跳和任务快照。可选 <code>state=ready|in_progress|blocked|done</code> 和 <code>limit</code>，默认上限 200。它不启动也不改变自治运行时。<code>GET /autonomy/tasks/{id}</code> 返回操作摘要和是否有检查点，不返回完整检查点载荷。<code>GET /api/v1/cron</code> 列出定时任务。创建、暂停、恢复和删除由 Agent 的 <code>AddCronJob</code> / <code>PauseCronJob</code> / <code>ResumeCronJob</code> / <code>RemoveCronJob</code> 提供，HTTP 写路由在 API 模块接线后开放。</p>
           </article>
           <article class="endpoint" id="approvals">
             <div class="ep-head"><span class="verb GET">GET</span><span class="verb POST">POST</span><span class="path">/api/v1/approvals</span></div>
