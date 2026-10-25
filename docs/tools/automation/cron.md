@@ -33,6 +33,11 @@ cron 任务可以按 shell 模式执行命令，也可以按 agent 模式执行 
 
 HTTP 创建、暂停、恢复和删除走 `Agent.AddCronJob`、`PauseCronJob`、`ResumeCronJob`、`RemoveCronJob`。它们复用 `buildCronTask`，并在变更后调用同一条 `saveCronJobs`。调用方必须传入已经解析好的 `cron.Schedule` 和非空 id；id 规则仍由工具层的 `buildCronJobID` 决定，Agent 不另造一套。metadata 至少保留 `session_id` 和 `platform`，结果才能回到原会话。
 
+`AddCronJob` 的 metadata 可包含 `delete_after_run`（`true`、`1`、`yes`，忽略大小写和首尾空格）。
+它只设置删除标志，不重建计数、运行状态或 `NextRun`；调度没有下一次执行时由引擎移除任务，
+不会把每日等周期调度自动变成一次性任务。即刻到期的任务也会等标志和首次持久化完成后
+才执行正文；初始化或保存失败会撤销内存中的新任务。此键是任务 metadata，不是全局配置字段。
+
 ## cron 统一入口
 
 `cron` 参数：
