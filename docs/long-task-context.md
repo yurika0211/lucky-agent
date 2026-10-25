@@ -25,6 +25,15 @@
 
 完整排列、分类和软预算见[上下文编排策略](prompts/la-context-packing-strategy.md)。
 
+### 探索结果交接
+
+大批量检查结果可以交给探索子任务总结，但一批调用必须全部是已知的检查操作。
+计量结果大小、决定是否交接和替换上下文中的原结果共用同一个调用分类规则。
+合并后的 `data` 读取动作、`memory action=recall`、`document_read` 和兼容的旧读取
+入口都参与计量；`memory action=remember/hygiene`、文件修改、RAG 索引、委派、
+凭据工具及未知工具不交接。无约束的 `terminal` / `opencli` 命令也留在父上下文，
+不能仅凭工具名称认定它们没有副作用。这样不会在一次混合读写后把写入结果替换掉。
+
 ## 读回省略的证据
 
 模型工具 `context_history_read` 只读取宿主绑定的当前会话，不接受模型指定其他会话：
