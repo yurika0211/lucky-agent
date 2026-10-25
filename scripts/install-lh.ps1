@@ -32,6 +32,13 @@ if (-not $asset -or [string]::IsNullOrWhiteSpace($asset.download_url)) {
 
 $archivePath = Join-Path $tmpDir $archiveName
 Invoke-WebRequest -Uri $asset.download_url -OutFile $archivePath
+if ([string]::IsNullOrWhiteSpace($asset.sha256)) {
+  throw "release asset is missing sha256: $archiveName"
+}
+$actual = (Get-FileHash -Algorithm SHA256 -Path $archivePath).Hash.ToLowerInvariant()
+if ($actual -ne $asset.sha256.ToLowerInvariant()) {
+  throw "checksum mismatch for $archiveName"
+}
 Expand-Archive -Path $archivePath -DestinationPath $tmpDir -Force
 $installer = Join-Path $tmpDir "Install-Portable.ps1"
 if (-not (Test-Path $installer)) {

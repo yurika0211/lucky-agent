@@ -145,6 +145,9 @@ ${HOME}/.luckyagent/config.json
 
 [打开 LuckyAgent 部署知识库](https://yurika0211.github.io/lucky-agent/)
 
+`lh update` 和安装脚本会在解压前验证发布包的 SHA-256。固定版本清单使用固定版本的
+下载地址；旧清单缺失摘要或校验不匹配时会停止安装。见[发布与安装完整性](docs/release-integrity.md)。
+
 仓库中也提供了两套 Compose：
 
 ```bash
