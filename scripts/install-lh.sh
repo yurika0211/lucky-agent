@@ -56,19 +56,38 @@ for asset in data.get("assets", []):
     if asset.get("name") == archive_name:
         print(asset.get("download_url", ""))
         print(data.get("tag_name", ""))
+        print(asset.get("sha256", ""))
         break
 PY
 )"
 download_url="$(printf '%s\n' "$release_metadata" | sed -n '1p')"
 release_tag="$(printf '%s\n' "$release_metadata" | sed -n '2p')"
+asset_sha="$(printf '%s\n' "$release_metadata" | sed -n '3p')"
 
 if [ -z "$download_url" ]; then
   echo "could not find release asset: $archive_name" >&2
   exit 1
 fi
+if [ -z "$asset_sha" ]; then
+  echo "release asset is missing sha256: $archive_name" >&2
+  exit 1
+fi
 
 mkdir -p "$tmp_dir"
 curl -fsSL -o "$tmp_dir/$archive_name" "$download_url"
+# Python is already required for the manifest; unlike sha256sum it is also
+# available on the supported macOS installation path. Hash before extraction.
+python3 - "$tmp_dir/$archive_name" "$asset_sha" <<'PY'
+import hashlib
+import sys
+
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as archive:
+    for block in iter(lambda: archive.read(1024 * 1024), b""):
+        digest.update(block)
+if digest.hexdigest() != sys.argv[2].strip().lower():
+    raise SystemExit("checksum mismatch for " + sys.argv[1])
+PY
 tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
 installer="$tmp_dir/install.sh"
 if [ ! -x "$installer" ]; then

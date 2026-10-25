@@ -1013,7 +1013,7 @@ func (a *Agent) processToolCallBatch(
 		}
 		loopState.noteFailureRepeat(tcLog.Name, tcLog.Result)
 		messages = append(messages, contextToolMsg)
-		loopState.noteExplorationResult(execResult.ToolCall.Name, len(execResult.Result))
+		loopState.noteExplorationResult(execResult.ToolCall, len(execResult.Result))
 		if sess != nil {
 			if err := sess.AddProviderMessageWithError(observedToolMessage(loopCfg.RunID, execResult, execResult.Result)); err != nil {
 				loopState.sessionErr = err
@@ -1143,32 +1143,40 @@ func (a *Agent) executeToolMaybeDedup(name, arguments string, autoApprove bool, 
 /*
 compactToolResultForContext 将工具结果压缩成适合继续放入上下文的文本。
 */
-func (s *loopRuntimeState) noteExplorationResult(toolName string, resultBytes int) {
-	if s == nil || resultBytes <= 0 || !isExplorationTool(toolName) {
+func (s *loopRuntimeState) noteExplorationResult(call provider.ToolCall, resultBytes int) {
+	if s == nil || resultBytes <= 0 || !isExplorationTool(call) {
 		return
 	}
 	s.explorationBytes += resultBytes
 }
 
-func isExplorationTool(toolName string) bool {
-	switch strings.ToLower(strings.TrimSpace(toolName)) {
-	case "file_read", "file_list", "web_search", "web_fetch", "opencli",
-		"data_query", "log", "recall", "rag_search", "terminal":
+// isExplorationTool is the single policy for counting, handing off and replacing
+// inspection results. Mixed-action tools must be classified by the actual call:
+// e.g. memory recall is evidence, but memory remember is a durable write.
+// Unknown tools and unrestricted shell/browser commands stay in the parent.
+func isExplorationTool(call provider.ToolCall) bool {
+	switch strings.ToLower(strings.TrimSpace(call.Name)) {
+	case "file_read", "file_list", "document_read", "web_search", "web_fetch",
+		"data_query", "csv_query", "sql_query", "db_schema", "log", "log_file",
+		"recall", "rag_search":
 		return true
-	default:
-		return false
+	case "data", "memory":
+		var args struct {
+			Action string `json:"action"`
+		}
+		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
+			return false
+		}
+		action := strings.ToLower(strings.TrimSpace(args.Action))
+		if strings.EqualFold(strings.TrimSpace(call.Name), "memory") {
+			return action == "recall"
+		}
+		switch action {
+		case "log", "query", "csv", "sql", "schema":
+			return true
+		}
 	}
-}
-
-func isContextHandoffBlocked(toolName string) bool {
-	switch strings.ToLower(strings.TrimSpace(toolName)) {
-	case "file_write", "file_edit", "apply_patch", "ask_user", "request_credential",
-		"create_ephemeral_credential_terminal_tool", "subagent", "delegate_task",
-		"computer_act", "computer_observe":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func shouldHandOffExploration(loopCfg LoopConfig, state *loopRuntimeState, executed []executedToolCall) bool {
@@ -1181,16 +1189,12 @@ func shouldHandOffExploration(loopCfg LoopConfig, state *loopRuntimeState, execu
 	if strings.EqualFold(strings.TrimSpace(loopCfg.Source), "subagent") {
 		return false
 	}
-	hasExploration := false
 	for _, execResult := range executed {
-		if isContextHandoffBlocked(execResult.ToolCall.Name) {
+		if !isExplorationTool(execResult.ToolCall) {
 			return false
 		}
-		if isExplorationTool(execResult.ToolCall.Name) {
-			hasExploration = true
-		}
 	}
-	return hasExploration
+	return len(executed) > 0
 }
 
 func (a *Agent) maybeHandOffExploration(messages []provider.Message, executed []executedToolCall, loopCfg LoopConfig, state *loopRuntimeState, sess *session.Session, userRequest string) []provider.Message {
@@ -1233,7 +1237,7 @@ func explorationHandoffContext(executed []executedToolCall) string {
 	var b strings.Builder
 	b.WriteString("Already observed in the parent context:\n")
 	for _, execResult := range executed {
-		if !isExplorationTool(execResult.ToolCall.Name) {
+		if !isExplorationTool(execResult.ToolCall) {
 			continue
 		}
 		fmt.Fprintf(&b, "- %s (%d bytes)\n", execResult.ToolCall.Name, len(execResult.Result))
@@ -1254,7 +1258,7 @@ func explorationHandoffNote(taskID, summary string) string {
 func replaceExplorationToolResults(messages []provider.Message, executed []executedToolCall) []provider.Message {
 	replaced := make(map[string]executedToolCall, len(executed))
 	for _, execResult := range executed {
-		if isExplorationTool(execResult.ToolCall.Name) && len(execResult.Result) > 0 {
+		if isExplorationTool(execResult.ToolCall) && len(execResult.Result) > 0 {
 			replaced[execResult.ToolCall.ID] = execResult
 		}
 	}
@@ -1380,7 +1384,7 @@ func isExplicitRequiredToolMention(input string, pos int, name string) bool {
 		end = len(input)
 	}
 	window := input[start:end]
-	if toolMentionNegated(window, name) {
+	if toolMentionNegated(input, pos) {
 		return false
 	}
 	lower := strings.ToLower(window)
@@ -1399,18 +1403,11 @@ func isExplicitRequiredToolMention(input string, pos int, name string) bool {
 	}
 	// "调用一次 file_read" keeps the verb in the same clause without gluing
 	// it to the tool name.
-	return clauseRequestsTool(window, name)
+	return clauseRequestsTool(input, pos)
 }
 
-func clauseRequestsTool(window, name string) bool {
-	idx := strings.Index(window, name)
-	if idx < 0 {
-		idx = strings.Index(strings.ToLower(window), strings.ToLower(name))
-	}
-	if idx < 0 {
-		return false
-	}
-	clause := strings.ToLower(clauseBeforeTool(window[:idx]))
+func clauseRequestsTool(input string, pos int) bool {
+	clause := strings.ToLower(clauseBeforeTool(toolMentionContext(input, pos)))
 	if clause == "" {
 		return false
 	}
@@ -1426,15 +1423,8 @@ func clauseRequestsTool(window, name string) bool {
 // forbids the tool. Only the text between the previous sentence boundary and
 // the tool name counts, so an earlier "不要解释" cannot drop a later
 // "调用 file_read".
-func toolMentionNegated(window, name string) bool {
-	idx := strings.Index(window, name)
-	if idx < 0 {
-		idx = strings.Index(strings.ToLower(window), strings.ToLower(name))
-	}
-	if idx < 0 {
-		return false
-	}
-	clause := clauseBeforeTool(window[:idx])
+func toolMentionNegated(input string, pos int) bool {
+	clause := clauseBeforeTool(toolMentionContext(input, pos))
 	if clause == "" {
 		return false
 	}
@@ -1452,11 +1442,25 @@ func toolMentionNegated(window, name string) bool {
 	return false
 }
 
+func toolMentionContext(input string, pos int) string {
+	if pos < 0 {
+		return ""
+	}
+	if pos > len(input) {
+		pos = len(input)
+	}
+	start := pos - 64
+	if start < 0 {
+		start = 0
+	}
+	return input[start:pos]
+}
+
 func clauseBeforeTool(before string) string {
 	cut := 0
 	for i, r := range before {
 		switch r {
-		case '。', '\n', '；', ';', '!', '！', '？', '?':
+		case '。', '\n', '；', ';', '.', '!', '！', '？', '?':
 			cut = i + utf8.RuneLen(r)
 		}
 	}
