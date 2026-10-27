@@ -385,6 +385,15 @@ List query parameters:
 
 List items include `format` (`legacy_md` or `segment_v1`) and `byte_size` when known. `pinned` is true for pinned sessions. `project` is the display group; empty means ungrouped. Pinned sessions sort before the rest. Search `q` also matches title, id, and project.
 
+List/search items and single-session GET/PATCH responses also include optional
+`recap` (one sentence in the conversation's language) and `recap_updated_at`
+(RFC3339 timestamp). Older sessions omit them. The Agent generates this preview
+asynchronously after a completed turn; an immediate read may still show the
+previous preview. Failed generation preserves the previous value. Clients
+display stored text and never derive it from history, compact summaries, memory
+or RAG. Recaps do not replace titles or change conversation ordering. See
+[session recaps](session-recap.md) for lifecycle and client behavior.
+
 Patch body fields are optional, but at least one is required:
 
 ```json

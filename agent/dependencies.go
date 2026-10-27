@@ -150,6 +150,7 @@ func NewWithDependencies(opts Options, deps *Dependencies) (*Agent, error) {
 	}
 
 	a.bindOptionalExecutionServices()
+	a.recaps = newRecapService()
 
 	return a, nil
 }

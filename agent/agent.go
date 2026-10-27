@@ -49,6 +49,7 @@ type Agent struct {
 	closeError       error
 	foregroundActive sync.Map // session ID -> active caller; removed when the request ends
 	sessionCalls     sync.Map // *sessionCall -> active model/tool request
+	recaps           *recapService
 	loopMu           sync.Mutex
 	loop             *Loop
 	cfg              *config.Manager
@@ -648,6 +649,7 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 		return "", sessionError(err)
 	}
 	a.maybeRollSession(sess)
+	a.queueSessionRecap(sess)
 
 	// 自动记忆：将对话存为短期记忆（去重 + 智能分类 + 截断）。计数和
 	// 维护 cadence 由 memory runtime 持有。
@@ -1721,6 +1723,7 @@ func (a *Agent) Close() error {
 	if a == nil {
 		return nil
 	}
+	a.recaps.close()
 	if a.components != nil {
 		a.closeOnce.Do(func() {
 			a.stopAutonomyResultReporter()
