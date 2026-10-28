@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import action_bot  # noqa: E402
 import benchstat_json  # noqa: E402
+import ci_modules  # noqa: E402
 
 
 class ActionBotTest(unittest.TestCase):
@@ -47,6 +48,21 @@ class ActionBotTest(unittest.TestCase):
                 action_bot.module_deps(path),
                 [("github.com/yurika0211/luckyagent-app", "v0.4.2")],
             )
+
+    def test_ci_module_filter_drops_only_republished_zips(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "go.sum"
+            path.write_text(
+                "github.com/yurika0211/luckyagent-app v0.4.3 h1:old=\n"
+                "github.com/yurika0211/luckyagent-app v0.4.3/go.mod h1:keep=\n"
+                "golang.org/x/mod v0.1.0 h1:keep=\n",
+                encoding="utf-8",
+            )
+            ci_modules.filter_sum(path)
+            text = path.read_text(encoding="utf-8")
+            self.assertNotIn("h1:old", text)
+            self.assertIn("go.mod h1:keep", text)
+            self.assertIn("golang.org/x/mod", text)
 
     def test_parser_script_exits_nonzero_without_rows(self):
         result = subprocess.run(

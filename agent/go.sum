@@ -111,7 +111,7 @@ github.com/yurika0211/luckyagent-orchestrator v0.1.1 h1:NipscOmOyFeVe0OLD+of73kC
 github.com/yurika0211/luckyagent-orchestrator v0.1.1/go.mod h1:2+IqqxdSrq8S3+K7ADbml705RqSsWQMGEOfADJmNSJk=
 github.com/yurika0211/luckyagent-plugins v0.1.0 h1:YcwLLk92KEbF5p2dffMTYk4BN1VD0fkRymrycoTvO18=
 github.com/yurika0211/luckyagent-plugins v0.1.0/go.mod h1:EXtG1c3oNR6yoN1s+cOUY9Zm9ZhuKcm2139iwCEreVY=
-github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261027090016-f09a23c7f36f h1:hOdsf07Xc7rqojYhs6T8CukEfH8m49NBVeVYPKBY5MI=
+github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261027090016-f09a23c7f36f h1:YCCINcOPxNYA2fPwHOgq+XputRc9YyMwqwrdMaqTRwk=
 github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261027090016-f09a23c7f36f/go.mod h1:um1PXX5+TYzXe2AEZzOkHWU8gGeP/C9yO6RRhS+tmFk=
 github.com/yurika0211/luckyagent-tools v0.2.4-0.20261025155312-14ca32a46742 h1:+XhWwZ2RwGNOdJhKUINkm4wRxuJ5GVCM30IVSZMFL0w=
 github.com/yurika0211/luckyagent-tools v0.2.4-0.20261025155312-14ca32a46742/go.mod h1:KJC8R4l9teqT4BbFhprB7DVYcZDoC3MdNKVRp1jd/H0=
