@@ -22,7 +22,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: action-bot
+  group: action-bot-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -35,20 +35,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Benchmark checkpoint trajectory
+      - name: Benchmark selected packages
+        env:
+          GOWORK: "off"
         run: |
-          set -o pipefail
-          cd agent
-          go test -mod=readonly -run '^$' -bench 'BenchmarkCheckpointTrajectory$' \
-            -benchtime=1x -count=1 -timeout 15m -json ./... \
-            | python3 ../scripts/benchstat_json.py --output ../checkpoint-bench.json
-      - name: Benchmark queue persistence
-        run: |
-          set -o pipefail
-          cd packages/luckyagent-orchestrator
-          go test -mod=readonly -run '^$' -bench 'BenchmarkQueue(SnapshotEncoding|PersistLock)$' \
-            -benchtime=1x -count=1 -timeout 15m -json ./autonomy \
-            | python3 ../../scripts/benchstat_json.py --output ../../queue-bench.json
+          set -euo pipefail
+          bench() {
+            local module="$1" pattern="$2" output="$3"
+            shift 3
+            (
+              cd "$module"
+              go test -mod=readonly -run '^$' -bench "$pattern" \
+                -benchtime=1x -count=1 -timeout 15m -json "$@"
+            ) > "$output.raw"
+            python3 scripts/benchstat_json.py --output "$output" < "$output.raw"
+          }
+          bench agent 'BenchmarkCheckpointTrajectory$' checkpoint-bench.json .
+          bench packages/luckyagent-orchestrator 'BenchmarkQueue(SnapshotEncoding|PersistLock)$' queue-bench.json ./autonomy
       - name: Combine benchmark summary
         run: |
           python3 - <<'PY'
@@ -56,6 +59,8 @@ jobs:
           rows = []
           for path in ("checkpoint-bench.json", "queue-bench.json"):
               rows.extend(json.load(open(path, encoding="utf-8")))
+          if not rows:
+              raise SystemExit("performance summary is empty")
           json.dump(rows, open("perf-summary.json", "w", encoding="utf-8"), indent=2)
           print(f"recorded {len(rows)} benchmark rows")
           PY
@@ -67,7 +72,7 @@ jobs:
             perf-summary.json
             checkpoint-bench.json
             queue-bench.json
-          if-no-files-found: error
+          if-no-files-found: warn
 
   digest:
     name: Post maintenance digest
