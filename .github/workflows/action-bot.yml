@@ -3,6 +3,13 @@ name: Action bot
 on:
   schedule:
     - cron: "20 1 * * *"
+  pull_request:
+    paths:
+      - ".github/workflows/action-bot.yml"
+      - "scripts/action_bot.py"
+      - "scripts/benchstat_json.py"
+      - "agent/checkpoint_persistence_test.go"
+      - "packages/luckyagent-orchestrator/autonomy/persistence_benchmark_test.go"
   workflow_dispatch:
     inputs:
       issue:
@@ -73,7 +80,13 @@ jobs:
         with:
           name: performance-summary
       - name: Comment issue digest
+        if: github.event_name != 'pull_request'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE: ${{ github.event.inputs.issue || '342' }}
         run: python3 scripts/action_bot.py --issue "$ISSUE" --bench perf-summary.json
+      - name: Preview issue digest
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/action_bot.py --issue 342 --bench perf-summary.json --dry-run
