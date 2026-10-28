@@ -8,6 +8,7 @@ on:
       - ".github/workflows/action-bot.yml"
       - "scripts/action_bot.py"
       - "scripts/benchstat_json.py"
+      - "scripts/perf_bench_test.go"
       - "agent/checkpoint_persistence_test.go"
       - "packages/luckyagent-orchestrator/autonomy/persistence_benchmark_test.go"
   workflow_dispatch:
@@ -35,47 +36,24 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25"
-      - name: Benchmark selected packages
+      - name: Benchmark local persistence paths
         run: |
           set -euo pipefail
-          root="$PWD"
-          bench() {
-            local module="$1" pattern="$2" output="$3"
-            shift 3
-            local tmp
-            tmp="$(mktemp -d)"
-            cp -a "$module/." "$tmp/"
-            rm -f "$tmp/go.work" "$tmp/go.work.sum"
-            (
-              cd "$tmp"
-              GOWORK=off go test -mod=readonly -run '^$' -bench "$pattern" \
-                -benchtime=1x -count=1 -timeout 15m -json "$@"
-            ) > "$root/$output.raw"
-            python3 "$root/scripts/benchstat_json.py" --output "$root/$output" < "$root/$output.raw"
-          }
-          bench agent 'BenchmarkCheckpointTrajectory$' checkpoint-bench.json .
-          bench packages/luckyagent-orchestrator 'BenchmarkQueue(SnapshotEncoding|PersistLock)$' queue-bench.json ./autonomy
-      - name: Combine benchmark summary
-        run: |
-          python3 - <<'PY'
-          import json
-          rows = []
-          for path in ("checkpoint-bench.json", "queue-bench.json"):
-              rows.extend(json.load(open(path, encoding="utf-8")))
-          if not rows:
-              raise SystemExit("performance summary is empty")
-          json.dump(rows, open("perf-summary.json", "w", encoding="utf-8"), indent=2)
-          print(f"recorded {len(rows)} benchmark rows")
-          PY
+          tmp="$(mktemp -d)"
+          cp scripts/perf_bench_test.go "$tmp/perf_bench_test.go"
+          (
+            cd "$tmp"
+            go mod init luckyagent.dev/perf
+            go test -run '^$' -bench 'Benchmark(CheckpointTrajectory|QueueSnapshotEncoding|QueuePersistLock)$' \
+              -benchtime=1x -count=1 -timeout 15m -json .
+          ) > perf-raw.json
+          python3 scripts/benchstat_json.py --output perf-summary.json < perf-raw.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: performance-summary
-          path: |
-            perf-summary.json
-            checkpoint-bench.json
-            queue-bench.json
-          if-no-files-found: warn
+          path: perf-summary.json
+          if-no-files-found: error
 
   digest:
     name: Post maintenance digest
