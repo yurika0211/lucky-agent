@@ -27,9 +27,7 @@ jobs:
           go-version: '1.25'
       - name: Download dependencies
         env:
-          GOPRIVATE: github.com/yurika0211/*
           GONOSUMDB: github.com/yurika0211/*
-          GOSUMDB: off
         run: python3 scripts/ci_modules.py
       - name: Release manifest and installer contracts
         run: python3 -m unittest discover -s scripts -p test_release_integrity.py
@@ -63,38 +61,28 @@ jobs:
         working-directory: agent
         env:
           GOWORK: off
-          GOPRIVATE: github.com/yurika0211/*
           GONOSUMDB: github.com/yurika0211/*
-          GOSUMDB: off
         run: |
           go test -mod=readonly -race -count=1 ./...
           go vet ./...
       - name: Run tests
         env:
-          GOPRIVATE: github.com/yurika0211/*
           GONOSUMDB: github.com/yurika0211/*
-          GOSUMDB: off
         run: go test ./... -race -count=1 -timeout 10m
       - name: Launcher end-to-end
         env:
-          GOPRIVATE: github.com/yurika0211/*
           GONOSUMDB: github.com/yurika0211/*
-          GOSUMDB: off
         run: go test -tags e2e -count=1 -timeout 8m ./e2e
       - name: Build
         env:
-          GOPRIVATE: github.com/yurika0211/*
           GONOSUMDB: github.com/yurika0211/*
-          GOSUMDB: off
         run: |
           test "$(go list -f '{{.Dir}}' github.com/yurika0211/lucky-agent/agent)" = "$PWD/agent"
           go build -o lh ./cmd/la
       - name: Build published dependency graph
         env:
           GOWORK: off
-          GOPRIVATE: github.com/yurika0211/*
           GONOSUMDB: github.com/yurika0211/*
-          GOSUMDB: off
         run: go build -mod=readonly -o /tmp/lh-pinned ./cmd/la
       - name: Verify binary
         run: ./lh version

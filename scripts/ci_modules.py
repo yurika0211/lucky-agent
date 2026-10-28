@@ -35,7 +35,7 @@ def filter_sum(path):
 
 def download(directory):
     env = os.environ.copy()
-    env.update(GOWORK="off", GOPRIVATE="github.com/yurika0211/*", GONOSUMDB="github.com/yurika0211/*", GOSUMDB="off")
+    env.update(GOWORK="off", GONOSUMDB="github.com/yurika0211/*")
     subprocess.run(["go", "mod", "download"], cwd=directory, env=env, check=True)
 
 
