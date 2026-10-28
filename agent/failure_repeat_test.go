@@ -58,6 +58,14 @@ func TestTrackToolCallPatternStopsSameFailureWithChangedArguments(t *testing.T) 
 	}
 }
 
+func TestFormatRepeatedToolStopIncludesCanonicalArguments(t *testing.T) {
+	sig := toolCallSignature("file_read", `{"path":"notes/today.md","line_start":4}`)
+	got := formatRepeatedToolStop([]string{sig}, map[string]string{sig: "path is outside sandbox"})
+	if !strings.Contains(got, `- file_read {"line_start":4,"path":"notes/today.md"}: path is outside sandbox`) {
+		t.Fatalf("repeated-call stop omitted the call arguments: %q", got)
+	}
+}
+
 func providerToolCall(name, arguments string) []provider.ToolCall {
 	return []provider.ToolCall{{Name: name, Arguments: arguments}}
 }
