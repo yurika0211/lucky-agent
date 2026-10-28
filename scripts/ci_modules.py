@@ -18,9 +18,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def is_republished_zip_sum(line):
     parts = line.split()
-    if len(parts) < 3 or parts[2].startswith("go.mod"):
+    if len(parts) != 3 or "/go.mod" in parts[1] or not parts[2].startswith("h1:"):
         return False
-    return parts[0].startswith("github.com/yurika0211/") and parts[2].startswith("h1:")
+    return parts[0].startswith("github.com/yurika0211/")
 
 
 def filter_sum(path):
