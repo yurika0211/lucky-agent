@@ -172,7 +172,13 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 				}
 			}
 		}
-		return result, save()
+		if err := save(); err != nil {
+			return result, err
+		}
+		if !cfg.Ephemeral {
+			a.queueSessionRecap(sess)
+		}
+		return result, nil
 	}
 	for i := 0; i < cfg.MaxIterations; i++ {
 		if err := checkSessionHistory(ctx, sess); err != nil {

@@ -117,6 +117,7 @@ func (a *Agent) getStreamMode() StreamMode {
 streamConvergenceState 保存流式对话在多轮推理中的收敛与去重状态。
 */
 type streamConvergenceState struct {
+	ephemeral bool
 	// provider is captured at stream-turn start and reused by every recursive
 	// iteration. It must remain immutable for the lifetime of the stream.
 	provider                       providerSnapshot
@@ -596,6 +597,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
 
 		state := &streamConvergenceState{
+			ephemeral:              loopCfg.Ephemeral,
 			provider:               turnProvider,
 			autoApprove:            loopCfg.AutoApprove,
 			source:                 loopCfg.Source,
@@ -1240,6 +1242,10 @@ func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *sessi
 }
 
 func (a *Agent) finalizeStreamWithUsage(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, usage *provider.TokenUsage, citationLogs ...[]toolCallLog) {
+	a.finalizeStreamWithRecap(events, sess, turnInput, response, reasoningContent, usage, true, citationLogs...)
+}
+
+func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, usage *provider.TokenUsage, generateRecap bool, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
 	if strings.TrimSpace(response) == "" {
@@ -1271,6 +1277,9 @@ func (a *Agent) finalizeStreamWithUsage(events chan<- ChatEvent, sess *session.S
 	}
 
 	maintenance := a.recordMemoryTurn(sess)
+	if generateRecap {
+		a.queueSessionRecap(sess)
+	}
 	a.saveConversationMemoryFromSession(sess, turnInput, response)
 	a.applyMemoryMaintenance(maintenance)
 
@@ -1296,7 +1305,7 @@ func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.S
 	if len(reasoning) > 0 {
 		reasoningContent = reasoning[0]
 	}
-	a.finalizeStreamWithUsage(events, sess, turnInput, response, reasoningContent, state.usage, state.citationToolCalls)
+	a.finalizeStreamWithRecap(events, sess, turnInput, response, reasoningContent, state.usage, !state.ephemeral, state.citationToolCalls)
 }
 
 // finalizeStreamAfterInterruption gives the model one final, tool-free chance

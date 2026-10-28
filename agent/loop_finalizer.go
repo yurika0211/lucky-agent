@@ -91,6 +91,11 @@ func (f *loopFinalizer) Finalize(response, reasoningContent string) error {
 		if f.runtime != nil {
 			f.runtime.maybeRollSession(f.sess)
 		}
+		if !f.loopCfg.Ephemeral {
+			if owner, ok := f.runtime.(interface{ queueSessionRecap(*session.Session) }); ok {
+				owner.queueSessionRecap(f.sess)
+			}
+		}
 	}
 	return nil
 }
