@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Prepare CI module downloads when a pinned zip hash has been republished.
+"""Refresh first-party zip sums that the public proxy has republished.
 
-The public proxy has served more than one zip for the same selected
-pseudo-version. For the CI job only, drop first-party zip hashes from go.sum
-and download with sumdb disabled for github.com/yurika0211/*. go.mod versions
-stay unchanged. Other modules keep their checksums.
+The selected versions stay in go.mod. CI drops only stale first-party zip
+hashes, downloads through the module proxy, then records the zip hash the
+proxy actually served. Other checksums are left untouched.
 """
 
 import os
@@ -33,18 +32,26 @@ def filter_sum(path):
     return removed
 
 
-def download(directory):
+def download_env():
     env = os.environ.copy()
     env.update(GOWORK="off", GONOSUMDB="github.com/yurika0211/*")
+    return env
+
+
+def refresh(directory):
+    if filter_sum(directory / "go.sum") == 0:
+        raise SystemExit(f"no first-party zip sums found in {directory / 'go.sum'}")
+    env = download_env()
+    print(f"download {directory.relative_to(ROOT) or '.'}", flush=True)
     subprocess.run(["go", "mod", "download"], cwd=directory, env=env, check=True)
+    subprocess.run(["go", "mod", "download", "-json", "all"], cwd=directory, env=env, check=True, capture_output=True)
+    subprocess.run(["go", "mod", "tidy"], cwd=directory, env=env, check=True)
+    print(f"recorded current first-party zip sums in {directory.relative_to(ROOT) or '.'}", flush=True)
 
 
 def main():
-    for directory in (ROOT, ROOT / "agent"):
-        if filter_sum(directory / "go.sum") == 0:
-            raise SystemExit(f"no first-party zip sums found in {directory / 'go.sum'}")
-        print(f"download {directory.relative_to(ROOT) or '.'}", flush=True)
-        download(directory)
+    refresh(ROOT)
+    refresh(ROOT / "agent")
     return 0
 
 
