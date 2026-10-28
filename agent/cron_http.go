@@ -45,21 +45,39 @@ func (a *Agent) AddCronJob(id, name, description, mode, command string, metadata
 		description = command
 	}
 	task := a.buildCronTask(id, cronTaskMode(mode), command, meta)
-	if err := a.cronEngine.AddJobWithMeta(id, name, description, schedule, task, meta); err != nil {
+	// A running engine can pick up an immediately-due job before AddJobWithMeta
+	// returns. Do not execute it until flags and the initial save are complete.
+	ready := make(chan struct{})
+	var setupErr error
+	defer close(ready)
+	preparedTask := func() error {
+		<-ready
+		if setupErr != nil {
+			return setupErr
+		}
+		return task()
+	}
+	if err := a.cronEngine.AddJobWithMeta(id, name, description, schedule, preparedTask, meta); err != nil {
+		setupErr = err
 		return err
 	}
 	if metadataBool(meta, "delete_after_run") {
-		// GetJob returns a copy. RestoreJobState writes the stored job, so the
-		// flag survives save and restart.
-		if err := a.cronEngine.RestoreJobState(id, cron.RestoredJobState{DeleteAfterRun: true}); err != nil {
+		// RestoreJobState replaces counters, history, and NextRun. Only the
+		// flag should change; save and restart keep it from job metadata.
+		if err := a.cronEngine.SetDeleteAfterRun(id, true); err != nil {
+			setupErr = err
 			_ = a.cronEngine.RemoveJob(id)
 			return err
 		}
 	}
+	if setupErr = a.saveCronJobs(); setupErr != nil {
+		_ = a.cronEngine.RemoveJob(id)
+		return setupErr
+	}
 	if !a.cronEngine.IsRunning() {
 		a.cronEngine.Start()
 	}
-	return a.saveCronJobs()
+	return nil
 }
 
 // PauseCronJob pauses a job and persists the change.
