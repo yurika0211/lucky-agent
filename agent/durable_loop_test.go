@@ -383,3 +383,178 @@ func TestDurableStartupResumesQueuedWork(t *testing.T) {
 		})
 	}
 }
+
+func TestDurableEmptyResponsesYieldInsteadOfBlocking(t *testing.T) {
+	a, sess, _, _, cfg := durableHarness(t, durableCheckpoint{})
+	modelCalls := 0
+	a.provider = &durableScriptProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if strings.HasPrefix(messages[0].Content, "Review whether") {
+			return &provider.Response{Content: verifiedAssessment}, nil
+		}
+		modelCalls++
+		// An upstream that bills completion tokens but returns no text, which is
+		// the failure mode from the issue.
+		return &provider.Response{}, nil
+	}}
+	cfg.MaxIterations = 8
+	_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if !errors.Is(err, autonomy.ErrYield) {
+		t.Fatalf("empty replies blocked instead of yielding: modelCalls=%d err=%v", modelCalls, err)
+	}
+	if modelCalls < 3 {
+		t.Fatalf("stopped retrying empty replies before the stall limit was reached: modelCalls=%d", modelCalls)
+	}
+}
+
+func TestDurableTruncatedResponsesYieldInsteadOfBlocking(t *testing.T) {
+	a, sess, _, _, cfg := durableHarness(t, durableCheckpoint{})
+	a.provider = &durableScriptProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if strings.HasPrefix(messages[0].Content, "Review whether") {
+			return &provider.Response{Content: verifiedAssessment}, nil
+		}
+		return &provider.Response{Content: "partial answer", FinishReason: "length"}, nil
+	}}
+	cfg.MaxIterations = 8
+	_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if !errors.Is(err, autonomy.ErrYield) {
+		t.Fatalf("truncated replies blocked instead of yielding: %v", err)
+	}
+}
+
+func TestDurableEmptyResponsesDoNotConsumeEvidenceBudget(t *testing.T) {
+	a, sess, _, _, cfg := durableHarness(t, pendingCheckpoint())
+	calls := 0
+	a.tools.Register(&tool.Tool{Name: "perform_operation", Permission: tool.PermAuto, Handler: func(map[string]any) (string, error) {
+		calls++
+		return fmt.Sprintf("evidence-%d", calls), nil
+	}})
+	modelCalls := 0
+	a.provider = &durableScriptProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if strings.HasPrefix(messages[0].Content, "Review whether") {
+			return &provider.Response{Content: verifiedAssessment}, nil
+		}
+		modelCalls++
+		if modelCalls <= 2 {
+			return &provider.Response{}, nil
+		}
+		return &provider.Response{Content: "Completed with evidence"}, nil
+	}}
+	cfg.MaxIterations = 8
+	result, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if err != nil || !result.Verified {
+		t.Fatalf("empty replies blocked a task that still had evidence budget: result=%+v err=%v", result, err)
+	}
+}
+
+func TestDurableRepeatedReadOnlyEvidenceStillBlocks(t *testing.T) {
+	a, sess, _, _, cfg := durableHarness(t, pendingCheckpoint())
+	a.tools.Register(&tool.Tool{Name: "perform_operation", Permission: tool.PermAuto, Handler: func(map[string]any) (string, error) {
+		return "unchanged evidence", nil
+	}})
+	a.provider = &durableScriptProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if strings.HasPrefix(messages[0].Content, "Review whether") {
+			return &provider.Response{Content: verifiedAssessment}, nil
+		}
+		// The model keeps asking for the same read-only check and the tool keeps
+		// returning the same result: that is missing evidence, not a model stall.
+		call := provider.ToolCall{ID: "call-1", Name: "perform_operation", Arguments: "{}"}
+		return &provider.Response{ToolCalls: []provider.ToolCall{call}}, nil
+	}}
+	cfg.MaxIterations = 12
+	_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if !errors.Is(err, autonomy.ErrBlocked) {
+		t.Fatalf("repeated identical tool output no longer blocks: %v", err)
+	}
+}
+
+func TestDurableTransientUpstreamErrorsYield(t *testing.T) {
+	for _, message := range []string{
+		"api error 429: rate limited",
+		"api error 502: bad gateway",
+		"api error 503: unavailable",
+		"read tcp 10.0.0.1:443: connection reset by peer",
+	} {
+		t.Run(message, func(t *testing.T) {
+			a, sess, _, _, cfg := durableHarness(t, durableCheckpoint{})
+			a.provider = &durableScriptProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+				return nil, errors.New(message)
+			}}
+			_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+			if !errors.Is(err, autonomy.ErrYield) {
+				t.Fatalf("transient upstream failure did not yield: %v", err)
+			}
+		})
+	}
+}
+
+func TestDurableAuthFailuresStillBlock(t *testing.T) {
+	for _, message := range []string{
+		"api error 401: invalid api key",
+		"api error 403: forbidden",
+		"api error 400: malformed request",
+	} {
+		t.Run(message, func(t *testing.T) {
+			a, sess, _, _, cfg := durableHarness(t, durableCheckpoint{})
+			a.provider = &durableScriptProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+				return nil, errors.New(message)
+			}}
+			_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+			if !errors.Is(err, autonomy.ErrBlocked) {
+				t.Fatalf("authentication or format failure stopped blocking: %v", err)
+			}
+		})
+	}
+}
+
+func TestDurableReadOnlyStartedOperationIsReplayed(t *testing.T) {
+	a, sess, q, _, cfg := durableHarness(t, pendingCheckpoint())
+	calls := 0
+	a.tools.Register(&tool.Tool{
+		Name: "perform_operation", Permission: tool.PermAuto, ParallelSafe: true, PolicySafe: true,
+		Handler: func(map[string]any) (string, error) { calls++; return "read-only evidence", nil },
+	})
+	// The process died after recording the intent but before the result.
+	if _, err := cfg.Execution.BeginOperation(turn.DurableOperation{ID: "step-1-1", Name: "perform_operation", Arguments: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	q = resumeDurableQueue(t, q, &cfg)
+	result, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if err != nil || !result.Verified || calls != 1 {
+		t.Fatalf("read-only operation was not replayed: calls=%d result=%+v err=%v", calls, result, err)
+	}
+}
+
+func TestDurableShellAwareStartedOperationStillBlocks(t *testing.T) {
+	a, sess, q, _, cfg := durableHarness(t, pendingCheckpoint())
+	calls := 0
+	a.tools.Register(&tool.Tool{
+		Name: "perform_operation", Permission: tool.PermAuto, ParallelSafe: true, ShellAware: true,
+		Handler: func(map[string]any) (string, error) { calls++; return "shell evidence", nil },
+	})
+	if _, err := cfg.Execution.BeginOperation(turn.DurableOperation{ID: "step-1-1", Name: "perform_operation", Arguments: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+	q = resumeDurableQueue(t, q, &cfg)
+	_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if !errors.Is(err, autonomy.ErrBlocked) || calls != 0 {
+		t.Fatalf("shell-aware operation was replayed: calls=%d err=%v", calls, err)
+	}
+}
+
+func TestDurableInconclusiveReviewYieldsInsteadOfBlocking(t *testing.T) {
+	a, sess, _, _, cfg := durableHarness(t, durableCheckpoint{Candidate: "finished"})
+	reviews := 0
+	a.provider = &durableScriptProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if strings.HasPrefix(messages[0].Content, "Review whether") {
+			reviews++
+			// A review that is not valid JSON cannot decide anything. The
+			// recorded operations are unaffected, so the task continues.
+			return &provider.Response{Content: "looks fine to me"}, nil
+		}
+		return &provider.Response{Content: "finished"}, nil
+	}}
+	_, err := a.RunLoopWithSession(context.Background(), sess, "perform requested operation", cfg)
+	if !errors.Is(err, autonomy.ErrYield) {
+		t.Fatalf("inconclusive review blocked instead of yielding: reviews=%d err=%v", reviews, err)
+	}
+}

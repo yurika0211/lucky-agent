@@ -547,6 +547,33 @@ memory gate did not produce final synthesis
 
 当流式模型返回工具调用后，代码通常转入 `streamSimulated` 继续下一轮，因为工具结果之后需要完整响应做稳定收敛。
 
+## 持久化循环的继续与阻断
+
+前台任务和后台 worker 走 `runDurableLoop`，每推进一步都把检查点写入磁盘。一次执行被切段后能否自己继续，取决于失败属于哪一类：
+
+| 情况 | 结果 |
+| --- | --- |
+| 模型返回空正文或 `length` 截断 | 记一次 `model_stalls`，达到上限后 `ErrYield`，由仍在运行的前台循环续段。 |
+| 429、5xx、连接重置 | `ErrYield`，下一段重试。 |
+| 401/403/400/404 | `ErrBlocked`，需要人处理凭据或请求格式。 |
+| 进度摘要暂时不完整 | `ErrYield`，下一段重新压缩。 |
+| 完成校验没有得到可用结论 | `ErrYield`，已落盘的操作记录不变。 |
+| 同一工具签名反复返回相同结果 | 记一次 `no_progress`，达到 `RepeatToolCallLimit` 后 `ErrBlocked`。 |
+| 有 `started` 但结果未知的写入、shell 或需审批操作 | `ErrBlocked`，先人工核对副作用。 |
+| 有 `started` 但结果未知的只读操作 | 恢复时直接重放，不生成人工核对工单。 |
+
+`model_stalls` 和 `no_progress` 是两个独立计数。模型没有产出内容不代表工具没有新证据，把它算进 `no_progress` 会让几次空回复就变成需要人工介入的工单。两个计数在真正有产出时归零：拿到可用正文或发出工具调用时清 `model_stalls`，工具结果与上次不同时清 `no_progress`。
+
+截断的回复不会被当成候选答案送去完成校验。它的正文累加进 `cp.Continuation`，并追问模型继续，避免已经产出的文字被丢弃。
+
+只有后续非空、未截断的正文才能形成候选答案；空回复不会把先前的半截答案提升为完成。
+恢复重放还需检查实际 action、动态审批和 permission override：`ParallelSafe` 仅表示可并发，
+不证明没有写副作用。只有已知检查动作或宿主显式声明 `PolicySafe` 的工具，且无需审批、
+非 shell、没有执行 hooks，才允许重放。memory remember、HTTP POST 等仍阻断等待核对。
+这里没有增加运行配置字段；宿主自动续跑及 orchestrator 的剩余工作仍由本 PR 列出的后续 issue 跟踪。
+
+`ErrYield` 不消耗重试预算，只消耗执行段数和总时长预算。预算用尽时才转成阻断，原因写在 `block_reason` 里。
+
 ## 当前边界
 
 当前 agent loop 的安全与收敛边界可以这样理解：
