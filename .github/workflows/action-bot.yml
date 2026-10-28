@@ -36,19 +36,22 @@ jobs:
         with:
           go-version: "1.25"
       - name: Benchmark selected packages
-        env:
-          GOWORK: "off"
         run: |
           set -euo pipefail
+          root="$PWD"
           bench() {
             local module="$1" pattern="$2" output="$3"
             shift 3
+            local tmp
+            tmp="$(mktemp -d)"
+            cp -a "$module/." "$tmp/"
+            rm -f "$tmp/go.work" "$tmp/go.work.sum"
             (
-              cd "$module"
-              go test -mod=readonly -run '^$' -bench "$pattern" \
+              cd "$tmp"
+              GOWORK=off go test -mod=readonly -run '^$' -bench "$pattern" \
                 -benchtime=1x -count=1 -timeout 15m -json "$@"
-            ) > "$output.raw"
-            python3 scripts/benchstat_json.py --output "$output" < "$output.raw"
+            ) > "$root/$output.raw"
+            python3 "$root/scripts/benchstat_json.py" --output "$root/$output" < "$root/$output.raw"
           }
           bench agent 'BenchmarkCheckpointTrajectory$' checkpoint-bench.json .
           bench packages/luckyagent-orchestrator 'BenchmarkQueue(SnapshotEncoding|PersistLock)$' queue-bench.json ./autonomy
