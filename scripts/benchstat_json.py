@@ -13,6 +13,7 @@ BENCH = re.compile(
     r"(?P<rest>.*)$"
 )
 METRIC = re.compile(r"\s+([\d.eE+-]+)\s+([A-Za-z0-9_./+-]+)")
+STANDARD = {"ns/op", "B/op", "allocs/op"}
 
 
 def parse(stream):
@@ -27,13 +28,17 @@ def parse(stream):
         match = BENCH.match(event.get("Output", "").strip())
         if not match:
             continue
-        metrics = {name: float(value) for value, name in METRIC.findall(match.group("rest"))}
+        metrics = {
+            name: float(value)
+            for value, name in METRIC.findall(match.group("rest"))
+            if name not in STANDARD
+        }
         rows.append({
             "name": match.group("name"),
             "ops": int(match.group("ops")),
             "ns_per_op": float(match.group("ns")),
-            "bytes_per_op": int(match.group("bytes") or 0),
-            "allocs_per_op": int(match.group("allocs") or 0),
+            "bytes_per_op": int(match.group("bytes") or metrics.pop("B/op", 0)),
+            "allocs_per_op": int(match.group("allocs") or metrics.pop("allocs/op", 0)),
             "metrics": metrics,
         })
     return rows

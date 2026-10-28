@@ -143,8 +143,8 @@ def performance_summary(path):
     for item in bench:
         extra = ", ".join(f"{key}={value:g}" for key, value in item.get("metrics", {}).items()) or "-"
         lines.append(
-            f"| `{item['name']}` | {item['ops']} | {item['ns_per_op']:.0f} | "
-            f"{item['bytes_per_op']} | {item['allocs_per_op']} | {extra} |"
+            f"| `{item['name']}` | {item['ops']} | {item['ns_per_op']:.3g} | "
+            f"{float(item['bytes_per_op']):.3g} | {float(item['allocs_per_op']):.3g} | {extra} |"
         )
     return "\n".join(lines)
 

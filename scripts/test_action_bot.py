@@ -23,7 +23,10 @@ class ActionBotTest(unittest.TestCase):
         })
         rows = benchstat_json.parse(io.StringIO(raw + "\n"))
         self.assertEqual(rows[0]["ops"], 1)
+        self.assertEqual(rows[0]["bytes_per_op"], 456)
+        self.assertEqual(rows[0]["allocs_per_op"], 7)
         self.assertEqual(rows[0]["metrics"]["encoded-bytes/trajectory"], 890)
+        self.assertNotIn("B/op", rows[0]["metrics"])
 
     def test_digest_fingerprint_ignores_timestamp(self):
         first = action_bot.render([], [], [], "", "abc123")
