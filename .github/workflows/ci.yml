@@ -29,6 +29,8 @@ jobs:
         run: go mod download
       - name: Release manifest and installer contracts
         run: python3 -m unittest discover -s scripts -p test_release_integrity.py
+      - name: Action bot parser contracts
+        run: python3 -m unittest discover -s scripts -p test_action_bot.py
       - name: Verify Agent graph audit
         env:
           EVENT_REF: ${{ github.ref }}

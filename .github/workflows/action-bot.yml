@@ -1,0 +1,79 @@
+name: Action bot
+
+on:
+  schedule:
+    - cron: "20 1 * * *"
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Digest issue number"
+        required: false
+        default: "342"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: action-bot
+  cancel-in-progress: false
+
+jobs:
+  performance:
+    name: Checkpoint and queue benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Benchmark checkpoint trajectory
+        run: |
+          set -o pipefail
+          cd agent
+          go test -mod=readonly -run '^$' -bench 'BenchmarkCheckpointTrajectory$' \
+            -benchtime=1x -count=1 -timeout 15m -json ./... \
+            | python3 ../scripts/benchstat_json.py --output ../checkpoint-bench.json
+      - name: Benchmark queue persistence
+        run: |
+          set -o pipefail
+          cd packages/luckyagent-orchestrator
+          go test -mod=readonly -run '^$' -bench 'BenchmarkQueue(SnapshotEncoding|PersistLock)$' \
+            -benchtime=1x -count=1 -timeout 15m -json ./autonomy \
+            | python3 ../../scripts/benchstat_json.py --output ../../queue-bench.json
+      - name: Combine benchmark summary
+        run: |
+          python3 - <<'PY'
+          import json
+          rows = []
+          for path in ("checkpoint-bench.json", "queue-bench.json"):
+              rows.extend(json.load(open(path, encoding="utf-8")))
+          json.dump(rows, open("perf-summary.json", "w", encoding="utf-8"), indent=2)
+          print(f"recorded {len(rows)} benchmark rows")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-summary
+          path: |
+            perf-summary.json
+            checkpoint-bench.json
+            queue-bench.json
+          if-no-files-found: error
+
+  digest:
+    name: Post maintenance digest
+    runs-on: ubuntu-latest
+    needs: performance
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: performance-summary
+      - name: Comment issue digest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.inputs.issue || '342' }}
+        run: python3 scripts/action_bot.py --issue "$ISSUE" --bench perf-summary.json
