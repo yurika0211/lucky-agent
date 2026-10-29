@@ -371,9 +371,12 @@ and restart behavior. No new `config.json` keys are required.
 | `GET` | `/api/v1/sessions/{id}` | Get a session (paged history + optional truncation) |
 | `PATCH` | `/api/v1/sessions/{id}` | Rename, pin, or set the project |
 | `DELETE` | `/api/v1/sessions/{id}` | Delete the session and its files |
+| `GET` | `/api/v1/sessions/{id}/activity` | List unfinished chat runs for a session |
 | `GET` | `/api/v1/sessions/{id}/tools` | Get a bounded, paged tool trace for a session |
 | `POST` | `/api/v1/sessions/{id}/compact` | Compact a session |
 | `GET` | `/api/v1/sessions/{id}/compact/latest` | Get latest compact trace |
+
+`GET /api/v1/sessions/{id}/activity` returns `{session_id, runs}`. Each run has `run_id`, `state` (`queued` or `running`), and `updated_at`. Finished runs are omitted, so an empty `runs` array means the session is not working. This is not the task list: a normal chat turn appears here without becoming a task. A durable-store read failure is HTTP 500, not an empty list. WebSocket status frames use the same run words, and a finished run emits `completed`, `cancelled`, or `error`. Replayed status frames set `replay: true`.
 
 List query parameters:
 

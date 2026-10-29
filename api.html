@@ -287,6 +287,17 @@ Authorization: Bearer &lt;key&gt;</pre>
             <pre>{"title":"新名字","pinned":true,"project":"luckyagent"}</pre>
             <p>空 <code>title</code> 被拒绝。空 <code>project</code> 清除分组。改名和置顶只写元数据，不重写历史。删除返回 <code>{"id","deleted":true}</code>，并取消这个 Agent 拥有的在途 HTTP 和 WebSocket 工作。删除存储失败时不取消任务。</p>
           </article>
+          <article class="endpoint" id="sessions-activity">
+            <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/sessions/{id}/activity</span></div>
+            <p>这个会话还没结束的聊天回合。不是任务列表，普通聊天也会出现。没有未结束回合时 <code>runs</code> 是空数组，不返回已完成历史。</p>
+            <table>
+              <tr><th>字段</th><th>说明</th></tr>
+              <tr><td><code>runs[].run_id</code></td><td>持久化回合 ID。</td></tr>
+              <tr><td><code>runs[].state</code></td><td>只有 <code>queued</code> 或 <code>running</code>。</td></tr>
+              <tr><td><code>runs[].updated_at</code></td><td>这条回合记录的最后更新时间。</td></tr>
+            </table>
+            <div class="note">读持久化记录失败时返回 500，不会把失败伪装成没有正在工作。WebSocket 终态使用同一套词：<code>completed</code>、<code>cancelled</code>、<code>error</code>。重连回放的状态帧带 <code>replay:true</code>。</div>
+          </article>
           <article class="endpoint" id="sessions-tools">
             <div class="ep-head"><span class="verb GET">GET</span><span class="path">/api/v1/sessions/{id}/tools</span></div>
             <p>分页工具轨迹。<code>limit</code> 默认 100，上限 200。<code>offset</code> 从最新调用向前跳。<code>turn=first</code> 只取原始首轮；压缩已经盖住原始轮次时返回 410。</p>
