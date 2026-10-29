@@ -218,6 +218,7 @@ const (
 	maxEmptyResponseRetries        = 2
 	searchSynthesisThreshold       = 2
 	emptyResponseRecoveryPrompt    = "Your last response was empty. Please provide a direct, complete answer to my previous request. Avoid tool calls unless required."
+	lengthRecoveryPrompt           = "Continue exactly from where you stopped. Do not repeat previous content."
 	searchSynthesisPrompt          = "You now have enough search evidence from previous tool results. Synthesize a direct, source-aware answer now. Do not call any more tools unless a critical factual gap remains unresolved."
 	explorationHandoffBytes        = 12 * 1024
 	explorationHandoffSummaryBytes = 1500

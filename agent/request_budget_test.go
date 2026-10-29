@@ -8,6 +8,7 @@ import (
 
 	"github.com/yurika0211/luckyagent-runtime/contextx"
 	"github.com/yurika0211/luckyagent-runtime/provider"
+	"github.com/yurika0211/luckyagent-runtime/tool"
 )
 
 type requestCaptureProvider struct {
@@ -220,6 +221,79 @@ func TestModelRequestBudgetSelectsSchemasAndRetainsTurnRequiredTools(t *testing.
 	}
 }
 
+func toolNamesIn(schemas []map[string]any) map[string]bool {
+	names := make(map[string]bool, len(schemas))
+	for _, schema := range schemas {
+		names[functionToolNameFromSchema(schema)] = true
+	}
+	return names
+}
+
+func TestSelectRequestToolsKeepsEnabledToolsAheadOfPreferredList(t *testing.T) {
+	a := requestBudgetAgent(6000)
+	messages := []provider.Message{{Role: "user", Content: "继续处理当前任务"}}
+	priorities := a.requestPriorities(messages)
+	opts := provider.CallOptions{ToolChoice: "auto"}
+	// Preferred names are registered first and are large. Enabled tools that
+	// the user did not name must still be admitted while any of them fit.
+	for _, name := range []string{"file_read", "file_list", "terminal", "web_search", "web_fetch", "ask_user", "context_history_read", "skill_read"} {
+		opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+			"name": name, "description": strings.Repeat("core catalog entry ", 80),
+		}})
+	}
+	opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+		"name": "subagent", "description": strings.Repeat("delegate schema ", 30),
+	}})
+	for i := 0; i < 40; i++ {
+		opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+			"name": fmt.Sprintf("mcp_tool_%02d", i), "description": strings.Repeat("remote catalog ", 40),
+		}})
+	}
+
+	got, err := a.selectRequestTools(a.requestBudget(), messages, priorities, opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Tools) >= len(opts.Tools) {
+		t.Fatal("catalog was not bounded")
+	}
+	names := toolNamesIn(got.Tools)
+	if !names["subagent"] {
+		t.Fatal("enabled subagent schema was dropped before larger preferred schemas")
+	}
+	if !names["mcp_tool_00"] {
+		t.Fatal("enabled non-preferred schema was dropped before larger preferred schemas")
+	}
+	if n := estimateProviderRequest(a.contextEst, messages, got.Tools); n > 6000 {
+		t.Fatalf("request exceeds budget: %d", n)
+	}
+}
+
+func TestSelectRequestToolsStillPrefersNamedToolWhenBudgetIsTight(t *testing.T) {
+	a := requestBudgetAgent(6000)
+	messages := []provider.Message{{Role: "user", Content: "请使用 subagent 改这段代码"}}
+	priorities := a.requestPriorities(messages)
+	opts := provider.CallOptions{}
+	opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+		"name": "subagent", "description": strings.Repeat("delegate schema ", 400),
+	}})
+	for i := 0; i < 30; i++ {
+		opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+			"name": fmt.Sprintf("filler_%02d", i), "description": strings.Repeat("unrelated filler ", 80),
+		}})
+	}
+
+	a.tools = tool.NewRegistry()
+	a.tools.Register(&tool.Tool{Name: "subagent", Description: "delegate", Enabled: true})
+	got, err := a.selectRequestTools(a.requestBudget(), messages, priorities, opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !toolNamesIn(got.Tools)["subagent"] {
+		t.Fatal("named subagent schema was omitted")
+	}
+}
+
 func TestCompactionCannotBypassRequestBudget(t *testing.T) {
 	a := requestBudgetAgent(50)
 	p := &requestCaptureProvider{}
@@ -227,5 +301,66 @@ func TestCompactionCannotBypassRequestBudget(t *testing.T) {
 	_, _, err := a.generateMapReduceCompactSummary(context.Background(), []provider.Message{{Role: "user", Content: strings.Repeat("past conversation ", 100)}}, a.baseProviderSnapshot(), CompactSessionOptions{})
 	if err == nil || !strings.Contains(err.Error(), "context input budget") || p.messages != nil {
 		t.Fatalf("compaction bypassed input budget: %v", err)
+	}
+}
+
+func TestSelectRequestToolsKeepsRelevantLargeSchemaAheadOfUnrelatedSmallOnes(t *testing.T) {
+	a := requestBudgetAgent(6000)
+	messages := []provider.Message{{Role: "user", Content: "Analyze spectroscopy measurements"}}
+	opts := provider.CallOptions{}
+	for i := 0; i < 100; i++ {
+		opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+			"name": fmt.Sprintf("unrelated_%d", i), "description": "Generic helper",
+		}})
+	}
+	opts.Tools = append(opts.Tools, map[string]any{"type": "function", "function": map[string]any{
+		"name": "spectral_analyzer", "description": strings.Repeat("Analyze spectroscopy measurements. ", 100),
+	}})
+	got, err := a.selectRequestTools(a.requestBudget(), messages, a.requestPriorities(messages), opts, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !toolNamesIn(got.Tools)["spectral_analyzer"] {
+		t.Fatal("cheap unrelated schemas crowded out the relevant enabled tool")
+	}
+	if cost := estimateToolSchemas(a.contextEst, got.Tools); cost > 2000 {
+		t.Fatalf("schema allocation exceeded: %d", cost)
+	}
+}
+
+func TestSelectRequestToolsBudgetFailuresAndRequiredBorrowing(t *testing.T) {
+	schema := func(name string, repeats int) map[string]any {
+		return map[string]any{"type": "function", "function": map[string]any{
+			"name": name, "description": strings.Repeat("schema details ", repeats),
+		}}
+	}
+	for _, tt := range []struct {
+		name, text, wantError string
+		tools                 []map[string]any
+		required              []string
+	}{
+		{"pinned input", strings.Repeat("pinned input ", 5000), "pinned instructions exceed", []map[string]any{schema("small", 1)}, nil},
+		{"required overflow", "continue", "required tool schemas need", []map[string]any{schema("huge", 5000), schema("small", 1)}, []string{"huge"}},
+		{"no optional fits", "continue", "no tool schema fits", []map[string]any{schema("one", 5000), schema("two", 5000)}, nil},
+		{"required borrows", "continue", "", []map[string]any{schema("required", 700), schema("optional", 1000)}, []string{"required"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := requestBudgetAgent(6000)
+			messages := []provider.Message{{Role: "user", Content: tt.text}}
+			got, err := a.selectRequestTools(a.requestBudget(), messages, a.requestPriorities(messages), provider.CallOptions{Tools: tt.tools}, tt.required)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil || !toolNamesIn(got.Tools)["required"] {
+				t.Fatalf("required schema lost: opts=%v err=%v", got, err)
+			}
+			cost := estimateToolSchemas(a.contextEst, got.Tools)
+			if cost <= 2000 || estimateProviderRequest(a.contextEst, messages, got.Tools) > 6000 {
+				t.Fatalf("fixture did not exercise safe borrowing: schema tokens=%d", cost)
+			}
+		})
 	}
 }

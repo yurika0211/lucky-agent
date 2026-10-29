@@ -46,6 +46,7 @@ type durableCheckpoint struct {
 	LastResultDigests  map[string]string     `json:"last_result_digests,omitempty"`
 	RepeatSignatures   []string              `json:"repeat_signatures,omitempty"`
 	NoProgress         int                   `json:"no_progress,omitempty"`
+	ModelStalls        int                   `json:"model_stalls,omitempty"`
 	Continuation       string                `json:"continuation,omitempty"`
 	Summary            string                `json:"summary,omitempty"`
 	SummarizedThrough  int                   `json:"summarized_through,omitempty"`
@@ -84,6 +85,9 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		}
 	}
 	cp.migrateResultDigests()
+	// Model stalls bound retries within one execution slice, not every later
+	// slice to a single attempt after a persisted stall count reaches the cap.
+	cp.ModelStalls = 0
 	if cp.Shell != nil && sess != nil {
 		sess.RestoreShellContext(*cp.Shell)
 	}
@@ -313,7 +317,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			return result, durableProviderError(ctx, err)
 		}
 		if resp == nil {
-			return result, fmt.Errorf("provider returned no response")
+			resp = &provider.Response{}
 		}
 		cp.Tokens += resp.TokensUsed
 		result.TokensUsed += resp.TokensUsed
@@ -342,6 +346,8 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		}
 		if len(resp.ToolCalls) > 0 {
 			cp.Batch++
+			cp.ModelStalls = 0
+			cp.Continuation = ""
 			msg := provider.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent, ToolCalls: resp.ToolCalls}
 			cp.Messages = append(cp.Messages, msg)
 			if sess != nil {
@@ -352,28 +358,83 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			for j, call := range resp.ToolCalls {
 				cp.Pending = append(cp.Pending, durablePendingCall{ID: fmt.Sprintf("step-%d-%d", cp.Batch, j+1), Call: call})
 			}
+		} else if strings.EqualFold(resp.FinishReason, "length") {
+			// A truncated reply is a stalled model turn, not a finished answer. Keep
+			// the partial text and ask for the rest instead of handing it to the
+			// completion review, which can only reject it.
+			cp.Continuation += resp.Content
+			cp.ModelStalls++
+			cp.Messages = append(cp.Messages,
+				provider.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent},
+				provider.Message{Role: "user", Content: lengthRecoveryPrompt})
+		} else if strings.TrimSpace(resp.Content) == "" {
+			// A prior partial answer is not proof that the model finished.
+			// Keep it for a real continuation, never promote it on an empty reply.
+			cp.ModelStalls++
+			cp.Messages = append(cp.Messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
 		} else {
-			answer := strings.TrimSpace(resp.Content)
+			answer := strings.TrimSpace(cp.Continuation + resp.Content)
 			cp.Continuation = ""
-			if answer == "" {
-				cp.NoProgress++
-				cp.Messages = append(cp.Messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
-			} else if msg, blocked := artifactGuard.BlockMessage(answer); blocked {
+			if msg, blocked := artifactGuard.BlockMessage(answer); blocked {
 				cp.Messages = append(cp.Messages, provider.Message{Role: "assistant", Content: answer},
 					provider.Message{Role: "user", Content: msg})
 				cp.NoProgress++
 			} else {
 				cp.Candidate, cp.Reasoning = answer, resp.ReasoningContent
+				cp.ModelStalls = 0
 			}
 		}
 		if err := save(); err != nil {
 			return result, err
+		}
+		// An unresponsive model is not a stalled tool loop. Once a slice has
+		// retried enough empty or truncated replies, hand the task to the next
+		// slice instead of asking a person to intervene.
+		if cp.ModelStalls >= modelStallLimit(cfg) {
+			return result, autonomy.ErrYield
 		}
 		if cp.NoProgress >= cfg.RepeatToolCallLimit {
 			return result, fmt.Errorf("%w: no new evidence after repeated attempts", autonomy.ErrBlocked)
 		}
 	}
 	return result, autonomy.ErrYield
+}
+
+// defaultModelStallLimit is used when the repeat limit is not configured.
+const defaultModelStallLimit = 3
+
+// modelStallLimit bounds how many consecutive replies without usable text one
+// slice tolerates. It reuses the repeat limit as a cadence but keeps its own
+// counter, so a model that returns nothing never consumes the evidence budget
+// that guards repeated tool calls.
+func modelStallLimit(cfg LoopConfig) int {
+	if cfg.RepeatToolCallLimit > 0 {
+		return cfg.RepeatToolCallLimit
+	}
+	return defaultModelStallLimit
+}
+
+// errIncompleteSummary marks a progress summary the model could not finish. The
+// checkpoint is intact, so the next slice retries instead of blocking.
+var errIncompleteSummary = errors.New("progress summary is incomplete")
+
+// errVerifierRetryable marks a completion review that produced no usable
+// assessment. The recorded operations are untouched, so the next slice retries
+// instead of asking a person to intervene.
+var errVerifierRetryable = errors.New("completion review was inconclusive")
+
+// durableTransientErrorMarkers lists upstream failures that leave the
+// checkpoint usable. They are retried by the next slice instead of opening a
+// manual intervention ticket.
+var durableTransientErrorMarkers = []string{
+	"api error 429:",
+	"api error 500:",
+	"api error 502:",
+	"api error 503:",
+	"api error 504:",
+	"connection reset",
+	"broken pipe",
+	"unexpected eof",
 }
 
 func durableProviderError(ctx context.Context, err error) error {
@@ -383,11 +444,23 @@ func durableProviderError(ctx context.Context, err error) error {
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return ctx.Err()
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return autonomy.ErrYield
+	}
+	if errors.Is(err, errIncompleteSummary) || errors.Is(err, errVerifierRetryable) {
+		return autonomy.ErrYield
+	}
 	// Authentication and malformed requests need intervention, not retries.
 	message := strings.ToLower(err.Error())
 	for _, marker := range []string{"api error 400:", "api error 401:", "api error 403:", "api error 404:"} {
 		if strings.Contains(message, marker) {
 			return fmt.Errorf("%w: %v", autonomy.ErrBlocked, err)
+		}
+	}
+	// Throttling and transport failures are recoverable within the run budget.
+	for _, marker := range durableTransientErrorMarkers {
+		if strings.Contains(message, marker) {
+			return fmt.Errorf("%w: %v", autonomy.ErrYield, err)
 		}
 	}
 	return err
@@ -428,6 +501,12 @@ func (a *Agent) executeDurablePending(ctx context.Context, sess *session.Session
 		var executed detailedToolExecutionResult
 		var toolErr error
 		executeArgs := pending.Call.Arguments
+		// A read-only call interrupted before its result was recorded has no
+		// side effect to reconcile, so recovery repeats it. Mutating, shell and
+		// approval-gated calls keep the human reconciliation path.
+		if op.State == "started" && a.durableReplaySafeCall(pending.Call.Name, pending.Call.Arguments) {
+			op.State = "retry"
+		}
 		switch op.State {
 		case "started":
 			return fmt.Errorf("%w: operation %s (%s) started without a durable result; reconcile before resuming", autonomy.ErrBlocked, op.ID, op.Name)
@@ -587,6 +666,31 @@ func appendUnique(items []string, value string) []string {
 	return append(items, value)
 }
 
+// ParallelSafe alone is not a replay guarantee: memory writes and HTTP POSTs
+// can also run concurrently. Require a known inspection action or the host's
+// explicit PolicySafe declaration, and never replay approval-gated calls.
+func (a *Agent) durableReplaySafeCall(name, arguments string) bool {
+	if a == nil || a.Tools() == nil || a.hooks.Enabled() {
+		return false
+	}
+	name = a.canonicalToolName(name)
+	registered, ok := a.Tools().Get(name)
+	if !ok || registered == nil || !registered.Enabled || !registered.ParallelSafe || registered.ShellAware {
+		return false
+	}
+	var args map[string]any
+	if strings.TrimSpace(arguments) != "" {
+		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+			return false
+		}
+	}
+	permission, err := a.Tools().CheckPermission(name)
+	if err != nil || permission != tool.PermAuto || registered.EffectivePermission(args) != tool.PermAuto {
+		return false
+	}
+	return registered.PolicySafe || isExplorationTool(provider.ToolCall{Name: name, Arguments: arguments})
+}
+
 // durableRepeatCanConverge reports whether a stable repeated result is usable
 // evidence. A read-only tool can be concluded from; a failed or mutating call
 // still needs the existing blocked recovery path.
@@ -702,7 +806,7 @@ func (a *Agent) compactDurableCheckpoint(ctx context.Context, goal string, cp *d
 		return err
 	}
 	if resp == nil || len(resp.ToolCalls) > 0 || strings.TrimSpace(resp.Content) == "" || strings.EqualFold(resp.FinishReason, "length") {
-		return fmt.Errorf("progress summary is incomplete")
+		return errIncompleteSummary
 	}
 	p := newContextPlannerWithProvider(a, defaultContextBuildOptions(), snapshot)
 	cp.Summary, cp.SummarizedThrough = p.fitTextToBudget(resp.Content, a.contextInputLimit()/5), cut
