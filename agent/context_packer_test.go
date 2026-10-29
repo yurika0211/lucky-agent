@@ -128,6 +128,27 @@ func TestSelectIntentAwareRecentHistoryPreservesLatestUserTurn(t *testing.T) {
 	}
 }
 
+func TestFitStableHistoryTailKeepsLatestTurnWhenOlderHistoryDoesNotFit(t *testing.T) {
+	planner := &contextPlanner{est: contextx.NewTokenEstimator(4096)}
+	messages := []provider.Message{
+		{Role: "user", Content: strings.Repeat("old topic that must not displace the current request ", 200)},
+		{Role: "assistant", Content: strings.Repeat("old answer and stale plan ", 200)},
+		{Role: "user", Content: "请核对刚才提交的超时修复，列出实际修改的文件。"},
+		{Role: "assistant", Content: "我会先检查最新提交和工作区 diff，再逐项汇报。"},
+	}
+	latestBudget := estimateProviderMessages(planner.est, messages[2:])
+	got := planner.fitStableHistoryTail(messages, latestBudget)
+	text := messagesToTestText(got)
+	if strings.Contains(text, "old topic") || strings.Contains(text, "stale plan") {
+		t.Fatalf("older history should be dropped when it does not fit: %s", text)
+	}
+	for _, want := range []string{"刚才提交的超时修复", "最新提交和工作区 diff"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("latest turn lost %q: %s", want, text)
+		}
+	}
+}
+
 func TestBuildHistoryMessagesRespectsCompactBoundary(t *testing.T) {
 	sess := session.NewSession("compact-history", t.TempDir())
 	sess.AddMessage("user", "old raw secret before compact")
