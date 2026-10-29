@@ -99,8 +99,7 @@ func formatRepeatedToolStop(sigs []string, last map[string]string) string {
 	b.WriteString("Detected repeated tool-call loop and stopped early to avoid timeout.\n")
 	b.WriteString("Latest tool outputs:\n")
 	for _, sig := range sigs {
-		parts := strings.SplitN(sig, "|", 2)
-		name := parts[0]
+		label := formatRepeatedToolSignature(sig)
 		out := "(no cached output)"
 		if last != nil {
 			if v := strings.TrimSpace(last[sig]); v != "" {
@@ -110,9 +109,22 @@ func formatRepeatedToolStop(sigs []string, last map[string]string) string {
 		if len(out) > 240 {
 			out = out[:240] + "...(truncated)"
 		}
-		b.WriteString(fmt.Sprintf("- %s: %s\n", name, out))
+		b.WriteString(fmt.Sprintf("- %s: %s\n", label, out))
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func formatRepeatedToolSignature(sig string) string {
+	parts := strings.SplitN(sig, "|", 2)
+	name := parts[0]
+	if len(parts) == 1 || strings.TrimSpace(parts[1]) == "" {
+		return name
+	}
+	args := strings.TrimSpace(parts[1])
+	if len(args) > 240 {
+		args = args[:240] + "...(truncated)"
+	}
+	return fmt.Sprintf("%s %s", name, args)
 }
 
 func (s *streamConvergenceState) failureRepeated(name, arguments string) bool {
