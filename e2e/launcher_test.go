@@ -76,6 +76,10 @@ func TestSyncChatPersistsAssistantText(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		if sessionRecapRequest(r) {
+			writeCompletion(w, "You asked for the fixed answer.")
+			return
+		}
 		calls++
 		if completionReviewRequest(r) {
 			writeCompletion(w, `{"status":"complete","reason":"the fixed answer was returned","evidence":["assistant returned the fixed answer"]}`)
@@ -342,11 +346,23 @@ func serveModel(t *testing.T, handler http.HandlerFunc) *modelServer {
 	return &modelServer{URL: "http://" + ln.Addr().String()}
 }
 
-func completionReviewRequest(r *http.Request) bool {
+func requestBody(r *http.Request) []byte {
 	body, _ := io.ReadAll(r.Body)
 	_ = r.Body.Close()
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	return bytes.Contains(body, []byte("Review whether the original task"))
+	return body
+}
+
+func completionReviewRequest(r *http.Request) bool {
+	return bytes.Contains(requestBody(r), []byte("Review whether the original task"))
+}
+
+func sessionRecapRequest(r *http.Request) bool {
+	body := requestBody(r)
+	// A finished turn queues an asynchronous session recap. It has no tools and
+	// must not be counted as the answer or the independent completion review.
+	return bytes.Contains(body, []byte("Write exactly one concise sentence to help the user recall")) &&
+		!bytes.Contains(body, []byte(`"tools"`))
 }
 
 func writeCompletion(w http.ResponseWriter, content string) {
