@@ -44,6 +44,24 @@ func TestTurnChatEventDurationRoundTrip(t *testing.T) {
 	}
 }
 
+func TestTurnChatEventStreamPreservesDuration(t *testing.T) {
+	in := make(chan ChatEvent, 1)
+	in <- ChatEvent{Type: ChatEventToolResult, Name: "terminal", Duration: 1250 * time.Millisecond}
+	close(in)
+
+	out := ToTurnChatEventStream(context.Background(), in)
+	event, ok := <-out
+	if !ok {
+		t.Fatal("adapter closed before forwarding the event")
+	}
+	if event.Duration != 1250*time.Millisecond {
+		t.Fatalf("stream duration = %s", event.Duration)
+	}
+	if _, ok := <-out; ok {
+		t.Fatal("adapter did not close after the source")
+	}
+}
+
 func TestDurableToolDurationMatchesPersistedResult(t *testing.T) {
 	for _, replay := range []bool{false, true} {
 		t.Run(map[bool]string{false: "failed execution", true: "completed replay"}[replay], func(t *testing.T) {
