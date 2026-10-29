@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/yurika0211/luckyagent-plugins v0.1.0
-	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261029173750-ae447fbb1f94
+	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261029221023-9e0d4d4d5c2b
 	go.opentelemetry.io/otel v1.43.0
 	go.opentelemetry.io/otel/trace v1.43.0
 	gopkg.in/yaml.v3 v3.0.1
