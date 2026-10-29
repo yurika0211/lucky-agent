@@ -57,6 +57,13 @@ func completeFromOperationLedger(candidate string, operations []turn.DurableOper
 	if strings.TrimSpace(candidate) == "" {
 		return nil, false
 	}
+	// A candidate without any recorded operation is still only a model claim.
+	// The ledger gate applies after the task has produced at least one piece of
+	// durable evidence; otherwise the normal verifier must reject promises and
+	// inconclusive answers.
+	if len(operations) == 0 {
+		return nil, false
+	}
 	for _, op := range operations {
 		if op.State != "completed" {
 			return nil, false

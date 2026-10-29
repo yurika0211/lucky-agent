@@ -270,7 +270,11 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			if err != nil {
 				return result, err
 			}
-			if len(current.AcceptanceCriteria) == 0 {
+			// Foreground tasks still require the verifier to prove that a model
+			// response is more than a plan, even when their operation ledger is
+			// otherwise complete. The ledger shortcut is for ordinary tasks with
+			// no independent acceptance criteria.
+			if !cfg.Foreground && len(current.AcceptanceCriteria) == 0 {
 				if verification, complete := completeFromOperationLedger(cp.Candidate, current.Operations); complete {
 					cp.Verification = verification
 					if err := save(); err != nil {
