@@ -2,7 +2,7 @@ module github.com/yurika0211/lucky-agent
 
 go 1.25.0
 
-require github.com/yurika0211/luckyagent-app v0.4.3-0.20261029053739-abc75ce085e1
+require github.com/yurika0211/luckyagent-app v0.4.3-0.20261029174941-4a4fa0b114f6
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
@@ -51,12 +51,12 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yuin/goldmark v1.3.5 // indirect
 	github.com/yurika0211/aestus v0.1.0 // indirect
-	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261028182005-716648ba4411 // indirect
-	github.com/yurika0211/luckyagent-api v0.2.4 // indirect
+	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261029174731-fed6282cdb6c // indirect
+	github.com/yurika0211/luckyagent-api v0.2.5-0.20261029173750-96a97c0c2623 // indirect
 	github.com/yurika0211/luckyagent-gateway v0.2.2 // indirect
 	github.com/yurika0211/luckyagent-orchestrator v0.1.1 // indirect
 	github.com/yurika0211/luckyagent-plugins v0.1.0 // indirect
-	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261028184909-247d91fb416a // indirect
+	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261029173750-ae447fbb1f94 // indirect
 	github.com/yurika0211/luckyagent-tools v0.2.4-0.20261025155312-14ca32a46742 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
