@@ -26,9 +26,13 @@ jobs:
         with:
           go-version: '1.25'
       - name: Download dependencies
-        run: go mod download
+        env:
+          GONOSUMDB: github.com/yurika0211/*
+        run: python3 scripts/ci_modules.py
       - name: Release manifest and installer contracts
         run: python3 -m unittest discover -s scripts -p test_release_integrity.py
+      - name: Action bot parser contracts
+        run: python3 -m unittest discover -s scripts -p test_action_bot.py
       - name: Verify Agent graph audit
         env:
           EVENT_REF: ${{ github.ref }}
@@ -57,20 +61,28 @@ jobs:
         working-directory: agent
         env:
           GOWORK: off
+          GONOSUMDB: github.com/yurika0211/*
         run: |
           go test -mod=readonly -race -count=1 ./...
           go vet ./...
       - name: Run tests
+        env:
+          GONOSUMDB: github.com/yurika0211/*
         run: go test ./... -race -count=1 -timeout 10m
       - name: Launcher end-to-end
+        env:
+          GONOSUMDB: github.com/yurika0211/*
         run: go test -tags e2e -count=1 -timeout 8m ./e2e
       - name: Build
+        env:
+          GONOSUMDB: github.com/yurika0211/*
         run: |
           test "$(go list -f '{{.Dir}}' github.com/yurika0211/lucky-agent/agent)" = "$PWD/agent"
           go build -o lh ./cmd/la
       - name: Build published dependency graph
         env:
           GOWORK: off
+          GONOSUMDB: github.com/yurika0211/*
         run: go build -mod=readonly -o /tmp/lh-pinned ./cmd/la
       - name: Verify binary
         run: ./lh version
