@@ -1,0 +1,78 @@
+name: Action bot
+
+on:
+  schedule:
+    - cron: "20 1 * * *"
+  pull_request:
+    paths:
+      - ".github/workflows/action-bot.yml"
+      - "scripts/action_bot.py"
+      - "scripts/benchstat_json.py"
+      - "scripts/perf_bench_test.go"
+      - "agent/checkpoint_persistence_test.go"
+      - "packages/luckyagent-orchestrator/autonomy/persistence_benchmark_test.go"
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: "Digest issue number"
+        required: false
+        default: "342"
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: action-bot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  performance:
+    name: Checkpoint and queue benchmarks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Benchmark local persistence paths
+        run: |
+          set -euo pipefail
+          tmp="$(mktemp -d)"
+          cp scripts/perf_bench_test.go "$tmp/perf_bench_test.go"
+          (
+            cd "$tmp"
+            go mod init luckyagent.dev/perf
+            go test -run '^$' -bench 'Benchmark(CheckpointTrajectory|QueueSnapshotEncoding|QueuePersistLock)$' \
+              -benchtime=1x -count=1 -timeout 15m -json .
+          ) > perf-raw.json
+          python3 scripts/benchstat_json.py --output perf-summary.json < perf-raw.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-summary
+          path: perf-summary.json
+          if-no-files-found: error
+
+  digest:
+    name: Post maintenance digest
+    runs-on: ubuntu-latest
+    needs: performance
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: performance-summary
+      - name: Comment issue digest
+        if: github.event_name != 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.inputs.issue || '342' }}
+        run: python3 scripts/action_bot.py --issue "$ISSUE" --bench perf-summary.json
+      - name: Preview issue digest
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/action_bot.py --issue 342 --bench perf-summary.json --dry-run
