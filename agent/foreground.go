@@ -239,11 +239,12 @@ func (a *Agent) runForeground(ctx context.Context, sess *session.Session, input 
 			return last, err
 		}
 		emitForeground(cfg, ChatEvent{Type: ChatEventThinking, TaskID: task.ID, Content: fmt.Sprintf("前台任务 %s，执行第 %d 段。", task.ID, claimed.Attempts-claimed.BudgetStartAttempt)})
+		sliceStarted := time.Now()
 		last, err = a.runDurableLoop(sliceCtx, sess, input, cfg, snapshot)
 		if sliceCtx.Err() != nil && !errors.Is(err, autonomy.ErrBlocked) && !errors.Is(ctx.Err(), context.Canceled) {
 			err = autonomy.ErrYield
 		}
-		outcome := &turn.DurableResult{Error: err}
+		outcome := &turn.DurableResult{Error: err, Duration: time.Since(sliceStarted)}
 		if last != nil {
 			outcome.Output, outcome.Verified, outcome.Verification = last.Response, last.Verified, last.Verification
 		}
@@ -253,6 +254,12 @@ func (a *Agent) runForeground(ctx context.Context, sess *session.Session, input 
 			return last, fmt.Errorf("前台任务结果保存失败: %w", persistErr)
 		}
 		task, _ = q.Get(task.ID)
+		// A slice deadline is the foreground active-budget boundary. Preserve
+		// that cause for callers instead of turning it into a generic blocked
+		// queue reason after the lease is released.
+		if errors.Is(sliceCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
+			return last, foregroundInterrupted(task, context.DeadlineExceeded)
+		}
 		if err == nil {
 			last.foregroundInput = &input
 			return last, nil
