@@ -12,6 +12,7 @@ import (
 	"github.com/yurika0211/lucky-agent/agent/artifact"
 	"github.com/yurika0211/lucky-agent/agent/textcall"
 	"github.com/yurika0211/luckyagent-runtime/logger"
+	"github.com/yurika0211/luckyagent-runtime/openui"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/sandbox"
 	"github.com/yurika0211/luckyagent-runtime/session"
@@ -34,6 +35,7 @@ type ChatEvent struct {
 	Observation *ObservationEvent
 	Approval    *ApprovalEvent
 	Compact     *CompactProgress     // session compact progress (Type=ChatEventCompact)
+	UI          *openui.Delta        // catalog-validated tree (Type=ChatEventUIDelta)
 	Usage       *provider.TokenUsage // aggregate provider usage for ChatEventDone
 	CreatedAt   *time.Time           // server timestamp of the final assistant message
 	Err         error
@@ -82,6 +84,7 @@ const (
 	ChatEventApprovalRequired                      // 🔐 approval required
 	ChatEventReasoningContent                      // 🧠 真实推理摘要内容
 	ChatEventCompact                               // 📦 session context compact progress
+	ChatEventUIDelta                               // OpenUI tree patch
 )
 
 // StreamMode 流式输出模式
