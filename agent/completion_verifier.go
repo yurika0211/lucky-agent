@@ -48,6 +48,32 @@ type completionVerifier struct {
 	call   func(context.Context, []provider.Message) (*provider.Response, error)
 }
 
+// completeFromOperationLedger handles tasks without independent acceptance
+// criteria. The durable operation ledger is the completion gate in that case:
+// every recorded operation must be complete and all failures must have a later
+// successful recheck. A verifier call must not turn a complete ledger into a
+// false block.
+func completeFromOperationLedger(candidate string, operations []turn.DurableOperation) (*durableVerification, bool) {
+	if strings.TrimSpace(candidate) == "" {
+		return nil, false
+	}
+	for _, op := range operations {
+		if op.State != "completed" {
+			return nil, false
+		}
+	}
+	if failures := unresolvedCompletionFailures(operations); len(failures) > 0 {
+		return nil, false
+	}
+	evidence := []string{"No independent acceptance criteria were declared; the operation ledger is complete."}
+	for _, op := range operations {
+		if op.ID != "" {
+			evidence = append(evidence, "completed operation "+op.ID)
+		}
+	}
+	return &durableVerification{Status: "complete", Reason: "Operation ledger complete without independent acceptance criteria", Evidence: evidence}, true
+}
+
 func operationEvidence(op turn.DurableOperation, resultRunes int) completionObservation {
 	return completionObservation{ID: op.ID, Tool: op.Name, Arguments: op.Arguments,
 		Result: truncateToolResultForContext(op.Output, resultRunes), Failed: op.Failed}
