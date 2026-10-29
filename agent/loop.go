@@ -1276,6 +1276,14 @@ func replaceExplorationToolResults(messages []provider.Message, executed []execu
 }
 
 func compactToolResultForContext(toolName, result string) string {
+	return compactToolResultForContextKey(toolName, result, "", false)
+}
+
+// compactToolResultForContextKey prepares one tool result for the next turn.
+// The one-line finding stays, then the shape rewrite and the line compressor
+// share the same rune budget. assignmentKey selects the A/B arm; the paired
+// lengths are recorded either way.
+func compactToolResultForContextKey(toolName, result, assignmentKey string, toolError bool) string {
 	out := strings.TrimSpace(result)
 	if out == "" {
 		return result
@@ -1286,17 +1294,20 @@ func compactToolResultForContext(toolName, result string) string {
 		out = fmt.Sprintf("[Tool Summary]\n- tool: %s\n- finding: %s\n\n%s", toolName, summary, out)
 	}
 
-	limit := 8000
+	return compactToolResultAB(toolName, out, assignmentKey, toolResultRuneLimit(toolName), toolError)
+}
+
+func toolResultRuneLimit(toolName string) int {
 	switch toolName {
 	case "web_search":
-		limit = 2400
+		return 2400
 	case "web_fetch", "opencli":
-		limit = 6000
+		return 6000
 	case "file_list":
-		limit = 1200
+		return 1200
+	default:
+		return 8000
 	}
-
-	return truncateToolResultForContext(out, limit)
 }
 
 // truncateToolResultForContext keeps identifier-bearing lines and drops the most
