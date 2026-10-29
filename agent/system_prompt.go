@@ -188,7 +188,7 @@ func (a *Agent) buildToolPolicyPromptBlock() string {
 Use tools to reduce uncertainty, inspect real state, fetch external facts, or change real state when needed.
 
 Choose tools by intent:
-- Use file tools for repository truth and local documents.
+- Use file tools for repository truth and local documents. Do not use terminal only to print or read local file contents: use file_read, file_list, or document_read for that. Reserve terminal for executing commands, tests, process inspection, and other environment operations; avoid cat, head, tail, sed, awk, or Python print wrappers when a file tool can read the same content.
 - Use terminal or runtime tools for environment inspection and execution.
 - Use web/search tools for external or recent information.
 - Use opencli for OpenCLI access: action=web_read for a URL, action=site for site adapters, action=twitter_timeline for authenticated following feed, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh to opencli; use terminal for shell commands.
