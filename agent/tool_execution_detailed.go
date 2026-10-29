@@ -87,9 +87,9 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 	if sess != nil {
 		sessionID = sess.ID
 	}
-	if snapshot := sandbox.SnapshotFromContext(ctx); snapshot != nil && snapshot.Isolated() && a.tools != nil {
+	if snapshot := sandbox.SnapshotFromContext(ctx); snapshot != nil && snapshot.Restricted() && a.tools != nil {
 		if registered, ok := a.tools.Get(name); ok && (registered.Category == tool.CatMCP || (registered.Category == pluginCategory && registered.Name != "plugin_info" && registered.Name != "plugin_agent")) {
-			return detailedToolExecutionResult{}, fmt.Errorf("tool %s is disabled in iso sandbox", name)
+			return detailedToolExecutionResult{}, fmt.Errorf("tool %s is disabled in restricted sandbox", name)
 		}
 	}
 
@@ -135,7 +135,7 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 			}
 		}
 	}
-	if snapshot != nil && snapshot.Isolated() {
+	if snapshot != nil && snapshot.Restricted() {
 		if sc == nil {
 			sc = &tool.ShellContext{}
 		}
