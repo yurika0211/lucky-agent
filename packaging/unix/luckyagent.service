@@ -1,0 +1,23 @@
+[Unit]
+Description=LuckyAgent HTTP API (lh serve)
+Documentation=https://github.com/yurika0211/lucky-agent
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/lh serve --addr 127.0.0.1:9090
+WorkingDirectory=%h
+Restart=on-failure
+RestartSec=5s
+# Bound the cgroup so a leak cannot OOM the whole host. Raise if the
+# machine has more RAM and an active workload needs it.
+MemoryMax=2G
+MemoryHigh=1536M
+Environment=GOMEMLIMIT=1536MiB
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target

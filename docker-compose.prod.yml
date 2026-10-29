@@ -1,6 +1,7 @@
 x-luckyagent-env: &luckyagent-env
   HOME: /var/lib/luckyagent
   TZ: ${TZ:-Asia/Shanghai}
+  GOMEMLIMIT: ${LH_GOMEMLIMIT:-1536MiB}
 
 services:
   luckyagent:
@@ -8,6 +9,10 @@ services:
     container_name: luckyagent
     entrypoint: ["luckyagent"]
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     environment: *luckyagent-env
     command: ["serve"]
     ports:

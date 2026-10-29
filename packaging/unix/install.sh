@@ -21,6 +21,9 @@ if [ -f "$source_dir/install.sh" ]; then
   cp -f "$source_dir/install.sh" "$stage_dir/install.sh"
   chmod 0755 "$stage_dir/install.sh"
 fi
+if [ -f "$source_dir/luckyagent.service" ]; then
+  cp -f "$source_dir/luckyagent.service" "$stage_dir/luckyagent.service"
+fi
 
 rm -rf "$app_dir"
 mv "$stage_dir" "$app_dir"
@@ -49,6 +52,27 @@ elif [ ! -e "$profile_file" ]; then
 fi
 
 "$bin_dir/lh" init >/dev/null 2>&1 || true
+
+unit_src="$source_dir/luckyagent.service"
+if [ ! -f "$unit_src" ] && [ -f "$app_dir/luckyagent.service" ]; then
+  unit_src="$app_dir/luckyagent.service"
+fi
+if [ -f "$unit_src" ] && command -v systemctl >/dev/null 2>&1; then
+  unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+  mkdir -p "$unit_dir"
+  unit_tmp=$(mktemp "$unit_dir/.luckyagent.service.XXXXXX")
+  sed "s|ExecStart=%h/.local/bin/lh|ExecStart=$bin_dir/lh|" "$unit_src" > "$unit_tmp"
+  chmod 0644 "$unit_tmp"
+  mv -f "$unit_tmp" "$unit_dir/luckyagent.service"
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+  if systemctl --user is-enabled luckyagent.service >/dev/null 2>&1; then
+    echo "user unit luckyagent.service already enabled"
+  else
+    systemctl --user enable luckyagent.service >/dev/null 2>&1 || true
+  fi
+  echo "systemd user unit: $unit_dir/luckyagent.service"
+  echo "Do not also enable a system unit against the same home/port."
+fi
 
 echo "LuckyAgent installed to $app_dir"
 echo "Command: lh"

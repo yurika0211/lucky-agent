@@ -7,9 +7,14 @@ services:
     container_name: luckyagent
     entrypoint: ["luckyagent"]
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     environment:
       HOME: /var/lib/luckyagent
       TZ: ${TZ:-Asia/Shanghai}
+      GOMEMLIMIT: ${LH_GOMEMLIMIT:-1536MiB}
     command: ["serve"]
     ports:
       - "${LH_PORT:-9090}:9090"

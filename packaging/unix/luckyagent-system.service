@@ -1,0 +1,23 @@
+[Unit]
+Description=LuckyAgent HTTP API (system)
+Documentation=https://github.com/yurika0211/lucky-agent
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+
+[Service]
+Type=simple
+User=luckyagent
+Group=luckyagent
+ExecStart=/usr/local/bin/lh serve --addr 127.0.0.1:9090
+WorkingDirectory=/var/lib/luckyagent
+Restart=on-failure
+RestartSec=5s
+MemoryMax=2G
+MemoryHigh=1536M
+Environment=GOMEMLIMIT=1536MiB
+Environment=HOME=/var/lib/luckyagent
+
+[Install]
+WantedBy=multi-user.target
