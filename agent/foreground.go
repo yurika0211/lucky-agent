@@ -196,19 +196,13 @@ func (a *Agent) runForeground(ctx context.Context, sess *session.Session, input 
 	a.applyIntentToolGating(&cfg, input.RoutingText)
 	a.applyVisionToolPolicy(&cfg, snapshot)
 	policy := a.foregroundPolicy()
-	// Recompute the deadline from the persisted run budget; time between
-	// attempts counts, so network retries cannot reset the total timeout.
+	// Active execution time is persisted by the orchestrator. Queue waits,
+	// retry backoff, and time spent waiting for a user must not consume the
+	// foreground budget.
 	task, _ = q.Get(task.ID)
-	started := task.FirstStartedAt
-	if started.IsZero() {
-		started = time.Now()
-	}
-	runCtx, cancel := context.WithDeadline(ctx, started.Add(policy.MaxTotalTime))
-	defer cancel()
-	cfg.eventContext = runCtx
 	var last *LoopResult
 	for {
-		if err := runCtx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return last, foregroundInterrupted(task, err)
 		}
 		task, _ = q.Get(task.ID)
@@ -219,9 +213,9 @@ func (a *Agent) runForeground(ctx context.Context, sess *session.Session, input 
 			emitForeground(cfg, ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("请求暂时失败，%.0f 秒后从检查点重试。", delay.Seconds())})
 			timer := time.NewTimer(delay)
 			select {
-			case <-runCtx.Done():
+			case <-ctx.Done():
 				timer.Stop()
-				return last, foregroundInterrupted(task, runCtx.Err())
+				return last, foregroundInterrupted(task, ctx.Err())
 			case <-timer.C:
 			}
 		}
@@ -233,17 +227,29 @@ func (a *Agent) runForeground(ctx context.Context, sess *session.Session, input 
 			task, _ = q.Get(task.ID)
 			return last, foregroundInterrupted(task, errors.New("执行预算已用完"))
 		}
+		remaining := policy.MaxTotalTime - time.Duration(claimed.ExecutedNanos)
+		if remaining <= 0 {
+			return last, foregroundInterrupted(claimed, errors.New("执行预算已用完"))
+		}
+		sliceCtx, cancel := context.WithTimeout(ctx, remaining)
+		cfg.eventContext = sliceCtx
 		cfg.Execution = autonomybridge.NewTurnExecution(autonomy.NewExecution(q, claimed))
 		if err := cfg.Execution.BindSession(sess.ID); err != nil {
+			cancel()
 			return last, err
 		}
 		emitForeground(cfg, ChatEvent{Type: ChatEventThinking, TaskID: task.ID, Content: fmt.Sprintf("前台任务 %s，执行第 %d 段。", task.ID, claimed.Attempts-claimed.BudgetStartAttempt)})
-		last, err = a.runDurableLoop(runCtx, sess, input, cfg, snapshot)
+		last, err = a.runDurableLoop(sliceCtx, sess, input, cfg, snapshot)
+		if sliceCtx.Err() != nil && !errors.Is(err, autonomy.ErrBlocked) && !errors.Is(ctx.Err(), context.Canceled) {
+			err = autonomy.ErrYield
+		}
 		outcome := &turn.DurableResult{Error: err}
 		if last != nil {
 			outcome.Output, outcome.Verified, outcome.Verification = last.Response, last.Verified, last.Verification
 		}
-		if persistErr := cfg.Execution.Finish(outcome, runCtx.Err() != nil); persistErr != nil {
+		persistErr := cfg.Execution.Finish(outcome, errors.Is(sliceCtx.Err(), context.Canceled) && ctx.Err() != nil)
+		cancel()
+		if persistErr != nil {
 			return last, fmt.Errorf("前台任务结果保存失败: %w", persistErr)
 		}
 		task, _ = q.Get(task.ID)
@@ -254,8 +260,8 @@ func (a *Agent) runForeground(ctx context.Context, sess *session.Session, input 
 		if isSessionError(err) {
 			return last, foregroundInterrupted(task, err)
 		}
-		if runCtx.Err() != nil {
-			return last, foregroundInterrupted(task, runCtx.Err())
+		if ctx.Err() != nil {
+			return last, foregroundInterrupted(task, ctx.Err())
 		}
 	}
 }
