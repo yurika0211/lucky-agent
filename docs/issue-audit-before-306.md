@@ -11,6 +11,14 @@
 这是一次交付快照，不替代项目的长期进度总览。下表区分本次补齐与已有修复，
 不把历史修复计为本次新写代码。
 
+## 2026-10-30 续接
+
+runtime PR [#23](https://github.com/yurika0211/luckyagent-runtime/pull/23)
+已把冷搜索改为 JSON 解码流式扫描，并覆盖 9 MiB legacy JSON 与转义正文；其 head
+`133e005` 的两项 CI 均成功。本分支把 launcher 的 runtime 选择更新到
+`v0.3.1-0.20261029191257-133e005597ee`，根模块 `GOWORK=off go list -mod=readonly -m all`
+和构建通过。runtime 合并后即可合并本分支，随后关闭 #274。
+
 ## 问题与交付
 
 | issue | 处理 | 代码或证据 |
