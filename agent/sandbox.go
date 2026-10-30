@@ -33,7 +33,7 @@ func (a *Agent) SetSandboxMode(raw string) error {
 	}
 	mode := sandbox.Mode(strings.ToLower(strings.TrimSpace(raw)))
 	if !mode.Valid() {
-		return fmt.Errorf("usage: /set dev|iso|status")
+		return fmt.Errorf("usage: /set dev|iso|workspace-write|status")
 	}
 	return a.sandbox.Set(mode)
 }
@@ -47,17 +47,21 @@ func (a *Agent) sandboxSnapshot(sess *session.Session) (*sandbox.Snapshot, error
 		root = strings.TrimSpace(sess.GetCwd())
 	}
 	if root == "" {
+		mode := a.sandbox.Current()
+		if mode == sandbox.ModeIso || mode == sandbox.ModeWorkspaceWrite {
+			return nil, fmt.Errorf("%s sandbox requires a session working directory; set the session cwd before starting the turn", mode)
+		}
 		root, _ = os.Getwd()
 	}
 	return sandbox.Prepare(a.sandbox.Current(), root)
 }
 
 func (a *Agent) applySandboxToolPolicy(cfg *LoopConfig, snapshot *sandbox.Snapshot) {
-	if cfg == nil || snapshot == nil || !snapshot.Isolated() {
+	if cfg == nil || snapshot == nil || !snapshot.Restricted() {
 		return
 	}
 	// These tools run outside the shell process and therefore must be disabled
-	// explicitly in iso mode. Terminal itself is wrapped by bubblewrap.
+	// explicitly in restricted modes. Terminal itself is wrapped by bubblewrap.
 	disabled := []string{
 		"computer_observe", "computer_act",
 		"web_search", "web_fetch", "http_request", "opencli",

@@ -52,6 +52,7 @@ func (a *Agent) StartupHooks() bootstrap.Hooks {
 		SaveCron:          a.saveCronJobs,
 		StartHeartbeat:    a.initHeartbeatService,
 		ResumeAutonomy:    a.StartAutonomyNow,
+		ResumeForeground:  a.ResumeForeground,
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	autonomybridge "github.com/yurika0211/luckyagent-runtime/autonomy"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -68,6 +69,11 @@ func (a *Agent) openForeground(sess *session.Session) (*autonomy.TaskQueue, erro
 	q.SetRunPolicy(a.foregroundPolicy())
 	name := fmt.Sprintf("%x.json", sha256.Sum256([]byte(sess.ID)))
 	_, err := q.EnablePersistence(filepath.Join(a.cfg.HomeDir(), "runtime", "foreground", name))
+	if err == nil {
+		err = q.SetSessionInitializer(func(*autonomy.QueueTask) (string, error) {
+			return sess.ID, nil
+		})
+	}
 	if err == nil {
 		err = q.CompactCompleted(10)
 	}
@@ -186,12 +192,33 @@ func (a *Agent) runForeground(ctx context.Context, sess *session.Session, input 
 		if err != nil {
 			return nil, err
 		}
-		task, _, err = q.AddWithAcceptance(input.RoutingText, string(data), autonomy.PriorityNormal, nil, nil, nil)
+		policy := a.foregroundPolicy()
+		metadata := map[string]string{
+			"foreground_source":            foregroundSource(input),
+			"foreground_max_slices":        strconv.Itoa(policy.MaxSlices),
+			"foreground_max_total_seconds": strconv.Itoa(int(policy.MaxTotalTime / time.Second)),
+		}
+		task, _, err = q.AddWithAcceptance(input.RoutingText, string(data), autonomy.PriorityNormal, nil, metadata, nil)
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	return a.runForegroundTask(ctx, sess, input, cfg, snapshot, q, task)
+}
+
+func foregroundSource(input UserTurnInput) string {
+	source := strings.ToLower(strings.TrimSpace(input.Scope.Platform))
+	if source == "" {
+		return "cli"
+	}
+	return source
+}
+
+// runForegroundTask executes one persisted task. Both request-bound turns and
+// explicitly enabled startup recovery use this path so their checkpoint and
+// budget semantics stay identical.
+func (a *Agent) runForegroundTask(ctx context.Context, sess *session.Session, input UserTurnInput, cfg LoopConfig, snapshot providerSnapshot, q *autonomy.TaskQueue, task *autonomy.QueueTask) (*LoopResult, error) {
 	sanitizeLoopConfig(&cfg)
 	a.applyIntentToolGating(&cfg, input.RoutingText)
 	a.applyVisionToolPolicy(&cfg, snapshot)
