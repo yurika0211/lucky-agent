@@ -119,6 +119,7 @@
     pre { margin: 0; padding: 14px; background: var(--code); color: var(--code-ink); font-family: "Roboto Mono", monospace; font-size: 12.5px; line-height: 1.65; }
     .pre-label, .table-label { margin: 12px 0 6px; color: var(--faint); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
     table { width: 100%; border-collapse: collapse; font-size: 13.5px; background: color-mix(in srgb, var(--panel-solid) 70%, transparent); }
+    .endpoint > table, .cols table { display: block; max-width: 100%; overflow-x: auto; }
     th, td { text-align: left; vertical-align: top; padding: 9px 10px; border-top: 1px solid var(--line); }
     th { color: var(--faint); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
     code { font-family: "Roboto Mono", monospace; font-size: .92em; }
@@ -129,12 +130,12 @@
       .side { position: static; max-height: none; }
       h1 { font-size: 36px; }
       .stats, .cols { grid-template-columns: 1fr; }
-      .nav-links { display: none; }
+      .nav-links { display: flex; min-width: 0; overflow-x: auto; }
+      .nav-links .chip { white-space: nowrap; }
     }
   </style>
 </head>
-<body>
-  <div x-data="apiDocs()" x-init="init()" :class="dark ? 'theme-dark' : ''">
+<body x-data="apiDocs()" x-init="init()" :class="dark ? 'theme-dark' : ''">
     <header class="top">
       <a class="brand" href="./">
         <svg class="mark" viewBox="0 0 34 34" fill="none" aria-hidden="true"><path d="M4 28L14 5L30 28H4Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/><path d="M14 5V28M14 19L25 28" stroke="currentColor" stroke-width="2.2"/></svg>
@@ -231,7 +232,7 @@ Authorization: Bearer &lt;key&gt;</pre>
         <section id="chat" data-search="post chat sse stream session_id max_iterations auto_approve attachments">
           <h2>聊天</h2>
           <article class="endpoint" id="chat-stream">
-            <div class="ep-head"><span class="verb POST">POST</span><span class="path">/api/v1/chat</span><button class="copy" @click="copy('/api/v1/chat')">复制</button></div>
+            <div class="ep-head"><span class="verb POST">POST</span><span class="path">/api/v1/chat</span><button class="copy" @click="copyTarget($event)">复制 curl</button></div>
             <p>SSE 流式对话。省略 <code>session_id</code> 会新建会话。传入的会话不存在时，在调用模型前返回 404。<code>max_iterations</code> 取 0 到 300，0 使用配置默认值。</p>
             <div class="table-label">请求</div>
             <table>
@@ -245,7 +246,7 @@ Authorization: Bearer &lt;key&gt;</pre>
               <tr><td><code>attachments</code></td><td>先用上传接口拿到附件对象，再放进这个数组。WebSocket 单帧上限 64 KiB，文件字节不要直接塞进消息。</td></tr>
             </table>
             <div class="pre-label">示例</div>
-            <pre>curl -N http://127.0.0.1:9090/api/v1/chat \
+            <pre class="copy-target">curl -N http://127.0.0.1:9090/api/v1/chat \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: &lt;key&gt;' \
   -d '{"message":"hello","max_iterations":8}'</pre>
@@ -554,7 +555,6 @@ POST /api/v1/tasks/{id}/cancel
         </section>
       </main>
     </div>
-  </div>
   <script>
     function apiDocs() {
       return {
@@ -562,10 +562,10 @@ POST /api/v1/tasks/{id}/cancel
         query: '',
         active: 'contract',
         groups: [
-          { title: '约定', items: [{ id: 'contract', title: '基址与传输' }, { id: 'auth', title: '鉴权与错误' }] },
-          { title: '对话', items: [{ id: 'chat', title: '聊天' }, { id: 'sessions', title: '会话' }, { id: 'commands', title: '命令与插件' }] },
-          { title: '运行', items: [{ id: 'models', title: '模型与配置' }, { id: 'tools', title: '工具与上传' }, { id: 'tasks', title: '任务与审批' }, { id: 'memory', title: '记忆与 RAG' }] },
-          { title: '通道', items: [{ id: 'realtime', title: 'WebSocket' }, { id: 'ops', title: '健康与其余资源' }] }
+          { id: 'contract-group', title: '约定', items: [{ id: 'contract', title: '基址与传输' }, { id: 'auth', title: '鉴权与错误' }] },
+          { id: 'chat-group', title: '对话', items: [{ id: 'chat', title: '聊天' }, { id: 'sessions', title: '会话' }, { id: 'commands', title: '命令与插件' }] },
+          { id: 'runtime-group', title: '运行', items: [{ id: 'models', title: '模型与配置' }, { id: 'tools', title: '工具与上传' }, { id: 'tasks', title: '任务与审批' }, { id: 'memory', title: '记忆与 RAG' }] },
+          { id: 'transport-group', title: '通道', items: [{ id: 'realtime', title: 'WebSocket' }, { id: 'ops', title: '健康与其余资源' }] }
         ],
         init() {
           this.$watch('dark', (value) => localStorage.setItem('la-theme', value ? 'dark' : 'light'));
@@ -574,7 +574,14 @@ POST /api/v1/tasks/{id}/cancel
             const found = nodes.findLast((node) => node.getBoundingClientRect().top < 120);
             if (found) this.active = found.id;
           };
-          document.addEventListener('scroll', mark, { passive: true });
+          const fromHash = () => {
+            const id = decodeURIComponent(location.hash.slice(1));
+            if (id && document.getElementById(id)) this.active = id;
+            mark();
+          };
+          window.addEventListener('scroll', mark, { passive: true });
+          window.addEventListener('hashchange', fromHash);
+          fromHash();
         },
         filteredGroups() {
           const q = this.query.trim().toLowerCase();
@@ -583,13 +590,17 @@ POST /api/v1/tasks/{id}/cancel
             ...group,
             items: group.items.filter((item) => {
               const node = document.getElementById(item.id);
-              const text = ((node && node.dataset.search) || '') + ' ' + item.title;
+              const text = ((node && node.dataset.search) || '') + ' ' + ((node && node.textContent) || '') + ' ' + item.title;
               return text.toLowerCase().includes(q) || item.title.toLowerCase().includes(q);
             })
           })).filter((group) => group.items.length);
         },
         async copy(value) {
           try { await navigator.clipboard.writeText(value); } catch (err) { console.error(err); }
+        },
+        async copyTarget(event) {
+          const target = event.currentTarget.closest('.endpoint')?.querySelector('.copy-target');
+          if (target) await this.copy(target.innerText);
         }
       };
     }
