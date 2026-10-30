@@ -46,6 +46,26 @@ func TestCompletionReviewRetainsEarlyFailureAndRejectsUnsupportedComplete(t *tes
 	}
 }
 
+func TestCompleteFromOperationLedgerWithoutCriteria(t *testing.T) {
+	review, ok := completeFromOperationLedger("已完成", []turn.DurableOperation{{ID: "op-1", State: "completed", Name: "file_read"}})
+	if !ok || review.Status != "complete" {
+		t.Fatalf("complete ledger was not accepted: review=%+v ok=%v", review, ok)
+	}
+	if len(review.Evidence) == 0 {
+		t.Fatal("completion did not retain ledger evidence")
+	}
+}
+
+func TestCompleteFromOperationLedgerRejectsIncompleteEvidence(t *testing.T) {
+	if review, ok := completeFromOperationLedger("已完成", []turn.DurableOperation{{ID: "op-1", State: "started"}}); ok || review != nil {
+		t.Fatalf("incomplete operation was accepted: review=%+v ok=%v", review, ok)
+	}
+	failure := []turn.DurableOperation{{ID: "op-1", State: "completed", Name: "terminal", Failed: true}}
+	if review, ok := completeFromOperationLedger("已完成", failure); ok || review != nil {
+		t.Fatalf("unresolved failure was accepted: review=%+v ok=%v", review, ok)
+	}
+}
+
 func TestCompletionFailureRequiresEquivalentLaterSuccess(t *testing.T) {
 	failure := turn.DurableOperation{ID: "failed", Name: "terminal", Arguments: `{"command":"go test","cwd":"/one"}`, State: "completed", Failed: true}
 	unrelated := turn.DurableOperation{ID: "other", Name: "terminal", Arguments: `{"command":"go test","cwd":"/two"}`, State: "completed"}

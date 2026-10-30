@@ -266,6 +266,23 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 				}
 				return finish()
 			}
+			current, err := cfg.Execution.Snapshot()
+			if err != nil {
+				return result, err
+			}
+			// Foreground tasks still require the verifier to prove that a model
+			// response is more than a plan, even when their operation ledger is
+			// otherwise complete. The ledger shortcut is for ordinary tasks with
+			// no independent acceptance criteria.
+			if !cfg.Foreground && len(current.AcceptanceCriteria) == 0 {
+				if verification, complete := completeFromOperationLedger(cp.Candidate, current.Operations); complete {
+					cp.Verification = verification
+					if err := save(); err != nil {
+						return result, err
+					}
+					return finish()
+				}
+			}
 			emitForeground(cfg, ChatEvent{Type: ChatEventThinking, Content: "正在核对原始目标与执行结果。"})
 			verification, tokens, err := a.verifyDurableCandidate(ctx, input.RoutingText, task.AcceptanceCriteria, &cp, cfg, snapshot)
 			cp.Tokens += tokens

@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -127,6 +129,29 @@ func TestCollaborationAllowlistBlocksUnadvertisedAndGeneratedTools(t *testing.T)
 	}
 	if tools := applyToolAllowlist(opts, LoopConfig{RestrictTools: true}); len(tools.Tools) != 0 {
 		t.Fatal("empty allowlist must deny all tools")
+	}
+}
+
+func TestCollaborationCWDStaysInsideParentWorkspace(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "nested")
+	if err := os.Mkdir(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	got, err := validateCollaborationCWD(parent, child)
+	if err != nil || got != child {
+		t.Fatalf("nested role cwd rejected: %q %v", got, err)
+	}
+	outside := t.TempDir()
+	if _, err := validateCollaborationCWD(parent, outside); err == nil {
+		t.Fatal("outside role cwd was accepted")
+	}
+	link := filepath.Join(parent, "escape")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateCollaborationCWD(parent, link); err == nil {
+		t.Fatal("symlink escape was accepted")
 	}
 }
 
