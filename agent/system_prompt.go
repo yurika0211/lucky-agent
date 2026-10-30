@@ -94,6 +94,9 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 		if slices.Contains(toolNames, "subagent") {
 			parts = append(parts, a.buildDelegateTaskPolicyPromptBlock())
 		}
+		if slices.Contains(toolNames, presentUIToolName) {
+			parts = append(parts, presentUIPolicy)
+		}
 		if slices.Contains(toolNames, "terminal") &&
 			slices.Contains(toolNames, "computer_observe") &&
 			slices.Contains(toolNames, "computer_act") {

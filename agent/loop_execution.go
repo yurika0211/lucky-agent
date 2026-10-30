@@ -779,6 +779,10 @@ func emitChatToolCallEvents(events chan<- ChatEvent, toolCalls []provider.ToolCa
 }
 
 func emitChatToolResultEvent(events chan<- ChatEvent, toolName, result string, metadata map[string]any, duration time.Duration) {
+	if delta, note := takeOpenUIDelta(toolName, result); delta != nil {
+		events <- ChatEvent{Type: ChatEventUIDelta, UI: delta}
+		result = note
+	}
 	events <- ChatEvent{
 		Type:     ChatEventToolResult,
 		Name:     toolName,

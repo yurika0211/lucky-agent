@@ -8,5 +8,8 @@ Fixes the contract in #369.
 - Transports: `ui_delta` / `ui_action` on the WebSocket catalog
 - Android: Compose names matching the catalog; streaming trees are not clickable
 
-The model loop does not yet emit trees by itself. Call `EmitUIDelta` from a
-future producer. Telegram/CLI keep Markdown until they implement the catalog.
+Free chat emits a tree by calling the `present_ui` tool. The handler validates
+the tree with `EmitUIDelta`. A kept tree becomes `ChatEventUIDelta` on the
+stream path; the non-stream loop keeps the Markdown answer and drops the raw
+tree from the tool result the model sees next. An empty or invalid tree stays
+on the Markdown path. Telegram/CLI keep Markdown until they implement the catalog.

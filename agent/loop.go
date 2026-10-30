@@ -989,6 +989,12 @@ func (a *Agent) processToolCallBatch(
 		if memoryGate != nil {
 			memoryGate.markExecuted(execResult.ToolCall.Name, execResult.Result)
 		}
+		if delta, note := takeOpenUIDelta(execResult.ToolCall.Name, execResult.Result); delta != nil {
+			if loopCfg.emit != nil {
+				loopCfg.emit(loopCfg.eventContext, ChatEvent{Type: ChatEventUIDelta, UI: delta})
+			}
+			execResult.Result = note
+		}
 		tcLog := toolCallLog{
 			Name:      execResult.ToolCall.Name,
 			Arguments: execResult.ToolCall.Arguments,
