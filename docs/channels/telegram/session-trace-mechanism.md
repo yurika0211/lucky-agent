@@ -151,7 +151,7 @@ type telegramToolTraceStep struct {
 agent 侧事件来源：
 
 - `emitChatToolCallEvents()` 把工具名和截断到 100 字符以内的参数发成 `ChatEventToolCall`。
-- `emitChatToolResultEvent()` 把工具名和 short result 发成 `ChatEventToolResult`。
+- `emitChatToolResultEvent()` 把工具名、完整结果和本次 `Duration` 发成 `ChatEventToolResult`。WebSocket `tool_result` 与 SSE `observe` 使用同一个 `duration_ms`。
 
 ### 可见性分层
 

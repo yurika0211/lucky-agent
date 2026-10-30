@@ -93,11 +93,14 @@ func TestEmitChatToolResultEventRetainsFullResultAndMemoryTrace(t *testing.T) {
 	result := "prefix-" + strings.Repeat("full tool output ", 100) + "-suffix"
 	emitChatToolResultEvent(events, "terminal", result, map[string]any{
 		"memory_trace": map[string]any{"source": "test"},
-	})
+	}, 1500*time.Millisecond)
 
 	toolEvent := <-events
 	if toolEvent.Type != ChatEventToolResult || toolEvent.Result != result || !strings.Contains(toolEvent.Content, result) {
 		t.Fatalf("tool result event did not retain full output: %#v", toolEvent)
+	}
+	if toolEvent.Duration != 1500*time.Millisecond {
+		t.Fatalf("tool result duration = %s", toolEvent.Duration)
 	}
 	traceEvent := <-events
 	if traceEvent.Name != chatEventMemoryTraceName || !strings.Contains(traceEvent.Result, `"source":"test"`) {
