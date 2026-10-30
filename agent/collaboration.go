@@ -45,16 +45,17 @@ func (a *Agent) RunCollaborationSubTask(ctx context.Context, sub *collab.SubTask
 	sess.SetTitle("collaboration-task")
 	sess.SetAgentProfile("subagent:"+sub.AgentID, delegatedSubagentSystemPrompt())
 	if sub.Runtime.CWD != "" {
-		cwd, err := filepath.Abs(sub.Runtime.CWD)
+		parentRoot := sess.GetCwd()
+		if strings.TrimSpace(sub.ParentSessionID) != "" {
+			parent, ok := a.sessions.Get(sub.ParentSessionID)
+			if !ok {
+				return "", fmt.Errorf("parent collaboration session %q is unavailable", sub.ParentSessionID)
+			}
+			parentRoot = parent.GetCwd()
+		}
+		cwd, err := validateCollaborationCWD(parentRoot, sub.Runtime.CWD)
 		if err != nil {
 			return "", err
-		}
-		info, err := os.Stat(cwd)
-		if err != nil {
-			return "", fmt.Errorf("role working directory: %w", err)
-		}
-		if !info.IsDir() {
-			return "", fmt.Errorf("role working directory is not a directory")
 		}
 		sess.SetCwd(cwd)
 	}
@@ -77,6 +78,55 @@ func (a *Agent) RunCollaborationSubTask(ctx context.Context, sub *collab.SubTask
 		}
 		return result.Response, nil
 	})
+}
+
+// validateCollaborationCWD resolves both sides before comparing them. A role
+// may narrow the parent's workspace, but it cannot replace the sandbox root
+// with an unrelated directory or escape through a symlink.
+func validateCollaborationCWD(parentRoot, roleCWD string) (string, error) {
+	parentRoot = strings.TrimSpace(parentRoot)
+	if parentRoot == "" {
+		var err error
+		parentRoot, err = os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("resolve parent workspace: %w", err)
+		}
+	}
+	parent, err := filepath.Abs(parentRoot)
+	if err != nil {
+		return "", fmt.Errorf("resolve parent workspace: %w", err)
+	}
+	role, err := filepath.Abs(strings.TrimSpace(roleCWD))
+	if err != nil {
+		return "", fmt.Errorf("resolve role working directory: %w", err)
+	}
+	parentInfo, err := os.Stat(parent)
+	if err != nil {
+		return "", fmt.Errorf("parent workspace: %w", err)
+	}
+	if !parentInfo.IsDir() {
+		return "", fmt.Errorf("parent workspace is not a directory")
+	}
+	roleInfo, err := os.Stat(role)
+	if err != nil {
+		return "", fmt.Errorf("role working directory: %w", err)
+	}
+	if !roleInfo.IsDir() {
+		return "", fmt.Errorf("role working directory is not a directory")
+	}
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", fmt.Errorf("resolve parent workspace links: %w", err)
+	}
+	resolvedRole, err := filepath.EvalSymlinks(role)
+	if err != nil {
+		return "", fmt.Errorf("resolve role working directory links: %w", err)
+	}
+	rel, err := filepath.Rel(resolvedParent, resolvedRole)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("role working directory is outside parent workspace: %s", roleCWD)
+	}
+	return role, nil
 }
 
 func (a *Agent) collaborationLoopConfig(role collab.AgentRuntimeProfile) (LoopConfig, error) {
