@@ -54,10 +54,10 @@ require (
 	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261029174731-fed6282cdb6c // indirect
 	github.com/yurika0211/luckyagent-api v0.2.5-0.20261029173750-96a97c0c2623 // indirect
 	github.com/yurika0211/luckyagent-gateway v0.2.2 // indirect
-	github.com/yurika0211/luckyagent-orchestrator v0.1.1 // indirect
+	github.com/yurika0211/luckyagent-orchestrator v0.1.2-0.20261029210738-8f7a8557a00e // indirect
 	github.com/yurika0211/luckyagent-plugins v0.1.0 // indirect
 	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261029173750-ae447fbb1f94 // indirect
-	github.com/yurika0211/luckyagent-tools v0.2.4-0.20261025155312-14ca32a46742 // indirect
+	github.com/yurika0211/luckyagent-tools v0.2.4-0.20261029210954-83d0c5857e79 // indirect
 	go.mongodb.org/mongo-driver/v2 v2.5.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel v1.43.0 // indirect
