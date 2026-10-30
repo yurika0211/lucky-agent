@@ -53,7 +53,7 @@ require (
 	github.com/yurika0211/aestus v0.1.0 // indirect
 	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261029222621-4741d805a27a // indirect
 	github.com/yurika0211/luckyagent-api v0.2.5-0.20261029222552-bc07ab3b8b7e // indirect
-	github.com/yurika0211/luckyagent-gateway v0.2.2 // indirect
+	github.com/yurika0211/luckyagent-gateway v0.2.3-0.20261023165540-c9f71654f308 // indirect
 	github.com/yurika0211/luckyagent-orchestrator v0.1.2-0.20261029210738-8f7a8557a00e // indirect
 	github.com/yurika0211/luckyagent-plugins v0.1.0 // indirect
 	github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261029221023-9e0d4d4d5c2b // indirect
