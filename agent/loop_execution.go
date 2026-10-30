@@ -737,7 +737,7 @@ func (a *Agent) executeToolCallsOrderedGuardedContext(
 }
 
 func buildContextToolResult(toolName, rawResult string, successfulSearchEvidence, detailedSearchEvidence *int) string {
-	contextResult := compactToolResultForContext(toolName, rawResult)
+	contextResult := compactToolResultForContextKey(toolName, rawResult, "", strings.HasPrefix(strings.TrimSpace(rawResult), "[Tool Error:"))
 	if isUsefulSearchEvidence(toolName, rawResult) {
 		if successfulSearchEvidence != nil {
 			*successfulSearchEvidence = *successfulSearchEvidence + 1

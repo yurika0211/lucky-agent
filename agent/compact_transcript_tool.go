@@ -17,7 +17,7 @@ func transcriptToolSummary(toolName, result string) string {
 	if trimmed == "" {
 		return ""
 	}
-	compressed := compressToolResultLines(trimmed, transcriptToolLimit)
+	compressed := compactToolResultAB(toolName, trimmed, "", transcriptToolLimit, strings.HasPrefix(trimmed, "[Tool Error:"))
 	if len([]rune(compressed)) > transcriptToolLimit {
 		// Identifier lines outrank the budget inside compressToolResultLines. The
 		// engine still caps this message, so cut the middle here to keep both the
