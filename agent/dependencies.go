@@ -146,6 +146,7 @@ func NewWithDependencies(opts Options, deps *Dependencies) (*Agent, error) {
 
 	a.bindOptionalToolServices()
 	a.registerContextHistoryTool()
+	a.registerPresentUITool()
 	if err := a.registerPluginTools(); err != nil {
 		return nil, fmt.Errorf("register plugin tools: %w", err)
 	}

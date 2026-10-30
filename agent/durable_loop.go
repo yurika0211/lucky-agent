@@ -610,6 +610,11 @@ func (a *Agent) executeDurablePending(ctx context.Context, sess *session.Session
 			Result:   executed.Output,
 			Duration: executed.Duration,
 		}
+		if delta, note := takeOpenUIDelta(pending.Call.Name, executed.Output); delta != nil {
+			emitForeground(cfg, ChatEvent{Type: ChatEventUIDelta, UI: delta})
+			executed.Output = note
+			observed.Result = note
+		}
 		msg := observedToolMessage(cfg.RunID, observed, executed.Output)
 		cp.Messages = append(cp.Messages, msg)
 		cp.Messages = appendLatestComputerObservation(cp.Messages, []executedToolCall{{ToolCall: pending.Call, Observations: executed.Observations}})

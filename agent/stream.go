@@ -924,6 +924,9 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 				}
 				emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata, execResult.Duration)
 				emitChatObservationEvents(events, execResult)
+				if _, note := takeOpenUIDelta(execResult.ToolCall.Name, execResult.Result); note != execResult.Result {
+					execResult.Result = note
+				}
 				messages = append(messages, observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)))
 				if sess != nil {
 					if !appendStreamSessionMessage(events, sess, observedToolMessage(state.runID, execResult, execResult.Result)) {
@@ -1151,6 +1154,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			}
 			emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata, execResult.Duration)
 			emitChatObservationEvents(events, execResult)
+			if _, note := takeOpenUIDelta(execResult.ToolCall.Name, execResult.Result); note != execResult.Result {
+				execResult.Result = note
+			}
 			messages = append(messages, observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)))
 			if sess != nil {
 				if !appendStreamSessionMessage(events, sess, observedToolMessage(state.runID, execResult, execResult.Result)) {
