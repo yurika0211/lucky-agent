@@ -30,8 +30,8 @@ func (a *Agent) pluginSkillHandler(skill *tool.SkillInfo, definition tool.SkillT
 		if !execContext.AutoApprove {
 			return tool.ToolCallResult{}, &tool.ApprovalRequiredError{Tool: name, Reason: "execute an installed plugin skill"}
 		}
-		if (execContext.Sandbox != nil && execContext.Sandbox.Isolated()) || (execContext.Sandbox == nil && a != nil && a.SandboxMode() == sandbox.ModeIso) {
-			return tool.ToolCallResult{}, fmt.Errorf("plugin scripts cannot run in isolated mode")
+		if (execContext.Sandbox != nil && execContext.Sandbox.Restricted()) || (execContext.Sandbox == nil && a != nil && a.SandboxMode() != sandbox.ModeDev) {
+			return tool.ToolCallResult{}, fmt.Errorf("plugin scripts cannot run in restricted sandbox mode")
 		}
 		ctx := execContext.Context
 		if ctx == nil {
