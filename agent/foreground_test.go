@@ -399,8 +399,12 @@ func TestForegroundTotalDeadlineStopsModel(t *testing.T) {
 		t.Fatalf("deadline failed: %v", err)
 	}
 	q, _ := a.openForeground(sess)
-	if q.ListAll()[0].State == autonomy.TaskDone {
+	task := q.ListAll()[0]
+	if task.State == autonomy.TaskDone {
 		t.Fatal("deadline became completion")
+	}
+	if task.ExecutedNanos <= 0 {
+		t.Fatal("foreground active duration was not persisted")
 	}
 }
 
