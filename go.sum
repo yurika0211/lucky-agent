@@ -136,6 +136,8 @@ github.com/yurika0211/luckyagent-api v0.2.5-0.20261029222552-bc07ab3b8b7e h1:5zS
 github.com/yurika0211/luckyagent-api v0.2.5-0.20261029222552-bc07ab3b8b7e/go.mod h1:auKwSvWrCAzckvc1IMmTjjNsOkZpJP2BhUk51WkIMeY=
 github.com/yurika0211/luckyagent-app v0.4.3-0.20261029222614-74ba20f1d92e h1:xrKGreStDFgwhGmdHS0PtZuD0MlFzzakJeyrGxmYFmM=
 github.com/yurika0211/luckyagent-app v0.4.3-0.20261029222614-74ba20f1d92e/go.mod h1:PWt0dIF/zIRz04xFJn3ePUQcS1bN8iTlZo/oJotvMjs=
+github.com/yurika0211/luckyagent-app v0.4.3-0.20261031130639-ff990277dac4 h1:WQmqkcrT/I8m7nCs7yEjpLSvXy0KS72nUR3RT8JWI50=
+github.com/yurika0211/luckyagent-app v0.4.3-0.20261031130639-ff990277dac4/go.mod h1:ijEfCcGLyz3A1iItWsKB31vH8CmpuAR6iQZdrDFBLrs=
 github.com/yurika0211/luckyagent-gateway v0.2.3-0.20261023165540-c9f71654f308 h1:OSqW9v2Jyq8bICEjXIKlk+8UHwrTwA2fy25pW8y23y4=
 github.com/yurika0211/luckyagent-gateway v0.2.3-0.20261023165540-c9f71654f308/go.mod h1:zog8ZaOyWKfJmM6MN43G5+ftyvjjxpiY3VsrcDR3+tE=
 github.com/yurika0211/luckyagent-orchestrator v0.1.2-0.20261030050707-d4020609f3f2 h1:JWAfTL587qhj5TkjjSYosdnvuupMVeLxBhvnnwqojYE=
