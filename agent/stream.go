@@ -548,6 +548,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		defer snapshot.Close()
 
 		sanitizeLoopConfig(&loopCfg)
+		profile := applyRequestProfile(&loopCfg, routingText)
 		if strings.TrimSpace(loopCfg.RunID) == "" {
 			loopCfg.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
 		}
@@ -579,6 +580,9 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 			"max_iterations", loopCfg.MaxIterations,
 			"timeout_ms", loopCfg.Timeout.Milliseconds(),
 			"auto_approve", loopCfg.AutoApprove,
+			"profile", profile.Profile,
+			"profile_source", profile.Source,
+			"profile_confidence", profile.Confidence,
 			"input_len", len(routingText),
 		)
 		logger.Debug("agent stream loop input",
