@@ -548,7 +548,9 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		defer snapshot.Close()
 
 		sanitizeLoopConfig(&loopCfg)
-		profile := applyRequestProfile(&loopCfg, routingText)
+		profile := a.classifyRequestProfileWithModel(ctx, routingText, loopCfg, turnProvider)
+		applyRequestProfileDecision(&loopCfg, profile)
+		turnProvider = a.providerSnapshotForProfile(turnProvider, profile.Profile)
 		if strings.TrimSpace(loopCfg.RunID) == "" {
 			loopCfg.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
 		}
@@ -596,7 +598,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 			"disabled_tools", strings.Join(loopCfg.DisabledTools, ","),
 		)
 
-		buildOpts := defaultContextBuildOptions()
+		buildOpts := contextBuildOptionsForProfile(loopCfg.Profile)
 		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 		a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider, compactProgressEmitter(loopCfg))
 		messages := a.buildContextMessagesForInputWithProvider(ctx, sess, input, buildOpts, turnProvider)
@@ -724,6 +726,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 	var content strings.Builder
 	var reasoning strings.Builder
 	emittedContentBytes := 0
+	emittedReasoningBytes := 0
 	streamFinishReason := ""
 	streamTerminal := false
 	var iterationUsage *provider.UsageDetails
@@ -780,6 +783,15 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		}
 		if chunk.ReasoningContent != "" {
 			reasoning.WriteString(chunk.ReasoningContent)
+			fullReasoning := reasoning.String()
+			if len(fullReasoning) > emittedReasoningBytes {
+				events <- ChatEvent{
+					Type:    ChatEventReasoningContent,
+					Content: fullReasoning[emittedReasoningBytes:],
+					Round:   round,
+				}
+				emittedReasoningBytes = len(fullReasoning)
+			}
 		}
 		// 处理流式 tool_calls 增量
 		if len(chunk.ToolCallDeltas) > 0 {
@@ -846,8 +858,8 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		"stream_tool_call_deltas", len(toolCallsAcc),
 		"text_tool_calls", len(textToolCalls),
 	)
-	if reasoning.Len() > 0 {
-		events <- ChatEvent{Type: ChatEventReasoningContent, Content: reasoning.String(), Round: round}
+	if reasoning.Len() > emittedReasoningBytes {
+		events <- ChatEvent{Type: ChatEventReasoningContent, Content: reasoning.String()[emittedReasoningBytes:], Round: round}
 	}
 
 	// 如果有累积的 tool_calls，处理它们
@@ -965,8 +977,10 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 			nextRound := round + 1
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
 
-			// 递归进入下一轮（用非流式，因为 tool_calls 后通常需要完整响应）
-			a.streamSimulated(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state)
+			// 递归进入下一轮并保留 provider 原生流式输出。工具调用后的
+			// 下一轮同样可能先产生 reasoning；切到模拟流会把它重新延迟到
+			// 整轮完成，破坏增量 reasoning 的事件顺序。
+			a.streamNativeAttempt(ctx, events, messages, callOpts, sess, turnInput, nextRound, remaining-1, state, iterationTimeout, allowSoftRetry)
 			return
 		}
 	}

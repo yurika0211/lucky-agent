@@ -61,6 +61,14 @@ func applyRequestProfile(cfg *LoopConfig, input string) RequestProfileDecision {
 		return RequestProfileDecision{Profile: RequestProfileChat, Source: "nil_config", Confidence: 0}
 	}
 	decision := classifyRequestProfile(input, *cfg)
+	applyRequestProfileDecision(cfg, decision)
+	return decision
+}
+
+func applyRequestProfileDecision(cfg *LoopConfig, decision RequestProfileDecision) {
+	if cfg == nil {
+		return
+	}
 	cfg.Profile = decision.Profile
 	cfg.ProfileSource = decision.Source
 	cfg.ProfileConfidence = decision.Confidence
@@ -87,5 +95,19 @@ func applyRequestProfile(cfg *LoopConfig, input string) RequestProfileDecision {
 			cfg.Timeout = 3 * time.Minute
 		}
 	}
-	return decision
+}
+
+func contextBuildOptionsForProfile(profile RequestProfile) contextBuildOptions {
+	opts := defaultContextBuildOptions()
+	switch profile {
+	case RequestProfileChat:
+		opts.HistoryRecent = 4
+		opts.MaxContextTokens = 24000
+	case RequestProfileToolTask:
+		opts.HistoryRecent = 6
+		opts.MaxContextTokens = 48000
+	case RequestProfileCodeTask, RequestProfileLongTask:
+		opts.HistoryRecent = 12
+	}
+	return opts
 }

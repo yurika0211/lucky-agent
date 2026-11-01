@@ -26,11 +26,12 @@ import (
 contextBuildOptions 定义上下文构建时的行为开关。
 */
 type contextBuildOptions struct {
-	IncludeRAG     bool
-	IncludeHistory bool
-	HistoryRecent  int
-	HistoryMiddle  int
-	DisabledTools  []string
+	IncludeRAG       bool
+	IncludeHistory   bool
+	HistoryRecent    int
+	HistoryMiddle    int
+	MaxContextTokens int
+	DisabledTools    []string
 	// ReadOnly skips memory hygiene, activation feedback, and the context
 	// cache. Inspection must not change durable state or poison a later turn.
 	ReadOnly bool
@@ -191,6 +192,9 @@ func newContextPlannerWithProvider(a *Agent, options contextBuildOptions, turnPr
 	cfg := contextx.DefaultWindowConfig()
 	if a != nil && a.contextWin != nil {
 		cfg = a.contextWin.Config()
+	}
+	if options.MaxContextTokens > 0 && options.MaxContextTokens < cfg.MaxTokens {
+		cfg.MaxTokens = options.MaxContextTokens
 	}
 	budget := computeContextBudget(cfg.MaxTokens, cfg.ReservedTokens, contextBudgetShareFor(a))
 	budget.Project = utils.MinInt(4096, utils.MaxInt(128, (cfg.MaxTokens-cfg.ReservedTokens)/3))
@@ -1214,6 +1218,9 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session, query strin
 	}
 	_ = query // History is intentionally query-independent for prefix caching.
 	summaries, raw := p.compactBoundaryContext(all)
+	if p.options.HistoryRecent > 0 {
+		raw = limitHistoryTurns(raw, p.options.HistoryRecent)
+	}
 	summaries = p.projectCompactSummaries(summaries)
 	messages := append([]provider.Message(nil), summaries...)
 	rawBudget := p.budget.History - estimateProviderMessages(p.est, summaries)
@@ -1222,6 +1229,24 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session, query strin
 	}
 	messages = append(messages, p.fitStableHistoryTail(raw, rawBudget)...)
 	return messages
+}
+
+func limitHistoryTurns(messages []provider.Message, maxTurns int) []provider.Message {
+	if maxTurns <= 0 || len(messages) == 0 {
+		return messages
+	}
+	users := 0
+	start := 0
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			users++
+			if users == maxTurns {
+				start = i
+				break
+			}
+		}
+	}
+	return messages[start:]
 }
 
 func (p *contextPlanner) compactBoundaryContext(messages []provider.Message) ([]provider.Message, []provider.Message) {

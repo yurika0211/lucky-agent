@@ -144,6 +144,8 @@ type loopRuntime interface {
 	SandboxMode() sandbox.Mode
 	applySandboxToolPolicy(*LoopConfig, *sandbox.Snapshot)
 	applyIntentToolGating(*LoopConfig, string)
+	classifyRequestProfile(context.Context, string, LoopConfig, providerSnapshot) RequestProfileDecision
+	providerSnapshotForProfile(providerSnapshot, RequestProfile) providerSnapshot
 	applyVisionToolPolicy(*LoopConfig, providerSnapshot)
 	getStreamMode() StreamMode
 	appendNaturalCitationsIfEnabled(string, []toolCallLog) string
@@ -466,7 +468,9 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 	if sess != nil {
 		loopCfg.SessionID = strings.TrimSpace(sess.ID)
 	}
-	profile := applyRequestProfile(&loopCfg, routingText)
+	profile := l.runtime.classifyRequestProfile(ctx, routingText, loopCfg, turnProvider)
+	applyRequestProfileDecision(&loopCfg, profile)
+	turnProvider = l.runtime.providerSnapshotForProfile(turnProvider, profile.Profile)
 	if loopCfg.Execution != nil {
 		l.runtime.applyIntentToolGating(&loopCfg, routingText)
 		l.runtime.applyVisionToolPolicy(&loopCfg, turnProvider)
@@ -575,7 +579,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 
 	// 构建初始消息
 	l.runtime.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider, compactProgressEmitter(loopCfg))
-	buildOpts := defaultContextBuildOptions()
+	buildOpts := contextBuildOptionsForProfile(loopCfg.Profile)
 	buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 	messages := l.runtime.buildContextMessagesForInputWithProvider(ctx, sess, turnInput, buildOpts, turnProvider)
 	if sess != nil {

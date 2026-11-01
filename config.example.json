@@ -115,6 +115,7 @@
       "credential_ref": "",
       "api_base": "https://api.openai.com/v1",
       "model": "gpt-5.4-mini",
+      "reasoning_effort": "none",
       "prompt_cache_key": ""
     }
   ],

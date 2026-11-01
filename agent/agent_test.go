@@ -1418,6 +1418,8 @@ func (p *streamToolThenFinalProvider) ChatStreamWithOptions(ctx context.Context,
 			ch <- provider.StreamChunk{Done: true, FinishReason: "tool_calls"}
 			return
 		}
+		ch <- provider.StreamChunk{ReasoningContent: "先看检索结果。"}
+		ch <- provider.StreamChunk{ReasoningContent: "再组织答案。"}
 		ch <- provider.StreamChunk{Content: "final answer from retrieved course material"}
 		ch <- provider.StreamChunk{Done: true, FinishReason: "stop"}
 	}()
@@ -1496,6 +1498,7 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 				t.Fatalf("ChatWithSessionStreamInputWithLoopConfig() error = %v", err)
 			}
 			var doneContent string
+			var reasoningEvents []string
 			for evt := range events {
 				if evt.Type == ChatEventError {
 					t.Fatalf("unexpected stream error: %v", evt.Err)
@@ -1503,6 +1506,12 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 				if evt.Type == ChatEventDone {
 					doneContent = evt.Content
 				}
+				if evt.Type == ChatEventReasoningContent {
+					reasoningEvents = append(reasoningEvents, evt.Content)
+				}
+			}
+			if mode == "native" && !reflect.DeepEqual(reasoningEvents, []string{"先看检索结果。", "再组织答案。"}) {
+				t.Fatalf("reasoning events = %#v, want incremental chunks", reasoningEvents)
 			}
 			if !strings.Contains(doneContent, naturalCitationHeader) {
 				t.Fatalf("expected done content to include natural citations, got %q", doneContent)
