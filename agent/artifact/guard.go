@@ -1,6 +1,7 @@
 package artifact
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
@@ -65,17 +66,37 @@ func (g *Guard) RecordToolResult(name, arguments, result string) {
 		return
 	}
 	name = strings.TrimSpace(name)
-	if name != "file_write" {
+	if name != "file_write" && name != "file_send" {
 		return
 	}
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(result)), "error:") {
 		return
 	}
-	for _, path := range fileWritePaths(arguments, result) {
+	var paths []string
+	if name == "file_send" {
+		paths = fileSendPaths(result)
+	} else {
+		paths = fileWritePaths(arguments, result)
+	}
+	for _, path := range paths {
 		if pathExists(path) {
 			g.Paths[path] = struct{}{}
 		}
 	}
+}
+
+func fileSendPaths(result string) []string {
+	var payload struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(result)), &payload); err != nil {
+		return nil
+	}
+	path := cleanArtifactPath(payload.FilePath)
+	if path == "" {
+		return nil
+	}
+	return []string{path}
 }
 
 func (g *Guard) BlockMessage(finalResponse string) (string, bool) {
