@@ -164,6 +164,7 @@
   },
   "stream_mode": "native",
   "memory": {
+    "backend": "aestus",
     "short_term_max_turns": 10,
     "midterm_expire_days": 365,
     "midterm_max_summaries": 100,

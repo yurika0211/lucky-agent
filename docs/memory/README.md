@@ -416,11 +416,14 @@ Gateway：
 
 ## 配置
 
+核心 memory 配置。`backend` 为 `aestus`（默认，空字符串相同）时走 Aestus SDK 落盘；`off` 为进程内空实现，不写 `~/.luckyagent/memory`，也不加载 Aestus。改此项需重启。
+
 核心 memory 配置：
 
 ```json
 {
   "memory": {
+    "backend": "aestus",
     "short_term_max_turns": 10,
     "midterm_expire_days": 365,
     "midterm_max_summaries": 100,
