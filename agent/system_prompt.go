@@ -83,27 +83,10 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 		if toolPolicy := a.buildToolPolicyPromptBlock(); toolPolicy != "" {
 			parts = append(parts, toolPolicy)
 		}
-		if toolInventory := a.buildToolInventoryPromptBlock(toolNames); toolInventory != "" {
-			parts = append(parts, toolInventory)
-		}
-		if slices.Contains(toolNames, "computer_observe") || slices.Contains(toolNames, "computer_act") {
-			if computerPolicy := a.buildComputerUsePolicyPromptBlock(); computerPolicy != "" {
-				parts = append(parts, computerPolicy)
-			}
-		}
-		if slices.Contains(toolNames, "subagent") {
-			parts = append(parts, a.buildDelegateTaskPolicyPromptBlock())
-		}
-		if slices.Contains(toolNames, presentUIToolName) {
-			parts = append(parts, presentUIPolicy)
-		}
-		if slices.Contains(toolNames, "terminal") &&
-			slices.Contains(toolNames, "computer_observe") &&
-			slices.Contains(toolNames, "computer_act") {
-			if hybridPolicy := a.buildHybridComputerTerminalPolicyPromptBlock(); hybridPolicy != "" {
-				parts = append(parts, hybridPolicy)
-			}
-		}
+		// Computer, hybrid, OpenUI, and per-tool inventories stay out of every
+		// system message. Function-calling schemas and tool.Description carry
+		// those details. A second system message would still count as
+		// cached_system_tokens.
 	}
 	if len(a.snapshotSkills()) > 0 && slices.Contains(toolNames, "skill_read") {
 		if skillPolicy := a.buildSkillPolicyPromptBlock(); skillPolicy != "" {
@@ -188,30 +171,22 @@ Core behavior:
 func (a *Agent) buildToolPolicyPromptBlock() string {
 	defaultPolicy := `Tool-use policy:
 
-Use tools to reduce uncertainty, inspect real state, fetch external facts, or change real state when needed.
+Use tools to reduce uncertainty or change real state. Stop when one result already answers the user.
 
 Choose tools by intent:
-- Use file tools for repository truth and local documents. Do not use terminal only to print or read local file contents: use file_read, file_list, or document_read for that. Reserve terminal for executing commands, tests, process inspection, and other environment operations; avoid cat, head, tail, sed, awk, or Python print wrappers when a file tool can read the same content.
-- Use terminal or runtime tools for environment inspection and execution.
-- Use web/search tools for external or recent information.
-- Use opencli for OpenCLI access: action=web_read for a URL, action=site for site adapters, action=twitter_timeline for authenticated following feed, action=browser for browser primitives, and action=raw for doctor/list/external/plugin commands. Do not pass bash/sh to opencli; use terminal for shell commands.
-- Use computer_observe and computer_act for local GUI work. Prefer an API, CLI, DOM, or an observed accessibility control over guessing pixel coordinates. Observe before the first action, use the newest frame_id, perform one atomic action or a short predetermined sequence, and inspect the resulting observation before continuing.
-- Use RAG tools when the needed knowledge is likely already indexed.
-- Use memory tools for durable user facts, preferences, and recurring constraints.
-- Use autonomy only for deferred, background, proactive, or multi-step follow-up work; answer immediate questions directly when a normal tool call is enough.
-- When the user asks what background workers did, inspect autonomy status/report/list and summarize real queue results; do not invent worker counts, task IDs, or outputs.
-- Use skill tools when the task matches a reusable workflow.
+- File tools for repository truth. Terminal for commands, tests, and process inspection, not for printing a file.
+- Web and search tools for external or recent facts. opencli for OpenCLI access; terminal for shell commands.
+- computer_observe and computer_act for local GUI work. Observe before the first action, then one atomic action, then check the returned frame. Do not guess pixel coordinates.
+- RAG for indexed knowledge. Memory for durable user facts. Skills when the task matches a named workflow.
+- Autonomy only for deferred or background work. subagent delegates a task; wait for its task_id before a final answer.
+- present_ui only when a table, chart, list, or choices is clearer than a sentence.
+- ask_user when a required value is missing. request_credential for a secret; never paste a secret into chat.
 
 Tool discipline:
-- Do not call tools just to appear active.
-- Do not emit fake tool-call syntax in normal assistant text.
-- Do not repeat the same tool call unless the previous result was incomplete, stale, or contradicted.
-- If one tool result is already enough to answer the user, stop.
-- If a tool fails, identify whether the blocker is permissions, network, missing input, invalid arguments, or wrong tool choice before retrying.
-- If a required value is missing (path, choice, confirmation text), call ask_user with a short prompt and wait. Do not invent the value and do not keep calling other tools while blocked on the user.
-- If a secret is missing (API key, token, password), call request_credential. Never ask the user to paste a secret into chat, and never put a secret in a tool argument. The form result only returns credential_ref.
-- For a command that needs a stored credential, use create_ephemeral_credential_terminal_tool. Put the credential only in its declared environment variable; never interpolate a secret into command_template, arguments, ShellContext, or a persistent shell export.
-- Prefer a small number of high-value tool calls over many low-value ones.`
+- Do not call tools just to appear active, and do not emit fake tool-call syntax.
+- Do not repeat a call unless the previous result was incomplete, stale, or contradicted.
+- If a tool fails, name the blocker before retrying.
+- Prefer a few high-value calls over many low-value ones. Schemas already list each tool.`
 
 	loader := getPromptLoader()
 	return loader.LoadOrDefault("tool_policy.md", defaultPolicy)
@@ -536,7 +511,7 @@ func (a *Agent) buildLuckyAgentManualPrompt(sess *session.Session) string {
 		if content == "" {
 			return ""
 		}
-		content = compactPromptExcerpt(content, 1800)
+		content = compactPromptExcerpt(content, 400)
 		if content == "" {
 			return ""
 		}

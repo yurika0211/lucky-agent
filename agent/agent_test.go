@@ -49,6 +49,51 @@ func TestProgressFeedbackSystemPromptUsesDefaultPresentation(t *testing.T) {
 	}
 }
 
+type failIfCalledProvider struct{}
+
+func (failIfCalledProvider) Name() string { return "fail-if-called" }
+func (failIfCalledProvider) Chat(context.Context, []provider.Message) (*provider.Response, error) {
+	return nil, errors.New("Chat must not be called for progress feedback")
+}
+func (failIfCalledProvider) ChatStream(context.Context, []provider.Message) (<-chan provider.StreamChunk, error) {
+	return nil, errors.New("ChatStream must not be called for progress feedback")
+}
+func (failIfCalledProvider) Validate() error { return nil }
+
+func TestProgressFeedbackComposesWithoutProvider(t *testing.T) {
+	a := &Agent{provider: failIfCalledProvider{}}
+	text, err := a.ProgressFeedbackWithPrompt(context.Background(), "find the bug", 2, []string{
+		"Tool call: file_read",
+		"Tool result (file_read): path /tmp/a.go error E42 at line 10 " + strings.Repeat("payload ", 40),
+		"Tool result (terminal): exit 0",
+		"",
+		"Previous user-facing update: checked the workspace",
+	}, "")
+	if err != nil {
+		t.Fatalf("compose error: %v", err)
+	}
+	if strings.TrimSpace(text) == "" {
+		t.Fatal("expected a progress sentence")
+	}
+	if !strings.Contains(text, "file_read") || !strings.Contains(text, "E42") {
+		t.Fatalf("dropped tool evidence: %q", text)
+	}
+	if strings.Contains(text, "payload payload payload") {
+		t.Fatalf("kept the raw tool dump: %q", text)
+	}
+
+	empty, err := a.ProgressFeedbackWithPrompt(context.Background(), "find the bug", 1, nil, "使用简体中文")
+	if err != nil || empty != "" {
+		t.Fatalf("empty observations = %q err=%v", empty, err)
+	}
+	zh, err := a.ProgressFeedbackWithPrompt(context.Background(), "找问题", 3, []string{
+		"Tool result (file_read): /tmp/a.go",
+	}, "使用简体中文")
+	if err != nil || !strings.Contains(zh, "这一轮") {
+		t.Fatalf("chinese compose = %q err=%v", zh, err)
+	}
+}
+
 // --- truncate ---
 
 func TestTruncate(t *testing.T) {
