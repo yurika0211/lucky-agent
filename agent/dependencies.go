@@ -8,6 +8,7 @@ import (
 	"github.com/yurika0211/luckyagent-runtime/hook"
 	"github.com/yurika0211/luckyagent-runtime/metrics"
 	"github.com/yurika0211/luckyagent-runtime/tool"
+	"github.com/yurika0211/luckyagent-tools/memory"
 )
 
 // Options controls core execution resources. Configuration schema and backend
@@ -144,6 +145,12 @@ func NewWithDependencies(opts Options, deps *Dependencies) (*Agent, error) {
 		}
 	}
 
+	a.memory = capMemoryStore(memoryRT.Store, DefaultMaxMemoryNoteBytes)
+	if a.toolServices != nil {
+		if backend, ok := a.memory.(memory.ToolBackend); ok {
+			a.toolServices.Memory = tool.NewMemoryToolService(backend)
+		}
+	}
 	a.bindOptionalToolServices()
 	a.registerContextHistoryTool()
 	a.registerPresentUITool()
