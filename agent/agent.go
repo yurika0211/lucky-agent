@@ -1598,6 +1598,17 @@ func (a *Agent) ToolMetricsPrometheus() string {
 	return a.toolMetrics.ExportPrometheus()
 }
 
+// MetricsPrometheus is the stable hook for GET /api/v1/metrics.
+// The HTTP handler lives in luckyagent-app and still writes
+// runtime Metrics.ExportPrometheus(). Append this string after that body.
+// It is the same text as ToolMetricsPrometheus.
+func (a *Agent) MetricsPrometheus() string {
+	if a == nil {
+		return ""
+	}
+	return a.ToolMetricsPrometheus()
+}
+
 // ToolDurationSnapshot returns per-tool success, failure, and latency.
 func (a *Agent) ToolDurationSnapshot() map[string]ToolDurationSnapshot {
 	if a == nil || a.toolMetrics == nil {

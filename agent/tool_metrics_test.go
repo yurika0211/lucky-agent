@@ -56,4 +56,9 @@ func TestToolDurationExportKeepsNamedLatency(t *testing.T) {
 	if strings.Contains(prom, "lh_function_calls_total") || strings.Contains(prom, "lh_tool_calls_total ") {
 		t.Fatalf("tool histogram must not redefine the runtime totals:\n%s", prom)
 	}
+
+	agent := &Agent{toolMetrics: m}
+	if agent.MetricsPrometheus() != prom || agent.ToolMetricsPrometheus() != prom {
+		t.Fatal("MetricsPrometheus must match ToolMetricsPrometheus")
+	}
 }
