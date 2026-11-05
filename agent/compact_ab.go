@@ -63,6 +63,10 @@ type compactABPair struct {
 	ServedBytes     int
 	IdentifiersKept bool
 	ShapeIdempotent bool
+	SyntaxFilter    string
+	SyntaxSkip      string
+	SyntaxInBytes   int
+	SyntaxOutBytes  int
 }
 
 var compactAB = &compactABLedger{}
@@ -85,6 +89,11 @@ type compactABSnapshot struct {
 	ByFilter         map[string]int `json:"by_filter,omitempty"`
 	BySkip           map[string]int `json:"by_skip,omitempty"`
 	ByArm            map[string]int `json:"by_arm,omitempty"`
+	SyntaxSamples    int            `json:"syntax_samples"`
+	SyntaxInBytes    int            `json:"syntax_in_bytes"`
+	SyntaxOutBytes   int            `json:"syntax_out_bytes"`
+	BySyntax         map[string]int `json:"by_syntax,omitempty"`
+	BySyntaxSkip     map[string]int `json:"by_syntax_skip,omitempty"`
 }
 
 func (l *compactABLedger) add(pair compactABPair) {
@@ -108,14 +117,21 @@ func (l *compactABLedger) snapshot() compactABSnapshot {
 	defer l.mu.Unlock()
 	out := compactABSnapshot{
 		Samples:  len(l.pairs),
-		ByFilter: map[string]int{},
-		BySkip:   map[string]int{},
-		ByArm:    map[string]int{},
+		ByFilter:     map[string]int{},
+		BySkip:       map[string]int{},
+		ByArm:        map[string]int{},
+		BySyntax:     map[string]int{},
+		BySyntaxSkip: map[string]int{},
 	}
 	for _, pair := range l.pairs {
 		out.InputBytes += pair.InputBytes
 		out.ControlBytes += pair.ControlBytes
 		out.TreatmentBytes += pair.TreatmentBytes
+		out.SyntaxInBytes += pair.SyntaxInBytes
+		out.SyntaxOutBytes += pair.SyntaxOutBytes
+		if pair.SyntaxFilter != "" || pair.SyntaxInBytes > 0 {
+			out.SyntaxSamples++
+		}
 		out.ByArm[pair.Arm]++
 		if pair.Arm == compactArmControl {
 			out.ControlServed++
@@ -127,6 +143,12 @@ func (l *compactABLedger) snapshot() compactABSnapshot {
 		}
 		if pair.Skip != "" {
 			out.BySkip[pair.Skip]++
+		}
+		if pair.SyntaxFilter != "" {
+			out.BySyntax[pair.SyntaxFilter]++
+		}
+		if pair.SyntaxSkip != "" {
+			out.BySyntaxSkip[pair.SyntaxSkip]++
 		}
 		if !pair.IdentifiersKept {
 			out.IdentifierMisses++
@@ -170,6 +192,10 @@ func compactToolResultAB(toolName, result, assignmentKey string, limit int, tool
 	if shape.Filter != "" {
 		shaped = shape.Text
 	}
+	syntax := compactToolResultSyntax(shaped, toolError)
+	if syntax.Filter != "" {
+		shaped = syntax.Text
+	}
 	treatment := compressToolResultLines(shaped, limit)
 	arm := compactArmControl
 	served := control
@@ -196,6 +222,10 @@ func compactToolResultAB(toolName, result, assignmentKey string, limit int, tool
 		ServedBytes:     servedBytes,
 		IdentifiersKept: shapeKeepsIdentifiers(result, treatment),
 		ShapeIdempotent: shape.Idempotent || shape.Filter == "",
+		SyntaxFilter:    syntax.Filter,
+		SyntaxSkip:      syntax.Skip,
+		SyntaxInBytes:   syntax.BytesIn,
+		SyntaxOutBytes:  syntax.BytesOut,
 	})
 	return served
 }
