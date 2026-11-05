@@ -1,0 +1,830 @@
+package session
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/yurika0211/luckyagent-runtime/provider"
+)
+
+func TestNewSession(t *testing.T) {
+	s := NewSession("test-1", t.TempDir())
+	if s.ID != "test-1" {
+		t.Errorf("expected test-1, got %s", s.ID)
+	}
+	if len(s.Messages) != 0 {
+		t.Errorf("expected empty messages, got %d", len(s.Messages))
+	}
+}
+
+func TestAgentProfilePersistsWithSession(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("profile-session", dir)
+	s.SetAgentProfile("subagent", "Use evidence and report blockers.")
+	s.AddMessage("user", "inspect the files")
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	loaded, ok := mgr.Get("profile-session")
+	if !ok {
+		t.Fatal("profile session not loaded")
+	}
+	role, prompt := loaded.AgentProfile()
+	if role != "subagent" || prompt != "Use evidence and report blockers." {
+		t.Fatalf("loaded profile = %q / %q", role, prompt)
+	}
+}
+
+func TestAddMessage(t *testing.T) {
+	s := NewSession("test-2", t.TempDir())
+	s.AddMessage("user", "hello")
+	s.AddMessage("assistant", "hi there")
+
+	msgs := s.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "hello" {
+		t.Errorf("unexpected first message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || msgs[1].Content != "hi there" {
+		t.Errorf("unexpected second message: %+v", msgs[1])
+	}
+}
+
+func TestAutoTitle(t *testing.T) {
+	s := NewSession("test-title", t.TempDir())
+	if s.Title != "" {
+		t.Error("expected empty title initially")
+	}
+
+	s.AddMessage("user", "this is a very long message that should be truncated to fifty characters or so")
+	if s.Title != "this is a very long message that should be truncat..." {
+		t.Errorf("expected truncated title, got: %s", s.Title)
+	}
+}
+
+func TestAddToolMessage(t *testing.T) {
+	s := NewSession("test-tool", t.TempDir())
+	s.AddToolMessage("shell", "output: hello world")
+
+	msgs := s.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Role != "tool" {
+		t.Errorf("expected tool role, got %s", msgs[0].Role)
+	}
+}
+
+func TestAddProviderMessagePreservesToolCallFields(t *testing.T) {
+	s := NewSession("test-provider-message", t.TempDir())
+	s.AddProviderMessage(provider.Message{
+		Role:             "tool",
+		Content:          "42",
+		ReasoningContent: "hidden reasoning",
+		ToolCallID:       "call_abc123",
+		Name:             "calculator",
+	})
+
+	msgs := s.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].ToolCallID != "call_abc123" {
+		t.Fatalf("expected tool_call_id call_abc123, got %q", msgs[0].ToolCallID)
+	}
+	if msgs[0].Name != "calculator" {
+		t.Fatalf("expected name calculator, got %q", msgs[0].Name)
+	}
+	if msgs[0].ReasoningContent != "hidden reasoning" {
+		t.Fatalf("expected reasoning content to be preserved, got %q", msgs[0].ReasoningContent)
+	}
+}
+
+func TestAddProviderMessagePreservesToolObservation(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("test-tool-observation", dir)
+	started := time.Date(2026, 10, 20, 1, 2, 3, 0, time.UTC)
+	s.AddProviderMessage(provider.Message{
+		Role:       "tool",
+		Content:    "Error: command timed out after 30 seconds",
+		ToolCallID: "call_timeout",
+		Name:       "terminal",
+		RunID:      "run-1",
+		StartedAt:  &started,
+		DurationMS: 30000,
+		Status:     "timeout",
+	})
+
+	if err := s.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	reloaded, ok := m.Get("test-tool-observation")
+	if !ok {
+		t.Fatal("session not found after save")
+	}
+	msgs := reloaded.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	got := msgs[0]
+	if got.RunID != "run-1" || got.DurationMS != 30000 || got.Status != "timeout" || got.StartedAt == nil || !got.StartedAt.Equal(started) {
+		t.Fatalf("observation not persisted: %#v", got)
+	}
+}
+
+func TestCompactBoundarySplitsPriorRawHistory(t *testing.T) {
+	s := NewSession("test-compact", t.TempDir())
+	s.AddMessage("user", "old raw request")
+	s.AddMessage("assistant", "old raw answer")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:                  "compact-test",
+		Trigger:             "manual",
+		Summary:             "summary replaces old raw request",
+		CreatedAt:           time.Now(),
+		PreTokenEstimate:    100,
+		PostTokenEstimate:   10,
+		SummaryTokens:       10,
+		DroppedMessages:     2,
+		RestoredAttachments: 1,
+		SummarySource:       "llm",
+	})
+	s.AddMessage("user", "new request")
+
+	after, meta, dropped, ok := MessagesAfterLastCompactBoundary(s.GetMessages())
+	if !ok {
+		t.Fatal("expected compact boundary")
+	}
+	if dropped != 2 {
+		t.Fatalf("expected 2 dropped messages, got %d", dropped)
+	}
+	if meta.ID != "compact-test" || !strings.Contains(meta.Summary, "summary replaces") {
+		t.Fatalf("unexpected metadata: %+v", meta)
+	}
+	if len(after) != 1 || after[0].Content != "new request" {
+		t.Fatalf("unexpected messages after boundary: %+v", after)
+	}
+	trace, ok := s.LatestCompactTrace()
+	if !ok {
+		t.Fatal("expected latest compact trace")
+	}
+	if trace.BoundaryID != "compact-test" || trace.SummarySource != "llm" || trace.RestoredAttachments != 1 {
+		t.Fatalf("unexpected compact trace: %+v", trace)
+	}
+}
+
+func TestCompactSegmentsPreserveImmutableSummariesAndLogicalTail(t *testing.T) {
+	s := NewSession("test-compact-segments", t.TempDir())
+	s.AddMessage("user", "turn one request")
+	s.AddMessage("assistant", "turn one answer")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:          "segment-1",
+		Summary:     "summary for turn one",
+		FromMessage: 0,
+		ToMessage:   2,
+	})
+	s.AddMessage("user", "turn two request")
+	s.AddMessage("assistant", "turn two answer")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:          "segment-2",
+		Summary:     "summary for turn two",
+		FromMessage: 2,
+		ToMessage:   4,
+	})
+	s.AddMessage("user", "raw tail request")
+
+	segments, tail, covered := CompactSegments(s.GetMessages())
+	if covered != 4 || len(segments) != 2 {
+		t.Fatalf("unexpected compact segments: covered=%d segments=%+v", covered, segments)
+	}
+	if segments[0].ID != "segment-1" || segments[1].ID != "segment-2" {
+		t.Fatalf("segments must preserve append order: %+v", segments)
+	}
+	if len(tail) != 1 || tail[0].Content != "raw tail request" {
+		t.Fatalf("unexpected logical raw tail: %+v", tail)
+	}
+}
+
+func TestCompactSegmentsCanRetainRawMessagesBeforePhysicalBoundary(t *testing.T) {
+	s := NewSession("test-compact-retained-tail", t.TempDir())
+	s.AddMessage("user", "compact this request")
+	s.AddMessage("assistant", "compact this answer")
+	s.AddMessage("user", "retain this request")
+	s.AddMessage("assistant", "retain this answer")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:          "segment-retain",
+		Summary:     "summary for first turn",
+		FromMessage: 0,
+		ToMessage:   2,
+	})
+
+	_, tail, covered := CompactSegments(s.GetMessages())
+	if covered != 2 || len(tail) != 2 {
+		t.Fatalf("unexpected retained tail: covered=%d tail=%+v", covered, tail)
+	}
+	if tail[0].Content != "retain this request" || tail[1].Content != "retain this answer" {
+		t.Fatalf("retained tail order changed: %+v", tail)
+	}
+}
+
+func TestCompactSegmentsKeepsLegacyBoundaryWithoutRawMessages(t *testing.T) {
+	s := NewSession("legacy-boundary-only", t.TempDir())
+	s.AddCompactBoundary(CompactMetadata{
+		ID:      "legacy-only",
+		Summary: "legacy summary whose raw messages are no longer stored",
+	})
+
+	segments, tail, covered := CompactSegments(s.GetMessages())
+	if len(segments) != 1 || segments[0].ID != "legacy-only" {
+		t.Fatalf("expected legacy segment to remain visible, got %+v", segments)
+	}
+	if len(tail) != 0 || covered != 0 {
+		t.Fatalf("unexpected legacy tail state: tail=%+v covered=%d", tail, covered)
+	}
+	if trace, ok := s.LatestCompactTrace(); !ok || trace.BoundaryID != "legacy-only" {
+		t.Fatalf("expected legacy compact trace, trace=%+v ok=%v", trace, ok)
+	}
+}
+
+func TestCompactSegmentsLegacyBoundarySupersedesPriorSummary(t *testing.T) {
+	s := NewSession("legacy-cumulative-boundaries", t.TempDir())
+	s.AddMessage("user", "first old request")
+	s.AddMessage("assistant", "first old answer")
+	s.AddCompactBoundary(CompactMetadata{ID: "legacy-1", Summary: "first cumulative summary"})
+	s.AddMessage("user", "second old request")
+	s.AddMessage("assistant", "second old answer")
+	s.AddCompactBoundary(CompactMetadata{ID: "legacy-2", Summary: "second cumulative summary including the first"})
+
+	segments, tail, covered := CompactSegments(s.GetMessages())
+	if len(segments) != 1 || segments[0].ID != "legacy-2" {
+		t.Fatalf("expected only latest cumulative legacy segment, got %+v", segments)
+	}
+	if len(tail) != 0 || covered != 4 {
+		t.Fatalf("unexpected legacy cumulative tail: tail=%+v covered=%d", tail, covered)
+	}
+}
+
+func TestUndoLatestCompactBoundary(t *testing.T) {
+	s := NewSession("test-compact-undo", t.TempDir())
+	s.AddMessage("user", "old raw request")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:        "compact-undo",
+		Trigger:   "manual",
+		Summary:   "summary replaces old raw request",
+		CreatedAt: time.Now(),
+	})
+
+	meta, err := s.UndoLatestCompactBoundary(false)
+	if err != nil {
+		t.Fatalf("UndoLatestCompactBoundary: %v", err)
+	}
+	if meta.ID != "compact-undo" {
+		t.Fatalf("unexpected undo metadata: %+v", meta)
+	}
+	if _, ok := s.LatestCompactTrace(); ok {
+		t.Fatal("expected compact trace to be removed")
+	}
+	msgs := s.GetMessages()
+	if len(msgs) != 1 || msgs[0].Content != "old raw request" {
+		t.Fatalf("expected raw history to remain, got %+v", msgs)
+	}
+}
+
+func TestUndoLatestCompactBoundaryRejectsNewerMessagesUnlessKept(t *testing.T) {
+	s := NewSession("test-compact-undo-keep", t.TempDir())
+	s.AddMessage("user", "old raw request")
+	s.AddCompactBoundary(CompactMetadata{
+		ID:        "compact-undo-keep",
+		Trigger:   "manual",
+		Summary:   "summary replaces old raw request",
+		CreatedAt: time.Now(),
+	})
+	s.AddMessage("user", "new request")
+
+	if _, err := s.UndoLatestCompactBoundary(false); err == nil {
+		t.Fatal("expected undo without keepAfter to fail when newer messages exist")
+	}
+	if _, err := s.UndoLatestCompactBoundary(true); err != nil {
+		t.Fatalf("UndoLatestCompactBoundary keepAfter: %v", err)
+	}
+	msgs := s.GetMessages()
+	if len(msgs) != 2 || msgs[0].Content != "old raw request" || msgs[1].Content != "new request" {
+		t.Fatalf("expected raw and newer messages to remain, got %+v", msgs)
+	}
+}
+
+func TestLastMessage(t *testing.T) {
+	s := NewSession("test-3", t.TempDir())
+	if last := s.LastMessage(); last != nil {
+		t.Error("expected nil for empty session")
+	}
+
+	s.AddMessage("user", "first")
+	s.AddMessage("assistant", "second")
+
+	last := s.LastMessage()
+	if last.Content != "second" {
+		t.Errorf("expected 'second', got %s", last.Content)
+	}
+}
+
+func TestMessageCount(t *testing.T) {
+	s := NewSession("test-count", t.TempDir())
+	if s.MessageCount() != 0 {
+		t.Errorf("expected 0 messages, got %d", s.MessageCount())
+	}
+	s.AddMessage("user", "hello")
+	if s.MessageCount() != 1 {
+		t.Errorf("expected 1 message, got %d", s.MessageCount())
+	}
+}
+
+func TestSessionSaveAndLoad(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("test-save", dir)
+	s.AddMessage("user", "test message")
+	s.AddMessage("assistant", "response")
+
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// Load from disk
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	loaded, ok := m.Get("test-save")
+	if !ok {
+		t.Fatal("session not found after save/load")
+	}
+	if loaded.Title != "test message" {
+		t.Errorf("expected title 'test message', got '%s'", loaded.Title)
+	}
+	if len(loaded.GetMessages()) != 2 {
+		t.Errorf("expected 2 messages, got %d", len(loaded.GetMessages()))
+	}
+}
+
+func TestSessionHistoryPageStreamsLegacyFile(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("test-page", dir)
+	for i := 0; i < 150; i++ {
+		s.AddMessage("user", fmt.Sprintf("message-%d", i))
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	loaded, ok := m.Get("test-page")
+	if !ok {
+		t.Fatal("session not found after save/load")
+	}
+	if loaded.messagesLoaded {
+		t.Fatal("manager should load metadata without the full message slice")
+	}
+
+	first, total, more, err := loaded.GetMessagesPage(60, 0)
+	if err != nil {
+		t.Fatalf("GetMessagesPage: %v", err)
+	}
+	if total != 150 || !more || len(first) != 60 {
+		t.Fatalf("page metadata = total %d, more %v, messages %d", total, more, len(first))
+	}
+	if first[0].Content != "message-90" || first[59].Content != "message-149" {
+		t.Fatalf("unexpected first page: %q ... %q", first[0].Content, first[59].Content)
+	}
+	if loaded.messagesLoaded {
+		t.Fatal("paged read should not promote the full session into memory")
+	}
+
+	last, total, more, err := loaded.GetMessagesPage(60, 120)
+	if err != nil {
+		t.Fatalf("GetMessagesPage final page: %v", err)
+	}
+	if total != 150 || more || len(last) != 30 || last[0].Content != "message-0" {
+		t.Fatalf("unexpected final page: total=%d more=%v messages=%d first=%q", total, more, len(last), last[0].Content)
+	}
+}
+
+func TestAssistantMessageSanitizesToolProtocolLeakage(t *testing.T) {
+	s := NewSession("test-sanitize", t.TempDir())
+	s.AddMessage("assistant", "to=cron_list\n{\"name\":\"cron_list\",\"arguments\":{}}\n仍然没有已配置的定时任务。")
+
+	msgs := s.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Content != "仍然没有已配置的定时任务。" {
+		t.Fatalf("unexpected sanitized content: %q", msgs[0].Content)
+	}
+}
+
+func TestManagerNew(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s := m.New()
+	if s.ID == "" {
+		t.Error("expected non-empty session ID")
+	}
+
+	s2, ok := m.Get(s.ID)
+	if !ok {
+		t.Error("session not found after creation")
+	}
+	if s2.ID != s.ID {
+		t.Errorf("expected %s, got %s", s.ID, s2.ID)
+	}
+}
+
+func TestManagerNewWithTitle(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s := m.NewWithTitle("My Session")
+	if s.Title != "My Session" {
+		t.Errorf("expected 'My Session', got '%s'", s.Title)
+	}
+}
+
+func TestManagerEnsure(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.Ensure("ws-session")
+	if s1.ID != "ws-session" {
+		t.Fatalf("expected ensured session ID ws-session, got %q", s1.ID)
+	}
+
+	s2 := m.Ensure("ws-session")
+	if s1 != s2 {
+		t.Fatal("expected Ensure to return the existing session instance")
+	}
+}
+
+func TestManagerNewGeneratesUniqueIDs(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	first := m.New()
+	second := m.New()
+	if first.ID == second.ID {
+		t.Fatalf("expected unique session IDs, got %q", first.ID)
+	}
+}
+
+func TestLoadMarkdownSessionWithEmbeddedCodeFenceText(t *testing.T) {
+	dir := t.TempDir()
+	content := "# LuckyAgent Session\n\n" +
+		"自动生成，请勿手动编辑 JSON 块。\n\n" +
+		"```json\n" +
+		"{\n" +
+		"  \"id\": \"test-md-session\",\n" +
+		"  \"title\": \"demo\",\n" +
+		"  \"messages\": [\n" +
+		"    {\n" +
+		"      \"role\": \"assistant\",\n" +
+		"      \"content\": \"Assistant: ```tool\\n{\\\"name\\\":\\\"cron_list\\\"}\\n```\"\n" +
+		"    }\n" +
+		"  ],\n" +
+		"  \"created_at\": \"2026-04-30T00:00:00Z\",\n" +
+		"  \"updated_at\": \"2026-04-30T00:00:00Z\",\n" +
+		"  \"shell_context\": {\n" +
+		"    \"cwd\": \"\",\n" +
+		"    \"env\": null\n" +
+		"  }\n" +
+		"}\n" +
+		"```\n"
+	if err := os.WriteFile(filepath.Join(dir, "test-md-session.md"), []byte(content), 0600); err != nil {
+		t.Fatalf("write session md: %v", err)
+	}
+
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	sess, ok := mgr.Get("test-md-session")
+	if !ok {
+		t.Fatal("expected session to load")
+	}
+	msgs := sess.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+}
+
+func TestManagerList(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	m.New()
+	m.New()
+	m.New()
+
+	sessions := m.List()
+	if len(sessions) != 3 {
+		t.Errorf("expected 3 sessions, got %d", len(sessions))
+	}
+}
+
+func TestManagerListInfo(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.New()
+	s1.AddMessage("user", "hello")
+
+	s2 := m.New()
+	s2.AddMessage("user", "world")
+
+	infos := m.ListInfo()
+	if len(infos) != 2 {
+		t.Fatalf("expected 2 infos, got %d", len(infos))
+	}
+
+	// Should be sorted by UpdatedAt (most recent first)
+	if infos[0].MessageCount != 1 {
+		t.Errorf("expected 1 message, got %d", infos[0].MessageCount)
+	}
+}
+
+func TestManagerSearch(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.NewWithTitle("Go Programming")
+	s1.AddMessage("user", "how to use goroutines")
+
+	s2 := m.NewWithTitle("Python Tips")
+	s2.AddMessage("user", "list comprehension tricks")
+
+	// Search by title
+	results := m.Search("go")
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for 'go', got %d", len(results))
+	}
+
+	// Search by content
+	results = m.Search("comprehension")
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for 'comprehension', got %d", len(results))
+	}
+
+	// Case insensitive
+	results = m.Search("PYTHON")
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for 'PYTHON', got %d", len(results))
+	}
+
+	// No results
+	results = m.Search("rust")
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for 'rust', got %d", len(results))
+	}
+}
+
+func TestManagerDelete(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s := m.New()
+	s.AddMessage("user", "test")
+	s.Save()
+
+	if err := m.Delete(s.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, ok := m.Get(s.ID); ok {
+		t.Error("session should be deleted")
+	}
+}
+
+func TestManagerSaveAll(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.New()
+	s1.AddMessage("user", "hello")
+
+	s2 := m.New()
+	s2.AddMessage("user", "world")
+
+	if err := m.SaveAll(); err != nil {
+		t.Fatalf("SaveAll: %v", err)
+	}
+
+	// Reload
+	m2, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager2: %v", err)
+	}
+
+	if m2.Count() != 2 {
+		t.Errorf("expected 2 sessions after reload, got %d", m2.Count())
+	}
+}
+
+func TestManagerCount(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if m.Count() != 0 {
+		t.Errorf("expected 0, got %d", m.Count())
+	}
+
+	m.New()
+	m.New()
+
+	if m.Count() != 2 {
+		t.Errorf("expected 2, got %d", m.Count())
+	}
+}
+
+func TestAddMessageOnMetadataOnlySessionKeepsHistory(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("keep-history", dir)
+	for i := 0; i < 5; i++ {
+		s.AddMessage("user", fmt.Sprintf("old-%d", i))
+	}
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	loaded, ok := mgr.Get("keep-history")
+	if !ok {
+		t.Fatal("session not loaded")
+	}
+	if loaded.messagesLoaded {
+		t.Fatal("manager stub should stay metadata-only until messages are requested")
+	}
+
+	loaded.AddMessage("user", "new-only")
+	if err := loaded.Save(); err != nil {
+		t.Fatalf("Save after append: %v", err)
+	}
+
+	mgr2, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager2: %v", err)
+	}
+	again, ok := mgr2.Get("keep-history")
+	if !ok {
+		t.Fatal("session missing after reload")
+	}
+	msgs := again.GetMessages()
+	if len(msgs) != 6 {
+		t.Fatalf("message count = %d, want 6 (5 old + new-only)", len(msgs))
+	}
+	if msgs[0].Content != "old-0" || msgs[5].Content != "new-only" {
+		t.Fatalf("history rewritten: first=%q last=%q", msgs[0].Content, msgs[5].Content)
+	}
+}
+
+func TestSaveCorruptSegmentDoesNotWipe(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("s1", dir)
+	s.AddMessage("user", "keep-me-please")
+	s.AddMessage("assistant", "still-here")
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	jsonl := filepath.Join(dir, "s1", "messages.jsonl")
+	if _, err := os.ReadFile(jsonl); err != nil {
+		t.Fatalf("read jsonl: %v", err)
+	}
+	corrupt := []byte("{not-json\n")
+	if err := os.WriteFile(jsonl, corrupt, 0600); err != nil {
+		t.Fatalf("corrupt jsonl: %v", err)
+	}
+
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	loaded, ok := mgr.Get("s1")
+	if !ok {
+		t.Fatal("session not loaded")
+	}
+	loaded.SetTitle("touch-title")
+	if err := loaded.Save(); err == nil {
+		t.Fatal("Save on corrupt history succeeded; want error")
+	}
+	after, err := os.ReadFile(jsonl)
+	if err != nil {
+		t.Fatalf("reread jsonl: %v", err)
+	}
+	if string(after) != string(corrupt) {
+		t.Fatalf("corrupt file was rewritten: %q", after)
+	}
+}
+
+func TestSearchMetadataOnlySessionFindsMessage(t *testing.T) {
+	dir := t.TempDir()
+	s := NewSession("search-me", dir)
+	s.SetTitle("ordinary title")
+	s.AddMessage("user", "unique-keyword-zebra-42")
+	if err := s.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	loaded, ok := mgr.Get("search-me")
+	if !ok || loaded.messagesLoaded {
+		t.Fatalf("want metadata-only stub, loaded=%v ok=%v", loaded.messagesLoaded, ok)
+	}
+	hits := mgr.Search("unique-keyword-zebra-42")
+	if len(hits) != 1 || hits[0].ID != "search-me" {
+		t.Fatalf("content search missed cold session: %+v", hits)
+	}
+	if again, _ := mgr.Get("search-me"); again.messagesLoaded {
+		t.Fatal("search should not force a full in-memory load")
+	}
+}
+
+func TestManagerEvictsIdleLoadedSessions(t *testing.T) {
+	dir := t.TempDir()
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	mgr.evictMax = 1
+	mgr.evictTTL = 0
+
+	first := mgr.New()
+	first.AddMessage("user", "keep-on-disk")
+	if err := first.Save(); err != nil {
+		t.Fatalf("Save first: %v", err)
+	}
+	if !first.messagesLoaded {
+		t.Fatal("saved session should still be resident until eviction")
+	}
+
+	second := mgr.New()
+	second.AddMessage("user", "active")
+	if err := second.Save(); err != nil {
+		t.Fatalf("Save second: %v", err)
+	}
+
+	if first.messagesLoaded {
+		t.Fatal("idle persisted session should be unloaded")
+	}
+	if !second.messagesLoaded {
+		t.Fatal("active session should remain resident")
+	}
+	loaded, _ := mgr.ResidentStats()
+	if loaded != 1 {
+		t.Fatalf("resident loaded=%d, want 1", loaded)
+	}
+	if msgs := first.GetMessages(); len(msgs) != 1 || msgs[0].Content != "keep-on-disk" {
+		t.Fatalf("unloaded session did not reload: %+v", msgs)
+	}
+}

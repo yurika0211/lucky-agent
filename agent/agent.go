@@ -521,8 +521,8 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 	// v0.36.0: 记录指标
 	a.metrics.RecordChatRequest()
 	if len(result.ToolCalls) > 0 {
-		for range result.ToolCalls {
-			a.metrics.RecordToolCall()
+		for _, call := range result.ToolCalls {
+			a.metrics.RecordToolCall(call.Name, call.Duration, toolResultFailed(call.Result))
 		}
 	}
 	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)

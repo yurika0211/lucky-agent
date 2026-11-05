@@ -1,0 +1,19 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - run: go test -mod=readonly -race -count=1 -p 2 ./...
+        env:
+          GOWORK: off
+      - run: go vet ./...
+        env:
+          GOWORK: off

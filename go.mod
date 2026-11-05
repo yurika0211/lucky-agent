@@ -83,3 +83,7 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+// In-tree patch of the pinned v0.3.1 metrics. Keeps per-tool histograms on the
+// same Metrics object that /api/v1/metrics exports.
+replace github.com/yurika0211/luckyagent-runtime => ./third_party/luckyagent-runtime
