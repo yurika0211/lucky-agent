@@ -3,9 +3,12 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yurika0211/luckyagent-runtime/session"
 
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-tools/autonomy"
@@ -63,6 +66,77 @@ func TestForegroundQueueBindsSessionID(t *testing.T) {
 	}
 	if task.Metadata["foreground_source"] != "api" {
 		t.Fatalf("metadata=%v", task.Metadata)
+	}
+}
+
+func addForegroundTask(t *testing.T, a *Agent, sess *session.Session, source, text string) *autonomy.QueueTask {
+	t.Helper()
+	q, err := a.openForeground(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := TextUserTurnInput(text).WithScope(TurnScope{Platform: source, ChatID: source})
+	data, err := json.Marshal(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := q.AddWithAcceptance(input.RoutingText, string(data), autonomy.PriorityNormal, nil, map[string]string{"foreground_source": source}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
+}
+
+func assertForegroundStillReady(t *testing.T, a *Agent, sess *session.Session, taskID string) {
+	t.Helper()
+	time.Sleep(50 * time.Millisecond)
+	reloaded, err := a.openForeground(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := reloaded.ListByState(autonomy.TaskReady)
+	if len(tasks) != 1 || tasks[0].ID != taskID || tasks[0].State != autonomy.TaskReady {
+		t.Fatalf("task did not stay ready: %+v", tasks)
+	}
+}
+
+func TestResumeForegroundEmptySourcesLeavesTaskReady(t *testing.T) {
+	a, sess, _ := foregroundHarness(t)
+	calls := 0
+	a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+		calls++
+		return nil, errors.New("provider must not be called when resume_sources is empty")
+	}}
+	if sources := a.cfg.Get().Agent.Foreground.ResumeSources; len(sources) != 0 {
+		t.Fatalf("default resume_sources = %v", sources)
+	}
+	task := addForegroundTask(t, a, sess, "api", "继续服务任务")
+	if err := a.ResumeForeground(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertForegroundStillReady(t, a, sess, task.ID)
+	if calls != 0 {
+		t.Fatalf("provider calls=%d", calls)
+	}
+}
+
+func TestResumeForegroundSkipsUndeclaredSource(t *testing.T) {
+	a, sess, _ := foregroundHarness(t)
+	if err := a.cfg.Set("agent.foreground.resume_sources", "api"); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+		calls++
+		return nil, errors.New("provider must not be called for an undeclared source")
+	}}
+	task := addForegroundTask(t, a, sess, "telegram", "继续聊天任务")
+	if err := a.ResumeForeground(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertForegroundStillReady(t, a, sess, task.ID)
+	if calls != 0 {
+		t.Fatalf("provider calls=%d", calls)
 	}
 }
 
