@@ -12,6 +12,7 @@ func TestParseIntentProfile(t *testing.T) {
 		{"fenced", "```json\n{\"profile\":\"tool_task\"}\n```", RequestProfileToolTask},
 		{"extra", `result: {"profile":"chat"}`, RequestProfileChat},
 		{"invalid", `{"profile":"unknown"}`, ""},
+		{"long_task", `{"profile":"long_task"}`, RequestProfileLongTask},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

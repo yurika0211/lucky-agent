@@ -41,6 +41,11 @@ func (a *Agent) classifyRequestProfileWithModel(ctx context.Context, input strin
 	if profile == "" {
 		return classifyRequestProfile(input, cfg)
 	}
+	// long_task is reserved for an explicit Execution or Foreground caller.
+	// This function already returned before the model call in those cases.
+	if profile == RequestProfileLongTask {
+		profile = RequestProfileCodeTask
+	}
 	return RequestProfileDecision{Profile: profile, Source: "model_intent", Confidence: 0.9}
 }
 

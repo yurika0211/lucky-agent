@@ -94,6 +94,15 @@ func applyRequestProfileDecision(cfg *LoopConfig, decision RequestProfileDecisio
 		if cfg.Timeout <= 0 || cfg.Timeout > 3*time.Minute {
 			cfg.Timeout = 3 * time.Minute
 		}
+	case RequestProfileLongTask:
+		// The long-task budget is the loop hard cap. Only explicit Execution
+		// or Foreground classification reaches this branch.
+		if cfg.MaxIterations <= 0 || cfg.MaxIterations > maxAllowedIterations {
+			cfg.MaxIterations = maxAllowedIterations
+		}
+		if cfg.Timeout <= 0 || cfg.Timeout > 10*time.Minute {
+			cfg.Timeout = 10 * time.Minute
+		}
 	}
 }
 

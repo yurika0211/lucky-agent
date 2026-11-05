@@ -55,7 +55,9 @@
         "api_base": "https://api.openai.com/v1"
       }
     },
-    "profiles": {}
+    "profiles": {
+      "_comment": "Defaults live in code: chat 6 turns/45s, tool_task 10/90s, code_task 20/3min, long_task only when Execution or Foreground is explicit."
+    }
   },
   "mcp": {
     "servers": {
