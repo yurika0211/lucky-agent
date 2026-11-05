@@ -130,6 +130,9 @@ type LoopConfig struct {
 	SessionID              string                // 当前回合的会话作用域（临时工具使用）
 	Sandbox                *sandbox.Snapshot     // task-scoped execution boundary
 	RunID                  string                // one user turn, shared by its tool results
+	Profile                RequestProfile        // resource profile selected before tool gating
+	ProfileSource          string                // profile decision source
+	ProfileConfidence      float32               // deterministic profile confidence
 }
 
 // loopRuntime is the narrow set of services used by one ordinary turn. The
@@ -141,6 +144,8 @@ type loopRuntime interface {
 	SandboxMode() sandbox.Mode
 	applySandboxToolPolicy(*LoopConfig, *sandbox.Snapshot)
 	applyIntentToolGating(*LoopConfig, string)
+	classifyRequestProfile(context.Context, string, LoopConfig, providerSnapshot) RequestProfileDecision
+	providerSnapshotForProfile(providerSnapshot, RequestProfile) providerSnapshot
 	applyVisionToolPolicy(*LoopConfig, providerSnapshot)
 	getStreamMode() StreamMode
 	appendNaturalCitationsIfEnabled(string, []toolCallLog) string
@@ -342,6 +347,9 @@ type LoopResult struct {
 	TokensUsed        int                  // 总 token 消耗
 	Usage             *provider.TokenUsage // provider-reported usage for the whole turn
 	CreatedAt         *time.Time           // server timestamp of the final assistant message
+	Profile           RequestProfile       // resource profile selected for this turn
+	ProfileSource     string
+	ProfileConfidence float32
 }
 
 /*
@@ -460,6 +468,9 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 	if sess != nil {
 		loopCfg.SessionID = strings.TrimSpace(sess.ID)
 	}
+	profile := l.runtime.classifyRequestProfile(ctx, routingText, loopCfg, turnProvider)
+	applyRequestProfileDecision(&loopCfg, profile)
+	turnProvider = l.runtime.providerSnapshotForProfile(turnProvider, profile.Profile)
 	if loopCfg.Execution != nil {
 		l.runtime.applyIntentToolGating(&loopCfg, routingText)
 		l.runtime.applyVisionToolPolicy(&loopCfg, turnProvider)
@@ -504,6 +515,9 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 		"timeout_ms", loopCfg.Timeout.Milliseconds(),
 		"auto_approve", loopCfg.AutoApprove,
 		"stream_mode", l.runtime.getStreamMode(),
+		"profile", profile.Profile,
+		"profile_source", profile.Source,
+		"profile_confidence", profile.Confidence,
 		"input_len", len(routingText),
 	)
 	logger.Debug("agent loop input",
@@ -551,7 +565,10 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 	}()
 
 	result = &LoopResult{
-		State: StateReason,
+		State:             StateReason,
+		Profile:           profile.Profile,
+		ProfileSource:     profile.Source,
+		ProfileConfidence: profile.Confidence,
 	}
 	finalizer := newLoopFinalizer(l.runtime, l.options.AppendRunningTaskNotice, result, sess, loopCfg, sessionID, routingText)
 	loopState := newLoopRuntimeState()
@@ -562,7 +579,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 
 	// 构建初始消息
 	l.runtime.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider, compactProgressEmitter(loopCfg))
-	buildOpts := defaultContextBuildOptions()
+	buildOpts := contextBuildOptionsForProfile(loopCfg.Profile)
 	buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 	messages := l.runtime.buildContextMessagesForInputWithProvider(ctx, sess, turnInput, buildOpts, turnProvider)
 	if sess != nil {

@@ -64,6 +64,20 @@ func (r *agentLoopRuntime) applyIntentToolGating(cfg *LoopConfig, input string) 
 	r.agent.applyIntentToolGating(cfg, input)
 }
 
+func (r *agentLoopRuntime) classifyRequestProfile(ctx context.Context, input string, cfg LoopConfig, snapshot providerSnapshot) RequestProfileDecision {
+	if r == nil || r.agent == nil {
+		return classifyRequestProfile(input, cfg)
+	}
+	return r.agent.classifyRequestProfileWithModel(ctx, input, cfg, snapshot)
+}
+
+func (r *agentLoopRuntime) providerSnapshotForProfile(snapshot providerSnapshot, profile RequestProfile) providerSnapshot {
+	if r == nil || r.agent == nil {
+		return snapshot
+	}
+	return r.agent.providerSnapshotForProfile(snapshot, profile)
+}
+
 func (r *agentLoopRuntime) applyVisionToolPolicy(cfg *LoopConfig, snapshot providerSnapshot) {
 	if r == nil || r.agent == nil {
 		return
