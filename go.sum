@@ -134,8 +134,6 @@ github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261029222621-4741d805a27a h1:
 github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261029222621-4741d805a27a/go.mod h1:db49K0yCejGvGpfA9ZW8wSD+urrH+pkTGnD562m//UM=
 github.com/yurika0211/luckyagent-api v0.2.5-0.20261029222552-bc07ab3b8b7e h1:5zSDEeiDYo1MILXrP8OPsuxfHw221zbG/VKAbXWJ8Q0=
 github.com/yurika0211/luckyagent-api v0.2.5-0.20261029222552-bc07ab3b8b7e/go.mod h1:auKwSvWrCAzckvc1IMmTjjNsOkZpJP2BhUk51WkIMeY=
-github.com/yurika0211/luckyagent-app v0.4.3-0.20261029222614-74ba20f1d92e h1:xrKGreStDFgwhGmdHS0PtZuD0MlFzzakJeyrGxmYFmM=
-github.com/yurika0211/luckyagent-app v0.4.3-0.20261029222614-74ba20f1d92e/go.mod h1:PWt0dIF/zIRz04xFJn3ePUQcS1bN8iTlZo/oJotvMjs=
 github.com/yurika0211/luckyagent-app v0.4.3-0.20261031130639-ff990277dac4 h1:WQmqkcrT/I8m7nCs7yEjpLSvXy0KS72nUR3RT8JWI50=
 github.com/yurika0211/luckyagent-app v0.4.3-0.20261031130639-ff990277dac4/go.mod h1:ijEfCcGLyz3A1iItWsKB31vH8CmpuAR6iQZdrDFBLrs=
 github.com/yurika0211/luckyagent-gateway v0.2.3-0.20261023165540-c9f71654f308 h1:OSqW9v2Jyq8bICEjXIKlk+8UHwrTwA2fy25pW8y23y4=
@@ -144,8 +142,8 @@ github.com/yurika0211/luckyagent-orchestrator v0.1.2-0.20261030050707-d4020609f3
 github.com/yurika0211/luckyagent-orchestrator v0.1.2-0.20261030050707-d4020609f3f2/go.mod h1:2+IqqxdSrq8S3+K7ADbml705RqSsWQMGEOfADJmNSJk=
 github.com/yurika0211/luckyagent-plugins v0.1.0 h1:YcwLLk92KEbF5p2dffMTYk4BN1VD0fkRymrycoTvO18=
 github.com/yurika0211/luckyagent-plugins v0.1.0/go.mod h1:EXtG1c3oNR6yoN1s+cOUY9Zm9ZhuKcm2139iwCEreVY=
-github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261105071758-44d8873628fd h1:oVdVwV5AFuvc56Iyfnx813GbJvtPRYwzF3hGSxn+ItA=
-github.com/yurika0211/luckyagent-runtime v0.3.1-0.20261105071758-44d8873628fd/go.mod h1:2mJNt7XHCyufSL/3sHH8hbb1OhKXpToktO27ywJF94M=
+github.com/yurika0211/luckyagent-runtime v0.3.1 h1:fy2gn5cObij4uTsMID7gU0Sc967IHokn447wdmkcGug=
+github.com/yurika0211/luckyagent-runtime v0.3.1/go.mod h1:2mJNt7XHCyufSL/3sHH8hbb1OhKXpToktO27ywJF94M=
 github.com/yurika0211/luckyagent-tools v0.2.5 h1:OdNbUuSN7dZfFXUkDCZGw01Jva7PNaN79paS+apIY3Y=
 github.com/yurika0211/luckyagent-tools v0.2.5/go.mod h1:CVm0ZL6DOfXjwwUT9XHMJ2WneuO1kTKEX2HAi9DMuyk=
 go.mongodb.org/mongo-driver/v2 v2.5.0 h1:yXUhImUjjAInNcpTcAlPHiT7bIXhshCTL3jVBkF3xaE=
