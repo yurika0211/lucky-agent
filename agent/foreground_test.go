@@ -221,6 +221,46 @@ func TestForegroundStableWriteRepeatsStayBlocked(t *testing.T) {
 	}
 }
 
+func TestForegroundEmptyRepliesContinueInSameRequest(t *testing.T) {
+	a, sess, _ := foregroundHarness(t)
+	const answer = "空回复之后给出的完整答案"
+	mainChats := 0
+	empties := 0
+	a.provider = &foregroundProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if len(messages) > 0 && strings.HasPrefix(messages[0].Content, "Review whether") {
+			return &provider.Response{Content: verifiedAssessment}, nil
+		}
+		mainChats++
+		if empties < 3 {
+			empties++
+			return &provider.Response{Content: ""}, nil
+		}
+		return &provider.Response{Content: answer}, nil
+	}}
+
+	got, err := a.ChatWithSession(context.Background(), sess.ID, "请直接回答，不要调用工具")
+	if err != nil {
+		t.Fatalf("err=%v mainChats=%d empties=%d", err, mainChats, empties)
+	}
+	if got != answer {
+		t.Fatalf("response=%q", got)
+	}
+	if mainChats <= 3 {
+		t.Fatalf("main loop chats=%d, want empties plus a real answer", mainChats)
+	}
+	q, err := a.openForeground(sess)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := q.ListAll()
+	if len(tasks) != 1 || tasks[0].State != autonomy.TaskDone {
+		t.Fatalf("tasks=%+v", tasks)
+	}
+	if strings.Contains(got, "继续前台任务") {
+		t.Fatalf("user was asked to resume: %q", got)
+	}
+}
+
 func TestForegroundContinuesInRequestAndStreams(t *testing.T) {
 	for _, mode := range []string{"sync", "native", "simulated"} {
 		t.Run(mode, func(t *testing.T) {
