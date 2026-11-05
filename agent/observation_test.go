@@ -50,3 +50,39 @@ func TestObservedToolMessageKeepsTimingOffTheModelContext(t *testing.T) {
 		t.Fatalf("run id leaked into model content: %s", msg.Content)
 	}
 }
+
+func TestObservedToolMessageKeepsFastAndRejectedDurations(t *testing.T) {
+	cases := []struct {
+		name     string
+		result   string
+		duration time.Duration
+		status   string
+	}{
+		{"fast", "ok", 200 * time.Microsecond, "ok"},
+		{"timeout", "Error: command timed out after 1 second", time.Millisecond, "timeout"},
+		{"exit", "failed [exit code: 2]", 40 * time.Millisecond, "error"},
+		{"sandbox", "Error: path /tmp/out is outside sandbox", 5 * time.Millisecond, "sandbox"},
+	}
+	for _, tc := range cases {
+		msg := observedToolMessage("run-1", executedToolCall{
+			ToolCall: provider.ToolCall{ID: "call-" + tc.name, Name: "terminal"},
+			Result:   tc.result,
+			Duration: tc.duration,
+		}, tc.result)
+		want := tc.duration.Milliseconds()
+		if want < 1 {
+			want = 1
+		}
+		if msg.DurationMS != want || msg.Status != tc.status || msg.StartedAt == nil {
+			t.Fatalf("%s observation = %#v", tc.name, msg)
+		}
+	}
+	unmeasured := observedToolMessage("", executedToolCall{
+		ToolCall: provider.ToolCall{ID: "call-old", Name: "terminal"},
+		Result:   "ok",
+		Duration: -1,
+	}, "ok")
+	if unmeasured.DurationMS != 0 || unmeasured.StartedAt != nil {
+		t.Fatalf("unmeasured = %#v", unmeasured)
+	}
+}

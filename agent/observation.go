@@ -8,10 +8,16 @@ import (
 )
 
 func toolObservation(exec executedToolCall) (started *time.Time, durationMS int64, status string) {
+	// Duration is the wall clock from execute start to result, including
+	// timeout, non-zero exit, and sandbox reject. Zero means the call was
+	// not measured; do not invent a start time for that case.
 	if exec.Duration > 0 {
 		begin := time.Now().Add(-exec.Duration)
 		started = &begin
 		durationMS = exec.Duration.Milliseconds()
+		if durationMS < 1 {
+			durationMS = 1
+		}
 	}
 	return started, durationMS, toolResultStatus(exec.Result)
 }
