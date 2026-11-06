@@ -72,6 +72,78 @@ func TestRequestProfileBudgets(t *testing.T) {
 	}
 }
 
+func TestRequestProfileKeepsConfiguredBudget(t *testing.T) {
+	cfg := LoopConfig{
+		MaxIterations:           80,
+		Timeout:                 5 * time.Minute,
+		maxIterationsFromConfig: true,
+		timeoutFromConfig:       true,
+	}
+	applyRequestProfileDecision(&cfg, RequestProfileDecision{Profile: RequestProfileChat, Source: "fallback_low_risk", Confidence: 0.55})
+	if cfg.MaxIterations != 80 || cfg.Timeout != 5*time.Minute {
+		t.Fatalf("configured chat budget = %d %s, want 80 5m", cfg.MaxIterations, cfg.Timeout)
+	}
+
+	over := LoopConfig{
+		MaxIterations:           400,
+		Timeout:                 30 * time.Minute,
+		maxIterationsFromConfig: true,
+		timeoutFromConfig:       true,
+	}
+	applyRequestProfileDecision(&over, RequestProfileDecision{Profile: RequestProfileChat, Source: "fallback_low_risk"})
+	sanitizeLoopConfig(&over)
+	if over.MaxIterations != maxAllowedIterations || over.Timeout != 10*time.Minute {
+		t.Fatalf("hard cap = %d %s, want %d 10m", over.MaxIterations, over.Timeout, maxAllowedIterations)
+	}
+}
+
+func TestContinuationInheritsLastProfile(t *testing.T) {
+	cfg := LoopConfig{inheritProfile: RequestProfileToolTask}
+	got := classifyRequestProfile("继续", cfg)
+	if got.Profile != RequestProfileToolTask || got.Source != "session_continue" {
+		t.Fatalf("继续 = %+v", got)
+	}
+	for _, input := range []string{"接着", "接着做", "continue", "go on", "keep going", "Keep Doing!", "继续。"} {
+		got := classifyRequestProfile(input, cfg)
+		if got.Profile != RequestProfileToolTask || got.Source != "session_continue" {
+			t.Fatalf("%q = %+v", input, got)
+		}
+	}
+	code := classifyRequestProfile("继续修编译错误", cfg)
+	if code.Profile != RequestProfileCodeTask || code.Source != "deterministic_code_intent" {
+		t.Fatalf("继续修编译错误 = %+v", code)
+	}
+	chat := classifyRequestProfile("你好", cfg)
+	if chat.Profile != RequestProfileChat || chat.Source != "fallback_low_risk" {
+		t.Fatalf("你好 = %+v", chat)
+	}
+	missing := classifyRequestProfile("继续", LoopConfig{})
+	if missing.Profile != RequestProfileChat || missing.Source != "fallback_low_risk" {
+		t.Fatalf("继续 without last profile = %+v", missing)
+	}
+	longTask := classifyRequestProfile("继续", LoopConfig{inheritProfile: RequestProfileLongTask})
+	if longTask.Profile != RequestProfileCodeTask || longTask.Source != "session_continue" {
+		t.Fatalf("long_task continue = %+v", longTask)
+	}
+	explicit := classifyRequestProfile("继续", LoopConfig{inheritProfile: RequestProfileLongTask, Foreground: true})
+	if explicit.Profile != RequestProfileLongTask || explicit.Source != "explicit_foreground" {
+		t.Fatalf("foreground continue = %+v", explicit)
+	}
+}
+
+func TestAgentRemembersSessionProfileForContinuation(t *testing.T) {
+	a, _, _ := foregroundHarness(t)
+	a.rememberRequestProfile("sess-1", RequestProfileCodeTask)
+	cfg := LoopConfig{SessionID: "sess-1", inheritProfile: a.lastRequestProfile("sess-1")}
+	got := classifyRequestProfile("继续", cfg)
+	if got.Profile != RequestProfileCodeTask || got.Source != "session_continue" {
+		t.Fatalf("remembered continue = %+v", got)
+	}
+	if a.lastRequestProfile("missing") != "" {
+		t.Fatal("missing session should have no profile")
+	}
+}
+
 func TestLongTaskRequiresExplicitExecutionOrForeground(t *testing.T) {
 	for _, input := range []string{"", "你好", "请做一个持续很久的后台任务"} {
 		decision := classifyRequestProfile(input, LoopConfig{})

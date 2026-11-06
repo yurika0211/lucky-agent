@@ -3,6 +3,7 @@ package agent
 import (
 	"strings"
 	"time"
+	"unicode"
 )
 
 // RequestProfile selects the cheapest execution budget that can satisfy a turn.
@@ -41,7 +42,77 @@ func classifyRequestProfile(input string, cfg LoopConfig) RequestProfileDecision
 	if containsAny(text, "查询", "查一下", "看看", "检查", "打开", "搜索", "列出", "状态", "search", "inspect", "check ", "list ") {
 		return RequestProfileDecision{Profile: RequestProfileToolTask, Source: "deterministic_tool_intent", Confidence: 0.8}
 	}
+	if inherited, ok := continuationProfile(text, cfg); ok {
+		return RequestProfileDecision{Profile: inherited, Source: "session_continue", Confidence: 0.9}
+	}
 	return RequestProfileDecision{Profile: RequestProfileChat, Source: "fallback_low_risk", Confidence: 0.55}
+}
+
+// continuationPhrases are whole-turn follow-ups. A longer request that only
+// contains one of these words still goes through keyword classification.
+var continuationPhrases = []string{
+	"继续",
+	"接着做",
+	"接着",
+	"go on",
+	"keep going",
+	"keep doing",
+	"continue",
+}
+
+func isContinuationPhrase(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	trimmed = strings.TrimFunc(trimmed, func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSpace(r)
+	})
+	trimmed = strings.ToLower(strings.TrimSpace(trimmed))
+	for _, phrase := range continuationPhrases {
+		if trimmed == phrase {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Agent) lastRequestProfile(sessionID string) RequestProfile {
+	if a == nil {
+		return ""
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return ""
+	}
+	value, ok := a.requestProfiles.Load(sessionID)
+	if !ok {
+		return ""
+	}
+	profile, _ := value.(RequestProfile)
+	return profile
+}
+
+func (a *Agent) rememberRequestProfile(sessionID string, profile RequestProfile) {
+	if a == nil || profile == "" {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	a.requestProfiles.Store(sessionID, profile)
+}
+
+func continuationProfile(text string, cfg LoopConfig) (RequestProfile, bool) {
+	if !isContinuationPhrase(text) {
+		return "", false
+	}
+	last, ok := cfg.inheritProfile, cfg.inheritProfile != ""
+	if !ok || last == RequestProfileChat {
+		return "", false
+	}
+	if last == RequestProfileLongTask && cfg.Execution == nil && !cfg.Foreground {
+		return RequestProfileCodeTask, true
+	}
+	return last, true
 }
 
 func containsAny(text string, terms ...string) bool {
@@ -74,35 +145,27 @@ func applyRequestProfileDecision(cfg *LoopConfig, decision RequestProfileDecisio
 	cfg.ProfileConfidence = decision.Confidence
 	switch decision.Profile {
 	case RequestProfileChat:
-		if cfg.MaxIterations <= 0 || cfg.MaxIterations > 6 {
-			cfg.MaxIterations = 6
-		}
-		if cfg.Timeout <= 0 || cfg.Timeout > 45*time.Second {
-			cfg.Timeout = 45 * time.Second
-		}
+		applyProfileBudget(cfg, 6, 45*time.Second)
 	case RequestProfileToolTask:
-		if cfg.MaxIterations <= 0 || cfg.MaxIterations > 10 {
-			cfg.MaxIterations = 10
-		}
-		if cfg.Timeout <= 0 || cfg.Timeout > 90*time.Second {
-			cfg.Timeout = 90 * time.Second
-		}
+		applyProfileBudget(cfg, 10, 90*time.Second)
 	case RequestProfileCodeTask:
-		if cfg.MaxIterations <= 0 || cfg.MaxIterations > 20 {
-			cfg.MaxIterations = 20
-		}
-		if cfg.Timeout <= 0 || cfg.Timeout > 3*time.Minute {
-			cfg.Timeout = 3 * time.Minute
-		}
+		applyProfileBudget(cfg, 20, 3*time.Minute)
 	case RequestProfileLongTask:
 		// The long-task budget is the loop hard cap. Only explicit Execution
 		// or Foreground classification reaches this branch.
-		if cfg.MaxIterations <= 0 || cfg.MaxIterations > maxAllowedIterations {
-			cfg.MaxIterations = maxAllowedIterations
-		}
-		if cfg.Timeout <= 0 || cfg.Timeout > 10*time.Minute {
-			cfg.Timeout = 10 * time.Minute
-		}
+		applyProfileBudget(cfg, maxAllowedIterations, 10*time.Minute)
+	}
+}
+
+// applyProfileBudget fills a missing budget and caps an unset one. Values
+// copied from agent config are left alone; sanitizeLoopConfig still enforces
+// the 300-iteration and 10-minute hard caps.
+func applyProfileBudget(cfg *LoopConfig, iterations int, timeout time.Duration) {
+	if !cfg.maxIterationsFromConfig && (cfg.MaxIterations <= 0 || cfg.MaxIterations > iterations) {
+		cfg.MaxIterations = iterations
+	}
+	if !cfg.timeoutFromConfig && (cfg.Timeout <= 0 || cfg.Timeout > timeout) {
+		cfg.Timeout = timeout
 	}
 }
 

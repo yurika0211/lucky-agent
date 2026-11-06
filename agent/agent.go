@@ -122,6 +122,9 @@ type Agent struct {
 	autoCompactFailures   map[string]int
 	activeModel           string
 	activeAPIBase         string
+	// requestProfiles remembers the last profile per session. In memory only;
+	// a restart makes the next 「继续」 fall back to keywords.
+	requestProfiles sync.Map
 }
 
 func buildDelegateChildLoopConfig(delegateCfg tool.DelegateConfig, allowRecursive bool) LoopConfig {
