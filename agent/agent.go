@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	appheartbeat "github.com/yurika0211/lucky-agent/agent/heartbeat"
 	autonomybridge "github.com/yurika0211/luckyagent-runtime/autonomy"
@@ -354,71 +355,111 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 	return a.ProgressFeedbackWithPrompt(ctx, userInput, round, observations, "")
 }
 
-// ProgressFeedbackWithPrompt generates a progress update using an optional
-// presentation prompt. Core evidence and safety constraints remain enforced
-// even when the presentation prompt is configured by the runtime owner.
+// ProgressFeedbackWithPrompt composes one short progress sentence from the
+// observations already collected for this round. It does not call the provider.
+// presentationPrompt only chooses the language: a mention of 中文, Chinese, or
+// 简体 writes Chinese; otherwise the sentence stays English.
 func (a *Agent) ProgressFeedbackWithPrompt(ctx context.Context, userInput string, round int, observations []string, presentationPrompt string) (string, error) {
-	turnProvider := a.providerSnapshotForTurn(userInput)
-	if !turnProvider.valid() {
-		return "", fmt.Errorf("provider not initialized")
-	}
 	if len(observations) == 0 {
 		return "", nil
 	}
+	_ = ctx
+	_ = userInput
+	return composeProgressFeedback(round, observations, presentationPrompt), nil
+}
 
-	systemPrompt := progressFeedbackSystemPrompt(presentationPrompt)
-
-	var userPrompt strings.Builder
-	var previousUpdates []string
-	var newObservations []string
+func composeProgressFeedback(round int, observations []string, presentationPrompt string) string {
+	chinese := progressPromptWantsChinese(presentationPrompt)
+	var previous string
+	var results []string
+	var calls []string
 	for _, line := range observations {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		if strings.HasPrefix(line, "Previous user-facing update: ") {
-			previousUpdates = append(previousUpdates, strings.TrimPrefix(line, "Previous user-facing update: "))
-			continue
+		switch {
+		case strings.HasPrefix(line, "Previous user-facing update: "):
+			previous = clipProgressLine(strings.TrimPrefix(line, "Previous user-facing update: "), 80)
+		case strings.HasPrefix(line, "Tool result ("):
+			results = append(results, clipProgressLine(progressToolLabel(line), 72))
+		case strings.HasPrefix(line, "Tool call:"):
+			calls = append(calls, clipProgressLine(line, 72))
+		default:
+			results = append(results, clipProgressLine(line, 72))
 		}
-		newObservations = append(newObservations, line)
 	}
+	focus := results
+	if len(focus) == 0 {
+		focus = calls
+	}
+	if len(focus) > 2 {
+		focus = focus[len(focus)-2:]
+	}
+	if len(focus) == 0 && previous == "" {
+		return ""
+	}
+	var b strings.Builder
+	if chinese {
+		if previous != "" {
+			b.WriteString("上一步：")
+			b.WriteString(previous)
+			b.WriteString("。")
+		}
+		if len(focus) > 0 {
+			b.WriteString("这一轮看到：")
+			b.WriteString(strings.Join(focus, "；"))
+			b.WriteString("。")
+		}
+		if round > 0 {
+			fmt.Fprintf(&b, "仍在第 %d 轮，还没结束。", round)
+		}
+		return strings.TrimSpace(b.String())
+	}
+	if previous != "" {
+		b.WriteString("So far, ")
+		b.WriteString(previous)
+		b.WriteString(". ")
+	}
+	if len(focus) > 0 {
+		b.WriteString("The latest result shows ")
+		b.WriteString(strings.Join(focus, "; "))
+		b.WriteString(". ")
+	}
+	if round > 0 {
+		fmt.Fprintf(&b, "This is still round %d, so the task is not finished.", round)
+	}
+	return strings.TrimSpace(b.String())
+}
 
-	userPrompt.WriteString("Original user request:\n")
-	userPrompt.WriteString(strings.TrimSpace(userInput))
-	userPrompt.WriteString("\n\nCurrent round:\n")
-	userPrompt.WriteString(fmt.Sprintf("%d", round))
-	if len(previousUpdates) > 0 {
-		userPrompt.WriteString("\n\nPrevious user-facing updates already shown:\n")
-		for _, line := range previousUpdates {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			userPrompt.WriteString("- ")
-			userPrompt.WriteString(line)
-			userPrompt.WriteString("\n")
-		}
-	}
-	userPrompt.WriteString("\n\nNew observed progress since the last update:\n")
-	for _, line := range newObservations {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		userPrompt.WriteString("- ")
-		userPrompt.WriteString(line)
-		userPrompt.WriteString("\n")
-	}
-	userPrompt.WriteString("\nWrite a single progress update for the user that clearly continues from the previous updates and focuses on what changed.")
+func progressPromptWantsChinese(prompt string) bool {
+	text := strings.ToLower(prompt)
+	return strings.Contains(prompt, "中文") || strings.Contains(prompt, "简体") || strings.Contains(text, "chinese")
+}
 
-	resp, err := a.chatLoopIteration(ctx, []provider.Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userPrompt.String()},
-	}, provider.CallOptions{}, true, turnProvider)
-	if err != nil {
-		return "", err
+func progressToolLabel(line string) string {
+	name := "tool"
+	rest := line
+	if strings.HasPrefix(line, "Tool result (") {
+		if end := strings.Index(line, "):"); end > len("Tool result (") {
+			name = line[len("Tool result ("):end]
+			rest = strings.TrimSpace(line[end+2:])
+		}
 	}
-	return strings.TrimSpace(resp.Content), nil
+	rest = clipProgressLine(rest, 48)
+	if rest == "" {
+		return name
+	}
+	return name + ": " + rest
+}
+
+func clipProgressLine(line string, maxRunes int) string {
+	line = strings.Join(strings.Fields(strings.TrimSpace(line)), " ")
+	if maxRunes <= 0 || utf8.RuneCountInString(line) <= maxRunes {
+		return line
+	}
+	runes := []rune(line)
+	return strings.TrimSpace(string(runes[:maxRunes])) + "…"
 }
 
 const defaultProgressFeedbackPresentationPrompt = `Write in English.

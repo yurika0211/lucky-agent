@@ -1,13 +1,16 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/yurika0211/luckyagent-runtime/config"
+	"github.com/yurika0211/luckyagent-runtime/contextx"
 	"github.com/yurika0211/luckyagent-runtime/memoryaestus"
+	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/session"
 	"github.com/yurika0211/luckyagent-runtime/soul"
 	"github.com/yurika0211/luckyagent-runtime/tool"
@@ -79,13 +82,14 @@ func TestBuildSystemPromptIncludesSoulSkillsAndPlatformHints(t *testing.T) {
 	if strings.Contains(prompt, "LuckyAgent manual (AGENTS.md):\n") && !strings.Contains(prompt, "excerpt") {
 		t.Fatalf("standing manual should be an excerpt, got %q", prompt)
 	}
-	for _, want := range []string{
+	for _, absent := range []string{
 		"Computer-use execution protocol",
-		"computer_observe twice in a row",
-		"computer_act already returns a fresh screenshot",
+		"Hybrid terminal + computer protocol:",
+		"Model-visible tools:",
+		"OpenUI policy:",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected computer-use guidance %q in prompt, got %q", want, prompt)
+		if strings.Contains(prompt, absent) {
+			t.Fatalf("standing prompt still contains %q", absent)
 		}
 	}
 	if !strings.Contains(prompt, "Model: gpt-5.4-mini") || !strings.Contains(prompt, "Provider: openai") {
@@ -119,28 +123,11 @@ func TestBuildSystemPromptIncludesHybridComputerTerminalPolicyOnlyWhenAllToolsVi
 	}
 
 	prompt := a.buildSystemPrompt(nil)
-	for _, want := range []string{
-		"Hybrid terminal + computer protocol:",
-		"Use terminal for deterministic state inspection",
-		"Execute dependent steps sequentially",
-	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("expected hybrid guidance %q in prompt, got %q", want, prompt)
-		}
+	if strings.Contains(prompt, "Hybrid terminal + computer protocol:") || strings.Contains(prompt, "Computer-use execution protocol") {
+		t.Fatalf("standing prompt still embeds computer protocols:\n%s", prompt)
 	}
-
-	withoutTerminal := a.buildSystemPromptWithOptions(nil, systemPromptOptions{
-		DisabledTools: []string{"terminal"},
-	})
-	if strings.Contains(withoutTerminal, "Hybrid terminal + computer protocol:") {
-		t.Fatalf("did not expect hybrid guidance when terminal is hidden, got %q", withoutTerminal)
-	}
-
-	withoutComputerAct := a.buildSystemPromptWithOptions(nil, systemPromptOptions{
-		DisabledTools: []string{"computer_act"},
-	})
-	if strings.Contains(withoutComputerAct, "Hybrid terminal + computer protocol:") {
-		t.Fatalf("did not expect hybrid guidance when computer_act is hidden, got %q", withoutComputerAct)
+	if !strings.Contains(prompt, "computer_observe and computer_act") {
+		t.Fatalf("expected one-line computer reminder in tool policy:\n%s", prompt)
 	}
 }
 
@@ -150,12 +137,12 @@ func TestBuildSystemPromptIncludesDelegateWaitPolicyOnlyWhenToolsVisible(t *test
 	a := &Agent{soul: soul.Default(), tools: reg}
 
 	prompt := a.buildSystemPrompt(nil)
-	if !strings.Contains(prompt, "Delegated-task completion protocol:") || !strings.Contains(prompt, "action=wait") {
-		t.Fatalf("expected delegate wait policy, got %q", prompt)
+	if strings.Contains(prompt, "Delegated-task completion protocol:") {
+		t.Fatalf("standing prompt still embeds the full delegate protocol:\n%s", prompt)
 	}
 	withoutWait := a.buildSystemPromptWithOptions(nil, systemPromptOptions{DisabledTools: []string{"subagent"}})
 	if strings.Contains(withoutWait, "Delegated-task completion protocol:") {
-		t.Fatalf("did not expect delegate wait policy when subagent is hidden, got %q", withoutWait)
+		t.Fatalf("did not expect delegate protocol when subagent is hidden, got %q", withoutWait)
 	}
 }
 
@@ -281,6 +268,51 @@ func TestBuildSystemPromptIncludesLowercaseAgentsContext(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Lowercase project operating rules.") {
 		t.Fatalf("expected lowercase agents.md content in prompt, got %q", prompt)
+	}
+}
+
+func TestStandingSystemPromptStaysUnderBudget(t *testing.T) {
+	reg := tool.NewRegistry()
+	for _, name := range []string{
+		"computer_observe", "computer_act", "terminal", "subagent",
+		"skill_read", "remember", "present_ui",
+	} {
+		reg.Register(&tool.Tool{Name: name, Enabled: true, Description: strings.Repeat(name+" does a long thing. ", 6)})
+	}
+	for i := 0; i < 8; i++ {
+		reg.Register(&tool.Tool{
+			Name:        fmt.Sprintf("dummy_%d", i),
+			Enabled:     true,
+			Description: strings.Repeat("dummy tool description used only to inflate an inventory. ", 3),
+		})
+	}
+	a := &Agent{
+		soul:  &soul.Soul{Content: "You are Custom Lucky."},
+		tools: reg,
+		skills: []*tool.SkillInfo{
+			{Name: "svg-export", Description: "Export charts", Summary: "Use this skill when exporting SVG."},
+		},
+	}
+	prompt := a.buildSystemPromptWithOptions(nil, systemPromptOptions{OmitProjectContext: true})
+	est := contextx.NewTokenEstimator(128000)
+	tokens := estimateProviderMessages(est, []provider.Message{{Role: "system", Content: prompt}})
+	t.Logf("standing system tokens=%d bytes=%d", tokens, len(prompt))
+	if tokens > 3000 {
+		t.Fatalf("standing system prompt is %d tokens, want <= 3000\n%s", tokens, prompt)
+	}
+	if !strings.Contains(prompt, "You are Custom Lucky.") || !strings.Contains(prompt, "You are LuckyAgent") {
+		t.Fatalf("SOUL or core missing:\n%s", prompt)
+	}
+	for _, absent := range []string{
+		"Computer-use execution protocol",
+		"Hybrid terminal + computer protocol:",
+		"Model-visible tools:",
+		"OpenUI policy:",
+		"Delegated-task completion protocol:",
+	} {
+		if strings.Contains(prompt, absent) {
+			t.Fatalf("protocol block %q still in standing prompt", absent)
+		}
 	}
 }
 
