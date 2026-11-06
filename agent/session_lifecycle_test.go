@@ -120,7 +120,10 @@ func TestCancelSessionStopsCallsWithoutFallback(t *testing.T) {
 			cfg.Foreground = false
 			started := make(chan struct{}, 2)
 			var calls atomic.Int32
-			a.provider = &foregroundProvider{chat: func(ctx context.Context, _ []provider.Message) (*provider.Response, error) {
+			a.provider = &foregroundProvider{chat: func(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+				if isIntentClassifyCall(messages) {
+					return &provider.Response{Content: `{"profile":"tool_task"}`}, nil
+				}
 				calls.Add(1)
 				started <- struct{}{}
 				<-ctx.Done()
@@ -193,7 +196,10 @@ func TestToolHistoryWriteFailureStopsFurtherModelCalls(t *testing.T) {
 				Handler: func(map[string]any) (string, error) { return strings.Repeat("x", 70*1024), nil },
 			})
 			var calls atomic.Int32
-			a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+			a.provider = &foregroundProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+				if isIntentClassifyCall(messages) {
+					return &provider.Response{Content: `{"profile":"tool_task"}`}, nil
+				}
 				if calls.Add(1) > 1 {
 					return &provider.Response{Content: "must not continue"}, nil
 				}

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -38,14 +39,17 @@ func TestRequestProfileGateEndToEndSelectsCodeTask(t *testing.T) {
 	if err := a.cfg.Set("agent.foreground.enabled", "false"); err != nil {
 		t.Fatal(err)
 	}
-	a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+	a.provider = &foregroundProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if len(messages) > 0 && strings.Contains(messages[0].Content, "Classify the user's request") {
+			return &provider.Response{Content: `{"profile":"code_task"}`}, nil
+		}
 		return &provider.Response{Content: "已完成"}, nil
 	}}
 	result, err := a.RunLoopWithSession(context.Background(), sess, "运行测试并修复失败", cfg)
 	if err != nil {
 		t.Fatalf("RunLoopWithSession() error = %v", err)
 	}
-	if result.Profile != RequestProfileCodeTask || result.ProfileSource != "deterministic_code_intent" {
+	if result.Profile != RequestProfileCodeTask || result.ProfileSource != "model_intent" {
 		t.Fatalf("unexpected profile result: %+v", result)
 	}
 }
@@ -244,13 +248,111 @@ func TestLongTaskRequiresExplicitExecutionOrForeground(t *testing.T) {
 	}
 }
 
+func TestModelIntentIgnoresRouterEnableAndFallbacks(t *testing.T) {
+	a, _, cfg := foregroundHarness(t)
+	cfg.Foreground = false
+	cfg.Execution = nil
+	loaded := a.cfg.Get()
+	if loaded.ModelRouter.Enable {
+		t.Fatal("harness must leave model_router.enable false")
+	}
+	loaded.Fallbacks = []config.FallbackEntry{{Model: "a"}, {Model: "b"}}
+	a.cfg.SetConfig(loaded)
+	calls := 0
+	a.provider = &foregroundProvider{chat: func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		calls++
+		if len(messages) == 0 || !strings.Contains(messages[0].Content, "Classify the user's request") {
+			t.Fatal("classify call missing intent prompt")
+		}
+		joined := messages[len(messages)-1].Content
+		if !strings.Contains(joined, "last_profile=code_task") {
+			t.Fatalf("user content = %q", joined)
+		}
+		return &provider.Response{Content: `{"profile":"tool_task"}`}, nil
+	}}
+	cfg.inheritProfile = RequestProfileCodeTask
+	decision := a.classifyRequestProfileWithModel(context.Background(), "这段日志和预期不一致", cfg, providerSnapshot{provider: a.provider})
+	if decision.Profile != RequestProfileToolTask || decision.Source != "model_intent" || calls != 1 {
+		t.Fatalf("tool_task = %+v calls=%d", decision, calls)
+	}
+	a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+		return &provider.Response{Content: `{"profile":"code_task"}`}, nil
+	}}
+	code := a.classifyRequestProfileWithModel(context.Background(), "随便一句", cfg, providerSnapshot{provider: a.provider})
+	if code.Profile != RequestProfileCodeTask || code.Source != "model_intent" {
+		t.Fatalf("code_task = %+v", code)
+	}
+	a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+		return &provider.Response{Content: `{"profile":"chat"}`}, nil
+	}}
+	chat := a.classifyRequestProfileWithModel(context.Background(), "随便一句", cfg, providerSnapshot{provider: a.provider})
+	if chat.Profile != RequestProfileChat || chat.Source != "model_intent" {
+		t.Fatalf("chat = %+v", chat)
+	}
+}
+
+func TestModelIntentFallsBackToKeywords(t *testing.T) {
+	a, _, cfg := foregroundHarness(t)
+	cfg.Foreground = false
+	for _, content := range []string{"", "not json", "   "} {
+		reply := content
+		a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+			if reply == "" {
+				return nil, errors.New("down")
+			}
+			return &provider.Response{Content: reply}, nil
+		}}
+		got := a.classifyRequestProfileWithModel(context.Background(), "运行测试并修复失败", cfg, providerSnapshot{provider: a.provider})
+		if got.Profile != RequestProfileCodeTask || got.Source != "deterministic_code_intent" {
+			t.Fatalf("content %q = %+v", reply, got)
+		}
+	}
+}
+
+func TestModelIntentShortCircuitsWithoutChat(t *testing.T) {
+	a, _, cfg := foregroundHarness(t)
+	calls := 0
+	a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
+		calls++
+		return &provider.Response{Content: `{"profile":"tool_task"}`}, nil
+	}}
+	snap := providerSnapshot{provider: a.provider}
+	execCfg := cfg
+	execCfg.Execution = markerDurable{}
+	execCfg.Foreground = false
+	got := a.classifyRequestProfileWithModel(context.Background(), "你好", execCfg, snap)
+	if got.Profile != RequestProfileLongTask || got.Source != "explicit_execution" || calls != 0 {
+		t.Fatalf("execution = %+v calls=%d", got, calls)
+	}
+	fg := cfg
+	fg.Foreground = true
+	got = a.classifyRequestProfileWithModel(context.Background(), "你好", fg, snap)
+	if got.Profile != RequestProfileLongTask || got.Source != "explicit_foreground" || calls != 0 {
+		t.Fatalf("foreground = %+v calls=%d", got, calls)
+	}
+	cont := cfg
+	cont.Foreground = false
+	cont.inheritProfile = RequestProfileCodeTask
+	got = a.classifyRequestProfileWithModel(context.Background(), "继续", cont, snap)
+	if got.Profile != RequestProfileCodeTask || got.Source != "session_continue" || calls != 0 {
+		t.Fatalf("continue = %+v calls=%d", got, calls)
+	}
+	cfg.Foreground = false
+	cfg.Execution = nil
+	got = a.classifyRequestProfileWithModel(context.Background(), "你好", cfg, snap)
+	if got.Profile != RequestProfileChat || got.Source != "explicit_chat" || calls != 0 {
+		t.Fatalf("hello = %+v calls=%d", got, calls)
+	}
+}
+
 func TestModelLongTaskWithoutExplicitCallerBecomesCodeTask(t *testing.T) {
 	a, _, cfg := foregroundHarness(t)
 	cfg.Foreground = false
 	cfg.Execution = nil
 	loaded := a.cfg.Get()
-	loaded.ModelRouter.Enable = true
-	a.cfg.SetConfig(loaded)
+	if loaded.ModelRouter.Enable {
+		t.Fatal("model_router.enable must stay false")
+	}
 	a.provider = &foregroundProvider{chat: func(context.Context, []provider.Message) (*provider.Response, error) {
 		return &provider.Response{Content: `{"profile":"long_task"}`}, nil
 	}}

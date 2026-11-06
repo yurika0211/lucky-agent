@@ -70,6 +70,9 @@ func foregroundHarness(t *testing.T) (*Agent, *session.Session, LoopConfig) {
 
 func scriptedForeground(p *foregroundProvider, steps int) {
 	p.chat = func(_ context.Context, messages []provider.Message) (*provider.Response, error) {
+		if len(messages) > 0 && strings.Contains(messages[0].Content, "Classify the user's request") {
+			return &provider.Response{Content: `{"profile":"code_task"}`}, nil
+		}
 		if strings.HasPrefix(messages[0].Content, "Review whether") {
 			return &provider.Response{Content: verifiedAssessment}, nil
 		}
