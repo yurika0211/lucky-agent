@@ -683,7 +683,11 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		return
 	}
 
-	effectiveCallOpts := prepareLoopCallOptions(messages, callOpts, state.forceSearchSynthesis)
+	synthesizeAtLimit := remaining == 1 && len(state.citationToolCalls) > 0 && !state.hasPendingDelegateTasks() && (state.memoryGate == nil || !state.memoryGate.shouldBlockFinal())
+	if synthesizeAtLimit {
+		messages = appendIterationSynthesisPrompt(messages)
+	}
+	effectiveCallOpts := prepareLoopCallOptions(messages, callOpts, state.forceSearchSynthesis || synthesizeAtLimit)
 	logger.Debug("agent stream native iteration started",
 		"session_id", sessionID,
 		"round", round,
@@ -708,7 +712,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		a.streamNativeAttempt(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state, retryTimeout, false)
 		return true
 	}
-	ch, err := a.streamLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis, state.provider)
+	ch, err := a.streamLoopIteration(iterCtx, messages, callOpts, state.forceSearchSynthesis || synthesizeAtLimit, state.provider)
 	if err != nil {
 		logger.Warn("agent stream native iteration failed",
 			"session_id", sessionID,
@@ -767,20 +771,13 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		}
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
-			if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
-				continue
-			}
-			if state.hasPendingDelegateTasks() {
-				continue
-			}
-			full := content.String()
-			pending := full[emittedContentBytes:]
-			if textcall.ShouldHoldStream(full) || textcall.ShouldHoldStream(pending) {
-				continue
-			}
-			if len(full) > emittedContentBytes {
-				events <- ChatEvent{Type: ChatEventContent, Content: pending}
-				emittedContentBytes = len(full)
+			if !synthesizeAtLimit && (state.memoryGate == nil || !state.memoryGate.shouldBlockFinal()) && !state.hasPendingDelegateTasks() {
+				full := content.String()
+				pending := full[emittedContentBytes:]
+				if !textcall.ShouldHoldStream(full) && !textcall.ShouldHoldStream(pending) && len(full) > emittedContentBytes {
+					events <- ChatEvent{Type: ChatEventContent, Content: pending}
+					emittedContentBytes = len(full)
+				}
 			}
 		}
 		if chunk.ReasoningContent != "" {
@@ -851,6 +848,12 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 	assistantContent, textToolCalls := textcall.Extract(response)
 	hadTextToolCalls := len(textToolCalls) > 0
 	textToolCalls = textcall.FilterDisabled(textToolCalls, state.disabledTools)
+	if synthesizeAtLimit && (len(toolCallsAcc) > 0 || len(textToolCalls) > 0 || strings.TrimSpace(assistantContent) == "") {
+		fallback := iterationLimitFallback(state.citationToolCalls)
+		events <- ChatEvent{Type: ChatEventContent, Content: fallback}
+		a.finalizeStreamWithState(events, sess, turnInput, fallback, state)
+		return
+	}
 	logger.Debug("agent stream native provider response",
 		"session_id", sessionID,
 		"round", round,
@@ -1072,7 +1075,11 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		return
 	}
 
-	effectiveCallOpts := prepareLoopCallOptions(messages, callOpts, state.forceSearchSynthesis)
+	synthesizeAtLimit := remaining == 1 && len(state.citationToolCalls) > 0 && !state.hasPendingDelegateTasks() && (state.memoryGate == nil || !state.memoryGate.shouldBlockFinal())
+	if synthesizeAtLimit {
+		messages = appendIterationSynthesisPrompt(messages)
+	}
+	effectiveCallOpts := prepareLoopCallOptions(messages, callOpts, state.forceSearchSynthesis || synthesizeAtLimit)
 	logger.Debug("agent stream simulated iteration started",
 		"session_id", sessionID,
 		"round", round,
@@ -1087,7 +1094,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		state.iterationTimeout,
 		messages,
 		callOpts,
-		state.forceSearchSynthesis,
+		state.forceSearchSynthesis || synthesizeAtLimit,
 		state.provider,
 		func() {
 			sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventThinking, Content: "本轮模型请求超时，正在短时重试一次。", Round: round})
@@ -1107,6 +1114,12 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	}
 	state.addResponseUsage(resp)
 	textcall.ApplyToResponse(resp, state.disabledTools)
+	if synthesizeAtLimit && (len(resp.ToolCalls) > 0 || strings.TrimSpace(resp.Content) == "") {
+		fallback := iterationLimitFallback(state.citationToolCalls)
+		events <- ChatEvent{Type: ChatEventContent, Content: fallback}
+		a.finalizeStreamWithState(events, sess, turnInput, fallback, state)
+		return
+	}
 	logger.Debug("agent stream simulated provider response",
 		"session_id", sessionID,
 		"round", round,
