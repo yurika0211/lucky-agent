@@ -20,7 +20,7 @@ When a free-chat answer is clearer as a table, chart, list, citation, map, or a 
 The tree is a JSON object: tree_id, state, nodes. Each node has id, type, and props. Allowed types and required props:
 
 - Table: columns, rows
-- Chart: kind, series
+- Chart: kind, series. kind is bar|line|area|pie|scatter. Unknown or Chinese 折线/散点 is drawn as bar. pie with more than 6 slices or a non-positive sum is drawn as bar. Optional range controls crop already present points; dragging does not call the model. When the user applies, they re-ask via ui_action with values.window and optional kind.
 - List: items
 - Actions: items (choices only; a write still goes through the existing approval flow)
 - Image: src
@@ -29,7 +29,7 @@ The tree is a JSON object: tree_id, state, nodes. Each node has id, type, and pr
 - Map: points
 - Markdown: text
 
-state is complete, or waiting_input when Actions needs a choice. Do not invent component names and do not send HTML as the tree.`
+state is complete, or waiting_input when Actions needs a choice. Do not invent Box, Row, Carousel, AppBlock, or HTML as the tree.`
 
 func (a *Agent) registerPresentUITool() {
 	if a == nil || a.tools == nil {
@@ -41,7 +41,7 @@ func (a *Agent) registerPresentUITool() {
 		Enabled:      true,
 		Permission:   tool.PermAuto,
 		ParallelSafe: true,
-		Description:  "Show a catalog OpenUI tree beside the Markdown answer in free chat. Use it for a table, chart, list, citation, map, or choices. Pass tree as an object with tree_id, state, and nodes. Unknown components are dropped; an empty tree keeps Markdown only.",
+		Description:  "Show a catalog OpenUI tree beside the Markdown answer in free chat. Use it for a table, chart, list, citation, map, or choices. Chart kind includes scatter; a range stays local until the user applies window and kind. Pass tree as an object with tree_id, state, and nodes. Unknown components are dropped; an empty tree keeps Markdown only.\n\n" + presentUIPolicy,
 		Parameters: map[string]tool.Param{
 			"tree": {
 				Type:        "object",
