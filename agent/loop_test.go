@@ -217,11 +217,11 @@ func TestFilterFunctionTools(t *testing.T) {
 
 func TestFilterFunctionToolsResolvesOpenAICompatibleName(t *testing.T) {
 	tools := []map[string]any{
-		{"type": "function", "function": map[string]any{"name": "codex_start_thread"}},
+		{"type": "function", "function": map[string]any{"name": "demo_echo"}},
 		{"type": "function", "function": map[string]any{"name": "terminal"}},
 	}
 
-	got := filterFunctionTools(tools, []string{"codex.start_thread"})
+	got := filterFunctionTools(tools, []string{"demo.echo"})
 	if len(got) != 1 || functionToolNameFromSchema(got[0]) != "terminal" {
 		t.Fatalf("expected dotted disabled name to hide its model alias, got %#v", got)
 	}

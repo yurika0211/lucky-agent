@@ -369,7 +369,7 @@ func (a *Agent) runPluginAgent(exec tool.ExecutionContext, name, task string) (s
 				continue
 			}
 			toolName := registered.Name
-			if registered.Category == tool.CatDelegate || strings.HasPrefix(toolName, "delegate_") || strings.HasPrefix(toolName, "autonomy_") || strings.HasPrefix(toolName, "collab_") || strings.HasPrefix(toolName, "cron_") || strings.HasPrefix(toolName, "codex.") || strings.HasPrefix(toolName, "grok.") || strings.HasPrefix(toolName, "tmp_credential_") || strings.HasPrefix(toolName, "tmp_terminal_credential_") {
+			if registered.Category == tool.CatDelegate || strings.HasPrefix(toolName, "delegate_") || strings.HasPrefix(toolName, "autonomy_") || strings.HasPrefix(toolName, "collab_") || strings.HasPrefix(toolName, "cron_") || strings.HasPrefix(toolName, "tmp_credential_") || strings.HasPrefix(toolName, "tmp_terminal_credential_") {
 				cfg.DisabledTools = append(cfg.DisabledTools, toolName)
 			}
 		}

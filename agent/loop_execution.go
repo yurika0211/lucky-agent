@@ -664,8 +664,8 @@ func (a *Agent) executeToolCallsOrderedGuardedContext(
 	allowed := make([]provider.ToolCall, 0, len(toolCalls))
 	for idx, tc := range toolCalls {
 		// Providers receive OpenAI-compatible names (for example
-		// codex_start_turn), while guard rules use the registry's canonical
-		// names (codex.start_turn). Resolve the name before policy checks so an
+		// demo_echo), while guard rules use the registry's canonical
+		// names (demo.echo). Resolve the name before policy checks so an
 		// aliased call cannot bypass the turn guard.
 		guardCall := tc
 		guardCall.Name = a.canonicalToolName(tc.Name)
