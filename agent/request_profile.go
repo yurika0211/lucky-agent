@@ -45,7 +45,45 @@ func classifyRequestProfile(input string, cfg LoopConfig) RequestProfileDecision
 	if inherited, ok := continuationProfile(text, cfg); ok {
 		return RequestProfileDecision{Profile: inherited, Source: "session_continue", Confidence: 0.9}
 	}
-	return RequestProfileDecision{Profile: RequestProfileChat, Source: "fallback_low_risk", Confidence: 0.55}
+	if isExplicitChat(text) {
+		return RequestProfileDecision{Profile: RequestProfileChat, Source: "explicit_chat", Confidence: 0.9}
+	}
+	if inherited, ok := inheritedUnknownProfile(cfg); ok {
+		return RequestProfileDecision{Profile: inherited, Source: "session_unknown", Confidence: 0.7}
+	}
+	return RequestProfileDecision{Profile: RequestProfileToolTask, Source: "fallback_needs_tools", Confidence: 0.6}
+}
+
+var explicitChatPhrases = []string{
+	"你好",
+	"谢谢",
+	"在吗",
+	"hi",
+	"hello",
+	"thanks",
+	"ok",
+	"好的",
+}
+
+func isExplicitChat(text string) bool {
+	trimmed := stripEdgePunct(text)
+	for _, phrase := range explicitChatPhrases {
+		if trimmed == phrase {
+			return true
+		}
+	}
+	return false
+}
+
+func inheritedUnknownProfile(cfg LoopConfig) (RequestProfile, bool) {
+	last := cfg.inheritProfile
+	if last == "" || last == RequestProfileChat {
+		return "", false
+	}
+	if last == RequestProfileLongTask && cfg.Execution == nil && !cfg.Foreground {
+		return RequestProfileCodeTask, true
+	}
+	return last, true
 }
 
 // continuationPhrases are whole-turn follow-ups. A longer request that only
@@ -60,14 +98,36 @@ var continuationPhrases = []string{
 	"continue",
 }
 
-func isContinuationPhrase(text string) bool {
+var continuationTokens = []string{
+	"继续",
+	"接着",
+	"go on",
+	"continue",
+	"keep going",
+	"keep doing",
+}
+
+func stripEdgePunct(text string) string {
 	trimmed := strings.TrimSpace(text)
 	trimmed = strings.TrimFunc(trimmed, func(r rune) bool {
 		return unicode.IsPunct(r) || unicode.IsSpace(r)
 	})
-	trimmed = strings.ToLower(strings.TrimSpace(trimmed))
+	return strings.ToLower(strings.TrimSpace(trimmed))
+}
+
+func isContinuationPhrase(text string) bool {
+	trimmed := stripEdgePunct(text)
 	for _, phrase := range continuationPhrases {
 		if trimmed == phrase {
+			return true
+		}
+	}
+	runes := []rune(trimmed)
+	if len(runes) == 0 || len(runes) > 24 {
+		return false
+	}
+	for _, token := range continuationTokens {
+		if strings.Contains(trimmed, token) {
 			return true
 		}
 	}
@@ -170,11 +230,22 @@ func applyProfileBudget(cfg *LoopConfig, iterations int, timeout time.Duration) 
 }
 
 func contextBuildOptionsForProfile(profile RequestProfile) contextBuildOptions {
+	return contextBuildOptionsForProfileSource(profile, "")
+}
+
+// contextBuildOptionsForProfileSource shrinks history only for a real chat
+// turn. Any other chat source uses the tool_task window.
+func contextBuildOptionsForProfileSource(profile RequestProfile, source string) contextBuildOptions {
 	opts := defaultContextBuildOptions()
 	switch profile {
 	case RequestProfileChat:
-		opts.HistoryRecent = 4
-		opts.MaxContextTokens = 24000
+		if source == "explicit_chat" || source == "empty_input" {
+			opts.HistoryRecent = 4
+			opts.MaxContextTokens = 24000
+		} else {
+			opts.HistoryRecent = 6
+			opts.MaxContextTokens = 48000
+		}
 	case RequestProfileToolTask:
 		opts.HistoryRecent = 6
 		opts.MaxContextTokens = 48000

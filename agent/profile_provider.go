@@ -11,6 +11,10 @@ import (
 // request provider while preserving the configured fallback nodes. The final
 // fallback can therefore still override reasoning_effort with none.
 func (a *Agent) providerSnapshotForProfile(snapshot providerSnapshot, profile RequestProfile) providerSnapshot {
+	return a.providerSnapshotForProfileSource(snapshot, profile, "")
+}
+
+func (a *Agent) providerSnapshotForProfileSource(snapshot providerSnapshot, profile RequestProfile, source string) providerSnapshot {
 	if a == nil || a.cfg == nil || a.registry == nil || !snapshot.valid() {
 		return snapshot
 	}
@@ -36,9 +40,9 @@ func (a *Agent) providerSnapshotForProfile(snapshot providerSnapshot, profile Re
 		return snapshot
 	}
 	tuned.Provider, tuned.APIKey, tuned.APIBase, tuned.Model = current.Provider, current.APIKey, current.APIBase, current.Model
-	effort := "low"
-	if profile == RequestProfileToolTask {
-		effort = "medium"
+	effort := "medium"
+	if profile == RequestProfileChat && (source == "explicit_chat" || source == "empty_input") {
+		effort = "low"
 	}
 	tuned.LlmProvider.ReasoningEffort = effort
 	if tuned.Models.Endpoints != nil {

@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/yurika0211/luckyagent-runtime/config"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/turn"
 )
@@ -22,7 +24,7 @@ func TestRequestProfileGateEndToEndSelectsLightweightChat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunLoopWithSession() error = %v", err)
 	}
-	if result.Profile != RequestProfileChat || result.ProfileSource != "fallback_low_risk" {
+	if result.Profile != RequestProfileChat || result.ProfileSource != "explicit_chat" {
 		t.Fatalf("unexpected profile result: %+v", result)
 	}
 	if result.ProfileConfidence <= 0 {
@@ -114,11 +116,11 @@ func TestContinuationInheritsLastProfile(t *testing.T) {
 		t.Fatalf("继续修编译错误 = %+v", code)
 	}
 	chat := classifyRequestProfile("你好", cfg)
-	if chat.Profile != RequestProfileChat || chat.Source != "fallback_low_risk" {
+	if chat.Profile != RequestProfileChat || chat.Source != "explicit_chat" {
 		t.Fatalf("你好 = %+v", chat)
 	}
 	missing := classifyRequestProfile("继续", LoopConfig{})
-	if missing.Profile != RequestProfileChat || missing.Source != "fallback_low_risk" {
+	if missing.Profile != RequestProfileToolTask || missing.Source != "fallback_needs_tools" {
 		t.Fatalf("继续 without last profile = %+v", missing)
 	}
 	longTask := classifyRequestProfile("继续", LoopConfig{inheritProfile: RequestProfileLongTask})
@@ -128,6 +130,89 @@ func TestContinuationInheritsLastProfile(t *testing.T) {
 	explicit := classifyRequestProfile("继续", LoopConfig{inheritProfile: RequestProfileLongTask, Foreground: true})
 	if explicit.Profile != RequestProfileLongTask || explicit.Source != "explicit_foreground" {
 		t.Fatalf("foreground continue = %+v", explicit)
+	}
+}
+
+func TestUnknownProfileIsNotCheapestChat(t *testing.T) {
+	paragraph := strings.Repeat("调试这段输出为什么和预期不一致。", 20)
+	if len([]rune(paragraph)) < 400 {
+		t.Fatalf("fixture too short: %d", len([]rune(paragraph)))
+	}
+	unknown := classifyRequestProfile(paragraph, LoopConfig{})
+	if unknown.Profile != RequestProfileToolTask || unknown.Source != "fallback_needs_tools" {
+		t.Fatalf("unknown = %+v", unknown)
+	}
+	inherited := classifyRequestProfile(paragraph, LoopConfig{inheritProfile: RequestProfileCodeTask})
+	if inherited.Profile != RequestProfileCodeTask || inherited.Source != "session_unknown" {
+		t.Fatalf("unknown inherit = %+v", inherited)
+	}
+	longUnknown := classifyRequestProfile(paragraph, LoopConfig{inheritProfile: RequestProfileLongTask})
+	if longUnknown.Profile != RequestProfileCodeTask || longUnknown.Source != "session_unknown" {
+		t.Fatalf("unknown long_task = %+v", longUnknown)
+	}
+	cont := classifyRequestProfile("继续吧", LoopConfig{inheritProfile: RequestProfileToolTask})
+	if cont.Profile != RequestProfileToolTask || cont.Source != "session_continue" {
+		t.Fatalf("继续吧 = %+v", cont)
+	}
+	for _, input := range []string{"那就继续", "please continue", "go on then"} {
+		got := classifyRequestProfile(input, LoopConfig{inheritProfile: RequestProfileToolTask})
+		if got.Profile != RequestProfileToolTask || got.Source != "session_continue" {
+			t.Fatalf("%q = %+v", input, got)
+		}
+	}
+	code := classifyRequestProfile("继续修编译错误", LoopConfig{inheritProfile: RequestProfileToolTask})
+	if code.Profile != RequestProfileCodeTask || code.Source != "deterministic_code_intent" {
+		t.Fatalf("继续修编译错误 = %+v", code)
+	}
+	hello := classifyRequestProfile("你好", LoopConfig{})
+	if hello.Profile != RequestProfileChat || hello.Source != "explicit_chat" {
+		t.Fatalf("你好 = %+v", hello)
+	}
+	embedded := classifyRequestProfile("你好，"+paragraph, LoopConfig{})
+	if embedded.Profile != RequestProfileToolTask || embedded.Source != "fallback_needs_tools" {
+		t.Fatalf("embedded 你好 = %+v", embedded)
+	}
+}
+
+func TestChatContextShrinksOnlyForExplicitChat(t *testing.T) {
+	explicit := contextBuildOptionsForProfileSource(RequestProfileChat, "explicit_chat")
+	if explicit.HistoryRecent != 4 || explicit.MaxContextTokens != 24000 {
+		t.Fatalf("explicit chat context = %+v", explicit)
+	}
+	empty := contextBuildOptionsForProfileSource(RequestProfileChat, "empty_input")
+	if empty.HistoryRecent != 4 || empty.MaxContextTokens != 24000 {
+		t.Fatalf("empty chat context = %+v", empty)
+	}
+	stale := contextBuildOptionsForProfileSource(RequestProfileChat, "fallback_low_risk")
+	tool := contextBuildOptionsForProfileSource(RequestProfileToolTask, "fallback_needs_tools")
+	if stale.HistoryRecent != tool.HistoryRecent || stale.MaxContextTokens != tool.MaxContextTokens {
+		t.Fatalf("stale chat context = %+v, tool = %+v", stale, tool)
+	}
+	if stale.HistoryRecent == 4 || stale.MaxContextTokens == 24000 {
+		t.Fatalf("stale chat still cheapest: %+v", stale)
+	}
+}
+
+func TestSimpleTaskTuningKeepsConfiguredBudget(t *testing.T) {
+	cfg := LoopConfig{
+		MaxIterations:           80,
+		Timeout:                 5 * time.Minute,
+		RepeatToolCallLimit:     8,
+		ToolOnlyIterationLimit:  8,
+		maxIterationsFromConfig: true,
+		timeoutFromConfig:       true,
+	}
+	applySimpleTaskLoopTuning(&cfg, "列出当前目录文件", config.AgentLoopConfig{})
+	if cfg.MaxIterations != 80 || cfg.Timeout != 5*time.Minute {
+		t.Fatalf("configured simple task = %d %s", cfg.MaxIterations, cfg.Timeout)
+	}
+	if cfg.RepeatToolCallLimit != 2 || cfg.ToolOnlyIterationLimit != 2 {
+		t.Fatalf("repeat limits = %d %d", cfg.RepeatToolCallLimit, cfg.ToolOnlyIterationLimit)
+	}
+	unset := LoopConfig{MaxIterations: 80, Timeout: 5 * time.Minute, RepeatToolCallLimit: 8, ToolOnlyIterationLimit: 8}
+	applySimpleTaskLoopTuning(&unset, "列出当前目录文件", config.AgentLoopConfig{})
+	if unset.MaxIterations != 3 || unset.Timeout != 25*time.Second {
+		t.Fatalf("unset simple task = %d %s", unset.MaxIterations, unset.Timeout)
 	}
 }
 

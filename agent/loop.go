@@ -489,7 +489,13 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 	}); ok {
 		remember.rememberRequestProfile(loopCfg.SessionID, profile.Profile)
 	}
-	turnProvider = l.runtime.providerSnapshotForProfile(turnProvider, profile.Profile)
+	if withSource, ok := l.runtime.(interface {
+		providerSnapshotForProfileSource(providerSnapshot, RequestProfile, string) providerSnapshot
+	}); ok {
+		turnProvider = withSource.providerSnapshotForProfileSource(turnProvider, profile.Profile, profile.Source)
+	} else {
+		turnProvider = l.runtime.providerSnapshotForProfile(turnProvider, profile.Profile)
+	}
 	if loopCfg.Execution != nil {
 		l.runtime.applyIntentToolGating(&loopCfg, routingText)
 		l.runtime.applyVisionToolPolicy(&loopCfg, turnProvider)
@@ -598,7 +604,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 
 	// 构建初始消息
 	l.runtime.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider, compactProgressEmitter(loopCfg))
-	buildOpts := contextBuildOptionsForProfile(loopCfg.Profile)
+	buildOpts := contextBuildOptionsForProfileSource(loopCfg.Profile, loopCfg.ProfileSource)
 	buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 	messages := l.runtime.buildContextMessagesForInputWithProvider(ctx, sess, turnInput, buildOpts, turnProvider)
 	if sess != nil {

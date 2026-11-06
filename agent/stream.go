@@ -552,7 +552,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		profile := a.classifyRequestProfileWithModel(ctx, routingText, loopCfg, turnProvider)
 		applyRequestProfileDecision(&loopCfg, profile)
 		a.rememberRequestProfile(loopCfg.SessionID, profile.Profile)
-		turnProvider = a.providerSnapshotForProfile(turnProvider, profile.Profile)
+		turnProvider = a.providerSnapshotForProfileSource(turnProvider, profile.Profile, profile.Source)
 		if strings.TrimSpace(loopCfg.RunID) == "" {
 			loopCfg.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())
 		}
@@ -600,7 +600,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 			"disabled_tools", strings.Join(loopCfg.DisabledTools, ","),
 		)
 
-		buildOpts := contextBuildOptionsForProfile(loopCfg.Profile)
+		buildOpts := contextBuildOptionsForProfileSource(loopCfg.Profile, loopCfg.ProfileSource)
 		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 		a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider, compactProgressEmitter(loopCfg))
 		messages := a.buildContextMessagesForInputWithProvider(ctx, sess, input, buildOpts, turnProvider)

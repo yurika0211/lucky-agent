@@ -625,10 +625,10 @@ func applySimpleTaskLoopTuning(loopCfg *LoopConfig, userInput string, cfg config
 		toolOnlyIterationLimit = 2
 	}
 
-	if loopCfg.MaxIterations > maxIterations {
+	if !loopCfg.maxIterationsFromConfig && loopCfg.MaxIterations > maxIterations {
 		loopCfg.MaxIterations = maxIterations
 	}
-	if loopCfg.Timeout > timeout {
+	if !loopCfg.timeoutFromConfig && loopCfg.Timeout > timeout {
 		loopCfg.Timeout = timeout
 	}
 	if loopCfg.RepeatToolCallLimit > repeatToolCallLimit {

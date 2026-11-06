@@ -92,6 +92,13 @@ func (r *agentLoopRuntime) providerSnapshotForProfile(snapshot providerSnapshot,
 	return r.agent.providerSnapshotForProfile(snapshot, profile)
 }
 
+func (r *agentLoopRuntime) providerSnapshotForProfileSource(snapshot providerSnapshot, profile RequestProfile, source string) providerSnapshot {
+	if r == nil || r.agent == nil {
+		return snapshot
+	}
+	return r.agent.providerSnapshotForProfileSource(snapshot, profile, source)
+}
+
 func (r *agentLoopRuntime) applyVisionToolPolicy(cfg *LoopConfig, snapshot providerSnapshot) {
 	if r == nil || r.agent == nil {
 		return
