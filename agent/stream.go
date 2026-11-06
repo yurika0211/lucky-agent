@@ -548,8 +548,10 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		defer snapshot.Close()
 
 		sanitizeLoopConfig(&loopCfg)
+		loopCfg.inheritProfile = a.lastRequestProfile(loopCfg.SessionID)
 		profile := a.classifyRequestProfileWithModel(ctx, routingText, loopCfg, turnProvider)
 		applyRequestProfileDecision(&loopCfg, profile)
+		a.rememberRequestProfile(loopCfg.SessionID, profile.Profile)
 		turnProvider = a.providerSnapshotForProfile(turnProvider, profile.Profile)
 		if strings.TrimSpace(loopCfg.RunID) == "" {
 			loopCfg.RunID = fmt.Sprintf("run-%d", time.Now().UnixNano())

@@ -64,6 +64,20 @@ func (r *agentLoopRuntime) applyIntentToolGating(cfg *LoopConfig, input string) 
 	r.agent.applyIntentToolGating(cfg, input)
 }
 
+func (r *agentLoopRuntime) lastRequestProfile(sessionID string) RequestProfile {
+	if r == nil || r.agent == nil {
+		return ""
+	}
+	return r.agent.lastRequestProfile(sessionID)
+}
+
+func (r *agentLoopRuntime) rememberRequestProfile(sessionID string, profile RequestProfile) {
+	if r == nil || r.agent == nil {
+		return
+	}
+	r.agent.rememberRequestProfile(sessionID, profile)
+}
+
 func (r *agentLoopRuntime) classifyRequestProfile(ctx context.Context, input string, cfg LoopConfig, snapshot providerSnapshot) RequestProfileDecision {
 	if r == nil || r.agent == nil {
 		return classifyRequestProfile(input, cfg)

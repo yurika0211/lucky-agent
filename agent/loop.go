@@ -133,6 +133,13 @@ type LoopConfig struct {
 	Profile                RequestProfile        // resource profile selected before tool gating
 	ProfileSource          string                // profile decision source
 	ProfileConfidence      float32               // deterministic profile confidence
+	// Set by ApplyAgentLoopConfig when agent.max_iterations / timeout_seconds
+	// are copied. Profile caps must not lower those values.
+	maxIterationsFromConfig bool
+	timeoutFromConfig       bool
+	// inheritProfile is the session's last non-chat profile, copied for this
+	// turn so a short 「继续」 can reuse it. Not persisted.
+	inheritProfile RequestProfile
 }
 
 // loopRuntime is the narrow set of services used by one ordinary turn. The
@@ -315,9 +322,11 @@ func ApplyAgentLoopConfig(loopCfg *LoopConfig, cfg config.AgentLoopConfig) {
 	loopCfg.Foreground = cfg.Foreground.Enabled == nil || *cfg.Foreground.Enabled
 	if cfg.MaxIterations > 0 {
 		loopCfg.MaxIterations = cfg.MaxIterations
+		loopCfg.maxIterationsFromConfig = true
 	}
 	if cfg.TimeoutSeconds > 0 {
 		loopCfg.Timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+		loopCfg.timeoutFromConfig = true
 	}
 	loopCfg.AutoApprove = cfg.AutoApprove
 	if cfg.RepeatToolCallLimit > 0 {
@@ -468,8 +477,18 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 	if sess != nil {
 		loopCfg.SessionID = strings.TrimSpace(sess.ID)
 	}
+	if remember, ok := l.runtime.(interface {
+		lastRequestProfile(string) RequestProfile
+	}); ok {
+		loopCfg.inheritProfile = remember.lastRequestProfile(loopCfg.SessionID)
+	}
 	profile := l.runtime.classifyRequestProfile(ctx, routingText, loopCfg, turnProvider)
 	applyRequestProfileDecision(&loopCfg, profile)
+	if remember, ok := l.runtime.(interface {
+		rememberRequestProfile(string, RequestProfile)
+	}); ok {
+		remember.rememberRequestProfile(loopCfg.SessionID, profile.Profile)
+	}
 	turnProvider = l.runtime.providerSnapshotForProfile(turnProvider, profile.Profile)
 	if loopCfg.Execution != nil {
 		l.runtime.applyIntentToolGating(&loopCfg, routingText)
