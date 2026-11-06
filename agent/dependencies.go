@@ -105,6 +105,7 @@ func NewWithDependencies(opts Options, deps *Dependencies) (*Agent, error) {
 		collabReg:           deps.CollabRegistry,
 		collabMgr:           deps.CollabManager,
 		metrics:             supportRT.Metrics,
+		toolMetrics:         newToolDurationMetrics(),
 		proactiveStore:      proactiveStore,
 		proactiveRuntime:    proactiveRuntime,
 		cronEngine:          supportRT.CronEngine,
@@ -132,6 +133,9 @@ func NewWithDependencies(opts Options, deps *Dependencies) (*Agent, error) {
 	}
 	if a.metrics == nil {
 		a.metrics = metrics.NewMetrics()
+	}
+	if a.toolMetrics == nil {
+		a.toolMetrics = newToolDurationMetrics()
 	}
 
 	if err := a.preparePlugins(); err != nil {

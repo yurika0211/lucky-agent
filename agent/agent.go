@@ -98,6 +98,7 @@ type Agent struct {
 	// skillInstall is built lazily by SkillInstaller; it is guarded by skillMu.
 	skillInstall          *tool.InstallManager
 	metrics               *metrics.Metrics // 指标收集器
+	toolMetrics           *toolDurationMetrics
 	proactiveStore        *proactive.Store
 	proactiveRuntime      *proactive.RuntimeService
 	cronEngine            *cron.Engine // 定时任务引擎
@@ -521,8 +522,13 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 	// v0.36.0: 记录指标
 	a.metrics.RecordChatRequest()
 	if len(result.ToolCalls) > 0 {
-		for range result.ToolCalls {
+		for _, call := range result.ToolCalls {
+			// Runtime counter has no duration. Pass the measured toolCallLog
+			// duration into the in-process histogram. Do not time again.
 			a.metrics.RecordToolCall()
+			if a.toolMetrics != nil {
+				a.toolMetrics.record(call.Name, call.Duration, toolResultFailed(call.Result))
+			}
 		}
 	}
 	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)
@@ -1580,6 +1586,35 @@ func (a *Agent) ContextCache() contextMessageCacheStore {
 // Metrics 返回指标收集器
 func (a *Agent) Metrics() *metrics.Metrics {
 	return a.metrics
+}
+
+// ToolMetricsPrometheus appends per-tool duration lines.
+// lh_tool_calls_total and lh_function_calls_total stay on Metrics().
+// lh_function_calls_total counts RecordFunctionCall, not tool wall clock.
+func (a *Agent) ToolMetricsPrometheus() string {
+	if a == nil || a.toolMetrics == nil {
+		return ""
+	}
+	return a.toolMetrics.ExportPrometheus()
+}
+
+// MetricsPrometheus is the stable hook for GET /api/v1/metrics.
+// The HTTP handler lives in luckyagent-app and still writes
+// runtime Metrics.ExportPrometheus(). Append this string after that body.
+// It is the same text as ToolMetricsPrometheus.
+func (a *Agent) MetricsPrometheus() string {
+	if a == nil {
+		return ""
+	}
+	return a.ToolMetricsPrometheus()
+}
+
+// ToolDurationSnapshot returns per-tool success, failure, and latency.
+func (a *Agent) ToolDurationSnapshot() map[string]ToolDurationSnapshot {
+	if a == nil || a.toolMetrics == nil {
+		return nil
+	}
+	return a.toolMetrics.snapshot()
 }
 
 // CronEngine 返回定时任务引擎

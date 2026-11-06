@@ -22,6 +22,15 @@ func toolObservation(exec executedToolCall) (started *time.Time, durationMS int6
 	return started, durationMS, toolResultStatus(exec.Result)
 }
 
+func toolResultFailed(result string) bool {
+	switch toolResultStatus(result) {
+	case "timeout", "sandbox", "error":
+		return true
+	default:
+		return false
+	}
+}
+
 func toolResultStatus(result string) string {
 	text := strings.TrimSpace(result)
 	switch {
