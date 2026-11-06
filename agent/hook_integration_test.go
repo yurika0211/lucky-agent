@@ -69,7 +69,7 @@ func TestExecuteGuardedPreToolUseResolvesOpenAICompatibleName(t *testing.T) {
 	requireShForHooks(t)
 	tools := tool.NewRegistry()
 	tools.Register(&tool.Tool{
-		Name:       "codex.start_turn",
+		Name:       "demo.echo",
 		Permission: tool.PermAuto,
 		Handler:    func(map[string]any) (string, error) { return "RAN", nil },
 	})
@@ -80,17 +80,17 @@ func TestExecuteGuardedPreToolUseResolvesOpenAICompatibleName(t *testing.T) {
 			Enabled: true,
 			Timeout: 2 * time.Second,
 			PreToolUse: []hook.Spec{{
-				Match:   []string{"codex.start_turn"},
-				Command: `echo '{"decision":"block","reason":"codex policy"}'`,
+				Match:   []string{"demo.echo"},
+				Command: `echo '{"decision":"block","reason":"demo policy"}'`,
 			}},
 		}),
 	}
 
-	results := runGuarded(a, []provider.ToolCall{{Name: "codex_start_turn", Arguments: "{}"}})
+	results := runGuarded(a, []provider.ToolCall{{Name: "demo_echo", Arguments: "{}"}})
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
-	if !strings.Contains(results[0].Result, "codex policy") {
+	if !strings.Contains(results[0].Result, "demo policy") {
 		t.Errorf("expected canonical-name hook to block, got %q", results[0].Result)
 	}
 	if strings.Contains(results[0].Result, "RAN") {
@@ -101,14 +101,14 @@ func TestExecuteGuardedPreToolUseResolvesOpenAICompatibleName(t *testing.T) {
 func TestExecuteGuardedPolicyResolvesOpenAICompatibleName(t *testing.T) {
 	tools := tool.NewRegistry()
 	tools.Register(&tool.Tool{
-		Name:       "codex.start_turn",
+		Name:       "file_write",
 		Permission: tool.PermAuto,
 		Handler:    func(map[string]any) (string, error) { return "RAN", nil },
 	})
 	a := &Agent{tools: tools, gateway: tool.NewGateway(tools)}
 
 	results := a.executeToolCallsOrderedGuarded(
-		[]provider.ToolCall{{Name: "codex_start_turn", Arguments: "{}"}},
+		[]provider.ToolCall{{Name: "file_write", Arguments: `{"path":"note.txt","content":"x"}`}},
 		true, nil, map[string]int{}, map[string]string{}, 1, false,
 		newTurnToolGuard("不要修改文件", nil, nil),
 	)

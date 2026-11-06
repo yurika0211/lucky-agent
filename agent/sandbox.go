@@ -65,8 +65,6 @@ func (a *Agent) applySandboxToolPolicy(cfg *LoopConfig, snapshot *sandbox.Snapsh
 	disabled := []string{
 		"computer_observe", "computer_act",
 		"web_search", "web_fetch", "http_request", "opencli",
-		"grok.start_session", "grok.resume_session", "grok.start_turn",
-		"grok.subscribe_events", "grok.respond_approval", "grok.get_turn_summary",
 		"cron",
 		"autonomy", "autonomy_queue_add", "autonomy_queue_update", "autonomy_worker_spawn",
 		"subagent",

@@ -147,24 +147,6 @@
     "max_chars": 50000,
     "fallback_to_web_fetch": true
   },
-  "codex": {
-    "enabled": false,
-    "command": "codex",
-    "args": ["app-server"],
-    "approval_mode": "gateway",
-    "default_sandbox": "workspace-write",
-    "cwd_allowlist": [],
-    "max_events": 256
-  },
-  "grok": {
-    "enabled": false,
-    "command": "grok",
-    "args": ["agent", "stdio"],
-    "approval_mode": "gateway",
-    "model": "",
-    "cwd_allowlist": [],
-    "max_events": 256
-  },
   "stream_mode": "native",
   "memory": {
     "backend": "aestus",

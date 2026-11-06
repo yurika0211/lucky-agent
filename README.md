@@ -202,8 +202,6 @@ lh rag search "deployment"
 - [共享应用服务及宿主适配](docs/application-services.md)
 - [多仓库协作与进度同步](docs/multi-repo-workflow.md)
 - [运行时请求与恢复选项](docs/runtime-request-recovery.md)：WebSocket 恢复、可选缓存 key 与 X11 截图回退
-- [Codex App Server 集成](docs/codex-app-server.md)
-- [Grok agent 集成](docs/grok-agent.md)
 - [记忆系统](docs/memory_system.md)
 - [Graph RAG 快速开始](docs/GRAPH_RAG_QUICKSTART.md)
 - [多 Agent 协作](docs/multi-agent/collaboration.md)

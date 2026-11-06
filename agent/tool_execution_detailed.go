@@ -230,9 +230,7 @@ func requiresInteractiveApproval(name string, args map[string]any) bool {
 		"computer_act", "image_generate", "text_to_speech",
 		"delegate_task", "delegate_cancel", "delegate_parallel", "delegate_to_skill", "delegate_to_mcp",
 		"cron_add", "cron_remove", "cron_pause", "cron_resume",
-		"autonomy", "autonomy_worker_spawn",
-		"codex.start_turn", "codex.steer_turn", "codex.respond_approval",
-		"grok.start_turn", "grok.respond_approval":
+		"autonomy", "autonomy_worker_spawn":
 		return true
 	case "http_request":
 		if args == nil {

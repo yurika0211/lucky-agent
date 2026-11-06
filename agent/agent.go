@@ -1068,8 +1068,8 @@ func (a *Agent) Tools() *tool.Registry {
 	return a.tools
 }
 
-// PendingApprovals returns runtime HITL waits plus external coding-agent
-// permission requests in a provider-neutral shape for HTTP/mobile/GUI surfaces.
+// PendingApprovals returns runtime HITL waits in a provider-neutral shape
+// for HTTP/mobile/GUI surfaces.
 func (a *Agent) PendingApprovals() []tool.PendingApproval {
 	if a == nil {
 		return nil
@@ -1085,7 +1085,7 @@ func (a *Agent) PendingApprovals() []tool.PendingApproval {
 }
 
 // RespondApproval resolves a pending approval. provider "runtime" (or empty)
-// targets the local agent HITL gate; "codex"/"grok" target external bridges.
+// targets the local agent HITL gate. Other providers are unsupported.
 func (a *Agent) RespondApproval(ctx context.Context, providerName, approvalID, decision string) (tool.PendingApproval, error) {
 	return a.RespondApprovalWithInput(ctx, providerName, approvalID, decision, "")
 }
