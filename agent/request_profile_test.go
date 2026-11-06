@@ -134,7 +134,7 @@ func TestContinuationInheritsLastProfile(t *testing.T) {
 }
 
 func TestUnknownProfileIsNotCheapestChat(t *testing.T) {
-	paragraph := strings.Repeat("调试这段输出为什么和预期不一致。", 20)
+	paragraph := strings.Repeat("调试这段输出为什么和预期不一致。", 26)
 	if len([]rune(paragraph)) < 400 {
 		t.Fatalf("fixture too short: %d", len([]rune(paragraph)))
 	}
