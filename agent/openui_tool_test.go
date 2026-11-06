@@ -39,6 +39,21 @@ func TestPresentUIKeepsTableAndStripsTreeFromModelNote(t *testing.T) {
 	}
 }
 
+func TestPresentUIDescriptionCarriesChartPolicy(t *testing.T) {
+	a := &Agent{tools: tool.NewRegistry()}
+	a.registerPresentUITool()
+	registered, ok := a.tools.Get(presentUIToolName)
+	if !ok {
+		t.Fatal("present_ui was not registered")
+	}
+	if !strings.Contains(registered.Description, "scatter") || !strings.Contains(registered.Description, "window") {
+		t.Fatalf("description missing chart policy: %s", registered.Description)
+	}
+	if !strings.Contains(registered.Description, presentUIPolicy) {
+		t.Fatal("description does not reference presentUIPolicy")
+	}
+}
+
 func TestPresentUIEmptyTreeStaysMarkdown(t *testing.T) {
 	a := &Agent{tools: tool.NewRegistry()}
 	a.registerPresentUITool()
