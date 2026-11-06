@@ -52,6 +52,16 @@ func TestPresentUIDescriptionCarriesChartPolicy(t *testing.T) {
 	if !strings.Contains(registered.Description, presentUIPolicy) {
 		t.Fatal("description does not reference presentUIPolicy")
 	}
+	if !strings.Contains(registered.Description, "series") &&
+		!strings.Contains(registered.Description, "start") &&
+		!strings.Contains(registered.Description, "mix") {
+		t.Fatal("description missing mix, series, or start")
+	}
+	if !strings.Contains(registered.Description, "again") &&
+		!strings.Contains(registered.Description, "stays") &&
+		!strings.Contains(registered.Description, "keep") {
+		t.Fatal("description missing actions keep-tree language")
+	}
 }
 
 func TestPresentUIEmptyTreeStaysMarkdown(t *testing.T) {

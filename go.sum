@@ -138,6 +138,8 @@ github.com/yurika0211/luckyagent-app v0.4.3 h1:5/1Q7FurfKJer8km8/QIo8F/q6ej45sBx
 github.com/yurika0211/luckyagent-app v0.4.3/go.mod h1:Vw2vmlRKu8kakXu7m42pHxPPa8aFa61sa2yFjORFb+Y=
 github.com/yurika0211/luckyagent-app v0.4.4 h1:dbz+1a5MFNPE5xLhBxG2jyEEUj6XfeCPgMIA2nVuXas=
 github.com/yurika0211/luckyagent-app v0.4.4/go.mod h1:Vw2vmlRKu8kakXu7m42pHxPPa8aFa61sa2yFjORFb+Y=
+github.com/yurika0211/luckyagent-app v0.4.5 h1:BDSd+dw1x0uH9bgspt0/9csWbjL6ordAy8HgJ9mqstA=
+github.com/yurika0211/luckyagent-app v0.4.5/go.mod h1:Vw2vmlRKu8kakXu7m42pHxPPa8aFa61sa2yFjORFb+Y=
 github.com/yurika0211/luckyagent-gateway v0.2.3 h1:AlByZWvb9zGUN23YG0m0a8/M/hZzfep+U/vBpibMsz4=
 github.com/yurika0211/luckyagent-gateway v0.2.3/go.mod h1:zog8ZaOyWKfJmM6MN43G5+ftyvjjxpiY3VsrcDR3+tE=
 github.com/yurika0211/luckyagent-orchestrator v0.1.2 h1:vfzGZ1hYru7ETQ7P9Sqc5ZsrmZb2DUxqG3hvxk+ODG8=
