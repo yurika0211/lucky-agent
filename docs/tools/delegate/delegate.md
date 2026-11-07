@@ -35,6 +35,7 @@
 | `delegate.max_timeout_seconds` | `1800` | 单次 `timeout` 的最大值。 |
 | `delegate.max_result_bytes_inline` | `4000` | `task_status` 内联结果上限。 |
 | `delegate.max_children` | `3` | 每次协作允许的最大子任务数。 |
+| `delegate.builtin_agents` | `true` | 没有同名角色文件时，`explore` 和 `plan` 使用内置只读角色。设为 `false` 后这两个名字按未知角色失败。 |
 | `delegate.child.max_iterations` | `5` | 子 Agent Loop 最大迭代次数。 |
 | `delegate.child.timeout_seconds` | `60` | 子 Agent Loop 单轮超时。 |
 | `delegate.child.auto_approve` | `false` | 子 Agent 是否自动批准工具调用，建议保持关闭。 |

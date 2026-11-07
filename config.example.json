@@ -260,6 +260,7 @@
     }
   },
   "delegate": {
+    "builtin_agents": true,
     "max_concurrent": 3,
     "timeout_seconds": 120,
     "min_timeout_seconds": 5,

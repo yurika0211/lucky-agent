@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/yurika0211/luckyagent-runtime/session"
@@ -17,21 +20,48 @@ import (
 // loop does not look the file up a second time.
 func (a *Agent) prepareSubagentDelegate(args map[string]any, workspace string) (subagentRole, error) {
 	roleName := delegateStringArg(args, "subagent_type")
+	thoroughness := delegateStringArg(args, "thoroughness")
+	if err := validateDelegateThoroughness(roleName, thoroughness); err != nil {
+		return subagentRole{}, err
+	}
 	if roleName == "" {
 		return subagentRole{}, nil
 	}
-	role, err := loadSubagentRole(a.delegateHome(), workspace, roleName)
+	role, err := a.loadDelegateRole(workspace, roleName)
 	if err != nil {
 		return subagentRole{}, err
 	}
 	if _, err := a.loopConfigForRole(role, delegateBoolArg(args, "allow_recursive_delegate")); err != nil {
 		return subagentRole{}, err
 	}
+	if thoroughness != "" {
+		role.Prompt = strings.TrimSpace(role.Prompt + "\n\n" + exploreThoroughnessNote(thoroughness))
+	}
 	return role, nil
 }
 
-func (a *Agent) resolveSubagentRole(roleName, workspace string, allowRecursive bool) (LoopConfig, error) {
+// loadDelegateRole prefers a project or user file. Builtin explore and plan
+// fill in only when no file uses that name and delegate.builtin_agents is on.
+func (a *Agent) loadDelegateRole(workspace, roleName string) (subagentRole, error) {
 	role, err := loadSubagentRole(a.delegateHome(), workspace, roleName)
+	if err == nil {
+		return role, nil
+	}
+	if !isMissingSubagentRole(err) {
+		return subagentRole{}, err
+	}
+	if !a.builtinAgentsEnabled() {
+		return subagentRole{}, fmt.Errorf("subagent role %q was not found", roleName)
+	}
+	builtin, ok := loadBuiltinSubagentRole(roleName)
+	if !ok {
+		return subagentRole{}, err
+	}
+	return builtin, nil
+}
+
+func (a *Agent) resolveSubagentRole(roleName, workspace string, allowRecursive bool) (LoopConfig, error) {
+	role, err := a.loadDelegateRole(workspace, roleName)
 	if err != nil {
 		return LoopConfig{}, err
 	}
@@ -144,7 +174,12 @@ func (a *Agent) installSubagentDelegateGuard() {
 	}
 	current.Parameters["subagent_type"] = tool.Param{
 		Type:        "string",
-		Description: "Optional role file name. Loads subagents/<name>.md from the project .luckyagent directory, then the user config directory. Omit to keep the default child tool set.",
+		Description: "Optional role. explore and plan are built in and read-only. A project or user file subagents/<name>.md with the same name replaces the builtin. Omit to keep the default child tool set.",
+		Required:    false,
+	}
+	current.Parameters["thoroughness"] = tool.Param{
+		Type:        "string",
+		Description: "Only for subagent_type=explore. quick, medium, or very_thorough. Changes how widely explore searches. Rejected for plan and for a delegate without a type.",
 		Required:    false,
 	}
 	inner := current.ContextDetailedHandler
@@ -180,6 +215,124 @@ func (a *Agent) delegateParentSession(id string) *session.Session {
 		return nil
 	}
 	return sess
+}
+
+// builtinSubagentDir is the repo copy of explore and plan. Tests and a
+// source checkout read it directly. A released binary falls back to the
+// copies embedded below, which match those files.
+func builtinSubagentDir() string {
+	candidates := []string{
+		filepath.Join("agent", "subagents"),
+		"subagents",
+	}
+	if cwd, err := os.Getwd(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(cwd, "agent", "subagents"),
+			filepath.Join(cwd, "subagents"),
+		)
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		candidates = append(candidates, filepath.Join(dir, "subagents"))
+	}
+	for _, dir := range candidates {
+		if info, err := os.Stat(filepath.Join(dir, "explore.md")); err == nil && !info.IsDir() {
+			return dir
+		}
+	}
+	return ""
+}
+
+func loadBuiltinSubagentRole(name string) (subagentRole, bool) {
+	name = strings.TrimSpace(name)
+	if dir := builtinSubagentDir(); dir != "" {
+		role, err := parseSubagentRoleFile(filepath.Join(dir, name+".md"))
+		if err == nil && role.Name == name {
+			role.Path = "builtin:" + name
+			return role, true
+		}
+	}
+	body, ok := embeddedBuiltinSubagent[name]
+	if !ok {
+		return subagentRole{}, false
+	}
+	path := filepath.Join(os.TempDir(), "luckyagent-builtin-subagents", name+".md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return subagentRole{}, false
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		return subagentRole{}, false
+	}
+	role, err := parseSubagentRoleFile(path)
+	if err != nil || role.Name != name {
+		return subagentRole{}, false
+	}
+	role.Path = "builtin:" + name
+	return role, true
+}
+
+// embeddedBuiltinSubagent mirrors agent/subagents/*.md for a binary that is
+// not sitting next to the source tree.
+var embeddedBuiltinSubagent = map[string]string{
+	"explore": "---\nname: explore\ndescription: Read-only search of the workspace. Returns paths, conclusions, and gaps.\ntools: [file_read, file_list, rag_search, memory, web_search, web_fetch]\n---\nSearch, then read. Do not edit files, run commands, or delegate.\n\nReturn three parts:\n- Paths you actually read, with why each one matters.\n- Conclusions that those paths support.\n- Gaps that a later change would still need to check.\n\nMemory is recall only. Do not write a new memory. Thoroughness changes how widely you search, not which tools you may call.\n",
+	"plan":    "---\nname: plan\ndescription: Read-only change plan with evidence. Does not edit.\ntools: [file_read, file_list, rag_search, memory, web_search, web_fetch]\n---\nWrite a change plan. Do not edit files, run commands, or delegate.\n\nThe plan names the files to change, the evidence for each change, and what you did not verify. Memory is recall only. Do not write a new memory.\n",
+}
+
+func validateDelegateThoroughness(roleName, thoroughness string) error {
+	if thoroughness == "" {
+		return nil
+	}
+	if roleName != "explore" {
+		return fmt.Errorf("thoroughness is only valid for subagent_type explore")
+	}
+	switch thoroughness {
+	case "quick", "medium", "very_thorough":
+		return nil
+	default:
+		return fmt.Errorf("thoroughness %q is not valid (use quick, medium, or very_thorough)", thoroughness)
+	}
+}
+
+func exploreThoroughnessNote(level string) string {
+	switch level {
+	case "quick":
+		return "Search scope: quick. Check the nearest matching files and stop once the question is answered."
+	case "very_thorough":
+		return "Search scope: very thorough. Search the whole workspace and follow related references before you close a gap."
+	default:
+		return "Search scope: medium. Search the area around the question and read the files that can confirm it."
+	}
+}
+
+// builtinAgentsEnabled reads delegate.builtin_agents from the config file.
+// The published config struct does not carry this switch, so a missing file
+// or a missing key stays enabled. false is the only off value.
+func (a *Agent) builtinAgentsEnabled() bool {
+	if a == nil || a.cfg == nil {
+		return true
+	}
+	path := filepath.Join(a.cfg.HomeDir(), "config.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return true
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return true
+	}
+	delegate, _ := raw["delegate"].(map[string]any)
+	if delegate == nil {
+		return true
+	}
+	value, ok := delegate["builtin_agents"]
+	if !ok {
+		return true
+	}
+	enabled, ok := value.(bool)
+	if !ok {
+		return true
+	}
+	return enabled
 }
 
 func cloneDelegateArgs(args map[string]any) map[string]any {
