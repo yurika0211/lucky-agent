@@ -78,7 +78,10 @@ func (a *Agent) bindOptionalExecutionServices() {
 				defer snap.Close()
 			}
 			if worktree.Path == "" {
-				if pending, ok := a.worktrees.get(taskID); ok && pending.ParentRoot != "" {
+				if parent := delegateSharedParent(contextStr); parent != "" {
+					a.worktrees.forget(taskID)
+					sess.SetCwd(parent)
+				} else if pending, ok := a.worktrees.get(taskID); ok && pending.ParentRoot != "" {
 					a.worktrees.forget(taskID)
 					sess.SetCwd(pending.ParentRoot)
 				} else if workspace := tool.ExtractDelegateWorkspace(contextStr); workspace != "" {

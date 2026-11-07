@@ -20,6 +20,7 @@ const (
 	delegateIsolationNone      = "none"
 	delegateIsolationWorktree  = "worktree"
 	delegateWorktreeContextKey = "LuckyAgent delegate isolation: worktree"
+	delegateSharedContextKey   = "LuckyAgent delegate isolation: none"
 )
 
 // delegateWorktree is one child checkout created from the parent HEAD.
@@ -104,19 +105,15 @@ func (a *Agent) installDelegateIsolation() {
 			return tool.ToolCallResult{}, err
 		}
 		if mode != delegateIsolationWorktree {
-			result, err := inner(exec, args)
-			if err != nil {
-				return result, err
-			}
-			// Remember the caller workspace so an omitted isolation keeps
-			// writing there. The delegate engine's own temp directory is only
-			// a fallback when the caller has no workspace.
+			forward := copyToolArgs(args)
+			delete(forward, "isolation")
+			// Stamp the parent before the task starts. Remembering it after
+			// inner() returns races the executor, which otherwise writes the
+			// engine temp directory.
 			if parent := callerWorkspace(exec.Context); parent != "" {
-				if taskID := delegateTaskIDFromOutput(result.Output); taskID != "" {
-					a.worktrees.remember(taskID, delegateWorktree{ParentRoot: parent})
-				}
+				forward["context"] = appendDelegateContext(delegateStringArg(forward, "context"), delegateSharedContextKey+"\nparent="+parent)
 			}
-			return result, nil
+			return inner(exec, forward)
 		}
 		parent, err := parentGitCheckout(exec.Context)
 		if err != nil {
@@ -165,9 +162,15 @@ func (a *Agent) prepareDelegatedWorkspace(ctx context.Context, taskID, contextSt
 	if !strings.Contains(contextStr, delegateWorktreeContextKey) {
 		return delegateWorktree{}, nil, nil
 	}
-	pending, ok := a.worktrees.get(taskID)
-	parent := strings.TrimSpace(pending.ParentRoot)
-	if !ok || parent == "" {
+	// The handler stamps parent= before the task starts. The in-memory book
+	// is filled only after HandleDelegate returns, so it can lose the race.
+	parent := delegateStampedParent(contextStr, delegateWorktreeContextKey)
+	if parent == "" {
+		if pending, ok := a.worktrees.get(taskID); ok {
+			parent = strings.TrimSpace(pending.ParentRoot)
+		}
+	}
+	if parent == "" {
 		var err error
 		parent, err = parentGitCheckout(ctx)
 		if err != nil {
@@ -204,6 +207,23 @@ func (a *Agent) finishDelegatedWorktree(item delegateWorktree, childErr error) s
 		return fmt.Sprintf("isolation=worktree base_commit=%s worktree_removed=true", item.BaseCommit)
 	}
 	return fmt.Sprintf("isolation=worktree base_commit=%s worktree_path=%s", item.BaseCommit, item.Path)
+}
+
+func delegateSharedParent(contextStr string) string {
+	return delegateStampedParent(contextStr, delegateSharedContextKey)
+}
+
+func delegateStampedParent(contextStr, key string) string {
+	marker := key + "\nparent="
+	at := strings.LastIndex(contextStr, marker)
+	if at < 0 {
+		return ""
+	}
+	rest := contextStr[at+len(marker):]
+	if end := strings.Index(rest, "\n"); end >= 0 {
+		rest = rest[:end]
+	}
+	return strings.TrimSpace(rest)
 }
 
 func callerWorkspace(ctx context.Context) string {

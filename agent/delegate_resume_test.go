@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -212,6 +213,16 @@ func TestDelegateResumeKeepsOriginalDisabledTools(t *testing.T) {
 	cfg.ChildModel = "original-child-model"
 	*manager = *tool.NewDelegateManager(cfg)
 	agent.delegate = manager
+	var (
+		seenMu sync.Mutex
+		seen   []LoopConfig
+	)
+	agent.delegateChildRun = func(_ context.Context, _ *session.Session, _ UserTurnInput, loopCfg LoopConfig) (*LoopResult, error) {
+		seenMu.Lock()
+		seen = append(seen, loopCfg)
+		seenMu.Unlock()
+		return &LoopResult{Response: "quoted " + marker}, nil
+	}
 	agent.bindOptionalExecutionServices()
 
 	parent := "parent-session"
@@ -220,11 +231,6 @@ func TestDelegateResumeKeepsOriginalDisabledTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	started := decodeStart(t, raw)
-	var seen []LoopConfig
-	agent.delegateChildRun = func(_ context.Context, _ *session.Session, _ UserTurnInput, loopCfg LoopConfig) (*LoopResult, error) {
-		seen = append(seen, loopCfg)
-		return &LoopResult{Response: "quoted " + marker}, nil
-	}
 	if done := waitDelegateStatus(t, manager, started.TaskID, parent); done.Status != "completed" {
 		t.Fatal(done.Error)
 	}
@@ -251,14 +257,17 @@ func TestDelegateResumeKeepsOriginalDisabledTools(t *testing.T) {
 	if finished.Status != "completed" || !strings.Contains(finished.Result, marker) {
 		t.Fatalf("resume result=%s err=%s", finished.Result, finished.Error)
 	}
-	if len(seen) != 2 || seen[1].subagentModel != "original-child-model" {
-		t.Fatalf("child models=%v", modelsOf(seen))
+	seenMu.Lock()
+	got := append([]LoopConfig(nil), seen...)
+	seenMu.Unlock()
+	if len(got) != 2 || got[1].subagentModel != "original-child-model" {
+		t.Fatalf("child models=%v", modelsOf(got))
 	}
-	if !toolNameInSet(makeToolNameSet(seen[1].DisabledTools), "file_write") {
-		t.Fatalf("resume dropped file_write disable: %v", seen[1].DisabledTools)
+	if !toolNameInSet(makeToolNameSet(got[1].DisabledTools), "file_write") {
+		t.Fatalf("resume dropped file_write disable: %v", got[1].DisabledTools)
 	}
-	if toolNameInSet(makeToolNameSet(seen[1].DisabledTools), "terminal") {
-		t.Fatalf("resume picked up the replacement disable list: %v", seen[1].DisabledTools)
+	if toolNameInSet(makeToolNameSet(got[1].DisabledTools), "terminal") {
+		t.Fatalf("resume picked up the replacement disable list: %v", got[1].DisabledTools)
 	}
 }
 
