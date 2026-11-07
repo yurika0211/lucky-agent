@@ -21,7 +21,7 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.42 // indirect
 	github.com/rogpeppe/go-internal v1.16.0 // indirect
 	github.com/yurika0211/aestus v0.1.1-0.20261031163709-5ea8b187b6af // indirect
-	github.com/yurika0211/luckyagent-orchestrator v0.1.2 // indirect
+	github.com/yurika0211/luckyagent-orchestrator v0.1.3-0.20261107100058-7e11cb9dd1f3 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.43.0 // indirect
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.43.0 // indirect
