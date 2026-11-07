@@ -76,7 +76,7 @@ func TestRequestProfileBudgets(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := LoopConfig{MaxIterations: 300, Timeout: 30 * time.Minute}
+			cfg := LoopConfig{MaxIterations: 0, Timeout: 0}
 			applyRequestProfileDecision(&cfg, tt.decision)
 			if cfg.MaxIterations != tt.wantIter || cfg.Timeout != tt.wantTime {
 				t.Fatalf("%s budget = %d %s, want %d %s", tt.name, cfg.MaxIterations, cfg.Timeout, tt.wantIter, tt.wantTime)
@@ -110,10 +110,18 @@ func TestRequestProfileKeepsConfiguredBudget(t *testing.T) {
 	}
 }
 
+func TestRequestProfileKeepsExplicitToolBudget(t *testing.T) {
+	cfg := LoopConfig{MaxIterations: 4, Timeout: 10 * time.Second}
+	applyRequestProfileDecision(&cfg, RequestProfileDecision{Profile: RequestProfileToolTask, Source: "deterministic_tool_intent", Confidence: 0.8})
+	if cfg.MaxIterations != 4 || cfg.Timeout != 10*time.Second {
+		t.Fatalf("explicit tool budget = %d %s, want 4 10s", cfg.MaxIterations, cfg.Timeout)
+	}
+}
+
 func TestRequestProfileCustomChatBudget(t *testing.T) {
 	cfg := LoopConfig{
-		MaxIterations: 300,
-		Timeout:       30 * time.Minute,
+		MaxIterations: 0,
+		Timeout:       0,
 		requestProfiles: config.RequestProfilesConfig{
 			Chat: config.RequestProfileBudgetConfig{MaxIterations: 12, TimeoutSeconds: 70},
 		},

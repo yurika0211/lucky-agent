@@ -233,7 +233,7 @@ func applyRequestProfileDecision(cfg *LoopConfig, decision RequestProfileDecisio
 	switch decision.Profile {
 	case RequestProfileChat, RequestProfileToolTask, RequestProfileCodeTask:
 		budget := requestProfileBudget(cfg.requestProfiles, decision.Profile)
-		applyProfileBudget(cfg, budget.MaxIterations, time.Duration(budget.TimeoutSeconds)*time.Second)
+		applyProfileBudgetFillOnly(cfg, budget.MaxIterations, time.Duration(budget.TimeoutSeconds)*time.Second)
 		if requestProfilesConfigured(cfg.requestProfiles) {
 			cfg.requestProfileClosingPrompt = budget.ClosingPrompt
 		}
@@ -303,12 +303,25 @@ func appendRequestProfileClosingMessage(messages []provider.Message, cfg LoopCon
 
 // applyProfileBudget fills a missing budget and caps an unset one. Values
 // copied from agent config are left alone; sanitizeLoopConfig still enforces
-// the 300-iteration and 10-minute hard caps.
+// the 300-iteration and 10-minute hard caps. long_task uses this. chat,
+// tool_task, and code_task use applyProfileBudgetFillOnly.
 func applyProfileBudget(cfg *LoopConfig, iterations int, timeout time.Duration) {
 	if !cfg.maxIterationsFromConfig && (cfg.MaxIterations <= 0 || cfg.MaxIterations > iterations) {
 		cfg.MaxIterations = iterations
 	}
 	if !cfg.timeoutFromConfig && (cfg.Timeout <= 0 || cfg.Timeout > timeout) {
+		cfg.Timeout = timeout
+	}
+}
+
+// applyProfileBudgetFillOnly writes a profile default only when that field is
+// missing. An already-set per-turn budget is neither lowered nor raised.
+// Values copied from agent.max_iterations / agent.timeout_seconds stay.
+func applyProfileBudgetFillOnly(cfg *LoopConfig, iterations int, timeout time.Duration) {
+	if !cfg.maxIterationsFromConfig && cfg.MaxIterations <= 0 {
+		cfg.MaxIterations = iterations
+	}
+	if !cfg.timeoutFromConfig && cfg.Timeout <= 0 {
 		cfg.Timeout = timeout
 	}
 }
