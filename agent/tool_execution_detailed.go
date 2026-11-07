@@ -11,6 +11,7 @@ import (
 	"github.com/yurika0211/luckyagent-runtime/sandbox"
 	"github.com/yurika0211/luckyagent-runtime/session"
 	"github.com/yurika0211/luckyagent-runtime/tool"
+	"github.com/yurika0211/luckyagent-tools/hitl"
 )
 
 type detailedToolExecutionResult struct {
@@ -301,6 +302,12 @@ func (a *Agent) waitHITLApproval(ctx context.Context, sessionID, name string, ar
 	return false, meta, nil
 }
 
+// askUserWaitTimeout is ask_user's own wait limit. The tool must return a
+// no-reply result when this elapses, even if the caller context still has
+// time left or would otherwise die as context deadline exceeded.
+// Tests replace it; production callers leave the default.
+var askUserWaitTimeout = hitl.DefaultTimeout
+
 func (a *Agent) executeAskUserHITL(ctx context.Context, sessionID string, args map[string]any) (detailedToolExecutionResult, error) {
 	if a == nil || a.hitl == nil {
 		return detailedToolExecutionResult{}, fmt.Errorf("ask_user requires the runtime hitl gate")
@@ -319,7 +326,31 @@ func (a *Agent) executeAskUserHITL(ctx context.Context, sessionID string, args m
 	if prompt == "" {
 		prompt = "请补充完成任务所需的信息"
 	}
-	res, err := a.hitl.RequestAndWait(ctx, hitlRequest{
+	waitFor := askUserWaitBudget(ctx, askUserWaitTimeout)
+	if waitFor <= 0 {
+		return askUserNoReply(prompt, 0), nil
+	}
+	// Detach from the caller deadline so a parent context deadline cannot
+	// turn "the user has not replied" into a tool error. Cancellation still
+	// stops the wait.
+	waitCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), waitFor)
+	defer cancel()
+	go func() {
+		select {
+		case <-ctx.Done():
+			cancel()
+		case <-waitCtx.Done():
+		}
+	}()
+	emit := hitlEmitterFrom(ctx)
+	if emit != nil {
+		emit(ChatEvent{
+			Type:    ChatEventThinking,
+			Name:    "ask_user",
+			Content: askUserWaitingNotice(waitFor),
+		})
+	}
+	res, err := a.hitl.RequestAndWait(waitCtx, hitlRequest{
 		Kind:      hitlKindInput,
 		SessionID: sessionID,
 		Tool:      "ask_user",
@@ -327,7 +358,7 @@ func (a *Agent) executeAskUserHITL(ctx context.Context, sessionID string, args m
 		Reason:    prompt,
 		Summary:   "需要你补充信息: " + prompt,
 		Args:      args,
-	}, hitlEmitterFrom(ctx))
+	}, emit)
 	meta := map[string]any{
 		"approval_required": map[string]any{
 			"tool":   "ask_user",
@@ -338,6 +369,9 @@ func (a *Agent) executeAskUserHITL(ctx context.Context, sessionID string, args m
 		},
 	}
 	if err != nil {
+		if askUserTimedOut(err, ctx) {
+			return askUserNoReply(prompt, waitFor), nil
+		}
 		return detailedToolExecutionResult{Metadata: meta}, err
 	}
 	if isDenyDecision(res.Decision) && strings.TrimSpace(res.Input) == "" {
@@ -360,6 +394,71 @@ func (a *Agent) executeAskUserHITL(ctx context.Context, sessionID string, args m
 		Output:   "User reply: " + answer,
 		Metadata: meta,
 	}, nil
+}
+
+// askUserWaitBudget is how long ask_user may block. A parent deadline shorter
+// than the tool limit still ends the wait before the caller is canceled, so
+// the result is a no-reply outcome and not context deadline exceeded.
+func askUserWaitBudget(ctx context.Context, limit time.Duration) time.Duration {
+	if limit <= 0 {
+		limit = askUserWaitTimeout
+	}
+	if ctx == nil {
+		return limit
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return limit
+	}
+	remaining := time.Until(deadline)
+	// Leave a margin so the tool returns before the parent deadline fires.
+	const margin = 2 * time.Second
+	if remaining <= margin {
+		return 0
+	}
+	if remaining-margin < limit {
+		return remaining - margin
+	}
+	return limit
+}
+
+func askUserWaitingNotice(waitFor time.Duration) string {
+	seconds := int(waitFor.Round(time.Second) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	return fmt.Sprintf("正在等你回复，最多再等 %d 秒。", seconds)
+}
+
+func askUserTimedOut(err error, parent context.Context) bool {
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if parent != nil && parent.Err() != nil {
+		return false
+	}
+	return true
+}
+
+// askUserNoReply is a successful tool result. Callers must not treat it as a
+// failed tool call and retry it.
+func askUserNoReply(prompt string, waited time.Duration) detailedToolExecutionResult {
+	seconds := int(waited.Round(time.Second) / time.Second)
+	if seconds < 0 {
+		seconds = 0
+	}
+	output := fmt.Sprintf("User did not reply within %d seconds. Do not retry ask_user for the same question; continue with recorded context or stop.", seconds)
+	return detailedToolExecutionResult{
+		Output: output,
+		Metadata: map[string]any{
+			"ask_user": map[string]any{
+				"status":      "no_reply",
+				"timed_out":   true,
+				"waited_secs": seconds,
+				"prompt":      prompt,
+			},
+		},
+	}
 }
 
 func toolApprovalReason(name string, args map[string]any) string {
