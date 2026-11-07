@@ -64,6 +64,13 @@ func (r *agentLoopRuntime) applyIntentToolGating(cfg *LoopConfig, input string) 
 	r.agent.applyIntentToolGating(cfg, input)
 }
 
+func (r *agentLoopRuntime) applyStoryModePolicy(sess *session.Session, cfg *LoopConfig, input string) {
+	if r == nil || r.agent == nil {
+		return
+	}
+	r.agent.applyStoryModePolicy(sess, cfg, input)
+}
+
 func (r *agentLoopRuntime) lastRequestProfile(sessionID string) RequestProfile {
 	if r == nil || r.agent == nil {
 		return ""

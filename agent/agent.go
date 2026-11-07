@@ -876,6 +876,13 @@ func (a *Agent) saveConversationMemoryFromSession(sess *session.Session, turnInp
 	}
 
 	userCategory := inferCategory(userInput)
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.ID
+	}
+	if _, story := a.storyActive(sessionID); story && !explicitMemorySaveRequest(userInput) {
+		userCategory = ""
+	}
 	if a.memory != nil && shouldPersistUserTurnMemory(userCategory, userInput) {
 		userImportance := inferImportance(userInput)
 		content := utils.TrimToRunes(userInput, 180)

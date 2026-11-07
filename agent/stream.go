@@ -572,6 +572,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		}
 		a.applyIntentToolGating(&loopCfg, routingText)
 		a.applyVisionToolPolicy(&loopCfg, turnProvider)
+		a.applyStoryModePolicy(sess, &loopCfg, routingText)
 		ctx = withHITLEmitter(ctx, func(event ChatEvent) {
 			sendForegroundEvent(ctx, events, event)
 		})
