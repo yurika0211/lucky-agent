@@ -80,6 +80,7 @@ lh cfg s delegate.child.disabled_tools terminal,file_delete
 | `max_children` | 否 | 全局配置 | 进一步收紧本次协作的子任务数量。 |
 | `isolation` | 否 | `none` | `none` 与父会话共用工作区。`worktree` 从父检出当前 HEAD 在仓库外建 git worktree，子代理的文件工具和 terminal 只写那棵树。不是 git 检出时报错且不创建任务。其它值报错。任务结束时没有相对 `base_commit` 的改动就删除 worktree；有改动、失败或取消则保留，并在结果里给出 `worktree_path` 和 `base_commit`。不自动合回。计入 `delegate.max_concurrent`。 |
 | `resume_from` | 否 | 空 | 本会话里已结束任务的 `task_id`（`completed`、`failed` 或 `cancelled`）。新任务继续那个子会话，`description` 是这次要做的新工作，不需要把上一轮结果贴进 `context`。返回新的 `task_id`，并带 `resumed_from`。`pending`、`running`、不存在或其他会话的 id 报错且不创建任务。原任务状态和结果不变。截断后的内联结果不阻止续跑。 |
+| `message` | 否 | 空 | `action=message` 的正文。`pending` 或 `running` 时排在当前工具轮之后，不打断正在执行的工具，也不新建任务。同一子代理最多 4 条未处理消息，第 5 条报错且保留前 4 条。`completed`、`failed` 或 `cancelled` 时走 `resume_from`，`message` 成为新任务的 `description`。其它会话或不存在的 `task_id` 报错。子循环即使打开了递归委派也不能调用 `action=message`。`status` 只增加 `pending_messages` 计数，不含正文。 |
 
 执行流程：
 

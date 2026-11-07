@@ -184,6 +184,14 @@ func (a *Agent) installSubagentDelegateGuard() {
 	}
 	inner := current.ContextDetailedHandler
 	current.ContextDetailedHandler = func(exec tool.ExecutionContext, args map[string]any) (tool.ToolCallResult, error) {
+		if strings.EqualFold(delegateStringArg(args, "action"), "status") {
+			result, err := inner(exec, args)
+			if err != nil {
+				return result, err
+			}
+			result.Output = a.annotateDelegateStatus(result.Output)
+			return result, nil
+		}
 		if strings.EqualFold(delegateStringArg(args, "action"), "delegate") {
 			workspace := subagentRoleWorkspace(a.delegateParentSession(exec.SessionID))
 			role, err := a.prepareSubagentDelegate(args, workspace)

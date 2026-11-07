@@ -35,6 +35,7 @@ func (a *Agent) bindOptionalToolServices() {
 	// a task is created.
 	a.installSubagentDelegateGuard()
 	a.installDelegateIsolation()
+	a.installSubagentMessage()
 }
 
 func (a *Agent) bindOptionalExecutionServices() {
@@ -121,6 +122,7 @@ func (a *Agent) bindOptionalExecutionServices() {
 			if model := strings.TrimSpace(options.Model); model != "" {
 				cfg.subagentModel = model
 			}
+			cfg.delegateTaskID = taskID
 			if snap != nil {
 				cfg.Sandbox = snap
 			}
