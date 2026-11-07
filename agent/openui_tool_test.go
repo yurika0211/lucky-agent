@@ -88,3 +88,92 @@ func TestPresentUIEmptyTreeStaysMarkdown(t *testing.T) {
 		t.Fatalf("note=%s", note)
 	}
 }
+
+func TestPresentUIReceiptFollowsChannel(t *testing.T) {
+	a := &Agent{tools: tool.NewRegistry()}
+	a.registerPresentUITool()
+	registered, ok := a.tools.Get(presentUIToolName)
+	if !ok || registered.ContextDetailedHandler == nil {
+		t.Fatal("present_ui context handler was not registered")
+	}
+	tree := map[string]any{
+		"tree_id": "memory-recall-quality",
+		"state":   "complete",
+		"nodes": []any{
+			map[string]any{"id": "lib", "type": "Table", "props": map[string]any{"columns": []any{"name"}, "rows": []any{[]any{"a"}}}},
+			map[string]any{"id": "probes", "type": "Table", "props": map[string]any{"columns": []any{"q"}, "rows": []any{[]any{"b"}}}},
+			map[string]any{"id": "src", "type": "Citation", "props": map[string]any{"source": "recall"}},
+		},
+	}
+	cases := []struct {
+		source       string
+		wantRepeat   bool
+		wantMarkdown bool
+	}{
+		{source: "http", wantRepeat: true},
+		{source: "websocket", wantRepeat: true},
+		{source: "android", wantRepeat: true},
+		{source: "telegram", wantMarkdown: true},
+		{source: "cli", wantMarkdown: true},
+		{source: "tui", wantMarkdown: true},
+		{source: "qq", wantMarkdown: true},
+		{source: "", wantMarkdown: true},
+	}
+	for _, tc := range cases {
+		result, err := registered.ContextDetailedHandler(tool.ExecutionContext{Source: tc.source}, map[string]any{"tree": tree})
+		if err != nil {
+			t.Fatalf("source %q: %v", tc.source, err)
+		}
+		_, note := takeOpenUIDelta(presentUIToolName, result.Output)
+		if strings.Contains(note, "Continue with the Markdown answer.") {
+			t.Fatalf("source %q still uses the unconditional receipt: %s", tc.source, note)
+		}
+		if tc.wantRepeat {
+			if !strings.Contains(note, "on screen") || !strings.Contains(note, "Do not repeat Table") {
+				t.Fatalf("source %q note=%s", tc.source, note)
+			}
+			if strings.Contains(note, "Do not repeat Citation") || strings.Contains(note, "no OpenUI") {
+				t.Fatalf("source %q over-blocked non-tabular nodes: %s", tc.source, note)
+			}
+		}
+		if tc.wantMarkdown {
+			if !strings.Contains(note, "no OpenUI") || !strings.Contains(note, "Markdown") {
+				t.Fatalf("source %q note=%s", tc.source, note)
+			}
+			if strings.Contains(note, "Do not repeat") {
+				t.Fatalf("source %q dropped the markdown table: %s", tc.source, note)
+			}
+		}
+	}
+
+	plain, err := registered.Handler(map[string]any{"tree": tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, plainNote := takeOpenUIDelta(presentUIToolName, plain)
+	if !strings.Contains(plainNote, "no OpenUI") {
+		t.Fatalf("handler without a channel must keep markdown: %s", plainNote)
+	}
+}
+
+func TestPresentUIOpenUIChannelKeepsMarkdownForNonTabularTree(t *testing.T) {
+	a := &Agent{tools: tool.NewRegistry()}
+	a.registerPresentUITool()
+	registered, _ := a.tools.Get(presentUIToolName)
+	result, err := registered.ContextDetailedHandler(tool.ExecutionContext{Source: "android"}, map[string]any{
+		"tree": map[string]any{
+			"tree_id": "pick",
+			"state":   "waiting_input",
+			"nodes": []any{
+				map[string]any{"id": "choices", "type": "Actions", "props": map[string]any{"items": []any{"a", "b"}}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, note := takeOpenUIDelta(presentUIToolName, result.Output)
+	if strings.Contains(note, "Do not repeat") || !strings.Contains(note, "on screen") || !strings.Contains(note, "Markdown") {
+		t.Fatalf("note=%s", note)
+	}
+}
