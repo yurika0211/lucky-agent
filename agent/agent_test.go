@@ -4516,7 +4516,19 @@ func TestSkillsSnapshotUnderRace(t *testing.T) {
 }
 
 // fixtureMemory exposes legacy seed helpers only to tests, never runtime consumers.
-func fixtureMemory(a *Agent) *memoryaestus.Store { return a.memory.(*memoryaestus.Store) }
+func fixtureMemory(a *Agent) *memoryaestus.Store {
+	store := a.memory
+	for {
+		switch wrapped := store.(type) {
+		case *cappedMemoryStore:
+			store = wrapped.RuntimeStore
+		case *recallTimeoutStore:
+			store = wrapped.RuntimeStore
+		default:
+			return store.(*memoryaestus.Store)
+		}
+	}
+}
 
 // Sessionless capture helpers belong to tests; production supplies a session.
 func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
