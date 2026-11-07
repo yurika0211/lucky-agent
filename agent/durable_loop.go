@@ -69,11 +69,17 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 	if err != nil {
 		return result, err
 	}
+	journal := checkpointWriter{dir: a.checkpointJournalDir(cfg)}
 	cp := durableCheckpoint{Version: 1}
 	if len(task.Checkpoint) > 0 {
-		if err := json.Unmarshal(task.Checkpoint, &cp); err != nil || cp.Version != 1 || len(cp.Messages) == 0 {
+		loaded, err := loadDurableCheckpoint(task.Checkpoint)
+		if err != nil || loaded.Version != 1 || len(loaded.Messages) == 0 {
 			return result, fmt.Errorf("%w: unreadable or unsupported task checkpoint", autonomy.ErrBlocked)
 		}
+		cp = loaded
+		// Keep the loaded journal as the writer's baseline when it is already
+		// version 2, so the next save appends instead of rewriting it.
+		journal.adopt(task.Checkpoint, &cp)
 	} else {
 		opts := defaultContextBuildOptions()
 		opts.DisabledTools = cfg.DisabledTools
@@ -102,7 +108,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		if sess != nil {
 			cp.Shell = &session.ShellContext{Cwd: sess.GetCwd(), Env: sess.GetEnv()}
 		}
-		data, err := json.Marshal(cp)
+		data, err := journal.encode(&cp)
 		if err == nil {
 			err = cfg.Execution.SaveCheckpoint(data)
 		}

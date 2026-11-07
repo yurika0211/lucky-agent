@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -70,8 +69,8 @@ func TestDurableRecoveryEmptyReplyDoesNotFinishTruncatedCandidate(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cp durableCheckpoint
-	if err := json.Unmarshal(task.Checkpoint, &cp); err != nil {
+	cp, err := loadDurableCheckpoint(task.Checkpoint)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if cp.Candidate != "" || cp.Continuation != "unfinished partial" {

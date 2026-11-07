@@ -77,6 +77,7 @@ func durableHarness(t *testing.T, cp durableCheckpoint) (*Agent, *session.Sessio
 	}
 	loopCfg := DefaultLoopConfig()
 	loopCfg.Execution, loopCfg.AutoApprove = turnExec, true
+	loopCfg.CheckpointLogDir = filepath.Join(root, "checkpoint-logs")
 	return a, sess, q, task, loopCfg
 }
 
