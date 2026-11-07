@@ -125,6 +125,10 @@ type Agent struct {
 	// requestProfiles remembers the last profile per session. In memory only;
 	// a restart makes the next 「继续」 fall back to keywords.
 	requestProfiles sync.Map
+	worktrees       delegateWorktreeBook
+	// delegateChildRun replaces the child Agent loop in tests. Production
+	// leaves it nil and uses loopRunner.
+	delegateChildRun func(context.Context, *session.Session, UserTurnInput, LoopConfig) (*LoopResult, error)
 }
 
 func buildDelegateChildLoopConfig(delegateCfg tool.DelegateConfig, allowRecursive bool) LoopConfig {

@@ -77,6 +77,7 @@ lh cfg s delegate.child.disabled_tools terminal,file_delete
 | `timeout` | 否 | `120` | 超时时间，单位秒；当前会限制在 5-1800 秒之间。 |
 | `mode` | 否 | `single` | `single`、`auto`、`parallel`、`pipeline`、`debate` 或 `autonomy_queue`。 |
 | `max_children` | 否 | 全局配置 | 进一步收紧本次协作的子任务数量。 |
+| `isolation` | 否 | `none` | `none` 与父会话共用工作区。`worktree` 从父检出当前 HEAD 在仓库外建 git worktree，子代理的文件工具和 terminal 只写那棵树。不是 git 检出时报错且不创建任务。其它值报错。任务结束时没有相对 `base_commit` 的改动就删除 worktree；有改动、失败或取消则保留，并在结果里给出 `worktree_path` 和 `base_commit`。不自动合回。计入 `delegate.max_concurrent`。 |
 
 执行流程：
 
