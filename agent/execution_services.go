@@ -20,6 +20,7 @@ func (a *Agent) bindOptionalToolServices() {
 			func(id, mode, command string, metadata map[string]string) func() error {
 				return a.buildCronTask(id, cronTaskMode(mode), command, metadata)
 			})
+		a.installCronToolPolicy()
 	}
 	if a.autonomy != nil {
 		a.toolServices.Autonomy = tool.NewAutonomyToolService(a.autonomy, func() error {

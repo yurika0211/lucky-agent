@@ -31,18 +31,15 @@ func (a *Agent) AddCronJob(id, name, description, mode, command string, metadata
 	if id == "" {
 		return fmt.Errorf("id is required")
 	}
-	meta := map[string]string{
-		"mode":    mode,
-		"command": command,
-	}
-	for key, value := range metadata {
-		meta[key] = value
+	intentKey, meta := prepareCronIdentity(id, name, description, mode, command, metadata, schedule)
+	if existing := findCronJobByIntent(a.cronEngine.ListJobs(), intentKey); existing != nil {
+		return &cronExistingJob{job: existing}
 	}
 	if strings.TrimSpace(name) == "" {
-		name = "Cron: " + id
+		name = meta[cronMetaTitle]
 	}
 	if strings.TrimSpace(description) == "" {
-		description = command
+		description = meta[cronMetaIntent]
 	}
 	task := a.buildCronTask(id, cronTaskMode(mode), command, meta)
 	// A running engine can pick up an immediately-due job before AddJobWithMeta
@@ -80,9 +77,15 @@ func (a *Agent) AddCronJob(id, name, description, mode, command string, metadata
 	return nil
 }
 
-// PauseCronJob pauses a job and persists the change.
+// PauseCronJob pauses a job and persists the change. The job is no longer due.
 func (a *Agent) PauseCronJob(id string) error {
-	return a.mutateCronJob(id, a.cronEngine.PauseJob)
+	return a.mutateCronJob(id, func(id string) error {
+		if err := a.cronEngine.PauseJob(id); err != nil {
+			return err
+		}
+		a.quiescePausedCronJobs()
+		return nil
+	})
 }
 
 // ResumeCronJob resumes a job and persists the change.
