@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/yurika0211/luckyagent-runtime/gateway"
 	"github.com/yurika0211/luckyagent-runtime/provider"
+	"github.com/yurika0211/luckyagent-runtime/tool"
 	"github.com/yurika0211/luckyagent-tools/cron"
 )
 
@@ -71,16 +74,168 @@ func (a *Agent) installCronEventHandler() {
 			fmt.Printf("[cron] job %s started\n", event.JobName)
 		case cron.EventJobCompleted:
 			fmt.Printf("[cron] job %s completed\n", event.JobName)
+			a.recordCronRun(event, nil)
 			if err := a.saveCronJobs(); err != nil {
 				fmt.Printf("[cron] save failed: %v\n", err)
 			}
 		case cron.EventJobFailed:
 			fmt.Printf("[cron] job %s failed: %v\n", event.JobName, event.Error)
+			a.recordCronRun(event, event.Error)
 			if err := a.saveCronJobs(); err != nil {
 				fmt.Printf("[cron] save failed: %v\n", err)
 			}
 		}
 	})
+}
+
+// recordCronRun separates a command failure from a delivery failure and stops
+// a one-shot job from being rescheduled forever. The engine has already stored
+// the next run; this corrects that product state before it is persisted.
+func (a *Agent) recordCronRun(event cron.Event, runErr error) {
+	if a == nil || a.cronEngine == nil {
+		return
+	}
+	// GetJob returns a shallow copy whose Metadata map is the engine's map.
+	// Classification is written there so the next save persists it. Status and
+	// NextRun still go through RestoreJobState.
+	job, ok := a.cronEngine.GetJob(event.JobID)
+	if !ok || job == nil || job.Metadata == nil {
+		return
+	}
+	meta := job.Metadata
+	class, deliveryStatus, deliveryErr := classifyCronRunError(runErr)
+	if class == cronErrorClassDelivery && deliveryStatus == cronDeliveryUndelivered {
+		// The command finished. A missing gateway must not keep the task failed.
+		meta[cronMetaLastErrorClass] = cronErrorClassDelivery
+		meta[cronMetaDeliveryStatus] = cronDeliveryUndelivered
+		meta[cronMetaDeliveryError] = deliveryErr
+		meta[cronMetaRetryCount] = "0"
+		_ = a.cronEngine.RestoreJobState(event.JobID, cronStateClearingTaskFailure(job))
+		return
+	}
+	meta[cronMetaDeliveryStatus] = deliveryStatus
+	meta[cronMetaDeliveryError] = deliveryErr
+	if class == cronErrorClassNone {
+		meta[cronMetaLastErrorClass] = cronErrorClassNone
+		meta[cronMetaRetryCount] = "0"
+		return
+	}
+
+	retries := cronMetadataInt(meta, cronMetaRetryCount) + 1
+	meta[cronMetaRetryCount] = strconv.Itoa(retries)
+	kind := cronScheduleKind(job.Schedule, meta)
+	if kind == cronScheduleKindOneShot && retries >= cronOneShotRetryLimit {
+		meta[cronMetaLastErrorClass] = cronErrorClassExhausted
+		state := restoredCronState(job)
+		state.Status = cron.StatusFailed.String()
+		state.NextRun = cronClearedNextRun()
+		_ = a.cronEngine.RestoreJobState(event.JobID, state)
+		return
+	}
+	meta[cronMetaLastErrorClass] = cronErrorClassCommand
+	if kind == cronScheduleKindOneShot {
+		when := time.Now().Add(cronOneShotBackoff(retries))
+		state := restoredCronState(job)
+		state.Status = cron.StatusIdle.String()
+		state.NextRun = &when
+		_ = a.cronEngine.RestoreJobState(event.JobID, state)
+	}
+}
+
+func classifyCronRunError(err error) (class, deliveryStatus, deliveryErr string) {
+	if err == nil {
+		return cronErrorClassNone, cronDeliverySkipped, ""
+	}
+	var delivery *cronDeliveryError
+	var task *cronTaskError
+	switch {
+	case errors.As(err, &delivery) && !errors.As(err, &task):
+		return cronErrorClassDelivery, cronDeliveryUndelivered, delivery.Error()
+	case errors.As(err, &task):
+		return cronErrorClassCommand, cronDeliverySkipped, ""
+	default:
+		// Errors restored from older runs have no typed class. Treat them as
+		// command failures so a delivery miss is never inferred from text.
+		return cronErrorClassCommand, cronDeliverySkipped, ""
+	}
+}
+
+func cronOneShotBackoff(retry int) time.Duration {
+	if retry < 1 {
+		retry = 1
+	}
+	delay := cronOneShotRetryBase
+	for i := 1; i < retry; i++ {
+		delay *= 2
+	}
+	if delay > 15*time.Minute {
+		return 15 * time.Minute
+	}
+	return delay
+}
+
+func restoredCronState(job *cron.Job) cron.RestoredJobState {
+	state := cron.RestoredJobState{
+		Status:         job.Status.String(),
+		Paused:         job.Status == cron.StatusPaused,
+		RunCount:       job.RunCount,
+		ErrorCount:     job.ErrorCount,
+		LastError:      job.LastError,
+		RunHistory:     append([]cron.RunRecord(nil), job.RunHistory...),
+		DeleteAfterRun: job.DeleteAfterRun,
+	}
+	if !job.CreatedAt.IsZero() {
+		created := job.CreatedAt
+		state.CreatedAt = &created
+	}
+	if !job.LastRun.IsZero() {
+		last := job.LastRun
+		state.LastRun = &last
+	}
+	if !job.NextRun.IsZero() {
+		next := job.NextRun
+		state.NextRun = &next
+	}
+	updated := time.Now()
+	state.UpdatedAt = &updated
+	return state
+}
+
+// cronStateClearingTaskFailure keeps the successful command while recording
+// that its result was not delivered. One-shot jobs still end; they do not
+// gain another run because the gateway was missing.
+func cronStateClearingTaskFailure(job *cron.Job) cron.RestoredJobState {
+	state := restoredCronState(job)
+	if job.ErrorCount > 0 {
+		state.ErrorCount = job.ErrorCount - 1
+	}
+	state.LastError = ""
+	if cronScheduleKind(job.Schedule, job.Metadata) == cronScheduleKindOneShot || job.NextRun.IsZero() {
+		state.Status = cron.StatusDone.String()
+		state.NextRun = cronClearedNextRun()
+	} else {
+		state.Status = cron.StatusIdle.String()
+	}
+	return state
+}
+
+// cronClearedNextRun is a non-nil zero time. RestoreJobState leaves NextRun
+// unchanged when the pointer itself is nil, so clearing the schedule needs a
+// pointer to the zero time.
+func cronClearedNextRun() *time.Time {
+	cleared := time.Time{}
+	return &cleared
+}
+
+func cronMetadataInt(meta map[string]string, key string) int {
+	if meta == nil {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(meta[key]))
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
 
 /*
@@ -90,27 +245,57 @@ func (a *Agent) restoreCronJobs() (int, error) {
 	if a == nil || a.cronStore == nil || a.cronEngine == nil {
 		return 0, nil
 	}
-	return a.cronStore.Load(a.cronEngine, func(job cron.PersistedJob) (func() error, map[string]string, error) {
-		mode := cronTaskMode(strings.ToLower(strings.TrimSpace(job.Mode)))
-		switch mode {
-		case cronTaskModeAgent, cronTaskModeShell:
-		default:
-			mode = cronTaskModeShell
-		}
+	restored, err := a.cronStore.Load(a.cronEngine, a.rebuildCronTask)
+	// Load reschedules a paused job whose stored next run is already due.
+	// Pause still means "do not schedule", including across a restart.
+	a.quiescePausedCronJobs()
+	return restored, err
+}
 
-		command := strings.TrimSpace(job.Command)
-		if command == "" {
-			return nil, nil, fmt.Errorf("command is empty")
-		}
+func (a *Agent) rebuildCronTask(job cron.PersistedJob) (func() error, map[string]string, error) {
+	mode := cronTaskMode(strings.ToLower(strings.TrimSpace(job.Mode)))
+	switch mode {
+	case cronTaskModeAgent, cronTaskModeShell:
+	default:
+		mode = cronTaskModeShell
+	}
 
-		metadata := map[string]string{
-			"mode": mode.String(),
+	command := strings.TrimSpace(job.Command)
+	if command == "" {
+		return nil, nil, fmt.Errorf("command is empty")
+	}
+
+	metadata := map[string]string{
+		"mode": mode.String(),
+	}
+	for k, v := range job.Metadata {
+		metadata[k] = v
+	}
+	return a.buildCronTask(job.ID, mode, command, metadata), metadata, nil
+}
+
+// quiescePausedCronJobs clears the next run of every paused job. Pause means
+// the scheduler will not run it; a stored next_run must not make a stopped
+// draft look like tomorrow's work.
+func (a *Agent) quiescePausedCronJobs() {
+	if a == nil || a.cronEngine == nil {
+		return
+	}
+	for _, job := range a.cronEngine.ListJobs() {
+		if job == nil || job.Status != cron.StatusPaused || job.NextRun.IsZero() {
+			continue
 		}
-		for k, v := range job.Metadata {
-			metadata[k] = v
+		// Recurring jobs keep their next run so resume can restore the same
+		// schedule. One-shot drafts must not stay due after pause.
+		if cronScheduleKind(job.Schedule, job.Metadata) != cronScheduleKindOneShot {
+			continue
 		}
-		return a.buildCronTask(job.ID, mode, command, metadata), metadata, nil
-	})
+		state := restoredCronState(job)
+		state.Status = cron.StatusPaused.String()
+		state.Paused = true
+		state.NextRun = cronClearedNextRun()
+		_ = a.cronEngine.RestoreJobState(job.ID, state)
+	}
 }
 
 /*
@@ -118,6 +303,199 @@ String 返回 cronTaskMode 的字符串形式。
 */
 func (m cronTaskMode) String() string {
 	return string(m)
+}
+
+// installCronToolPolicy wraps the published cron tool. The tool package mints
+// a new id on every add; this layer returns the existing job when the intent
+// key matches, and lists paused one-shot drafts as one group.
+func (a *Agent) installCronToolPolicy() {
+	if a == nil || a.tools == nil {
+		return
+	}
+	current, ok := a.tools.Get("cron")
+	if !ok || current == nil || current.Handler == nil {
+		return
+	}
+	base := current.Handler
+	wrapped := *current
+	params := make(map[string]tool.Param, len(current.Parameters)+8)
+	for key, value := range current.Parameters {
+		params[key] = value
+	}
+	params["title"] = tool.Param{Type: "string", Description: "Short task title", Required: false}
+	params["intent"] = tool.Param{Type: "string", Description: "Stable user intent. Repeat adds with the same intent return the existing job", Required: false}
+	params["schedule_kind"] = tool.Param{Type: "string", Description: "one_shot or recurring. Defaults from the schedule", Required: false}
+	params["created_by"] = tool.Param{Type: "string", Description: "Who created the task", Required: false}
+	params["desired_outcome"] = tool.Param{Type: "string", Description: "What success looks like", Required: false}
+	params["idempotency_key"] = tool.Param{Type: "string", Description: "Explicit intent key. A second add with this key returns the existing job", Required: false}
+	params["intent_key"] = tool.Param{Type: "string", Description: "For action=archive, archive every paused draft with this intent", Required: false}
+	wrapped.Parameters = params
+	wrapped.Description = strings.TrimSpace(current.Description + " Repeat add of the same intent returns the existing job. action=archive hides paused one-shot drafts that share an intent_key. The default list folds those drafts.")
+	wrapped.Handler = func(args map[string]any) (string, error) {
+		return a.handleCronTool(base, args)
+	}
+	a.tools.Register(&wrapped)
+}
+
+func (a *Agent) handleCronTool(base func(map[string]any) (string, error), args map[string]any) (string, error) {
+	action, _ := args["action"].(string)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "add":
+		return a.handleCronToolAdd(base, args)
+	case "list":
+		return a.handleCronToolList(base, args)
+	case "archive":
+		return a.handleCronToolArchive(args)
+	default:
+		return base(args)
+	}
+}
+
+func (a *Agent) handleCronToolAdd(base func(map[string]any) (string, error), args map[string]any) (string, error) {
+	modeText, _ := args["mode"].(string)
+	command, _ := args["command"].(string)
+	command = strings.TrimSpace(command)
+	mode, err := parseCronToolMode(modeText)
+	if err != nil || command == "" {
+		return base(args)
+	}
+	scheduleText, _ := args["schedule"].(string)
+	schedule, scheduleErr := cron.ParseNaturalLanguage(strings.TrimSpace(scheduleText))
+	if scheduleErr != nil {
+		schedule, scheduleErr = cron.ParseCronExpr(strings.TrimSpace(scheduleText))
+	}
+	meta := cronToolIdentityArgs(args)
+	key, prepared := prepareCronIdentity(cronToolString(args, "id"), cronToolString(args, "title"), cronToolString(args, "intent"), mode, command, meta, schedule)
+	if a.cronEngine != nil {
+		if existing := findCronJobByIntent(a.cronEngine.ListJobs(), key); existing != nil {
+			return cronExistingJobJSON(existing), nil
+		}
+	}
+	if scheduleErr == nil && schedule != nil && strings.TrimSpace(cronToolString(args, "id")) == "" {
+		// One intent keeps one id. A later retry must not append -2 or a new timestamp.
+		args["id"] = "intent-" + key
+	}
+	for field, metaKey := range map[string]string{
+		"title": prepared[cronMetaTitle], "intent": prepared[cronMetaIntent],
+	} {
+		if strings.TrimSpace(cronToolString(args, field)) == "" && metaKey != "" {
+			args[field] = metaKey
+		}
+	}
+	out, err := base(args)
+	if err != nil || a.cronEngine == nil {
+		return out, err
+	}
+	id := cronToolString(args, "id")
+	if id == "" {
+		var payload map[string]any
+		if json.Unmarshal([]byte(out), &payload) == nil {
+			id, _ = payload["id"].(string)
+		}
+	}
+	if job, ok := a.cronEngine.GetJob(id); ok && job != nil && job.Metadata != nil {
+		for key, value := range prepared {
+			if strings.TrimSpace(job.Metadata[key]) == "" {
+				job.Metadata[key] = value
+			}
+		}
+		_ = a.saveCronJobs()
+	}
+	return out, nil
+}
+
+func (a *Agent) handleCronToolList(base func(map[string]any) (string, error), args map[string]any) (string, error) {
+	out, err := base(args)
+	if err != nil || a == nil || a.cronEngine == nil {
+		return out, err
+	}
+	view := buildCronListView(a.cronEngine.ListJobs())
+	var payload map[string]any
+	if json.Unmarshal([]byte(out), &payload) != nil {
+		payload = map[string]any{}
+	}
+	payload["recurring"] = view.Recurring
+	payload["one_shot"] = view.OneShot
+	payload["paused_drafts"] = view.PausedDrafts
+	payload["recurring_count"] = view.RecurringCount
+	payload["one_shot_count"] = view.OneShotCount
+	payload["paused_draft_groups"] = view.DraftGroups
+	payload["paused_draft_jobs"] = view.DraftJobs
+	payload["jobs"] = append(append([]cronListItem{}, view.Recurring...), view.OneShot...)
+	payload["total"] = view.RecurringCount + view.OneShotCount
+	raw, marshalErr := json.Marshal(payload)
+	if marshalErr != nil {
+		return out, nil
+	}
+	return string(raw), nil
+}
+
+func (a *Agent) handleCronToolArchive(args map[string]any) (string, error) {
+	if a == nil || a.cronEngine == nil {
+		return "", fmt.Errorf("cron engine is not initialized")
+	}
+	key := firstNonEmpty(cronToolString(args, "intent_key"), cronToolString(args, "idempotency_key"))
+	if key == "" {
+		return "", fmt.Errorf("intent_key is required")
+	}
+	ids := archiveCronIntent(a.cronEngine.ListJobs(), key)
+	if err := a.saveCronJobs(); err != nil {
+		return "", err
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"ok":         true,
+		"action":     "archive",
+		"intent_key": key,
+		"archived":   ids,
+		"count":      len(ids),
+	})
+	return string(raw), nil
+}
+
+func cronExistingJobJSON(job *cron.Job) string {
+	raw, _ := json.Marshal(map[string]any{
+		"ok":              true,
+		"action":          "add",
+		"existing":        true,
+		"id":              job.ID,
+		"intent_key":      cronJobIntentKey(job),
+		"idempotency_key": cronJobIntentKey(job),
+		"title":           cronMetaOr(job, cronMetaTitle, job.Name),
+		"message":         fmt.Sprintf("Scheduled job %s already exists for this intent", job.ID),
+	})
+	return string(raw)
+}
+
+func cronToolIdentityArgs(args map[string]any) map[string]string {
+	meta := map[string]string{}
+	for _, key := range []string{
+		"title", "intent", "schedule_kind", "created_by", "desired_outcome",
+		"idempotency_key", "session_id", "platform", "delete_after_run",
+	} {
+		if value := cronToolString(args, key); value != "" {
+			meta[key] = value
+		}
+	}
+	return meta
+}
+
+func cronToolString(args map[string]any, key string) string {
+	if args == nil {
+		return ""
+	}
+	value, _ := args[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func parseCronToolMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "shell":
+		return "shell", nil
+	case "agent":
+		return "agent", nil
+	default:
+		return "", fmt.Errorf("invalid cron mode %q", mode)
+	}
 }
 
 func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, metadata map[string]string) func() error {
@@ -132,13 +510,20 @@ func (a *Agent) buildCronTask(id string, mode cronTaskMode, command string, meta
 }
 
 func combineCronTaskAndNotificationError(taskErr, notificationErr error) error {
+	var task *cronTaskError
+	if taskErr != nil {
+		task = &cronTaskError{err: taskErr}
+	}
 	if notificationErr == nil {
-		return taskErr
+		return task
 	}
-	if taskErr == nil {
-		return notificationErr
+	delivery := &cronDeliveryError{err: notificationErr}
+	if task == nil {
+		return delivery
 	}
-	return errors.Join(taskErr, fmt.Errorf("deliver cron result: %w", notificationErr))
+	// Both are returned so logs still show the command error. recordCronRun
+	// classifies the command failure first and does not retry delivery alone.
+	return errors.Join(task, delivery)
 }
 
 func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNotificationPayload) error {
