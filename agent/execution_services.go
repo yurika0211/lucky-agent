@@ -30,7 +30,11 @@ func (a *Agent) bindOptionalToolServices() {
 	}
 	a.toolServices.Heartbeat = tool.NewHeartbeatToolService(a.handleHeartbeatTrigger, a.handleHeartbeatStatus)
 	a.toolServices.RegisterCoreTools(a.tools)
+	// Role validation wraps the published handler first. Isolation wraps that
+	// guard so both checks run, and a bad isolation value still fails before
+	// a task is created.
 	a.installSubagentDelegateGuard()
+	a.installDelegateIsolation()
 }
 
 func (a *Agent) bindOptionalExecutionServices() {
@@ -65,31 +69,72 @@ func (a *Agent) bindOptionalExecutionServices() {
 			} else {
 				sess = sessions.NewWithTitle("delegate-task")
 			}
-			if workspace := tool.ExtractDelegateWorkspace(contextStr); workspace != "" {
-				if err := os.MkdirAll(workspace, 0o755); err == nil {
-					sess.SetCwd(workspace)
+			taskID := tool.DelegateTaskID(ctx)
+			worktree, snap, prepErr := a.prepareDelegatedWorkspace(ctx, taskID, contextStr, sess)
+			if prepErr != nil {
+				return "", prepErr
+			}
+			if snap != nil {
+				defer snap.Close()
+			}
+			if worktree.Path == "" {
+				if pending, ok := a.worktrees.get(taskID); ok && pending.ParentRoot != "" {
+					a.worktrees.forget(taskID)
+					sess.SetCwd(pending.ParentRoot)
+				} else if workspace := tool.ExtractDelegateWorkspace(contextStr); workspace != "" {
+					if err := os.MkdirAll(workspace, 0o755); err == nil {
+						sess.SetCwd(workspace)
+					}
 				}
 			}
-			cfg, contextStr, err := a.childLoopForDelegate(delegateCfg, options.AllowRecursiveDelegate, contextStr, "")
+			roleWorkspace := ""
+			if worktree.Path != "" {
+				roleWorkspace = worktree.ParentRoot
+			}
+			cfg, contextStr, err := a.childLoopForDelegate(delegateCfg, options.AllowRecursiveDelegate, contextStr, roleWorkspace)
 			if err != nil {
+				if note := a.finishDelegatedWorktree(worktree, err); note != "" {
+					return note, err
+				}
 				return "", err
+			}
+			if snap != nil {
+				cfg.Sandbox = snap
 			}
 			prompt := description
 			if contextStr != "" {
 				prompt = fmt.Sprintf("%s\n\nContext: %s", description, contextStr)
 			}
-			result, err := a.runDelegatedChild(ctx, loop, sess, prompt, cfg)
+			var result *LoopResult
+			if a.delegateChildRun != nil {
+				result, err = a.delegateChildRun(ctx, sess, TextUserTurnInput(prompt), cfg)
+			} else {
+				result, err = a.runDelegatedChild(ctx, loop, sess, prompt, cfg)
+			}
 			if result != nil {
 				lastTool := ""
 				if n := len(result.ToolCalls); n > 0 {
 					lastTool = result.ToolCalls[n-1].Name
 				}
-				delegateMgr.RecordExecutionMetrics(tool.DelegateTaskID(ctx), len(result.ToolCalls), lastTool)
+				delegateMgr.RecordExecutionMetrics(taskID, len(result.ToolCalls), lastTool)
+			}
+			response := ""
+			if result != nil {
+				response = result.Response
+			}
+			if worktree.Path != "" && err == nil && delegateTaskWasCancelled(delegateMgr, taskID) {
+				err = fmt.Errorf("delegate task cancelled")
+			}
+			if note := a.finishDelegatedWorktree(worktree, err); note != "" {
+				if response != "" {
+					response += "\n"
+				}
+				response += note
 			}
 			if err != nil {
-				return "", err
+				return response, err
 			}
-			return result.Response, nil
+			return response, nil
 		})
 		delegateMgr.SetTaskPlanner(a.planCollaboration)
 		delegateMgr.SetResultVerifier(a.verifyCollaborationSubTask)
