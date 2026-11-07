@@ -117,7 +117,13 @@ type LoopConfig struct {
 	Execution    turn.DurableExecution // durable background task claim
 	// CheckpointLogDir holds the append-only checkpoint event log. Empty uses
 	// the runtime home. The task record stores only the latest snapshot anchor.
-	CheckpointLogDir       string
+	CheckpointLogDir string
+	// subagentRolePrompt replaces the fixed child profile when a role file
+	// supplied one. Empty keeps delegatedSubagentSystemPrompt.
+	subagentRolePrompt string
+	// subagentModel overrides the parent model for this child loop. Empty
+	// keeps the parent snapshot.
+	subagentModel          string
 	MaxIterations          int                 // 最大循环次数
 	Timeout                time.Duration       // 单次循环超时
 	AutoApprove            bool                // 自动批准工具调用 (--yolo)

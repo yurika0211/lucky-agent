@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/yurika0211/luckyagent-runtime/session"
 	"github.com/yurika0211/luckyagent-runtime/tool"
@@ -29,6 +30,7 @@ func (a *Agent) bindOptionalToolServices() {
 	}
 	a.toolServices.Heartbeat = tool.NewHeartbeatToolService(a.handleHeartbeatTrigger, a.handleHeartbeatStatus)
 	a.toolServices.RegisterCoreTools(a.tools)
+	a.installSubagentDelegateGuard()
 }
 
 func (a *Agent) bindOptionalExecutionServices() {
@@ -40,7 +42,15 @@ func (a *Agent) bindOptionalExecutionServices() {
 		delegateMgr.SetSessionInitializer(func(task *tool.DelegateTask) error {
 			sess := sessions.Ensure(task.ExecutionSessionID)
 			sess.SetTitle("delegate-task")
-			sess.SetAgentProfile("subagent", delegatedSubagentSystemPrompt())
+			roleName, _, prompt, _, _ := takeSubagentRoleMarker(task.Context)
+			if strings.TrimSpace(prompt) == "" {
+				prompt = delegatedSubagentSystemPrompt()
+			}
+			role := "subagent"
+			if roleName != "" {
+				role = roleName
+			}
+			sess.SetAgentProfile(role, prompt)
 			if task.Workspace != "" {
 				sess.SetCwd(task.Workspace)
 			}
@@ -55,18 +65,20 @@ func (a *Agent) bindOptionalExecutionServices() {
 			} else {
 				sess = sessions.NewWithTitle("delegate-task")
 			}
-			sess.SetAgentProfile("subagent", delegatedSubagentSystemPrompt())
 			if workspace := tool.ExtractDelegateWorkspace(contextStr); workspace != "" {
 				if err := os.MkdirAll(workspace, 0o755); err == nil {
 					sess.SetCwd(workspace)
 				}
 			}
+			cfg, contextStr, err := a.childLoopForDelegate(delegateCfg, options.AllowRecursiveDelegate, contextStr, "")
+			if err != nil {
+				return "", err
+			}
 			prompt := description
 			if contextStr != "" {
 				prompt = fmt.Sprintf("%s\n\nContext: %s", description, contextStr)
 			}
-			cfg := buildDelegateChildLoopConfig(delegateCfg, options.AllowRecursiveDelegate)
-			result, err := loop.Run(ctx, sess, TextUserTurnInput(prompt), cfg)
+			result, err := a.runDelegatedChild(ctx, loop, sess, prompt, cfg)
 			if result != nil {
 				lastTool := ""
 				if n := len(result.ToolCalls); n > 0 {
