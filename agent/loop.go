@@ -123,7 +123,10 @@ type LoopConfig struct {
 	subagentRolePrompt string
 	// subagentModel overrides the parent model for this child loop. Empty
 	// keeps the parent snapshot.
-	subagentModel          string
+	subagentModel string
+	// delegateTaskID is the running child this loop belongs to. Parent
+	// messages queued for that id are appended after the current tool round.
+	delegateTaskID         string
 	MaxIterations          int                 // 最大循环次数
 	Timeout                time.Duration       // 单次循环超时
 	AutoApprove            bool                // 自动批准工具调用 (--yolo)
@@ -1103,6 +1106,7 @@ func (a *Agent) processToolCallBatch(
 
 	messages = appendLatestComputerObservation(messages, executed)
 	messages = appendComputerActDirective(messages, resp.ToolCalls)
+	messages = a.drainParentMessagesAfterToolRound(messages, sess, loopCfg.delegateTaskID)
 	messages = a.fitContextWindow(messages)
 	result.State = StateObserve
 

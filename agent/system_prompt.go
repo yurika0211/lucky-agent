@@ -202,6 +202,7 @@ func (a *Agent) buildDelegateTaskPolicyPromptBlock() string {
 
 	- After every successful subagent action=delegate call, retain the returned task_id.
 	- To continue a completed, failed, or cancelled task from this session, call action=delegate with resume_from set to that task_id and description set to the new work. Do not paste the previous result into context. A pending or running task cannot be resumed.
+	- To add a note to a pending or running task from this session, call action=message with that task_id and message. It waits until the current tool round finishes. A finished task resumes. Do not call action=message from inside a child.
 	- Before giving a final answer, call subagent with action=wait, every created task_id, and include_result=true.
 	- Do not finalize until that wait reports all_terminal=true. Then inspect each completed, failed, or cancelled result and synthesize an evidence-based answer.`
 }

@@ -126,6 +126,9 @@ type Agent struct {
 	// a restart makes the next 「继续」 fall back to keywords.
 	requestProfiles sync.Map
 	worktrees       delegateWorktreeBook
+	// parentMessagesBox queues action=message notes for a live child. The
+	// child loop drains them after the current tool round.
+	parentMessagesBox *parentMessageQueue
 	// delegateChildRun replaces the child Agent loop in tests. Production
 	// leaves it nil and uses loopRunner.
 	delegateChildRun func(context.Context, *session.Session, UserTurnInput, LoopConfig) (*LoopResult, error)
