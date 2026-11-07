@@ -111,28 +111,31 @@ func formatToolCallsForLog(calls []provider.ToolCall) string {
 LoopConfig 定义一次 Agent Loop 执行的关键参数。
 */
 type LoopConfig struct {
-	Foreground             bool // continue and checkpoint in the caller's request
-	emit                   func(context.Context, ChatEvent)
-	eventContext           context.Context
-	Execution              turn.DurableExecution // durable background task claim
-	MaxIterations          int                   // 最大循环次数
-	Timeout                time.Duration         // 单次循环超时
-	AutoApprove            bool                  // 自动批准工具调用 (--yolo)
-	RepeatToolCallLimit    int                   // 相同工具签名重复上限
-	ToolOnlyIterationLimit int                   // 连续纯工具轮次上限
-	DuplicateFetchLimit    int                   // 同一 URL 抓取上限
-	DisabledTools          []string              // 本轮对模型隐藏的工具名
-	RestrictTools          bool                  // enforce a positive per-turn allowlist
-	AllowedTools           []string              // canonical tool names; empty denies every tool
-	BlockedActions         map[string][]string   // 工具名到本轮禁止的 action
-	Ephemeral              bool                  // 临时后台执行，不写会话外持久化上下文
-	Source                 string                // 调用入口，例如 cli、tui、http、telegram
-	SessionID              string                // 当前回合的会话作用域（临时工具使用）
-	Sandbox                *sandbox.Snapshot     // task-scoped execution boundary
-	RunID                  string                // one user turn, shared by its tool results
-	Profile                RequestProfile        // resource profile selected before tool gating
-	ProfileSource          string                // profile decision source
-	ProfileConfidence      float32               // deterministic profile confidence
+	Foreground   bool // continue and checkpoint in the caller's request
+	emit         func(context.Context, ChatEvent)
+	eventContext context.Context
+	Execution    turn.DurableExecution // durable background task claim
+	// CheckpointLogDir holds the append-only checkpoint event log. Empty uses
+	// the runtime home. The task record stores only the latest snapshot anchor.
+	CheckpointLogDir       string
+	MaxIterations          int                 // 最大循环次数
+	Timeout                time.Duration       // 单次循环超时
+	AutoApprove            bool                // 自动批准工具调用 (--yolo)
+	RepeatToolCallLimit    int                 // 相同工具签名重复上限
+	ToolOnlyIterationLimit int                 // 连续纯工具轮次上限
+	DuplicateFetchLimit    int                 // 同一 URL 抓取上限
+	DisabledTools          []string            // 本轮对模型隐藏的工具名
+	RestrictTools          bool                // enforce a positive per-turn allowlist
+	AllowedTools           []string            // canonical tool names; empty denies every tool
+	BlockedActions         map[string][]string // 工具名到本轮禁止的 action
+	Ephemeral              bool                // 临时后台执行，不写会话外持久化上下文
+	Source                 string              // 调用入口，例如 cli、tui、http、telegram
+	SessionID              string              // 当前回合的会话作用域（临时工具使用）
+	Sandbox                *sandbox.Snapshot   // task-scoped execution boundary
+	RunID                  string              // one user turn, shared by its tool results
+	Profile                RequestProfile      // resource profile selected before tool gating
+	ProfileSource          string              // profile decision source
+	ProfileConfidence      float32             // deterministic profile confidence
 	// Set by ApplyAgentLoopConfig when agent.max_iterations / timeout_seconds
 	// are copied. Profile caps must not lower those values.
 	maxIterationsFromConfig bool
