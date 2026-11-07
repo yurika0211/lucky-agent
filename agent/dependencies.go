@@ -149,7 +149,7 @@ func NewWithDependencies(opts Options, deps *Dependencies) (*Agent, error) {
 		}
 	}
 
-	a.memory = capMemoryStore(memoryRT.Store, DefaultMaxMemoryNoteBytes)
+	a.memory = wrapRecallTimeout(capMemoryStore(memoryRT.Store, DefaultMaxMemoryNoteBytes), DefaultMemoryRecallTimeout)
 	if a.toolServices != nil {
 		if backend, ok := a.memory.(memory.ToolBackend); ok {
 			a.toolServices.Memory = tool.NewMemoryToolService(backend)
