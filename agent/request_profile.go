@@ -4,6 +4,9 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/yurika0211/luckyagent-runtime/config"
+	"github.com/yurika0211/luckyagent-runtime/provider"
 )
 
 // RequestProfile selects the cheapest execution budget that can satisfy a turn.
@@ -226,18 +229,76 @@ func applyRequestProfileDecision(cfg *LoopConfig, decision RequestProfileDecisio
 	cfg.Profile = decision.Profile
 	cfg.ProfileSource = decision.Source
 	cfg.ProfileConfidence = decision.Confidence
+	cfg.requestProfileClosingPrompt = ""
 	switch decision.Profile {
-	case RequestProfileChat:
-		applyProfileBudget(cfg, 6, 45*time.Second)
-	case RequestProfileToolTask:
-		applyProfileBudget(cfg, 10, 90*time.Second)
-	case RequestProfileCodeTask:
-		applyProfileBudget(cfg, 20, 3*time.Minute)
+	case RequestProfileChat, RequestProfileToolTask, RequestProfileCodeTask:
+		budget := requestProfileBudget(cfg.requestProfiles, decision.Profile)
+		applyProfileBudget(cfg, budget.MaxIterations, time.Duration(budget.TimeoutSeconds)*time.Second)
+		if requestProfilesConfigured(cfg.requestProfiles) {
+			cfg.requestProfileClosingPrompt = budget.ClosingPrompt
+		}
 	case RequestProfileLongTask:
 		// The long-task budget is the loop hard cap. Only explicit Execution
-		// or Foreground classification reaches this branch.
+		// or Foreground classification reaches this branch. Configured global
+		// values stay; an unset budget is still hard-capped. No wrap-up prompt.
 		applyProfileBudget(cfg, maxAllowedIterations, 10*time.Minute)
 	}
+}
+
+func requestProfilesConfigured(profiles config.RequestProfilesConfig) bool {
+	return profiles != (config.RequestProfilesConfig{})
+}
+
+func requestProfileBudget(profiles config.RequestProfilesConfig, profile RequestProfile) config.RequestProfileBudgetConfig {
+	defaults := config.DefaultConfig().Agent.RequestProfiles
+	var got config.RequestProfileBudgetConfig
+	var def config.RequestProfileBudgetConfig
+	switch profile {
+	case RequestProfileChat:
+		got, def = profiles.Chat, defaults.Chat
+	case RequestProfileToolTask:
+		got, def = profiles.ToolTask, defaults.ToolTask
+	case RequestProfileCodeTask:
+		got, def = profiles.CodeTask, defaults.CodeTask
+	default:
+		return config.RequestProfileBudgetConfig{}
+	}
+	if got.MaxIterations <= 0 {
+		got.MaxIterations = def.MaxIterations
+	}
+	if got.TimeoutSeconds <= 0 {
+		got.TimeoutSeconds = def.TimeoutSeconds
+	}
+	if strings.TrimSpace(got.ClosingPrompt) == "" {
+		got.ClosingPrompt = def.ClosingPrompt
+	}
+	return got
+}
+
+// appendRequestProfileClosingMessage adds the selected profile's wrap-up once,
+// after context build. An empty prompt, including long_task, leaves the
+// messages unchanged. The text is folded into the first system message so a
+// later tool-call and tool-result tail stays adjacent for the provider. The
+// standing system prompt builder is not changed. With no system message, the
+// wrap-up is appended as its own system message.
+func appendRequestProfileClosingMessage(messages []provider.Message, cfg LoopConfig) []provider.Message {
+	prompt := strings.TrimSpace(cfg.requestProfileClosingPrompt)
+	if prompt == "" {
+		return messages
+	}
+	out := append([]provider.Message(nil), messages...)
+	for i := range out {
+		if out[i].Role != "system" {
+			continue
+		}
+		if strings.TrimSpace(out[i].Content) == "" {
+			out[i].Content = prompt
+		} else {
+			out[i].Content = out[i].Content + "\n\n" + prompt
+		}
+		return out
+	}
+	return append(out, provider.Message{Role: "system", Content: prompt})
 }
 
 // applyProfileBudget fills a missing budget and caps an unset one. Values

@@ -605,6 +605,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 		a.maybeAutoCompactSessionWithProvider(ctx, sess, routingText, loopCfg.Ephemeral, turnProvider, compactProgressEmitter(loopCfg))
 		messages := a.buildContextMessagesForInputWithProvider(ctx, sess, input, buildOpts, turnProvider)
+		messages = appendRequestProfileClosingMessage(messages, loopCfg)
 		if err := sess.AddProviderMessageWithError(input.Message); err != nil {
 			sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventError, Err: sessionError(err)})
 			return
