@@ -65,6 +65,11 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 		contextBlock = a.buildContextFilesPrompt(sess)
 	}
 
+	// An entered story uses the card snapshot and skips the agent voice,
+	// tool policy, task ledger, and project manuals for this turn.
+	if story := a.storyContextMessage(sess); story != "" {
+		return story
+	}
 	// Runtime-owned role instructions must precede a potentially long SOUL;
 	// otherwise the context budget can truncate away a plugin agent's purpose.
 	if sess != nil {

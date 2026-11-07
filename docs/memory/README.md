@@ -15,6 +15,8 @@ LuckyAgent 的记忆系统不是单一的聊天历史缓存。它由四层组成
 
 RAG 与 memory 是两套系统。RAG 保存和检索 indexed documents；durable memory 的事实源是 Markdown vault，不是 RAG SQLite。
 
+剧情模式也不写入这四层。角色卡在 `${HOME}/.luckyagent/characters/<id>.md`，当前会话的剧情快照和状态在会话目录的 `story-mode.json`。只有用户明确要求保存某个事实时，才走现有的 remember 路径。进入和离开使用 `story_mode` 工具，不会在每轮对话里静默替换系统提示。
+
 ## 主要代码入口
 
 - `internal/memory/ports.go`、`types.go`：宿主端口与中立证据结构。

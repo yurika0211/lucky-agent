@@ -154,6 +154,7 @@ type loopRuntime interface {
 	SandboxMode() sandbox.Mode
 	applySandboxToolPolicy(*LoopConfig, *sandbox.Snapshot)
 	applyIntentToolGating(*LoopConfig, string)
+	applyStoryModePolicy(*session.Session, *LoopConfig, string)
 	classifyRequestProfile(context.Context, string, LoopConfig, providerSnapshot) RequestProfileDecision
 	providerSnapshotForProfile(providerSnapshot, RequestProfile) providerSnapshot
 	applyVisionToolPolicy(*LoopConfig, providerSnapshot)
@@ -515,6 +516,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 	}
 	l.runtime.applyIntentToolGating(&loopCfg, routingText)
 	l.runtime.applyVisionToolPolicy(&loopCfg, turnProvider)
+	l.runtime.applyStoryModePolicy(sess, &loopCfg, routingText)
 	loopCfg.eventContext = withPluginCallPolicy(ctx, loopCfg, turnInput.Scope, routingText)
 
 	if l.options.EnsureAutonomy != nil {

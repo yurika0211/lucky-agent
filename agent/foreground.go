@@ -222,6 +222,7 @@ func (a *Agent) runForegroundTask(ctx context.Context, sess *session.Session, in
 	sanitizeLoopConfig(&cfg)
 	a.applyIntentToolGating(&cfg, input.RoutingText)
 	a.applyVisionToolPolicy(&cfg, snapshot)
+	a.applyStoryModePolicy(sess, &cfg, input.RoutingText)
 	policy := a.foregroundPolicy()
 	// Active execution time is persisted by the orchestrator. Queue waits,
 	// retry backoff, and time spent waiting for a user must not consume the
