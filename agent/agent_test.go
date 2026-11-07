@@ -1395,6 +1395,9 @@ func (p *loopingFunctionProvider) ChatStream(ctx context.Context, messages []pro
 func (p *loopingFunctionProvider) Validate() error { return nil }
 
 func (p *loopingFunctionProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
+	if isIntentClassifyCall(messages) {
+		return &provider.Response{Content: `{"profile":"code_task"}`}, nil
+	}
 	p.callCount++
 	if p.callCount <= 4 {
 		return &provider.Response{
@@ -1426,6 +1429,9 @@ func (p *streamToolThenFinalProvider) Chat(ctx context.Context, messages []provi
 }
 
 func (p *streamToolThenFinalProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
+	if isIntentClassifyCall(messages) {
+		return &provider.Response{Content: `{"profile":"tool_task"}`}, nil
+	}
 	if hasToolMessage(messages, "rag_search") {
 		return &provider.Response{Content: "final answer from retrieved course material"}, nil
 	}
@@ -1447,6 +1453,12 @@ func (p *streamToolThenFinalProvider) ChatStream(ctx context.Context, messages [
 }
 
 func (p *streamToolThenFinalProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
+	if isIntentClassifyCall(messages) {
+		ch := make(chan provider.StreamChunk, 2)
+		ch <- provider.StreamChunk{Content: `{"profile":"tool_task"}`, Done: true}
+		close(ch)
+		return ch, nil
+	}
 	p.streamCallCount++
 	ch := make(chan provider.StreamChunk, 2)
 	go func() {
@@ -1898,6 +1910,10 @@ type staticChatProvider struct {
 }
 
 func (p *staticChatProvider) Name() string { return p.name }
+func isIntentClassifyCall(messages []provider.Message) bool {
+	return len(messages) > 0 && strings.Contains(messages[0].Content, "Classify the user's request")
+}
+
 func (p *staticChatProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
 	if p.err != nil {
 		return nil, p.err

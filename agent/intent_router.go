@@ -24,15 +24,28 @@ type intentRouterResponse struct {
 // request profile before tool gating. The provider's fallback chain is reused,
 // so its final reasoning_effort=none node is also the final classifier retry.
 func (a *Agent) classifyRequestProfileWithModel(ctx context.Context, input string, cfg LoopConfig, snapshot providerSnapshot) RequestProfileDecision {
-	if a == nil || a.cfg == nil || !snapshot.valid() || !a.cfg.Get().ModelRouter.Enable || cfg.Execution != nil || cfg.Foreground {
+	// model_router.enable only switches models. Fallbacks do not block this call.
+	// A missing or invalid snapshot still uses the keyword classifier.
+	if a == nil || !snapshot.valid() || cfg.Execution != nil || cfg.Foreground {
+		return classifyRequestProfile(input, cfg)
+	}
+	text := strings.ToLower(strings.TrimSpace(input))
+	if text == "" || isExplicitChat(text) {
+		return classifyRequestProfile(input, cfg)
+	}
+	if _, ok := continuationProfile(text, cfg); ok {
 		return classifyRequestProfile(input, cfg)
 	}
 
+	user := strings.TrimSpace(input)
+	if cfg.inheritProfile != "" {
+		user = user + "\nlast_profile=" + string(cfg.inheritProfile)
+	}
 	callCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	resp, err := snapshot.provider.Chat(callCtx, []provider.Message{
 		{Role: "system", Content: intentRouterSystemPrompt},
-		{Role: "user", Content: strings.TrimSpace(input)},
+		{Role: "user", Content: user},
 	})
 	if err != nil || resp == nil {
 		return classifyRequestProfile(input, cfg)

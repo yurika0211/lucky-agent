@@ -206,6 +206,9 @@ func (p *directThenFinalProvider) ChatStream(ctx context.Context, messages []pro
 func (p *directThenFinalProvider) Validate() error { return nil }
 
 func (p *directThenFinalProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
+	if len(messages) > 0 && strings.Contains(messages[0].Content, "Classify the user's request") {
+		return &provider.Response{Content: `{"profile":"tool_task"}`}, nil
+	}
 	p.callCount++
 	if p.callCount == 1 {
 		return &provider.Response{Content: "不用查，直接出门就行。"}, nil

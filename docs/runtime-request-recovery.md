@@ -52,9 +52,10 @@ Chat Completions / Responses 协议、流式 / 非流式请求都会传递该值
 }
 ```
 
-将 `model_router.enable` 设为 `true` 后，Agent 会在工具门控前用当前聊天 provider
-做一次意图分发；该调用不带工具，失败时沿用规则分发。它同样使用 `fallbacks`，
-因此最后一个 `reasoning_effort: "none"` 节点就是意图分发的最终兜底。
+普通回合在工具门控前用当前聊天 provider 做一次意图分发；该调用不带工具，
+失败时沿用规则分发。`model_router.enable` 只负责切换模型，`fallbacks` 不阻止
+意图分发。分发同样走当前 provider 的 `fallbacks`，因此最后一个
+`reasoning_effort: "none"` 节点就是意图分发的最终兜底。
 旧 `llm_provider.prompt_cache_key` 可读取，并迁移到 models 配置。
 
 key 由配置明确指定，不从用户文本或系统提示词自动计算。工具列表按名称排序，
