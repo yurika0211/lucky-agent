@@ -98,6 +98,26 @@ func (a *Agent) bindOptionalExecutionServices() {
 				}
 				return "", err
 			}
+			// A resume copies the tool list and model stored on the original
+			// task. A later config change must not replace them. An empty
+			// model keeps the role model, or the current default child model
+			// when the original task had no role.
+			if options.DisabledTools != nil {
+				cfg.DisabledTools = append([]string(nil), options.DisabledTools...)
+				if !options.AllowRecursiveDelegate {
+					cfg.DisabledTools = append(cfg.DisabledTools,
+						"subagent",
+						"autonomy",
+						"delegate_parallel",
+						"delegate_to_skill",
+						"delegate_to_mcp",
+					)
+				}
+				cfg.DisabledTools = normalizeToolNameList(cfg.DisabledTools)
+			}
+			if model := strings.TrimSpace(options.Model); model != "" {
+				cfg.subagentModel = model
+			}
 			if snap != nil {
 				cfg.Sandbox = snap
 			}

@@ -54,7 +54,7 @@ require (
 	github.com/yurika0211/lucky-agent/agent v0.3.2-0.20261106070523-c3aa3aeacf70 // indirect
 	github.com/yurika0211/luckyagent-api v0.2.5 // indirect
 	github.com/yurika0211/luckyagent-gateway v0.2.3 // indirect
-	github.com/yurika0211/luckyagent-orchestrator v0.1.2 // indirect
+	github.com/yurika0211/luckyagent-orchestrator v0.1.3-0.20261107100058-7e11cb9dd1f3 // indirect
 	github.com/yurika0211/luckyagent-plugins v0.1.0 // indirect
 	github.com/yurika0211/luckyagent-runtime v0.3.2 // indirect
 	github.com/yurika0211/luckyagent-tools v0.2.6 // indirect

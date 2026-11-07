@@ -89,6 +89,11 @@ func (a *Agent) installDelegateIsolation() {
 		Required:    false,
 		Default:     delegateIsolationNone,
 	}
+	copied["resume_from"] = tool.Param{
+		Type:        "string",
+		Description: "Optional task_id of a completed, failed, or cancelled subagent in this session. The new task continues that child session. description is the new work. A pending, running, missing, or other-session id fails and creates no task.",
+		Required:    false,
+	}
 	wrapped.Parameters = copied
 	wrapped.ContextDetailedHandler = func(exec tool.ExecutionContext, args map[string]any) (tool.ToolCallResult, error) {
 		if !strings.EqualFold(delegateStringArg(args, "action"), "delegate") {
