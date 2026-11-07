@@ -15,7 +15,32 @@ import (
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/session"
 	"github.com/yurika0211/luckyagent-runtime/tool"
+	"github.com/yurika0211/luckyagent-runtime/utils"
 )
+
+const iterationSynthesisPrompt = "The iteration limit is near. Answer now using the recorded tool results. Clearly state what remains incomplete or uncertain. Do not call tools."
+
+func appendIterationSynthesisPrompt(messages []provider.Message) []provider.Message {
+	if len(messages) > 0 && messages[len(messages)-1].Role == "user" && messages[len(messages)-1].Content == iterationSynthesisPrompt {
+		return messages
+	}
+	return append(messages, provider.Message{Role: "user", Content: iterationSynthesisPrompt})
+}
+
+func iterationLimitFallback(calls []toolCallLog) string {
+	var result strings.Builder
+	result.WriteString("The task is incomplete because the iteration limit was reached. Recorded tool results:")
+	for _, call := range calls {
+		result.WriteString("\n- ")
+		result.WriteString(call.Name)
+		result.WriteString(": ")
+		result.WriteString(utils.TrimToRunes(call.Result, 500))
+		if result.Len() >= 4000 {
+			break
+		}
+	}
+	return result.String()
+}
 
 // buildLoopCallOptions constructs the model-visible tool schema for one user input.
 func (a *Agent) buildLoopCallOptions(userInput string, loopCfg LoopConfig) provider.CallOptions {

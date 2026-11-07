@@ -634,6 +634,10 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 		}
 		callOpts = l.runtime.appendEphemeralToolSchemas(callOpts, loopCfg.SessionID)
 		callOpts = applyToolAllowlist(callOpts, loopCfg)
+		synthesizeAtLimit := i == loopCfg.MaxIterations-1 && len(result.ToolCalls) > 0 && loopCfg.Execution == nil && (memoryGate == nil || !memoryGate.shouldBlockFinal())
+		if synthesizeAtLimit {
+			messages = appendIterationSynthesisPrompt(messages)
+		}
 		result.Iterations = i + 1
 		result.State = StateReason
 		logger.Debug("agent loop iteration started",
@@ -652,7 +656,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 			loopCfg.Timeout,
 			messages,
 			callOpts,
-			loopState.forceSearchSynthesis,
+			loopState.forceSearchSynthesis || synthesizeAtLimit,
 			loopState.provider,
 			nil,
 		)
@@ -669,6 +673,9 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 			result.Usage.AddResponse(resp)
 		}
 		textcall.ApplyToResponse(resp, loopCfg.DisabledTools)
+		if synthesizeAtLimit && (len(resp.ToolCalls) > 0 || strings.TrimSpace(resp.Content) == "") {
+			return result, finalizer.Finalize(iterationLimitFallback(result.ToolCalls), "")
+		}
 		logger.Debug("agent loop provider response",
 			"session_id", sessionID,
 			"iteration", i+1,
