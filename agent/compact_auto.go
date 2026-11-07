@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 
 	"github.com/yurika0211/luckyagent-runtime/config"
 	"github.com/yurika0211/luckyagent-runtime/logger"
@@ -227,10 +228,30 @@ func (a *Agent) recordAutoCompactFailure(sessionID string) {
 }
 
 func (a *Agent) resetAutoCompactFailure(sessionID string) {
+	a.forgetAutoCompactFailure(sessionID)
+}
+
+func (a *Agent) forgetAutoCompactFailure(sessionID string) {
+	if a == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
 	a.autoCompactMu.Lock()
 	defer a.autoCompactMu.Unlock()
 	if a.autoCompactFailures == nil {
 		return
 	}
 	delete(a.autoCompactFailures, sessionID)
+}
+
+func (a *Agent) autoCompactFailureCountMapSize() int {
+	if a == nil {
+		return 0
+	}
+	a.autoCompactMu.Lock()
+	defer a.autoCompactMu.Unlock()
+	return len(a.autoCompactFailures)
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -217,6 +218,48 @@ func TestSimpleTaskTuningKeepsConfiguredBudget(t *testing.T) {
 	applySimpleTaskLoopTuning(&unset, "列出当前目录文件", config.AgentLoopConfig{})
 	if unset.MaxIterations != 3 || unset.Timeout != 25*time.Second {
 		t.Fatalf("unset simple task = %d %s", unset.MaxIterations, unset.Timeout)
+	}
+}
+
+func TestForgetShortTermSessionDropsRetainedSessionState(t *testing.T) {
+	const n = 32
+	a := &Agent{}
+	ids := make([]string, n)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("sess-%02d", i)
+		a.rememberRequestProfile(ids[i], RequestProfileCodeTask)
+		a.recordAutoCompactFailure(ids[i])
+		a.RecordExternalReplyAnchor("telegram", "chat-"+ids[i], "msg-"+ids[i], ids[i], "job-"+ids[i])
+	}
+	sizes := []struct {
+		name string
+		size func() int
+	}{
+		{name: "requestProfiles", size: a.requestProfileCount},
+		{name: "autoCompactFailures", size: a.autoCompactFailureCountMapSize},
+		{name: "externalReplyAnchors", size: a.externalReplyAnchorCount},
+	}
+	for _, row := range sizes {
+		if got := row.size(); got != n {
+			t.Fatalf("%s before delete = %d, want %d", row.name, got, n)
+		}
+	}
+
+	for _, id := range ids {
+		a.ForgetShortTermSession(id)
+	}
+	for _, row := range sizes {
+		if got := row.size(); got != 0 {
+			t.Fatalf("%s after delete = %d, want 0", row.name, got)
+		}
+	}
+	for _, id := range ids {
+		if a.lastRequestProfile(id) != "" || a.autoCompactFailureCount(id) != 0 {
+			t.Fatalf("session %s still retained", id)
+		}
+		if _, ok := a.ResolveExternalReplyAnchor("telegram", "chat-"+id, "msg-"+id); ok {
+			t.Fatalf("reply anchor %s still retained", id)
+		}
 	}
 }
 

@@ -162,6 +162,32 @@ func (a *Agent) RecordExternalReplyAnchor(platform, chatID, messageID, sessionID
 	a.heartbeatMu.Unlock()
 }
 
+func (a *Agent) forgetExternalReplyAnchors(sessionID string) {
+	if a == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	a.heartbeatMu.Lock()
+	defer a.heartbeatMu.Unlock()
+	for key, anchor := range a.externalReplyAnchors {
+		if anchor.SessionID == sessionID {
+			delete(a.externalReplyAnchors, key)
+		}
+	}
+}
+
+func (a *Agent) externalReplyAnchorCount() int {
+	if a == nil {
+		return 0
+	}
+	a.heartbeatMu.Lock()
+	defer a.heartbeatMu.Unlock()
+	return len(a.externalReplyAnchors)
+}
+
 func (a *Agent) ResolveExternalReplyAnchor(platform, chatID, messageID string) (sessionID string, ok bool) {
 	if a == nil {
 		return "", false

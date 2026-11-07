@@ -161,6 +161,29 @@ func (a *Agent) rememberRequestProfile(sessionID string, profile RequestProfile)
 	a.requestProfiles.Store(sessionID, profile)
 }
 
+func (a *Agent) forgetRequestProfile(sessionID string) {
+	if a == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return
+	}
+	a.requestProfiles.Delete(sessionID)
+}
+
+func (a *Agent) requestProfileCount() int {
+	if a == nil {
+		return 0
+	}
+	n := 0
+	a.requestProfiles.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
 func continuationProfile(text string, cfg LoopConfig) (RequestProfile, bool) {
 	if !isContinuationPhrase(text) {
 		return "", false

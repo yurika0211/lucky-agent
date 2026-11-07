@@ -844,6 +844,8 @@ func (a *Agent) shortTermBufferForSession(sess *session.Session, create bool) me
 
 // ForgetShortTermSession releases volatile state after a session is deleted
 // or intentionally reset. It is safe to call when no store is configured.
+// Process-lifetime maps keyed by session ID are dropped here too. Disk
+// transcripts stay until the session store itself deletes them.
 func (a *Agent) ForgetShortTermSession(sessionID string) {
 	if a == nil {
 		return
@@ -857,6 +859,9 @@ func (a *Agent) ForgetShortTermSession(sessionID string) {
 	if a.memory != nil {
 		a.memory.ForgetSession(sessionID)
 	}
+	a.forgetRequestProfile(sessionID)
+	a.forgetAutoCompactFailure(sessionID)
+	a.forgetExternalReplyAnchors(sessionID)
 }
 
 func (a *Agent) saveConversationMemoryFromSession(sess *session.Session, turnInput UserTurnInput, assistantResponse string) {
