@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -104,9 +105,20 @@ func loadSubagentRole(home, workspace, name string) (subagentRole, error) {
 		if readErr != nil {
 			return subagentRole{}, readErr
 		}
-		return subagentRole{}, fmt.Errorf("subagent role %q was not found", name)
+		return subagentRole{}, &missingSubagentRoleError{name: name}
 	}
 	return *found, nil
+}
+
+type missingSubagentRoleError struct{ name string }
+
+func (e *missingSubagentRoleError) Error() string {
+	return fmt.Sprintf("subagent role %q was not found", e.name)
+}
+
+func isMissingSubagentRole(err error) bool {
+	var missing *missingSubagentRoleError
+	return errors.As(err, &missing)
 }
 
 func parseSubagentRoleFile(path string) (subagentRole, error) {
