@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,24 +78,18 @@ func TestDelegateMessageReachesChildAfterCurrentTool(t *testing.T) {
 		release: make(chan struct{}),
 		note:    note,
 	}
-	var toolEntered chan struct{}
-	var toolRelease chan struct{}
+	var toolOnce sync.Once
+	toolEntered := make(chan struct{})
+	toolRelease := make(chan struct{})
 	agent, manager := resumeTestAgent(t, hold, "file body")
 	agent.tools.Register(&tool.Tool{
 		Name: "file_read", Enabled: true, Permission: tool.PermAuto,
 		Handler: func(map[string]any) (string, error) {
-			if toolEntered != nil {
-				close(toolEntered)
-				toolEntered = nil
-			}
-			if toolRelease != nil {
-				<-toolRelease
-			}
+			toolOnce.Do(func() { close(toolEntered) })
+			<-toolRelease
 			return "file body", nil
 		},
 	})
-	toolEntered = make(chan struct{})
-	toolRelease = make(chan struct{})
 
 	parent := "parent-session"
 	startedRaw, err := manager.HandleDelegateWithOwner(map[string]any{

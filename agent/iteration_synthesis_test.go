@@ -32,6 +32,11 @@ func (p *iterationSynthesisProvider) ChatWithOptions(_ context.Context, messages
 	if !strings.Contains(fmt.Sprint(messages), "Read evidence and answer") {
 		return &provider.Response{Content: verifiedAssessment}, nil
 	}
+	// Profile classification reuses this provider before the loop. It is not
+	// one of the four task iterations this test counts.
+	if len(messages) > 0 && messages[0].Role == "system" && strings.Contains(messages[0].Content, "Classify the user's request") {
+		return &provider.Response{Content: `{"profile":"tool_task"}`}, nil
+	}
 	p.calls++
 	p.opts = append(p.opts, opts)
 	if p.calls == 4 && p.emptyFinal {
