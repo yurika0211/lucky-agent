@@ -257,6 +257,23 @@
       "timeout_seconds": 25,
       "repeat_tool_call_limit": 2,
       "tool_only_iteration_limit": 2
+    },
+    "request_profiles": {
+      "chat": {
+        "max_iterations": 6,
+        "timeout_seconds": 45,
+        "closing_prompt": "This turn has a limited budget. Stop when the user's request is answered. Near the iteration or time limit, give a conclusion instead of opening new tools. Do not start work that cannot finish in the remaining budget."
+      },
+      "tool_task": {
+        "max_iterations": 10,
+        "timeout_seconds": 90,
+        "closing_prompt": "This turn has a limited budget. Stop when the user's request is answered. Near the iteration or time limit, give a conclusion instead of opening new tools. Do not start work that cannot finish in the remaining budget."
+      },
+      "code_task": {
+        "max_iterations": 20,
+        "timeout_seconds": 180,
+        "closing_prompt": "This turn has a limited budget. Stop when the user's request is answered. Near the iteration or time limit, give a conclusion instead of opening new tools. Do not start work that cannot finish in the remaining budget."
+      }
     }
   },
   "delegate": {

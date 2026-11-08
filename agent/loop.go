@@ -149,6 +149,12 @@ type LoopConfig struct {
 	// are copied. Profile caps must not lower those values.
 	maxIterationsFromConfig bool
 	timeoutFromConfig       bool
+	// requestProfiles is the agent.request_profiles copy for this turn.
+	// Zero profile fields fall back to config.DefaultConfig.
+	requestProfiles config.RequestProfilesConfig
+	// requestProfileClosingPrompt is the wrap-up text for this turn. Empty
+	// for long_task and when the selected profile has no prompt.
+	requestProfileClosingPrompt string
 	// inheritProfile is the session's last non-chat profile, copied for this
 	// turn so a short 「继续」 can reuse it. Not persisted.
 	inheritProfile RequestProfile
@@ -351,6 +357,7 @@ func ApplyAgentLoopConfig(loopCfg *LoopConfig, cfg config.AgentLoopConfig) {
 	if cfg.DuplicateFetchLimit > 0 {
 		loopCfg.DuplicateFetchLimit = cfg.DuplicateFetchLimit
 	}
+	loopCfg.requestProfiles = cfg.RequestProfiles
 }
 
 // LoopResult 是 Agent Loop 的执行结果
@@ -621,6 +628,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 	buildOpts := contextBuildOptionsForProfileSource(loopCfg.Profile, loopCfg.ProfileSource)
 	buildOpts.DisabledTools = append([]string(nil), loopCfg.DisabledTools...)
 	messages := l.runtime.buildContextMessagesForInputWithProvider(ctx, sess, turnInput, buildOpts, turnProvider)
+	messages = appendRequestProfileClosingMessage(messages, loopCfg)
 	if sess != nil {
 		if err := sess.AddProviderMessageWithError(turnInput.Message); err != nil {
 			return result, sessionError(err)

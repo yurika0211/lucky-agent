@@ -56,21 +56,27 @@ func TestRequestProfileGateEndToEndSelectsCodeTask(t *testing.T) {
 }
 
 func TestRequestProfileBudgets(t *testing.T) {
+	defaults := config.DefaultConfig().Agent.RequestProfiles
 	tests := []struct {
 		name     string
 		decision RequestProfileDecision
 		wantIter int
 		wantTime time.Duration
 	}{
-		{"chat", RequestProfileDecision{Profile: RequestProfileChat, Source: "fallback_low_risk", Confidence: 0.55}, 6, 45 * time.Second},
-		{"empty", RequestProfileDecision{Profile: RequestProfileChat, Source: "empty_input", Confidence: 1}, 6, 45 * time.Second},
-		{"tool_task", RequestProfileDecision{Profile: RequestProfileToolTask, Source: "deterministic_tool_intent", Confidence: 0.8}, 10, 90 * time.Second},
-		{"code_task", RequestProfileDecision{Profile: RequestProfileCodeTask, Source: "deterministic_code_intent", Confidence: 0.85}, 20, 3 * time.Minute},
+		{"chat", RequestProfileDecision{Profile: RequestProfileChat, Source: "fallback_low_risk", Confidence: 0.55}, defaults.Chat.MaxIterations, time.Duration(defaults.Chat.TimeoutSeconds) * time.Second},
+		{"empty", RequestProfileDecision{Profile: RequestProfileChat, Source: "empty_input", Confidence: 1}, defaults.Chat.MaxIterations, time.Duration(defaults.Chat.TimeoutSeconds) * time.Second},
+		{"tool_task", RequestProfileDecision{Profile: RequestProfileToolTask, Source: "deterministic_tool_intent", Confidence: 0.8}, defaults.ToolTask.MaxIterations, time.Duration(defaults.ToolTask.TimeoutSeconds) * time.Second},
+		{"code_task", RequestProfileDecision{Profile: RequestProfileCodeTask, Source: "deterministic_code_intent", Confidence: 0.85}, defaults.CodeTask.MaxIterations, time.Duration(defaults.CodeTask.TimeoutSeconds) * time.Second},
 		{"long_task", RequestProfileDecision{Profile: RequestProfileLongTask, Source: "explicit_execution", Confidence: 1}, maxAllowedIterations, 10 * time.Minute},
+	}
+	if defaults.Chat.MaxIterations != 6 || defaults.Chat.TimeoutSeconds != 45 ||
+		defaults.ToolTask.MaxIterations != 10 || defaults.ToolTask.TimeoutSeconds != 90 ||
+		defaults.CodeTask.MaxIterations != 20 || defaults.CodeTask.TimeoutSeconds != 180 {
+		t.Fatalf("default request profiles drifted: %+v", defaults)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := LoopConfig{MaxIterations: 300, Timeout: 30 * time.Minute}
+			cfg := LoopConfig{MaxIterations: 0, Timeout: 0}
 			applyRequestProfileDecision(&cfg, tt.decision)
 			if cfg.MaxIterations != tt.wantIter || cfg.Timeout != tt.wantTime {
 				t.Fatalf("%s budget = %d %s, want %d %s", tt.name, cfg.MaxIterations, cfg.Timeout, tt.wantIter, tt.wantTime)
@@ -101,6 +107,81 @@ func TestRequestProfileKeepsConfiguredBudget(t *testing.T) {
 	sanitizeLoopConfig(&over)
 	if over.MaxIterations != maxAllowedIterations || over.Timeout != 10*time.Minute {
 		t.Fatalf("hard cap = %d %s, want %d 10m", over.MaxIterations, over.Timeout, maxAllowedIterations)
+	}
+}
+
+func TestRequestProfileKeepsExplicitToolBudget(t *testing.T) {
+	cfg := LoopConfig{MaxIterations: 4, Timeout: 10 * time.Second}
+	applyRequestProfileDecision(&cfg, RequestProfileDecision{Profile: RequestProfileToolTask, Source: "deterministic_tool_intent", Confidence: 0.8})
+	if cfg.MaxIterations != 4 || cfg.Timeout != 10*time.Second {
+		t.Fatalf("explicit tool budget = %d %s, want 4 10s", cfg.MaxIterations, cfg.Timeout)
+	}
+}
+
+func TestRequestProfileCustomChatBudget(t *testing.T) {
+	cfg := LoopConfig{
+		MaxIterations: 0,
+		Timeout:       0,
+		requestProfiles: config.RequestProfilesConfig{
+			Chat: config.RequestProfileBudgetConfig{MaxIterations: 12, TimeoutSeconds: 70},
+		},
+	}
+	applyRequestProfileDecision(&cfg, RequestProfileDecision{Profile: RequestProfileChat, Source: "explicit_chat", Confidence: 1})
+	if cfg.MaxIterations != 12 || cfg.Timeout != 70*time.Second {
+		t.Fatalf("custom chat budget = %d %s, want 12 70s", cfg.MaxIterations, cfg.Timeout)
+	}
+}
+
+func TestRequestProfileClosingPromptCopied(t *testing.T) {
+	profiles := config.RequestProfilesConfig{
+		Chat:     config.RequestProfileBudgetConfig{MaxIterations: 6, TimeoutSeconds: 45, ClosingPrompt: "wrap chat"},
+		ToolTask: config.RequestProfileBudgetConfig{MaxIterations: 10, TimeoutSeconds: 90, ClosingPrompt: "wrap tool"},
+		CodeTask: config.RequestProfileBudgetConfig{MaxIterations: 20, TimeoutSeconds: 180, ClosingPrompt: "wrap code"},
+	}
+	cases := []struct {
+		profile RequestProfile
+		want    string
+	}{
+		{RequestProfileChat, "wrap chat"},
+		{RequestProfileToolTask, "wrap tool"},
+		{RequestProfileCodeTask, "wrap code"},
+		{RequestProfileLongTask, ""},
+	}
+	for _, tt := range cases {
+		cfg := LoopConfig{MaxIterations: 300, Timeout: 30 * time.Minute, requestProfiles: profiles}
+		applyRequestProfileDecision(&cfg, RequestProfileDecision{Profile: tt.profile, Source: "test", Confidence: 1})
+		if cfg.requestProfileClosingPrompt != tt.want {
+			t.Fatalf("%s closing prompt = %q, want %q", tt.profile, cfg.requestProfileClosingPrompt, tt.want)
+		}
+	}
+	unset := LoopConfig{MaxIterations: 300, Timeout: 30 * time.Minute}
+	applyRequestProfileDecision(&unset, RequestProfileDecision{Profile: RequestProfileChat, Source: "explicit_chat", Confidence: 1})
+	if unset.requestProfileClosingPrompt != "" {
+		t.Fatalf("unset profiles injected closing prompt %q", unset.requestProfileClosingPrompt)
+	}
+}
+
+func TestAppendRequestProfileClosingMessage(t *testing.T) {
+	base := []provider.Message{{Role: "system", Content: "standing"}, {Role: "user", Content: "hi"}}
+	chat := appendRequestProfileClosingMessage(base, LoopConfig{requestProfileClosingPrompt: "wrap chat"})
+	if len(chat) != 2 || chat[0].Role != "system" || !strings.Contains(chat[0].Content, "standing") || !strings.Contains(chat[0].Content, "wrap chat") || chat[1].Role != "user" {
+		t.Fatalf("chat append = %+v", chat)
+	}
+	if base[0].Content != "standing" || len(base) != 2 {
+		t.Fatalf("standing prompt changed: %+v", base)
+	}
+	noSystem := []provider.Message{{Role: "user", Content: "hi"}}
+	added := appendRequestProfileClosingMessage(noSystem, LoopConfig{requestProfileClosingPrompt: "wrap chat"})
+	if len(added) != 2 || added[1].Role != "system" || added[1].Content != "wrap chat" {
+		t.Fatalf("missing system prompt = %+v", added)
+	}
+	empty := appendRequestProfileClosingMessage(base, LoopConfig{})
+	if len(empty) != 2 || &empty[0] != &base[0] {
+		t.Fatalf("empty prompt changed messages: %+v", empty)
+	}
+	longTask := appendRequestProfileClosingMessage(base, LoopConfig{Profile: RequestProfileLongTask})
+	if len(longTask) != 2 {
+		t.Fatalf("long_task injected: %+v", longTask)
 	}
 }
 
