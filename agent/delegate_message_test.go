@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,24 +78,18 @@ func TestDelegateMessageReachesChildAfterCurrentTool(t *testing.T) {
 		release: make(chan struct{}),
 		note:    note,
 	}
-	var toolEntered chan struct{}
-	var toolRelease chan struct{}
+	var toolOnce sync.Once
+	toolEntered := make(chan struct{})
+	toolRelease := make(chan struct{})
 	agent, manager := resumeTestAgent(t, hold, "file body")
 	agent.tools.Register(&tool.Tool{
 		Name: "file_read", Enabled: true, Permission: tool.PermAuto,
 		Handler: func(map[string]any) (string, error) {
-			if toolEntered != nil {
-				close(toolEntered)
-				toolEntered = nil
-			}
-			if toolRelease != nil {
-				<-toolRelease
-			}
+			toolOnce.Do(func() { close(toolEntered) })
+			<-toolRelease
 			return "file body", nil
 		},
 	})
-	toolEntered = make(chan struct{})
-	toolRelease = make(chan struct{})
 
 	parent := "parent-session"
 	startedRaw, err := manager.HandleDelegateWithOwner(map[string]any{
@@ -232,6 +227,42 @@ func TestDelegateMessageRejectsMissingAndForeignTasks(t *testing.T) {
 		t.Fatalf("rejected message was queued: %d", got)
 	}
 	close(release)
+}
+
+func TestParentMessagesInitIsRaceFreeAndKeepsQueuedNotes(t *testing.T) {
+	agent := &Agent{}
+	const tasks = 32
+	var wg sync.WaitGroup
+	errCh := make(chan error, tasks)
+	for i := 0; i < tasks; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			taskID := fmt.Sprintf("task-%d", i)
+			if err := agent.parentMessages().enqueue(taskID, "parent", fmt.Sprintf("note-%d", i)); err != nil {
+				errCh <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+	box := agent.parentMessages()
+	if box == nil {
+		t.Fatal("queue was not published")
+	}
+	if again := agent.parentMessages(); again != box {
+		t.Fatal("parentMessages published a second queue")
+	}
+	for i := 0; i < tasks; i++ {
+		taskID := fmt.Sprintf("task-%d", i)
+		taken := box.take(taskID)
+		if len(taken) != 1 || taken[0].body != fmt.Sprintf("note-%d", i) {
+			t.Fatalf("task %s kept %+v", taskID, taken)
+		}
+	}
 }
 
 func TestSubagentMessageRejectedInsideChild(t *testing.T) {

@@ -128,7 +128,11 @@ type Agent struct {
 	worktrees       delegateWorktreeBook
 	// parentMessagesBox queues action=message notes for a live child. The
 	// child loop drains them after the current tool round.
-	parentMessagesBox *parentMessageQueue
+	// parentMessagesOnce publishes the box exactly once. Readers and writers
+	// go through parentMessages so a concurrent first message cannot drop
+	// a queue that another goroutine already filled.
+	parentMessagesOnce sync.Once
+	parentMessagesBox  *parentMessageQueue
 	// delegateChildRun replaces the child Agent loop in tests. Production
 	// leaves it nil and uses loopRunner.
 	delegateChildRun func(context.Context, *session.Session, UserTurnInput, LoopConfig) (*LoopResult, error)
