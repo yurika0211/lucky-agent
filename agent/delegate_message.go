@@ -93,13 +93,16 @@ func (q *parentMessageQueue) endDrain(taskID string) {
 	delete(q.draining, taskID)
 }
 
+// parentMessages returns the process-wide queue for this agent. The box is
+// published once. Concurrent action=message and the child drain must not
+// race on the pointer or replace a queue that already holds notes.
 func (a *Agent) parentMessages() *parentMessageQueue {
 	if a == nil {
 		return nil
 	}
-	if a.parentMessagesBox == nil {
+	a.parentMessagesOnce.Do(func() {
 		a.parentMessagesBox = &parentMessageQueue{}
-	}
+	})
 	return a.parentMessagesBox
 }
 
@@ -217,7 +220,11 @@ func (a *Agent) handleSubagentMessage(exec tool.ExecutionContext, args map[strin
 // annotateDelegateStatus adds pending_messages to a status payload. Bodies
 // stay out of status.
 func (a *Agent) annotateDelegateStatus(output string) string {
-	if a == nil || a.parentMessagesBox == nil || strings.TrimSpace(output) == "" {
+	if a == nil || strings.TrimSpace(output) == "" {
+		return output
+	}
+	box := a.parentMessages()
+	if box == nil {
 		return output
 	}
 	var payload map[string]any
@@ -228,7 +235,7 @@ func (a *Agent) annotateDelegateStatus(output string) string {
 	if strings.TrimSpace(taskID) == "" {
 		return output
 	}
-	payload["pending_messages"] = a.parentMessagesBox.count(taskID)
+	payload["pending_messages"] = box.count(taskID)
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return output
@@ -239,14 +246,18 @@ func (a *Agent) annotateDelegateStatus(output string) string {
 // drainParentMessagesAfterToolRound appends queued parent notes as user
 // messages. It runs only after the current tool batch has finished.
 func (a *Agent) drainParentMessagesAfterToolRound(messages []provider.Message, sess *session.Session, taskID string) []provider.Message {
-	if a == nil || a.parentMessagesBox == nil || strings.TrimSpace(taskID) == "" {
+	if a == nil || strings.TrimSpace(taskID) == "" {
 		return messages
 	}
-	if !a.parentMessagesBox.beginDrain(taskID) {
+	box := a.parentMessages()
+	if box == nil {
 		return messages
 	}
-	defer a.parentMessagesBox.endDrain(taskID)
-	taken := a.parentMessagesBox.take(taskID)
+	if !box.beginDrain(taskID) {
+		return messages
+	}
+	defer box.endDrain(taskID)
+	taken := box.take(taskID)
 	if len(taken) == 0 {
 		return messages
 	}
@@ -257,7 +268,7 @@ func (a *Agent) drainParentMessagesAfterToolRound(messages []provider.Message, s
 		messages = append(messages, msg)
 		if sess != nil {
 			if err := sess.AddProviderMessageWithError(msg); err != nil {
-				a.parentMessagesBox.restore(taskID, append([]parentMessage(nil), taken[len(written):]...))
+				box.restore(taskID, append([]parentMessage(nil), taken[len(written):]...))
 				return messages
 			}
 		}

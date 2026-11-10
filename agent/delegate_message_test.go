@@ -229,6 +229,42 @@ func TestDelegateMessageRejectsMissingAndForeignTasks(t *testing.T) {
 	close(release)
 }
 
+func TestParentMessagesInitIsRaceFreeAndKeepsQueuedNotes(t *testing.T) {
+	agent := &Agent{}
+	const tasks = 32
+	var wg sync.WaitGroup
+	errCh := make(chan error, tasks)
+	for i := 0; i < tasks; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			taskID := fmt.Sprintf("task-%d", i)
+			if err := agent.parentMessages().enqueue(taskID, "parent", fmt.Sprintf("note-%d", i)); err != nil {
+				errCh <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Fatal(err)
+	}
+	box := agent.parentMessages()
+	if box == nil {
+		t.Fatal("queue was not published")
+	}
+	if again := agent.parentMessages(); again != box {
+		t.Fatal("parentMessages published a second queue")
+	}
+	for i := 0; i < tasks; i++ {
+		taskID := fmt.Sprintf("task-%d", i)
+		taken := box.take(taskID)
+		if len(taken) != 1 || taken[0].body != fmt.Sprintf("note-%d", i) {
+			t.Fatalf("task %s kept %+v", taskID, taken)
+		}
+	}
+}
+
 func TestSubagentMessageRejectedInsideChild(t *testing.T) {
 	agent, _ := resumeTestAgent(t, &messageHoldProvider{note: "unused", started: make(chan struct{}), release: make(chan struct{})}, "unused")
 	sub, ok := agent.tools.Get("subagent")
