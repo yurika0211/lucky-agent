@@ -375,6 +375,9 @@ type LoopResult struct {
 	State             LoopState            // 结束状态
 	TokensUsed        int                  // 总 token 消耗
 	Usage             *provider.TokenUsage // provider-reported usage for the whole turn
+	LastRound         int64                // latest provider round, milliseconds
+	LastTTFT          int64                // latest streamed round's first token, milliseconds
+	RoundUsage        *provider.TokenUsage // latest provider round only
 	CreatedAt         *time.Time           // server timestamp of the final assistant message
 	Profile           RequestProfile       // resource profile selected for this turn
 	ProfileSource     string
@@ -670,6 +673,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 		)
 
 		// Reason: 调用 LLM（带 function calling 支持）
+		roundStarted := time.Now()
 		resp, err, _ := l.runtime.chatLoopIterationWithSoftRetry(
 			ctx,
 			loopCfg.Timeout,
@@ -685,13 +689,18 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 		}
 
 		result.TokensUsed += resp.TokensUsed
+		var roundUsage *provider.TokenUsage
 		if resp.Usage != nil || resp.TokensUsed > 0 {
 			if result.Usage == nil {
 				result.Usage = &provider.TokenUsage{}
 			}
 			result.Usage.AddResponse(resp)
+			roundUsage = &provider.TokenUsage{}
+			roundUsage.AddResponse(resp)
 		}
 		textcall.ApplyToResponse(resp, loopCfg.DisabledTools)
+		result.LastRound = measuredMillis(time.Since(roundStarted))
+		result.RoundUsage = roundUsage
 		if synthesizeAtLimit && (len(resp.ToolCalls) > 0 || strings.TrimSpace(resp.Content) == "") {
 			return result, finalizer.Finalize(iterationLimitFallback(result.ToolCalls), "")
 		}
@@ -1024,11 +1033,13 @@ func (a *Agent) processToolCallBatch(
 		return messages, true, formatRepeatedToolStop(repeatedSigs, loopState.toolCallLastResult)
 	}
 
+	roundMS := result.LastRound
 	messages = append(messages, provider.Message{
 		Role:             "assistant",
 		Content:          resp.Content,
 		ReasoningContent: resp.ReasoningContent,
 		ToolCalls:        resp.ToolCalls,
+		DurationMS:       roundMS,
 	})
 	if sess != nil {
 		if err := sess.AddProviderMessageWithError(provider.Message{
@@ -1036,6 +1047,8 @@ func (a *Agent) processToolCallBatch(
 			Content:          resp.Content,
 			ReasoningContent: resp.ReasoningContent,
 			ToolCalls:        resp.ToolCalls,
+			DurationMS:       roundMS,
+			Usage:            assistantUsage(result.RoundUsage),
 		}); err != nil {
 			loopState.sessionErr = err
 			return messages, false, ""

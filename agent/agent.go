@@ -668,6 +668,8 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 	messages := a.buildContextMessagesForInputWithProvider(ctx, sess, input, defaultContextBuildOptions(), turnProvider)
 
 	// 调用 Provider
+	started := time.Now()
+	var firstChunk time.Time
 	ch, err := a.streamLoopIteration(ctx, messages, provider.CallOptions{}, true, turnProvider)
 	if err != nil {
 		return "", fmt.Errorf("chat: %w", err)
@@ -677,6 +679,9 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 	var usageDetails *provider.UsageDetails
 	model := turnProvider.model
 	for chunk := range ch {
+		if (chunk.Content != "" || chunk.ReasoningContent != "") && firstChunk.IsZero() {
+			firstChunk = time.Now()
+		}
 		result.WriteString(chunk.Content)
 		if chunk.Usage != nil {
 			usageDetails = provider.MergeUsageDetails(usageDetails, chunk.Usage)
@@ -693,13 +698,11 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 	if err := sess.AddProviderMessageWithError(input.Message); err != nil {
 		return "", sessionError(err)
 	}
-	msg := provider.Message{Role: "assistant", Content: response}
+	msg := provider.Message{Role: "assistant", Content: response, DurationMS: measuredMillis(time.Since(started)), TTFTMS: measuredMillis(firstChunk.Sub(started))}
 	if usageDetails != nil {
 		usage := &provider.TokenUsage{}
 		usage.AddDetails(usageDetails, model)
-		if usage.TotalTokens > 0 {
-			msg.Usage = usage
-		}
+		msg.Usage = assistantUsage(usage)
 	}
 	if err := sess.AddProviderMessageWithError(msg); err != nil {
 		return "", sessionError(err)

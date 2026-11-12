@@ -151,7 +151,40 @@ type streamConvergenceState struct {
 	artifactGuard                  *artifact.Guard
 	pendingDelegateTaskIDs         map[string]struct{}
 	usage                          *provider.TokenUsage
+	roundUsage                     *provider.TokenUsage
+	roundStarted                   time.Time
+	firstChunkAt                   time.Time
 	runID                          string
+}
+
+func (s *streamConvergenceState) noteRoundStart() {
+	if s == nil {
+		return
+	}
+	s.roundStarted = time.Now()
+	s.firstChunkAt = time.Time{}
+	s.roundUsage = nil
+}
+
+func (s *streamConvergenceState) noteFirstChunk() {
+	if s == nil || s.roundStarted.IsZero() || !s.firstChunkAt.IsZero() {
+		return
+	}
+	s.firstChunkAt = time.Now()
+}
+
+func (s *streamConvergenceState) roundDurationMS() int64 {
+	if s == nil || s.roundStarted.IsZero() {
+		return 0
+	}
+	return measuredMillis(time.Since(s.roundStarted))
+}
+
+func (s *streamConvergenceState) roundTTFTMS() int64 {
+	if s == nil || s.roundStarted.IsZero() || s.firstChunkAt.IsZero() {
+		return 0
+	}
+	return measuredMillis(s.firstChunkAt.Sub(s.roundStarted))
 }
 
 func (s *streamConvergenceState) addUsage(details *provider.UsageDetails, model string) {
@@ -699,6 +732,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		"tool_choice", fmt.Sprint(effectiveCallOpts.ToolChoice),
 		"force_search_synthesis", state.forceSearchSynthesis,
 	)
+	state.noteRoundStart()
 	iterCtx, cancel := streamIterationContext(ctx, iterationTimeout)
 	defer cancel()
 	retryOnce := func(err error, safeToRetry bool) bool {
@@ -741,6 +775,9 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 	recordIterationUsage := func() {
 		if iterationUsage != nil {
 			state.addUsage(iterationUsage, state.provider.model)
+			roundUsage := &provider.TokenUsage{}
+			roundUsage.AddDetails(iterationUsage, state.provider.model)
+			state.roundUsage = roundUsage
 			iterationUsage = nil
 		}
 	}
@@ -770,6 +807,9 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		}
 		if chunk.FinishReason != "" {
 			streamFinishReason = chunk.FinishReason
+		}
+		if chunk.Content != "" || chunk.ReasoningContent != "" {
+			state.noteFirstChunk()
 		}
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
@@ -909,19 +949,17 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 			}
 
 			// 将 assistant 消息加入历史
-			messages = append(messages, provider.Message{
+			recordIterationUsage()
+			roundMsg := provider.Message{
 				Role:             "assistant",
 				Content:          assistantContent,
 				ReasoningContent: reasoning.String(),
 				ToolCalls:        toolCalls,
-			})
+			}
+			state.stampAssistant(&roundMsg)
+			messages = append(messages, roundMsg)
 			if sess != nil {
-				if !appendStreamSessionMessage(events, sess, provider.Message{
-					Role:             "assistant",
-					Content:          assistantContent,
-					ReasoningContent: reasoning.String(),
-					ToolCalls:        toolCalls,
-				}) {
+				if !appendStreamSessionMessage(events, sess, roundMsg) {
 					return
 				}
 			}
@@ -1091,6 +1129,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		"tool_choice", fmt.Sprint(effectiveCallOpts.ToolChoice),
 		"force_search_synthesis", state.forceSearchSynthesis,
 	)
+	state.noteRoundStart()
 	resp, err, _ := a.chatLoopIterationWithSoftRetry(
 		ctx,
 		state.iterationTimeout,
@@ -1115,6 +1154,14 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		return
 	}
 	state.addResponseUsage(resp)
+	if resp != nil && (resp.Usage != nil || resp.TokensUsed > 0) {
+		roundUsage := &provider.TokenUsage{}
+		roundUsage.AddResponse(resp)
+		state.roundUsage = roundUsage
+	}
+	if resp != nil && (resp.Content != "" || resp.ReasoningContent != "") {
+		state.noteFirstChunk()
+	}
 	textcall.ApplyToResponse(resp, state.disabledTools)
 	if synthesizeAtLimit && (len(resp.ToolCalls) > 0 || strings.TrimSpace(resp.Content) == "") {
 		fallback := iterationLimitFallback(state.citationToolCalls)
@@ -1151,19 +1198,16 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			a.finalizeStreamWithState(events, sess, turnInput, state.repeatedToolLoopMessage(repeatedSigs), state)
 			return
 		}
-		messages = append(messages, provider.Message{
+		roundMsg := provider.Message{
 			Role:             "assistant",
 			Content:          resp.Content,
 			ReasoningContent: resp.ReasoningContent,
 			ToolCalls:        resp.ToolCalls,
-		})
+		}
+		state.stampAssistant(&roundMsg)
+		messages = append(messages, roundMsg)
 		if sess != nil {
-			if !appendStreamSessionMessage(events, sess, provider.Message{
-				Role:             "assistant",
-				Content:          resp.Content,
-				ReasoningContent: resp.ReasoningContent,
-				ToolCalls:        resp.ToolCalls,
-			}) {
+			if !appendStreamSessionMessage(events, sess, roundMsg) {
 				return
 			}
 		}
@@ -1289,10 +1333,10 @@ func (a *Agent) finalizeStreamWithReasoning(events chan<- ChatEvent, sess *sessi
 }
 
 func (a *Agent) finalizeStreamWithUsage(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, usage *provider.TokenUsage, citationLogs ...[]toolCallLog) {
-	a.finalizeStreamWithRecap(events, sess, turnInput, response, reasoningContent, usage, true, citationLogs...)
+	a.finalizeStreamWithRecap(events, sess, turnInput, response, reasoningContent, usage, true, 0, 0, citationLogs...)
 }
 
-func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, usage *provider.TokenUsage, generateRecap bool, citationLogs ...[]toolCallLog) {
+func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, usage *provider.TokenUsage, generateRecap bool, durationMS, ttftMS int64, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
 	if strings.TrimSpace(response) == "" {
@@ -1309,10 +1353,9 @@ func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.S
 	if sess != nil {
 		msg := provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent}
 		msg.CreatedAt = &createdAt
-		if usage != nil && usage.TotalTokens > 0 {
-			usageCopy := *usage
-			msg.Usage = &usageCopy
-		}
+		msg.Usage = assistantUsage(usage)
+		msg.DurationMS = durationMS
+		msg.TTFTMS = ttftMS
 		if err := sess.AddProviderMessageWithError(msg); err != nil {
 			events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 			return
@@ -1335,12 +1378,7 @@ func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.S
 	}
 
 	a.metrics.RecordChatRequest()
-	var usageCopy *provider.TokenUsage
-	if usage != nil && usage.TotalTokens > 0 {
-		copy := *usage
-		usageCopy = &copy
-	}
-	events <- ChatEvent{Type: ChatEventDone, Content: response, Usage: usageCopy, CreatedAt: &createdAt}
+	events <- ChatEvent{Type: ChatEventDone, Content: response, Usage: assistantUsage(usage), CreatedAt: &createdAt}
 }
 
 func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, state *streamConvergenceState, reasoning ...string) {
@@ -1352,7 +1390,7 @@ func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.S
 	if len(reasoning) > 0 {
 		reasoningContent = reasoning[0]
 	}
-	a.finalizeStreamWithRecap(events, sess, turnInput, response, reasoningContent, state.usage, !state.ephemeral, state.citationToolCalls)
+	a.finalizeStreamWithRecap(events, sess, turnInput, response, reasoningContent, state.usage, !state.ephemeral, state.roundDurationMS(), state.roundTTFTMS(), state.citationToolCalls)
 }
 
 // finalizeStreamAfterInterruption gives the model one final, tool-free chance

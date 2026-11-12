@@ -61,10 +61,14 @@ func (f *loopFinalizer) Finalize(response, reasoningContent string) error {
 
 	// Keep provider-level message order: user -> assistant(tool call) -> tool -> assistant(final).
 	if f.sess != nil {
-		msg := provider.Message{Role: "assistant", Content: response, ReasoningContent: reasoningContent, CreatedAt: f.result.CreatedAt}
-		if f.result.Usage != nil && f.result.Usage.TotalTokens > 0 {
-			usage := *f.result.Usage
-			msg.Usage = &usage
+		msg := provider.Message{
+			Role:             "assistant",
+			Content:          response,
+			ReasoningContent: reasoningContent,
+			CreatedAt:        f.result.CreatedAt,
+			DurationMS:       f.result.LastRound,
+			TTFTMS:           f.result.LastTTFT,
+			Usage:            assistantUsage(f.result.Usage),
 		}
 		if err := f.sess.AddProviderMessageWithError(msg); err != nil {
 			return sessionError(err)

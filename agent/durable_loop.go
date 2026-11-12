@@ -49,6 +49,7 @@ type durableCheckpoint struct {
 	ModelStalls        int                   `json:"model_stalls,omitempty"`
 	Continuation       string                `json:"continuation,omitempty"`
 	Summary            string                `json:"summary,omitempty"`
+	LastRoundMS        int64                 `json:"last_round_ms,omitempty"`
 	SummarizedThrough  int                   `json:"summarized_through,omitempty"`
 	Shell              *session.ShellContext `json:"shell,omitempty"`
 }
@@ -164,6 +165,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 		result.State = StateDone
 		createdAt := time.Now().UTC()
 		result.CreatedAt = &createdAt
+		result.LastRound = cp.LastRoundMS
 		result.Verified = true
 		result.Verification = cp.Verification.Reason + "\n" + strings.Join(cp.Verification.Evidence, "\n")
 		if sess != nil {
@@ -172,7 +174,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 				return result, sessionError(err)
 			}
 			if len(all) == 0 || all[len(all)-1].Role != "assistant" || all[len(all)-1].Content != result.Response {
-				msg := provider.Message{Role: "assistant", Content: result.Response, ReasoningContent: cp.Reasoning, CreatedAt: result.CreatedAt}
+				msg := provider.Message{Role: "assistant", Content: result.Response, ReasoningContent: cp.Reasoning, CreatedAt: result.CreatedAt, DurationMS: result.LastRound}
 				if result.Usage != nil {
 					usage := *result.Usage
 					msg.Usage = &usage
@@ -334,8 +336,10 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			return result, err
 		}
 		callCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+		durableRoundStarted := time.Now()
 		resp, err := a.foregroundModelCall(callCtx, messages, opts, cfg, snapshot)
 		cancel()
+		cp.LastRoundMS = measuredMillis(time.Since(durableRoundStarted))
 		if err != nil {
 			return result, durableProviderError(ctx, err)
 		}
@@ -371,7 +375,12 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			cp.Batch++
 			cp.ModelStalls = 0
 			cp.Continuation = ""
-			msg := provider.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent, ToolCalls: resp.ToolCalls}
+			msg := provider.Message{Role: "assistant", Content: resp.Content, ReasoningContent: resp.ReasoningContent, ToolCalls: resp.ToolCalls, DurationMS: cp.LastRoundMS}
+			if resp.Usage != nil || resp.TokensUsed > 0 {
+				roundUsage := &provider.TokenUsage{}
+				roundUsage.AddResponse(resp)
+				msg.Usage = roundUsage
+			}
 			cp.Messages = append(cp.Messages, msg)
 			if sess != nil {
 				if err := sess.AddProviderMessageWithError(msg); err != nil {
