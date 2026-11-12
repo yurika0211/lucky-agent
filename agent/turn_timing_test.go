@@ -53,3 +53,42 @@ func TestStreamRoundStampsDurationAndTTFT(t *testing.T) {
 		t.Fatal("first chunk was overwritten")
 	}
 }
+
+func TestFreezeRoundTimingIgnoresLaterSleep(t *testing.T) {
+	state := &streamConvergenceState{}
+	state.noteRoundStart()
+	state.noteFirstChunk()
+	state.freezeRoundTiming()
+	frozenDuration := state.roundDurationMS()
+	frozenTTFT := state.roundTTFTMS()
+	time.Sleep(60 * time.Millisecond)
+	if state.roundDurationMS() != frozenDuration || state.roundTTFTMS() != frozenTTFT {
+		t.Fatalf("frozen duration %d ttft %d moved to %d %d", frozenDuration, frozenTTFT, state.roundDurationMS(), state.roundTTFTMS())
+	}
+}
+
+func TestRecoveryRoundDropsFailedStreamTiming(t *testing.T) {
+	state := &streamConvergenceState{}
+	state.noteRoundStart()
+	time.Sleep(30 * time.Millisecond)
+	state.noteFirstChunk()
+	failedDuration := state.roundDurationMS()
+	failedTTFT := state.roundTTFTMS()
+	if failedDuration < 1 || failedTTFT < 1 {
+		t.Fatal("failed round was not measured")
+	}
+
+	state.noteRoundStart()
+	time.Sleep(2 * time.Millisecond)
+	state.noteFirstChunk()
+	state.freezeRoundTiming()
+	msg := provider.Message{Role: "assistant", Content: "recovered"}
+	state.stampAssistant(&msg)
+	if msg.DurationMS >= failedDuration || msg.TTFTMS >= failedTTFT {
+		t.Fatalf("recovery stamped failed stream duration %d ttft %d (failed %d %d)", msg.DurationMS, msg.TTFTMS, failedDuration, failedTTFT)
+	}
+	time.Sleep(40 * time.Millisecond)
+	if state.roundDurationMS() != msg.DurationMS {
+		t.Fatalf("recovery duration moved from %d to %d", msg.DurationMS, state.roundDurationMS())
+	}
+}

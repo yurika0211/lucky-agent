@@ -155,6 +155,9 @@ type streamConvergenceState struct {
 	roundStarted                   time.Time
 	firstChunkAt                   time.Time
 	runID                          string
+	roundFrozen                    bool
+	frozenDurationMS               int64
+	frozenTTFTMS                   int64
 }
 
 func (s *streamConvergenceState) noteRoundStart() {
@@ -164,6 +167,20 @@ func (s *streamConvergenceState) noteRoundStart() {
 	s.roundStarted = time.Now()
 	s.firstChunkAt = time.Time{}
 	s.roundUsage = nil
+	s.roundFrozen = false
+	s.frozenDurationMS = 0
+	s.frozenTTFTMS = 0
+}
+
+// freezeRoundTiming snapshots provider wait. Later playback sleeps and a
+// failed stream's clock must not keep moving into the persisted assistant.
+func (s *streamConvergenceState) freezeRoundTiming() {
+	if s == nil || s.roundFrozen {
+		return
+	}
+	s.frozenDurationMS = s.liveRoundDurationMS()
+	s.frozenTTFTMS = s.liveRoundTTFTMS()
+	s.roundFrozen = true
 }
 
 func (s *streamConvergenceState) noteFirstChunk() {
@@ -173,18 +190,38 @@ func (s *streamConvergenceState) noteFirstChunk() {
 	s.firstChunkAt = time.Now()
 }
 
-func (s *streamConvergenceState) roundDurationMS() int64 {
+func (s *streamConvergenceState) liveRoundDurationMS() int64 {
 	if s == nil || s.roundStarted.IsZero() {
 		return 0
 	}
 	return measuredMillis(time.Since(s.roundStarted))
 }
 
-func (s *streamConvergenceState) roundTTFTMS() int64 {
+func (s *streamConvergenceState) liveRoundTTFTMS() int64 {
 	if s == nil || s.roundStarted.IsZero() || s.firstChunkAt.IsZero() {
 		return 0
 	}
 	return measuredMillis(s.firstChunkAt.Sub(s.roundStarted))
+}
+
+func (s *streamConvergenceState) roundDurationMS() int64 {
+	if s == nil {
+		return 0
+	}
+	if s.roundFrozen {
+		return s.frozenDurationMS
+	}
+	return s.liveRoundDurationMS()
+}
+
+func (s *streamConvergenceState) roundTTFTMS() int64 {
+	if s == nil {
+		return 0
+	}
+	if s.roundFrozen {
+		return s.frozenTTFTMS
+	}
+	return s.liveRoundTTFTMS()
 }
 
 func (s *streamConvergenceState) addUsage(details *provider.UsageDetails, model string) {
@@ -1162,6 +1199,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	if resp != nil && (resp.Content != "" || resp.ReasoningContent != "") {
 		state.noteFirstChunk()
 	}
+	state.freezeRoundTiming()
 	textcall.ApplyToResponse(resp, state.disabledTools)
 	if synthesizeAtLimit && (len(resp.ToolCalls) > 0 || strings.TrimSpace(resp.Content) == "") {
 		fallback := iterationLimitFallback(state.citationToolCalls)
@@ -1449,12 +1487,24 @@ func (a *Agent) finalizeStreamAfterInterruption(
 
 	synthesisCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	state.noteRoundStart()
 	resp, synthErr := a.chatLoopIteration(synthesisCtx, synthesisMessages, callOpts, true, state.provider)
 	if synthErr == nil && resp != nil && len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "" {
 		state.addResponseUsage(resp)
+		if resp.Usage != nil || resp.TokensUsed > 0 {
+			roundUsage := &provider.TokenUsage{}
+			roundUsage.AddResponse(resp)
+			state.roundUsage = roundUsage
+		}
+		if resp.Content != "" || resp.ReasoningContent != "" {
+			state.noteFirstChunk()
+		}
+		state.freezeRoundTiming()
 		a.finalizeStreamWithState(events, sess, turnInput, resp.Content, state, resp.ReasoningContent)
 		return true
 	}
+	state.noteRoundStart()
+	state.freezeRoundTiming()
 
 	if a.finalizeStreamInterruption(events, sess, turnInput, state, err, partial) {
 		return true
