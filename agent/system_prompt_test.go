@@ -129,6 +129,9 @@ func TestBuildSystemPromptIncludesHybridComputerTerminalPolicyOnlyWhenAllToolsVi
 	if !strings.Contains(prompt, "computer_observe and computer_act") {
 		t.Fatalf("expected one-line computer reminder in tool policy:\n%s", prompt)
 	}
+	if !strings.Contains(prompt, "background=true") || !strings.Contains(prompt, "terminal_output") || !strings.Contains(prompt, "terminal_kill") {
+		t.Fatalf("expected background terminal policy:\n%s", prompt)
+	}
 }
 
 func TestBuildSystemPromptIncludesDelegateWaitPolicyOnlyWhenToolsVisible(t *testing.T) {

@@ -227,7 +227,7 @@ func requiresInteractiveApproval(name string, args map[string]any) bool {
 		return true
 	}
 	switch name {
-	case "terminal", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch",
+	case "terminal", "terminal_kill", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch",
 		"computer_act", "image_generate", "text_to_speech",
 		"delegate_task", "delegate_cancel", "delegate_parallel", "delegate_to_skill", "delegate_to_mcp",
 		"cron_add", "cron_remove", "cron_pause", "cron_resume",
