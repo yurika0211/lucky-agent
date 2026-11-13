@@ -210,19 +210,47 @@ func TestParallelChildLoopHidesWaitForTasks(t *testing.T) {
 
 func TestPartialSubagentIterationLimitIsNotFailed(t *testing.T) {
 	result, err := partialSubagentLimitResult(LoopConfig{Source: "subagent"}, &LoopResult{
-		ToolCalls: []toolCallLog{{Name: "file_read", Result: "agent/loop.go"}},
-		Response:  "Max iterations reached, last response may be incomplete",
+		ToolCalls: []toolCallLog{
+			{Name: "file_read", Arguments: `{"path":"agent/loop.go"}`, Result: "package agent"},
+			{Name: "file_read", Result: "agent/request_profile.go"},
+			{Name: "memory", Result: "saved a note"},
+		},
+		Response: "Max iterations reached, last response may be incomplete",
 	}, fmt.Errorf("max iterations (10) reached"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result == nil || !strings.Contains(result.Response, "Partial result") || !strings.Contains(result.Response, "file_read") || !strings.Contains(result.Response, "Unfinished") {
+	if result == nil || !strings.Contains(result.Response, "Partial result") || !strings.Contains(result.Response, "Unfinished") {
 		t.Fatalf("partial result = %+v", result)
+	}
+	paths := partialResultSection(result.Response, "Paths:")
+	for _, path := range []string{"agent/loop.go", "agent/request_profile.go"} {
+		if !strings.Contains(paths, path) {
+			t.Fatalf("partial Paths missing %s: %s", path, paths)
+		}
+	}
+	if strings.Contains(paths, "saved a note") {
+		t.Fatalf("non-path result was written as a path: %s", paths)
+	}
+	if !strings.Contains(paths, "memory") {
+		t.Fatalf("tool name was dropped when no path was found: %s", paths)
 	}
 	parent, err := partialSubagentLimitResult(LoopConfig{Source: "user"}, &LoopResult{}, fmt.Errorf("max iterations (10) reached"))
 	if err == nil || parent.Response != "" {
 		t.Fatalf("parent max-iterations was rewritten: %+v err=%v", parent, err)
 	}
+}
+
+func partialResultSection(body, heading string) string {
+	start := strings.Index(body, heading)
+	if start < 0 {
+		return ""
+	}
+	rest := body[start+len(heading):]
+	if end := strings.Index(rest, "\n\n"); end >= 0 {
+		rest = rest[:end]
+	}
+	return rest
 }
 
 func TestSubagentRoleWhitelistWinsOverDisallow(t *testing.T) {

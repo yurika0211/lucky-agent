@@ -186,7 +186,7 @@ func (a *Agent) installSubagentDelegateGuard() {
 	}
 	current.Parameters["subagent_type"] = tool.Param{
 		Type:        "string",
-		Description: "Optional role. Omit to use builtin explore (read-only research). That is not the default full tool set. explore and plan are built in and read-only. A project or user file subagents/<name>.md with the same name replaces the builtin.",
+		Description: "Optional role. Omit it and, when delegate.builtin_agents is on (the default), the child is builtin explore: read-only research, not the parent tool set. When that switch is off, omit it to keep the current default child tool set. explore and plan are built in and read-only. A project or user file subagents/<name>.md with the same name replaces the builtin.",
 		Required:    false,
 	}
 	current.Parameters["thoroughness"] = tool.Param{
@@ -452,12 +452,17 @@ func isMaxIterationsError(err error) bool {
 
 func subagentLimitPaths(calls []toolCallLog) string {
 	var lines []string
+	seen := map[string]struct{}{}
 	for _, call := range calls {
-		name := strings.TrimSpace(call.Name)
-		if name == "" {
+		label := subagentLimitPathLabel(call)
+		if label == "" {
 			continue
 		}
-		lines = append(lines, "- "+name)
+		if _, ok := seen[label]; ok {
+			continue
+		}
+		seen[label] = struct{}{}
+		lines = append(lines, "- "+label)
 		if len(lines) >= 8 {
 			break
 		}
@@ -466,4 +471,83 @@ func subagentLimitPaths(calls []toolCallLog) string {
 		return "- none recorded"
 	}
 	return strings.Join(lines, "\n")
+}
+
+// subagentLimitPathLabel prefers a path the child already read. A tool call
+// with no recoverable path keeps the tool name so the partial result still
+// names what ran.
+func subagentLimitPathLabel(call toolCallLog) string {
+	name := strings.TrimSpace(call.Name)
+	if path := subagentLimitPath(call); path != "" {
+		if name == "" {
+			return path
+		}
+		return name + " " + path
+	}
+	return name
+}
+
+func subagentLimitPath(call toolCallLog) string {
+	args := map[string]any{}
+	if raw := strings.TrimSpace(call.Arguments); raw != "" {
+		_ = json.Unmarshal([]byte(raw), &args)
+	}
+	for _, key := range []string{"path", "file", "file_path", "filepath", "dir", "directory"} {
+		if path := cleanSubagentLimitPath(stringMapValue(args, key)); path != "" {
+			return path
+		}
+	}
+	return pathFromToolResult(call.Name, call.Result)
+}
+
+func stringMapValue(args map[string]any, key string) string {
+	if args == nil {
+		return ""
+	}
+	value, ok := args[key]
+	if !ok || value == nil {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func pathFromToolResult(name, result string) string {
+	text := strings.TrimSpace(result)
+	if text == "" || looksLikeToolError(text) {
+		return ""
+	}
+	switch strings.TrimSpace(name) {
+	case "file_read", "file_list", "document_read":
+		return cleanSubagentLimitPath(text)
+	default:
+		return ""
+	}
+}
+
+func looksLikeToolError(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	return strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "failed ")
+}
+
+func cleanSubagentLimitPath(raw string) string {
+	text := strings.TrimSpace(raw)
+	if text == "" || strings.ContainsAny(text, "\r\n") {
+		return ""
+	}
+	text = strings.Trim(text, `"'`)
+	text = strings.TrimPrefix(text, "file://")
+	if text == "" || strings.ContainsAny(text, " \t") {
+		return ""
+	}
+	if strings.Contains(text, "://") {
+		return ""
+	}
+	if len(text) > 240 {
+		return ""
+	}
+	return text
 }
