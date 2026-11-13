@@ -179,7 +179,7 @@ func (a *Agent) buildToolPolicyPromptBlock() string {
 Use tools to reduce uncertainty or change real state. Stop when one result already answers the user.
 
 Choose tools by intent:
-- File tools for repository truth. Terminal for commands, tests, and process inspection, not for printing a file.
+- File tools for repository truth. Terminal for commands, tests, and process inspection, not for printing a file. Long or blocking commands use terminal background=true (returns task_id), then terminal_output; stop with terminal_kill. Do not wait 900s in the foreground.
 - Web and search tools for external or recent facts. opencli for OpenCLI access; terminal for shell commands.
 - computer_observe and computer_act for local GUI work. Observe before the first action, then one atomic action, then check the returned frame. Do not guess pixel coordinates.
 - RAG for indexed knowledge. Memory for durable user facts. Skills when the task matches a named workflow.

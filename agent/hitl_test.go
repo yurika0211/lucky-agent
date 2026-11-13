@@ -93,10 +93,10 @@ func TestHITLResolveTextInput(t *testing.T) {
 }
 
 func TestRequiresInteractiveApproval(t *testing.T) {
-	if !requiresInteractiveApproval("terminal", nil) || !requiresInteractiveApproval("file_write", nil) {
+	if !requiresInteractiveApproval("terminal", nil) || !requiresInteractiveApproval("terminal_kill", nil) || !requiresInteractiveApproval("file_write", nil) {
 		t.Fatal("state-changing tools must wait for the user")
 	}
-	if requiresInteractiveApproval("web_search", nil) || requiresInteractiveApproval("file_read", nil) {
+	if requiresInteractiveApproval("web_search", nil) || requiresInteractiveApproval("file_read", nil) || requiresInteractiveApproval("terminal_output", nil) {
 		t.Fatal("read-only tools must not stall")
 	}
 	if requiresInteractiveApproval("http_request", map[string]any{"method": "GET"}) {
