@@ -25,7 +25,14 @@ func (a *Agent) prepareSubagentDelegate(args map[string]any, workspace string) (
 		return subagentRole{}, err
 	}
 	if roleName == "" {
-		return subagentRole{}, nil
+		if !a.builtinAgentsEnabled() {
+			return subagentRole{}, nil
+		}
+		role, err := a.loadDelegateRole(workspace, defaultUntypedSubagentRole)
+		if err != nil {
+			return subagentRole{}, err
+		}
+		return role, nil
 	}
 	role, err := a.loadDelegateRole(workspace, roleName)
 	if err != nil {
@@ -85,6 +92,9 @@ func (a *Agent) loopConfigForRole(role subagentRole, allowRecursive bool) (LoopC
 		return LoopConfig{}, err
 	}
 	cfg.subagentModel = role.Model
+	if role.MaxIterations >= 8 && role.MaxIterations <= 12 {
+		cfg.MaxIterations = role.MaxIterations
+	}
 	return cfg, nil
 }
 
@@ -103,9 +113,11 @@ func (a *Agent) toolsOrNil() *tool.Registry {
 // name itself can no longer be loaded.
 func (a *Agent) childLoopForDelegate(delegateCfg tool.DelegateConfig, allowRecursive bool, contextStr, workspace string) (LoopConfig, string, error) {
 	roleName, model, prompt, markedWorkspace, clean := takeSubagentRoleMarker(contextStr)
-	cfg := buildDelegateChildLoopConfig(delegateCfg, allowRecursive)
 	if roleName == "" {
-		return cfg, clean, nil
+		if !a.builtinAgentsEnabled() {
+			return buildDelegateChildLoopConfig(delegateCfg, allowRecursive), clean, nil
+		}
+		roleName = defaultUntypedSubagentRole
 	}
 	if markedWorkspace != "" {
 		workspace = markedWorkspace
@@ -174,7 +186,7 @@ func (a *Agent) installSubagentDelegateGuard() {
 	}
 	current.Parameters["subagent_type"] = tool.Param{
 		Type:        "string",
-		Description: "Optional role. explore and plan are built in and read-only. A project or user file subagents/<name>.md with the same name replaces the builtin. Omit to keep the default child tool set.",
+		Description: "Optional role. Omit to use builtin explore (read-only research). That is not the default full tool set. explore and plan are built in and read-only. A project or user file subagents/<name>.md with the same name replaces the builtin.",
 		Required:    false,
 	}
 	current.Parameters["thoroughness"] = tool.Param{
@@ -282,9 +294,11 @@ func loadBuiltinSubagentRole(name string) (subagentRole, bool) {
 // embeddedBuiltinSubagent mirrors agent/subagents/*.md for a binary that is
 // not sitting next to the source tree.
 var embeddedBuiltinSubagent = map[string]string{
-	"explore": "---\nname: explore\ndescription: Read-only search of the workspace. Returns paths, conclusions, and gaps.\ntools: [file_read, file_list, rag_search, memory, web_search, web_fetch]\n---\nSearch, then read. Do not edit files, run commands, or delegate.\n\nReturn three parts:\n- Paths you actually read, with why each one matters.\n- Conclusions that those paths support.\n- Gaps that a later change would still need to check.\n\nMemory is recall only. Do not write a new memory. Thoroughness changes how widely you search, not which tools you may call.\n",
+	"explore": "---\nname: explore\ndescription: Read-only search of the workspace. Returns paths, conclusions, and gaps.\ntools: [file_read, file_list, rag_search, memory, web_search, web_fetch]\nmax_iterations: 10\n---\nSearch, then read. Do not edit files, run commands, or delegate.\n\nReturn three parts:\n- Paths you actually read, with why each one matters.\n- Conclusions that those paths support.\n- Gaps that a later change would still need to check.\n\nMemory is recall only. Do not write a new memory. Thoroughness changes how widely you search, not which tools you may call.\n",
 	"plan":    "---\nname: plan\ndescription: Read-only change plan with evidence. Does not edit.\ntools: [file_read, file_list, rag_search, memory, web_search, web_fetch]\n---\nWrite a change plan. Do not edit files, run commands, or delegate.\n\nThe plan names the files to change, the evidence for each change, and what you did not verify. Memory is recall only. Do not write a new memory.\n",
 }
+
+const defaultUntypedSubagentRole = "explore"
 
 func validateDelegateThoroughness(roleName, thoroughness string) error {
 	if thoroughness == "" {
@@ -406,5 +420,50 @@ func (a *Agent) runDelegatedChild(ctx context.Context, loop *Loop, sess *session
 		}
 		snapshot = resolved
 	}
-	return loop.RunWithProviderSnapshot(ctx, sess, TextUserTurnInput(prompt), cfg, snapshot)
+	result, err := loop.RunWithProviderSnapshot(ctx, sess, TextUserTurnInput(prompt), cfg, snapshot)
+	return partialSubagentLimitResult(cfg, result, err)
+}
+
+// partialSubagentLimitResult turns a child that exhausted its iteration
+// budget into a successful partial result. The parent loop still fails when
+// it hits the same limit.
+func partialSubagentLimitResult(cfg LoopConfig, result *LoopResult, err error) (*LoopResult, error) {
+	if err == nil || cfg.Source != "subagent" || !isMaxIterationsError(err) {
+		return result, err
+	}
+	if result == nil {
+		result = &LoopResult{State: StateDone}
+	}
+	body := strings.TrimSpace(result.Response)
+	if body == "" || body == "Max iterations reached, last response may be incomplete" {
+		body = iterationLimitFallback(result.ToolCalls)
+	}
+	result.Response = "Partial result. The child iteration limit was reached.\n\nConclusions:\n" + body + "\n\nPaths:\n" + subagentLimitPaths(result.ToolCalls) + "\n\nUnfinished:\nThe search stopped at the iteration limit. A later pass still needs to check gaps that these tool results do not close."
+	result.State = StateDone
+	return result, nil
+}
+
+func isMaxIterationsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "max iterations")
+}
+
+func subagentLimitPaths(calls []toolCallLog) string {
+	var lines []string
+	for _, call := range calls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" {
+			continue
+		}
+		lines = append(lines, "- "+name)
+		if len(lines) >= 8 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return "- none recorded"
+	}
+	return strings.Join(lines, "\n")
 }

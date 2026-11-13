@@ -8,6 +8,7 @@ tools:
   - memory
   - web_search
   - web_fetch
+max_iterations: 10
 ---
 Search, then read. Do not edit files, run commands, or delegate.
 

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,7 @@ func roleRegistry(names ...string) *tool.Registry {
 	return registry
 }
 
-const childToolCatalog = "file_read,file_list,file_write,terminal,subagent,autonomy,delegate_parallel,delegate_to_skill,delegate_to_mcp"
+const childToolCatalog = "file_read,file_list,file_write,terminal,subagent,autonomy,delegate_parallel,delegate_to_skill,delegate_to_mcp,wait_for_tasks,rag_search,memory,web_search,web_fetch"
 
 func TestSubagentRoleProjectOverridesUser(t *testing.T) {
 	home := t.TempDir()
@@ -106,22 +107,30 @@ func TestLoopConfigForRoleGlobalDisableIsAFloor(t *testing.T) {
 func TestLoopConfigForRoleWithoutTypeMatchesToday(t *testing.T) {
 	limits := tool.DefaultDelegateConfig()
 	limits.ChildDisabledTools = []string{"file_write"}
-	a := &Agent{delegate: tool.NewDelegateManager(limits)}
+	registered := strings.Split(childToolCatalog, ",")
+	a := &Agent{delegate: tool.NewDelegateManager(limits), tools: roleRegistry(registered...)}
 	cfg, clean, err := a.childLoopForDelegate(limits, false, "plain context", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if clean != "plain context" || cfg.RestrictTools || cfg.subagentModel != "" {
-		t.Fatalf("untyped delegate changed the child loop: %+v clean=%q", cfg, clean)
+	if clean != "plain context" || !cfg.RestrictTools || cfg.ProfileSource != "subagent_role:explore" {
+		t.Fatalf("untyped delegate did not use explore: %+v clean=%q", cfg, clean)
 	}
-	want := buildDelegateChildLoopConfig(limits, false)
-	if strings.Join(cfg.DisabledTools, ",") != strings.Join(want.DisabledTools, ",") {
-		t.Fatalf("disabled = %v, want %v", cfg.DisabledTools, want.DisabledTools)
-	}
-	schema := childToolSchemaNames(strings.Split(childToolCatalog, ","), cfg)
+	schema := childToolSchemaNames(registered, cfg)
 	joined := "," + strings.Join(schema, ",") + ","
-	if strings.Contains(joined, ",file_write,") || strings.Contains(joined, ",subagent,") || !strings.Contains(joined, ",file_read,") || !strings.Contains(joined, ",terminal,") {
-		t.Fatalf("default child schema changed: %v", schema)
+	for _, name := range []string{"file_read", "file_list", "rag_search", "memory", "web_search", "web_fetch"} {
+		if !strings.Contains(joined, ","+name+",") {
+			t.Fatalf("explore schema missing %s: %v", name, schema)
+		}
+	}
+	for _, name := range []string{"terminal", "file_write", "wait_for_tasks", "subagent"} {
+		if strings.Contains(joined, ","+name+",") {
+			t.Fatalf("untyped schema includes %s: %v", name, schema)
+		}
+	}
+	guard := configuredTurnToolGuard("look", cfg)
+	if _, blocked := guard.blockMessage(provider.ToolCall{Name: "wait_for_tasks"}); !blocked {
+		t.Fatal("wait_for_tasks was callable on the default explore child")
 	}
 }
 
@@ -149,7 +158,7 @@ func TestPrepareSubagentEmptyWhitelistCreatesNoTask(t *testing.T) {
 
 func TestLoopConfigForRoleKeepsRecursiveToolsClosed(t *testing.T) {
 	workspace := t.TempDir()
-	writeRoleFile(t, filepath.Join(workspace, ".luckyagent", "subagents"), "wide.md", "---\nname: wide\ntools: file_read, subagent, autonomy, delegate_parallel, delegate_to_skill, delegate_to_mcp\n---\n")
+	writeRoleFile(t, filepath.Join(workspace, ".luckyagent", "subagents"), "wide.md", "---\nname: wide\ntools: file_read, subagent, autonomy, delegate_parallel, delegate_to_skill, delegate_to_mcp, wait_for_tasks\n---\n")
 	a := &Agent{delegate: tool.NewDelegateManager(tool.DefaultDelegateConfig()), tools: roleRegistry(strings.Split(childToolCatalog, ",")...)}
 	cfg, err := a.resolveSubagentRole("wide", workspace, true)
 	if err != nil {
@@ -172,6 +181,47 @@ func TestLoopConfigForRoleKeepsRecursiveToolsClosed(t *testing.T) {
 		if !strings.Contains(joined, ","+name+",") {
 			t.Fatalf("recursive tool %s stayed closed after allow_recursive_delegate: %v", name, openedSchema)
 		}
+	}
+	if strings.Contains(joined, ",wait_for_tasks,") {
+		t.Fatalf("wait_for_tasks re-entered a recursive child schema: %v", openedSchema)
+	}
+}
+
+func TestParallelChildLoopHidesWaitForTasks(t *testing.T) {
+	registered := strings.Split(childToolCatalog, ",")
+	a := &Agent{tools: roleRegistry(registered...)}
+	cfg, _, err := a.childLoopForDelegate(tool.DefaultDelegateConfig(), false, "batch context", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := childToolSchemaNames(registered, cfg)
+	joined := "," + strings.Join(schema, ",") + ","
+	if strings.Contains(joined, ",wait_for_tasks,") {
+		t.Fatalf("parallel child schema includes wait_for_tasks: %v", schema)
+	}
+	if !containsToolName(cfg.DisabledTools, "wait_for_tasks") {
+		t.Fatalf("parallel child DisabledTools = %v", cfg.DisabledTools)
+	}
+	guard := configuredTurnToolGuard("search the tree", cfg)
+	if _, blocked := guard.blockMessage(provider.ToolCall{Name: "wait_for_tasks"}); !blocked {
+		t.Fatal("parallel child could call wait_for_tasks")
+	}
+}
+
+func TestPartialSubagentIterationLimitIsNotFailed(t *testing.T) {
+	result, err := partialSubagentLimitResult(LoopConfig{Source: "subagent"}, &LoopResult{
+		ToolCalls: []toolCallLog{{Name: "file_read", Result: "agent/loop.go"}},
+		Response:  "Max iterations reached, last response may be incomplete",
+	}, fmt.Errorf("max iterations (10) reached"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || !strings.Contains(result.Response, "Partial result") || !strings.Contains(result.Response, "file_read") || !strings.Contains(result.Response, "Unfinished") {
+		t.Fatalf("partial result = %+v", result)
+	}
+	parent, err := partialSubagentLimitResult(LoopConfig{Source: "user"}, &LoopResult{}, fmt.Errorf("max iterations (10) reached"))
+	if err == nil || parent.Response != "" {
+		t.Fatalf("parent max-iterations was rewritten: %+v err=%v", parent, err)
 	}
 }
 

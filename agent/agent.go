@@ -149,14 +149,9 @@ func buildDelegateChildLoopConfig(delegateCfg tool.DelegateConfig, allowRecursiv
 	loopCfg.DuplicateFetchLimit = delegateCfg.ChildDuplicateLimit
 	loopCfg.DisabledTools = append([]string(nil), delegateCfg.ChildDisabledTools...)
 	if !allowRecursive {
-		loopCfg.DisabledTools = append(loopCfg.DisabledTools,
-			"subagent",
-			"autonomy",
-			"delegate_parallel",
-			"delegate_to_skill",
-			"delegate_to_mcp",
-		)
+		loopCfg.DisabledTools = append(loopCfg.DisabledTools, delegateRecursiveToolNames...)
 	}
+	loopCfg.DisabledTools = append(loopCfg.DisabledTools, delegateChildWaitToolNames...)
 	loopCfg.DisabledTools = normalizeToolNameList(loopCfg.DisabledTools)
 	return loopCfg
 }
