@@ -109,14 +109,9 @@ func (a *Agent) bindOptionalExecutionServices() {
 			if options.DisabledTools != nil {
 				cfg.DisabledTools = append([]string(nil), options.DisabledTools...)
 				if !options.AllowRecursiveDelegate {
-					cfg.DisabledTools = append(cfg.DisabledTools,
-						"subagent",
-						"autonomy",
-						"delegate_parallel",
-						"delegate_to_skill",
-						"delegate_to_mcp",
-					)
+					cfg.DisabledTools = append(cfg.DisabledTools, delegateRecursiveToolNames...)
 				}
+				cfg.DisabledTools = append(cfg.DisabledTools, delegateChildWaitToolNames...)
 				cfg.DisabledTools = normalizeToolNameList(cfg.DisabledTools)
 			}
 			if model := strings.TrimSpace(options.Model); model != "" {

@@ -2954,7 +2954,7 @@ func TestBuildDelegateRuntimeConfigUsesConfig(t *testing.T) {
 	if childLoop.MaxIterations != 12 || childLoop.Timeout != 90*time.Second || !childLoop.AutoApprove || childLoop.RepeatToolCallLimit != 4 || childLoop.ToolOnlyIterationLimit != 5 || childLoop.DuplicateFetchLimit != 2 {
 		t.Fatalf("unexpected child loop config: %#v", childLoop)
 	}
-	for _, name := range []string{"terminal", "subagent", "delegate_parallel", "delegate_to_skill", "delegate_to_mcp"} {
+	for _, name := range []string{"terminal", "subagent", "delegate_parallel", "delegate_to_skill", "delegate_to_mcp", "wait_for_tasks"} {
 		found := false
 		for _, disabled := range childLoop.DisabledTools {
 			if disabled == name {
@@ -2966,9 +2966,22 @@ func TestBuildDelegateRuntimeConfigUsesConfig(t *testing.T) {
 			t.Fatalf("expected child loop to disable %q, got %v", name, childLoop.DisabledTools)
 		}
 	}
-	if len(buildDelegateChildLoopConfig(got, true).DisabledTools) != 1 {
-		t.Fatalf("expected recursive child loop to retain only configured disabled tools, got %v", buildDelegateChildLoopConfig(got, true).DisabledTools)
+	recursiveDisabled := buildDelegateChildLoopConfig(got, true).DisabledTools
+	if len(recursiveDisabled) != 2 || !containsToolName(recursiveDisabled, "terminal") || !containsToolName(recursiveDisabled, "wait_for_tasks") {
+		t.Fatalf("expected recursive child loop to keep configured disables plus wait_for_tasks, got %v", recursiveDisabled)
 	}
+	if !containsToolName(buildDelegateChildLoopConfig(got, true).DisabledTools, "wait_for_tasks") {
+		t.Fatal("recursive child loop left wait_for_tasks enabled")
+	}
+}
+
+func containsToolName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestBuildAutonomyRuntimeConfigUsesPoolAndHeartbeatConfig(t *testing.T) {

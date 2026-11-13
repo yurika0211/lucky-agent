@@ -33,6 +33,7 @@ type subagentRole struct {
 	DisallowedTools []string
 	Model           string
 	Prompt          string
+	MaxIterations   int
 	// Whitelist is true when the file set tools. That list wins over
 	// disallowed_tools when both are present.
 	Whitelist bool
@@ -46,6 +47,7 @@ type subagentRoleFrontmatter struct {
 	DisallowedTools any    `yaml:"disallowed_tools"`
 	Model           string `yaml:"model"`
 	Prompt          string `yaml:"prompt"`
+	MaxIterations   int    `yaml:"max_iterations"`
 }
 
 // subagentRoleRoots lists the user directory and then the project directory.
@@ -141,6 +143,7 @@ func parseSubagentRoleFile(path string) (subagentRole, error) {
 		DisallowedTools: roleToolList(front.DisallowedTools),
 		Model:           strings.TrimSpace(front.Model),
 		Prompt:          strings.TrimSpace(front.Prompt),
+		MaxIterations:   front.MaxIterations,
 		Whitelist:       front.Tools != nil,
 		Path:            path,
 	}
@@ -234,6 +237,9 @@ func applySubagentRole(cfg LoopConfig, role subagentRole, allowRecursive bool, r
 			floor[name] = struct{}{}
 		}
 	}
+	for _, name := range delegateChildWaitToolNames {
+		floor[name] = struct{}{}
+	}
 	rolePrompt := strings.TrimSpace(role.Prompt)
 	if rolePrompt == "" {
 		rolePrompt = delegatedSubagentSystemPrompt()
@@ -293,6 +299,13 @@ var delegateRecursiveToolNames = []string{
 	"delegate_parallel",
 	"delegate_to_skill",
 	"delegate_to_mcp",
+}
+
+// delegateChildWaitToolNames stay closed on every child role. A recursive
+// child may spawn work, but it does not collect that work with wait_for_tasks.
+// The parent stream still requires the parent to call wait_for_tasks.
+var delegateChildWaitToolNames = []string{
+	"wait_for_tasks",
 }
 
 // childToolSchemaNames is the model-visible tool list for one child loop.

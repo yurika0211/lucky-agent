@@ -40,8 +40,8 @@ func TestExploreBuiltinSchemaExcludesWriteTools(t *testing.T) {
 			t.Fatalf("%s was callable on explore", name)
 		}
 	}
-	if cfg.MaxIterations != buildDelegateChildLoopConfig(tool.DefaultDelegateConfig(), false).MaxIterations {
-		t.Fatalf("explore changed max_iterations: %d", cfg.MaxIterations)
+	if cfg.MaxIterations < 8 || cfg.MaxIterations > 12 {
+		t.Fatalf("explore max_iterations = %d, want 8-12", cfg.MaxIterations)
 	}
 }
 

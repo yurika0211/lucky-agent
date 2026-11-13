@@ -28,7 +28,7 @@ func TestDelegateRoleGuardRejectsUnknownBeforeTask(t *testing.T) {
 	if !ok {
 		t.Fatal("subagent tool missing")
 	}
-	if sub.Parameters["subagent_type"].Description == "" || !strings.Contains(sub.Parameters["subagent_type"].Description, "subagents/<name>.md") {
+	if sub.Parameters["subagent_type"].Description == "" || !strings.Contains(sub.Parameters["subagent_type"].Description, "builtin explore") {
 		t.Fatalf("subagent_type was not advertised: %+v", sub.Parameters["subagent_type"])
 	}
 	_, err := sub.ContextDetailedHandler(tool.ExecutionContext{}, map[string]any{
@@ -57,8 +57,12 @@ func TestDelegateRoleGuardLeavesUntypedDelegateUnchanged(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got["context"] != "notes" || got["subagent_type"] != nil {
-		t.Fatalf("untyped delegate was rewritten: %#v", got)
+	context, _ := got["context"].(string)
+	if !strings.Contains(context, subagentRoleMarkerPrefix) || !strings.Contains(context, `"name":"explore"`) {
+		t.Fatalf("untyped delegate did not stamp explore: %#v", got)
+	}
+	if got["subagent_type"] != nil {
+		t.Fatalf("untyped delegate rewrote subagent_type: %#v", got)
 	}
 }
 

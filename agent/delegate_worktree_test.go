@@ -252,6 +252,9 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 func newWorktreeTestAgent(t *testing.T, run func(context.Context, *session.Session) error) *Agent {
 	t.Helper()
 	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{\"delegate\":{\"builtin_agents\":false}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	mgr, err := config.NewManagerWithDir(home)
 	if err != nil {
 		t.Fatal(err)
