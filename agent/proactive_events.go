@@ -149,6 +149,12 @@ func (a *Agent) recordProactiveToolEvent(sess *session.Session, result executedT
 		"result_chars": fmt.Sprintf("%d", len(result.Result)),
 		"arguments":    truncate(result.ToolCall.Arguments, 180),
 	}
+	if isBackgroundTerminalCall(result.ToolCall.Name, result.ToolCall.Arguments, result.Result) {
+		metadata["background"] = "true"
+	}
+	if isLongTerminalCall(result.ToolCall.Name, result.Duration) {
+		metadata["long"] = "true"
+	}
 	if cwd != "" {
 		metadata["cwd"] = cwd
 	}

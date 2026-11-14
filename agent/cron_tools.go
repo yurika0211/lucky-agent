@@ -612,6 +612,10 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 }
 
 func (a *Agent) deliverCronToSession(sessionID, message string) error {
+	return a.deliverSessionNotice(sessionID, message)
+}
+
+func (a *Agent) deliverSessionNotice(sessionID, message string) error {
 	sessionID = strings.TrimSpace(sessionID)
 	message = strings.TrimSpace(message)
 	if a == nil || a.sessions == nil || sessionID == "" || message == "" {

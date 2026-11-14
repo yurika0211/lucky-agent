@@ -97,31 +97,35 @@ type Agent struct {
 	// one" and leave the tool Registry holding a mix of both.
 	skillLoadMu sync.Mutex
 	// skillInstall is built lazily by SkillInstaller; it is guarded by skillMu.
-	skillInstall          *tool.InstallManager
-	metrics               *metrics.Metrics // 指标收集器
-	toolMetrics           *toolDurationMetrics
-	proactiveStore        *proactive.Store
-	proactiveRuntime      *proactive.RuntimeService
-	cronEngine            *cron.Engine // 定时任务引擎
-	cronStore             *cron.Store
-	autonomy              *autonomy.AutonomyKit // 自主工作套件
-	computerMgr           *computer.Manager
-	sandbox               *sandbox.Manager
-	autonomyResultsMu     sync.Mutex
-	autonomyResultsCancel context.CancelFunc
-	heartbeatSvc          *appheartbeat.Service
-	heartbeatMu           sync.Mutex
-	heartbeatSessionID    string
-	recentTarget          recentChatTarget
-	externalReplyAnchors  map[string]externalReplyAnchor
-	contextCache          *contextMessageCache
-	mediaMu               sync.RWMutex
-	mediaProcessor        *multimodal.Processor
-	taskStore             taskstore.Store
-	autoCompactMu         sync.Mutex
-	autoCompactFailures   map[string]int
-	activeModel           string
-	activeAPIBase         string
+	skillInstall               *tool.InstallManager
+	metrics                    *metrics.Metrics // 指标收集器
+	toolMetrics                *toolDurationMetrics
+	backgroundTerminalOnce     sync.Once
+	backgroundTerminalStopOnce sync.Once
+	backgroundTerminalStop     chan struct{}
+	backgroundTerminalWG       sync.WaitGroup
+	proactiveStore             *proactive.Store
+	proactiveRuntime           *proactive.RuntimeService
+	cronEngine                 *cron.Engine // 定时任务引擎
+	cronStore                  *cron.Store
+	autonomy                   *autonomy.AutonomyKit // 自主工作套件
+	computerMgr                *computer.Manager
+	sandbox                    *sandbox.Manager
+	autonomyResultsMu          sync.Mutex
+	autonomyResultsCancel      context.CancelFunc
+	heartbeatSvc               *appheartbeat.Service
+	heartbeatMu                sync.Mutex
+	heartbeatSessionID         string
+	recentTarget               recentChatTarget
+	externalReplyAnchors       map[string]externalReplyAnchor
+	contextCache               *contextMessageCache
+	mediaMu                    sync.RWMutex
+	mediaProcessor             *multimodal.Processor
+	taskStore                  taskstore.Store
+	autoCompactMu              sync.Mutex
+	autoCompactFailures        map[string]int
+	activeModel                string
+	activeAPIBase              string
 	// requestProfiles remembers the last profile per session. In memory only;
 	// a restart makes the next 「继续」 fall back to keywords.
 	requestProfiles sync.Map
@@ -571,16 +575,7 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 
 	// v0.36.0: 记录指标
 	a.metrics.RecordChatRequest()
-	if len(result.ToolCalls) > 0 {
-		for _, call := range result.ToolCalls {
-			// Runtime counter has no duration. Pass the measured toolCallLog
-			// duration into the in-process histogram. Do not time again.
-			a.metrics.RecordToolCall()
-			if a.toolMetrics != nil {
-				a.toolMetrics.record(call.Name, call.Duration, toolResultFailed(call.Result))
-			}
-		}
-	}
+	a.recordExecutedToolMetrics(result.ToolCalls)
 	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)
 
 	return response, nil
@@ -1823,6 +1818,7 @@ func (a *Agent) Close() error {
 	if a == nil {
 		return nil
 	}
+	a.stopBackgroundTerminalWatchers()
 	a.recaps.close()
 	if a.components != nil {
 		a.closeOnce.Do(func() {

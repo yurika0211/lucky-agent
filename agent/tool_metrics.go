@@ -76,6 +76,76 @@ func newToolDurationMetrics() *toolDurationMetrics {
 	return &toolDurationMetrics{tools: map[string]*toolDurationStat{}}
 }
 
+const (
+	backgroundTerminalMetricName = "terminal_background"
+	longTerminalMetricName       = "terminal_long"
+	longTerminalMetricThreshold  = 10 * time.Second
+)
+
+func (a *Agent) recordExecutedToolMetrics(calls []toolCallLog) {
+	if a == nil {
+		return
+	}
+	for _, call := range calls {
+		if a.metrics != nil {
+			a.metrics.RecordToolCall()
+		}
+		if a.toolMetrics != nil {
+			a.toolMetrics.record(toolMetricsName(call.Name, call.Arguments, call.Result, call.Duration), call.Duration, toolResultFailed(call.Result))
+		}
+	}
+}
+
+func toolMetricsName(name, arguments, result string, d time.Duration) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "unknown"
+	}
+	if isBackgroundTerminalCall(name, arguments, result) {
+		return backgroundTerminalMetricName
+	}
+	if isLongTerminalCall(name, d) {
+		return longTerminalMetricName
+	}
+	return name
+}
+
+func isBackgroundTerminalCall(name, arguments, result string) bool {
+	if strings.TrimSpace(name) != "terminal" {
+		return false
+	}
+	if terminalBackgroundArgJSON(arguments) {
+		return true
+	}
+	return strings.Contains(result, "background terminal started") && backgroundTerminalTaskID(result) != ""
+}
+
+func isLongTerminalCall(name string, d time.Duration) bool {
+	return strings.TrimSpace(name) == "terminal" && d >= longTerminalMetricThreshold
+}
+
+func terminalBackgroundArgJSON(arguments string) bool {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" {
+		return false
+	}
+	lower := strings.ToLower(arguments)
+	return strings.Contains(lower, `"background":true`) ||
+		strings.Contains(lower, `"background": true`) ||
+		strings.Contains(lower, `"background":"true"`) ||
+		strings.Contains(lower, `"background": "true"`)
+}
+
+func backgroundTerminalTaskID(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "task_id=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "task_id="))
+		}
+	}
+	return ""
+}
+
 func (m *toolDurationMetrics) record(name string, d time.Duration, failed bool) {
 	if m == nil {
 		return
