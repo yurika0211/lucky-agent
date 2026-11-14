@@ -3,8 +3,8 @@ package agent
 import (
 	"strings"
 	"time"
-	"unicode"
 
+	"github.com/yurika0211/lucky-agent/agent/intentclassify"
 	"github.com/yurika0211/luckyagent-runtime/config"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 )
@@ -35,20 +35,21 @@ func classifyRequestProfile(input string, cfg LoopConfig) RequestProfileDecision
 	if cfg.Foreground {
 		return RequestProfileDecision{Profile: RequestProfileLongTask, Source: "explicit_foreground", Confidence: 1}
 	}
-	text := strings.ToLower(strings.TrimSpace(input))
-	if text == "" {
+	classified := intentclassify.Classify(input)
+	text := classified.Text
+	if classified.Empty() {
 		return RequestProfileDecision{Profile: RequestProfileChat, Source: "empty_input", Confidence: 1}
 	}
-	if containsAny(text, "执行", "运行", "修复", "修改", "编译", "测试", "提交代码", "写代码", "run ", "fix ", "implement ", "build ", "test ") {
+	if classified.HasRule(intentclassify.RuleProfileCode) {
 		return RequestProfileDecision{Profile: RequestProfileCodeTask, Source: "deterministic_code_intent", Confidence: 0.85}
 	}
-	if containsAny(text, "查询", "查一下", "看看", "检查", "打开", "搜索", "列出", "状态", "search", "inspect", "check ", "list ") {
+	if classified.HasRule(intentclassify.RuleProfileTool) {
 		return RequestProfileDecision{Profile: RequestProfileToolTask, Source: "deterministic_tool_intent", Confidence: 0.8}
 	}
 	if inherited, ok := continuationProfile(text, cfg); ok {
 		return RequestProfileDecision{Profile: inherited, Source: "session_continue", Confidence: 0.9}
 	}
-	if isExplicitChat(text) {
+	if classified.HasRule(intentclassify.RuleExplicitChat) {
 		return RequestProfileDecision{Profile: RequestProfileChat, Source: "explicit_chat", Confidence: 0.9}
 	}
 	if inherited, ok := inheritedUnknownProfile(cfg); ok {
@@ -57,25 +58,8 @@ func classifyRequestProfile(input string, cfg LoopConfig) RequestProfileDecision
 	return RequestProfileDecision{Profile: RequestProfileToolTask, Source: "fallback_needs_tools", Confidence: 0.6}
 }
 
-var explicitChatPhrases = []string{
-	"你好",
-	"谢谢",
-	"在吗",
-	"hi",
-	"hello",
-	"thanks",
-	"ok",
-	"好的",
-}
-
 func isExplicitChat(text string) bool {
-	trimmed := stripEdgePunct(text)
-	for _, phrase := range explicitChatPhrases {
-		if trimmed == phrase {
-			return true
-		}
-	}
-	return false
+	return intentclassify.Classify(text).HasRule(intentclassify.RuleExplicitChat)
 }
 
 func inheritedUnknownProfile(cfg LoopConfig) (RequestProfile, bool) {
@@ -89,52 +73,8 @@ func inheritedUnknownProfile(cfg LoopConfig) (RequestProfile, bool) {
 	return last, true
 }
 
-// continuationPhrases are whole-turn follow-ups. A longer request that only
-// contains one of these words still goes through keyword classification.
-var continuationPhrases = []string{
-	"继续",
-	"接着做",
-	"接着",
-	"go on",
-	"keep going",
-	"keep doing",
-	"continue",
-}
-
-var continuationTokens = []string{
-	"继续",
-	"接着",
-	"go on",
-	"continue",
-	"keep going",
-	"keep doing",
-}
-
-func stripEdgePunct(text string) string {
-	trimmed := strings.TrimSpace(text)
-	trimmed = strings.TrimFunc(trimmed, func(r rune) bool {
-		return unicode.IsPunct(r) || unicode.IsSpace(r)
-	})
-	return strings.ToLower(strings.TrimSpace(trimmed))
-}
-
 func isContinuationPhrase(text string) bool {
-	trimmed := stripEdgePunct(text)
-	for _, phrase := range continuationPhrases {
-		if trimmed == phrase {
-			return true
-		}
-	}
-	runes := []rune(trimmed)
-	if len(runes) == 0 || len(runes) > 24 {
-		return false
-	}
-	for _, token := range continuationTokens {
-		if strings.Contains(trimmed, token) {
-			return true
-		}
-	}
-	return false
+	return intentclassify.Classify(text).Has(intentclassify.LabelContinuation)
 }
 
 func (a *Agent) lastRequestProfile(sessionID string) RequestProfile {
@@ -199,15 +139,6 @@ func continuationProfile(text string, cfg LoopConfig) (RequestProfile, bool) {
 		return RequestProfileCodeTask, true
 	}
 	return last, true
-}
-
-func containsAny(text string, terms ...string) bool {
-	for _, term := range terms {
-		if strings.Contains(text, term) {
-			return true
-		}
-	}
-	return false
 }
 
 // applyRequestProfile chooses conservative defaults only when the caller did

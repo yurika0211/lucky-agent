@@ -4,7 +4,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/yurika0211/luckyagent-tools/execpolicy"
+	"github.com/yurika0211/lucky-agent/agent/intentclassify"
 )
 
 const toolIntentGatingEnv = "LH_TOOL_INTENT_GATING"
@@ -82,7 +82,7 @@ func (a *Agent) intentAllowedTools(input string) (map[string]struct{}, bool) {
 			}
 		}
 	}
-	return execpolicy.AllowedTools(input, skillRunTools)
+	return allowedToolsFromIntent(intentclassify.Classify(input), skillRunTools)
 }
 
-var intentTextContainsAny = execpolicy.ContainsAny
+var intentTextContainsAny = intentclassify.ContainsAny

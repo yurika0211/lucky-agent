@@ -100,6 +100,7 @@ type Agent struct {
 	skillInstall          *tool.InstallManager
 	metrics               *metrics.Metrics // 指标收集器
 	toolMetrics           *toolDurationMetrics
+	skillUsage            *skillUsageStore
 	proactiveStore        *proactive.Store
 	proactiveRuntime      *proactive.RuntimeService
 	cronEngine            *cron.Engine // 定时任务引擎

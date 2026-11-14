@@ -76,6 +76,7 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		if out.Duration <= 0 {
 			out.Duration = time.Since(started)
 		}
+		a.recordSkillToolUsage(name, arguments, out.Output, out.Duration, err)
 	}()
 	if ctx == nil {
 		ctx = context.Background()

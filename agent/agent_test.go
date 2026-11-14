@@ -624,13 +624,8 @@ func TestApplyWebSearchEnv(t *testing.T) {
 		t.Skipf("cannot create config manager: %v", err)
 	}
 
-	// Set env vars
-	os.Setenv("LH_WEB_SEARCH_PROVIDER", "brave")
-	os.Setenv("LH_WEB_SEARCH_API_KEY", "test-key-123")
-	defer func() {
-		os.Unsetenv("LH_WEB_SEARCH_PROVIDER")
-		os.Unsetenv("LH_WEB_SEARCH_API_KEY")
-	}()
+	t.Setenv("LH_WEB_SEARCH_PROVIDER", "brave")
+	t.Setenv("LH_WEB_SEARCH_API_KEY", "test-key-123")
 
 	applyWebSearchEnv(cfg)
 
@@ -649,20 +644,12 @@ func TestApplyOpenCLIEnv(t *testing.T) {
 		t.Skipf("cannot create config manager: %v", err)
 	}
 
-	os.Setenv("LH_OPENCLI_ENABLED", "true")
-	os.Setenv("LH_OPENCLI_COMMAND", "opencli")
-	os.Setenv("LH_OPENCLI_ARGS", "web,read,--url,{url},--stdout,true,--download-images,false,-f,md")
-	os.Setenv("LH_OPENCLI_TIMEOUT_SECONDS", "42")
-	os.Setenv("LH_OPENCLI_MAX_CHARS", "12345")
-	os.Setenv("LH_OPENCLI_FALLBACK_TO_WEB_FETCH", "true")
-	defer func() {
-		os.Unsetenv("LH_OPENCLI_ENABLED")
-		os.Unsetenv("LH_OPENCLI_COMMAND")
-		os.Unsetenv("LH_OPENCLI_ARGS")
-		os.Unsetenv("LH_OPENCLI_TIMEOUT_SECONDS")
-		os.Unsetenv("LH_OPENCLI_MAX_CHARS")
-		os.Unsetenv("LH_OPENCLI_FALLBACK_TO_WEB_FETCH")
-	}()
+	t.Setenv("LH_OPENCLI_ENABLED", "true")
+	t.Setenv("LH_OPENCLI_COMMAND", "opencli")
+	t.Setenv("LH_OPENCLI_ARGS", "web,read,--url,{url},--stdout,true,--download-images,false,-f,md")
+	t.Setenv("LH_OPENCLI_TIMEOUT_SECONDS", "42")
+	t.Setenv("LH_OPENCLI_MAX_CHARS", "12345")
+	t.Setenv("LH_OPENCLI_FALLBACK_TO_WEB_FETCH", "true")
 
 	applyOpenCLIEnv(cfg)
 
