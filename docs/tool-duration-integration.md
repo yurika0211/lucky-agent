@@ -21,6 +21,13 @@ launcher 保留已接入更新校验和会话清理修复的 app 版本，没有
 这些外部仓库当前没有挂载到本线程，未通过修改模块缓存或恢复旧 internal 路径绕过归属。
 此记录不代表相关 PR 已获合并许可。
 
+## 直方图口径
+
+`lh_tool_call_duration_seconds` and `lh_tool_calls_by_name_total` still key by tool name.
+A background `terminal` start (`background=true` / `task_id=` + `background terminal started`) is recorded as `terminal_background`.
+A foreground `terminal` whose wall clock is at least 10s is recorded as `terminal_long`.
+Short interactive `terminal` stays `terminal`. The three series must not be summed as “user wait after send”.
+
 ## 已验证的主仓合同
 
 - 正常结果、错误文本通过中立事件转换时保留耗时。

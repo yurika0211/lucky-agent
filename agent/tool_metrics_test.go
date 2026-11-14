@@ -62,3 +62,47 @@ func TestToolDurationExportKeepsNamedLatency(t *testing.T) {
 		t.Fatal("MetricsPrometheus must match ToolMetricsPrometheus")
 	}
 }
+
+func TestToolDurationSplitsBackgroundAndLongTerminal(t *testing.T) {
+	a := &Agent{toolMetrics: newToolDurationMetrics()}
+	a.recordExecutedToolMetrics([]toolCallLog{
+		{Name: "terminal", Arguments: `{"command":"ls"}`, Result: "ok", Duration: 40 * time.Millisecond},
+		{Name: "terminal", Arguments: `{"command":"sleep 30","background":true}`, Result: "task_id=shell-1\nbackground terminal started\ncommand: sleep 30", Duration: 8 * time.Millisecond},
+		{Name: "terminal", Arguments: `{"command":"make test"}`, Result: "ok", Duration: 12 * time.Second},
+	})
+	snap := a.ToolDurationSnapshot()
+	if snap["terminal"].Calls != 1 {
+		t.Fatalf("interactive terminal = %#v", snap["terminal"])
+	}
+	if snap["terminal_background"].Calls != 1 {
+		t.Fatalf("background terminal = %#v", snap["terminal_background"])
+	}
+	if snap["terminal_long"].Calls != 1 {
+		t.Fatalf("long terminal = %#v", snap["terminal_long"])
+	}
+	prom := a.ToolMetricsPrometheus()
+	for _, want := range []string{
+		`lh_tool_calls_by_name_total{tool="terminal",result="success"} 1`,
+		`lh_tool_calls_by_name_total{tool="terminal_background",result="success"} 1`,
+		`lh_tool_calls_by_name_total{tool="terminal_long",result="success"} 1`,
+	} {
+		if !strings.Contains(prom, want) {
+			t.Fatalf("missing %q in:\n%s", want, prom)
+		}
+	}
+}
+
+func TestToolMetricsNameSplitsBackgroundAndLong(t *testing.T) {
+	if got := toolMetricsName("terminal", `{"command":"sleep 1","background":true}`, "task_id=shell-1\nbackground terminal started\n", 8*time.Millisecond); got != "terminal_background" {
+		t.Fatalf("background name = %q", got)
+	}
+	if got := toolMetricsName("terminal", `{"command":"make test"}`, "ok", 12*time.Second); got != "terminal_long" {
+		t.Fatalf("long name = %q", got)
+	}
+	if got := toolMetricsName("terminal", `{"command":"ls"}`, "ok", 40*time.Millisecond); got != "terminal" {
+		t.Fatalf("interactive name = %q", got)
+	}
+	if got := toolMetricsName("web_search", `{"background":true}`, "", 12*time.Second); got != "web_search" {
+		t.Fatalf("non-terminal name = %q", got)
+	}
+}
