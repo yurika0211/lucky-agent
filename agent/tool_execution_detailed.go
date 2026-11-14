@@ -142,11 +142,14 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		}
 		sc.Cwd = snapshot.Root
 	}
-	if snapshot != nil && !snapshot.Isolated() {
+	if snapshot != nil && !snapshot.Isolated() && consumesSandboxModeArg(a.canonicalToolName(name)) {
 		if args == nil {
 			args = make(map[string]any)
 		}
 		args["_sandbox_mode"] = snapshot.Mode.String()
+	}
+	if a.stripsHostMetadataArgs(name) {
+		args = stripHostMetadataArgs(args)
 	}
 
 	var result *tool.GatewayResult
@@ -505,4 +508,44 @@ func stringsTrimSpace(value string) string {
 		value = value[:len(value)-1]
 	}
 	return value
+}
+
+func consumesSandboxModeArg(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "file_read", "file_write", "file_mkdir", "file_move", "file_delete", "file_patch", "file_list", "file_send":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Agent) stripsHostMetadataArgs(name string) bool {
+	if a == nil || a.tools == nil {
+		return false
+	}
+	registered, ok := a.tools.Get(name)
+	if !ok || registered == nil {
+		registered, ok = a.tools.Get(a.canonicalToolName(name))
+		if !ok || registered == nil {
+			return false
+		}
+	}
+	if registered.Category == tool.CatMCP {
+		return true
+	}
+	return registered.Category == pluginCategory && registered.Name != "plugin_info" && registered.Name != "plugin_agent"
+}
+
+func stripHostMetadataArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return nil
+	}
+	cleaned := make(map[string]any, len(args))
+	for key, value := range args {
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
+		cleaned[key] = value
+	}
+	return cleaned
 }
