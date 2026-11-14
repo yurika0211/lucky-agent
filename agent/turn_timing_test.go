@@ -31,11 +31,9 @@ func TestAssistantUsageKeepsZeroTokenObject(t *testing.T) {
 
 func TestStreamRoundStampsDurationAndTTFT(t *testing.T) {
 	state := &streamConvergenceState{}
-	state.noteRoundStart()
-	time.Sleep(2 * time.Millisecond)
-	state.noteFirstChunk()
+	state.roundStarted = time.Now().Add(-4 * time.Millisecond)
+	state.firstChunkAt = state.roundStarted.Add(2 * time.Millisecond)
 	state.roundUsage = &provider.TokenUsage{Model: "m"}
-	time.Sleep(2 * time.Millisecond)
 	msg := provider.Message{Role: "assistant", Content: "answer"}
 	state.stampAssistant(&msg)
 	if msg.DurationMS < 1 {
@@ -56,12 +54,12 @@ func TestStreamRoundStampsDurationAndTTFT(t *testing.T) {
 
 func TestFreezeRoundTimingIgnoresLaterSleep(t *testing.T) {
 	state := &streamConvergenceState{}
-	state.noteRoundStart()
-	state.noteFirstChunk()
+	state.roundStarted = time.Now().Add(-5 * time.Millisecond)
+	state.firstChunkAt = state.roundStarted.Add(2 * time.Millisecond)
 	state.freezeRoundTiming()
 	frozenDuration := state.roundDurationMS()
 	frozenTTFT := state.roundTTFTMS()
-	time.Sleep(60 * time.Millisecond)
+	state.roundStarted = time.Now().Add(-time.Hour)
 	if state.roundDurationMS() != frozenDuration || state.roundTTFTMS() != frozenTTFT {
 		t.Fatalf("frozen duration %d ttft %d moved to %d %d", frozenDuration, frozenTTFT, state.roundDurationMS(), state.roundTTFTMS())
 	}
@@ -69,25 +67,26 @@ func TestFreezeRoundTimingIgnoresLaterSleep(t *testing.T) {
 
 func TestRecoveryRoundDropsFailedStreamTiming(t *testing.T) {
 	state := &streamConvergenceState{}
-	state.noteRoundStart()
-	time.Sleep(30 * time.Millisecond)
-	state.noteFirstChunk()
+	state.roundStarted = time.Now().Add(-40 * time.Millisecond)
+	state.firstChunkAt = state.roundStarted.Add(30 * time.Millisecond)
 	failedDuration := state.roundDurationMS()
 	failedTTFT := state.roundTTFTMS()
 	if failedDuration < 1 || failedTTFT < 1 {
 		t.Fatal("failed round was not measured")
 	}
 
-	state.noteRoundStart()
-	time.Sleep(2 * time.Millisecond)
-	state.noteFirstChunk()
+	state.roundStarted = time.Now().Add(-3 * time.Millisecond)
+	state.firstChunkAt = state.roundStarted.Add(time.Millisecond)
+	state.roundFrozen = false
+	state.frozenDurationMS = 0
+	state.frozenTTFTMS = 0
 	state.freezeRoundTiming()
 	msg := provider.Message{Role: "assistant", Content: "recovered"}
 	state.stampAssistant(&msg)
 	if msg.DurationMS >= failedDuration || msg.TTFTMS >= failedTTFT {
 		t.Fatalf("recovery stamped failed stream duration %d ttft %d (failed %d %d)", msg.DurationMS, msg.TTFTMS, failedDuration, failedTTFT)
 	}
-	time.Sleep(40 * time.Millisecond)
+	state.roundStarted = time.Now().Add(-time.Hour)
 	if state.roundDurationMS() != msg.DurationMS {
 		t.Fatalf("recovery duration moved from %d to %d", msg.DurationMS, state.roundDurationMS())
 	}

@@ -20,17 +20,7 @@ func TestExploreBuiltinSchemaExcludesWriteTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	schema := childToolSchemaNames(registered, cfg)
-	joined := strings.Join(schema, ",")
-	for _, name := range []string{"file_read", "file_list", "rag_search", "memory", "web_search", "web_fetch"} {
-		if !strings.Contains(","+joined+",", ","+name+",") {
-			t.Fatalf("explore schema missing %s: %v", name, schema)
-		}
-	}
-	for _, name := range []string{"file_write", "file_patch", "file_delete", "terminal", "subagent"} {
-		if strings.Contains(","+joined+",", ","+name+",") {
-			t.Fatalf("explore schema includes %s: %v", name, schema)
-		}
-	}
+	assertNamedTools(t, schema, exploreReadTools, exploreWriteTools)
 	if !strings.Contains(cfg.subagentRolePrompt, "Paths") || !strings.Contains(cfg.subagentRolePrompt, "Gaps") {
 		t.Fatalf("explore prompt missing required sections: %s", cfg.subagentRolePrompt)
 	}
@@ -57,8 +47,8 @@ func TestPlanBuiltinIsReadOnly(t *testing.T) {
 		t.Fatalf("plan prompt = %s", cfg.subagentRolePrompt)
 	}
 	schema := childToolSchemaNames(registered, cfg)
-	if strings.Contains(strings.Join(schema, ","), "file_write") || strings.Contains(strings.Join(schema, ","), "terminal") {
-		t.Fatalf("plan schema = %v", schema)
+	if extra := extraNames(schema, []string{"file_write", "terminal"}); len(extra) > 0 {
+		t.Fatalf("plan schema includes %v: %v", extra, schema)
 	}
 }
 
@@ -171,3 +161,102 @@ func TestBuiltinAgentsDisabledRejectsExplore(t *testing.T) {
 		t.Fatalf("unknown builtin created a task")
 	}
 }
+
+func TestBuiltinAgentsEnabledAllowsExplore(t *testing.T) {
+	t.Run("missing key", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		assertBuiltinExploreCreates(t, home)
+	})
+	t.Run("explicit true", func(t *testing.T) {
+		home := t.TempDir()
+		if err := os.WriteFile(filepath.Join(home, "config.json"), []byte("{\"delegate\":{\"builtin_agents\":true}}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		assertBuiltinExploreCreates(t, home)
+	})
+}
+
+func TestBuiltinAgentsReloadFollowsConfigFile(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "config.json")
+	if err := os.WriteFile(path, []byte("{\"delegate\":{\"builtin_agents\":false}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	a, sub, created := newBuiltinExploreHarness(t, home)
+	_, err := sub.ContextDetailedHandler(tool.ExecutionContext{}, map[string]any{
+		"action": "delegate", "description": "look", "subagent_type": "explore",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("disabled builtins err = %v", err)
+	}
+	if *created != 0 {
+		t.Fatalf("disabled reload created %d tasks", *created)
+	}
+	if err := os.WriteFile(path, []byte("{\"delegate\":{\"builtin_agents\":true}}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !a.builtinAgentsEnabled() {
+		t.Fatal("reload did not pick up builtin_agents true")
+	}
+	out, err := sub.ContextDetailedHandler(tool.ExecutionContext{}, map[string]any{
+		"action": "delegate", "description": "look", "subagent_type": "explore",
+	})
+	if err != nil {
+		t.Fatalf("enabled reload err = %v", err)
+	}
+	if *created != 1 {
+		t.Fatalf("enabled reload created %d tasks, output=%q", *created, out.Output)
+	}
+}
+
+func assertBuiltinExploreCreates(t *testing.T, home string) {
+	t.Helper()
+	a, sub, created := newBuiltinExploreHarness(t, home)
+	if !a.builtinAgentsEnabled() {
+		t.Fatal("builtin_agents should be on")
+	}
+	cfg, err := a.resolveSubagentRole("explore", t.TempDir(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	schema := childToolSchemaNames([]string{"file_read", "file_list", "rag_search", "memory", "web_search", "web_fetch", "file_write", "terminal"}, cfg)
+	assertNamedTools(t, schema, []string{"file_read", "file_list"}, []string{"file_write", "terminal", "subagent"})
+	out, err := sub.ContextDetailedHandler(tool.ExecutionContext{}, map[string]any{
+		"action": "delegate", "description": "look", "subagent_type": "explore",
+	})
+	if err != nil {
+		t.Fatalf("enabled builtins err = %v", err)
+	}
+	if *created != 1 {
+		t.Fatalf("enabled builtins created %d tasks, output=%q", *created, out.Output)
+	}
+}
+
+func newBuiltinExploreHarness(t *testing.T, home string) (*Agent, *tool.Tool, *int) {
+	t.Helper()
+	cfg, err := config.NewManagerWithDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registered := []string{"file_read", "file_list", "file_write", "terminal"}
+	registry := roleRegistry(registered...)
+	created := 0
+	registry.Register(&tool.Tool{
+		Name: "subagent",
+		ContextDetailedHandler: func(tool.ExecutionContext, map[string]any) (tool.ToolCallResult, error) {
+			created++
+			return tool.ToolCallResult{Output: "delegated"}, nil
+		},
+	})
+	a := &Agent{cfg: cfg, tools: registry}
+	a.installSubagentDelegateGuard()
+	sub, ok := registry.Get("subagent")
+	if !ok {
+		t.Fatal("subagent missing")
+	}
+	return a, sub, &created
+}
+

@@ -100,6 +100,7 @@ type Agent struct {
 	skillInstall               *tool.InstallManager
 	metrics                    *metrics.Metrics // 指标收集器
 	toolMetrics                *toolDurationMetrics
+	skillUsage                 *skillUsageStore
 	backgroundTerminalOnce     sync.Once
 	backgroundTerminalStopOnce sync.Once
 	backgroundTerminalStop     chan struct{}

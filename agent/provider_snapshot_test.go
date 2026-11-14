@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yurika0211/luckyagent-runtime/provider"
 )
@@ -57,13 +58,14 @@ func TestChatLoopIterationUsesTurnProviderSnapshot(t *testing.T) {
 	go call(providerSnapshot{provider: first, model: "model-first"}, results)
 	go call(providerSnapshot{provider: second, model: "model-second"}, results)
 
+	deadline := time.After(2 * time.Second)
 	seen := map[string]bool{}
 	for i := 0; i < 2; i++ {
 		select {
 		case name := <-started:
 			seen[name] = true
-		case <-make(chan struct{}):
-			t.Fatal("unreachable")
+		case <-deadline:
+			t.Fatalf("timed out waiting for turn providers, seen=%v", seen)
 		}
 	}
 	barrier.Wait()

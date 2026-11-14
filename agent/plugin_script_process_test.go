@@ -33,12 +33,9 @@ func TestPluginScriptCancellationKillsBackgroundChildren(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected cancellation, got %v", err)
 	}
-	// The background write was scheduled well after the deadline. Waiting past
-	// it checks the child process actually stopped, rather than just its pipes.
-	time.Sleep(500 * time.Millisecond)
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("background child survived canceled plugin call: %v", err)
-	}
+	// The background write was scheduled well after the deadline. Poll until
+	// that scheduled time has passed so a surviving child would have written.
+	assertMarkerAbsent(t, marker, 700*time.Millisecond, "background child survived canceled plugin call")
 }
 
 func TestPluginScriptCompletionKillsBackgroundChildren(t *testing.T) {
@@ -49,10 +46,7 @@ func TestPluginScriptCompletionKillsBackgroundChildren(t *testing.T) {
 	if err != nil || result.Output != "finished" {
 		t.Fatalf("result=%q error=%v", result.Output, err)
 	}
-	time.Sleep(500 * time.Millisecond)
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("background child survived completed plugin call: %v", err)
-	}
+	assertMarkerAbsent(t, marker, 700*time.Millisecond, "background child survived completed plugin call")
 }
 
 func TestPluginScriptWindowsExecutionIsExplicitlyUnsupported(t *testing.T) {
@@ -63,5 +57,19 @@ func TestPluginScriptWindowsExecutionIsExplicitlyUnsupported(t *testing.T) {
 		if _, err := pluginpkg.Command(script, nil); err == nil || !strings.Contains(err.Error(), "process-tree cancellation") {
 			t.Fatalf("Windows script %s did not fail explicitly: %v", script, err)
 		}
+	}
+}
+
+func assertMarkerAbsent(t *testing.T, marker string, wait time.Duration, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(wait)
+	for {
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("%s: %v", msg, err)
+		}
+		if !time.Now().Before(deadline) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }

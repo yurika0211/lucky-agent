@@ -64,12 +64,68 @@ class ActionBotTest(unittest.TestCase):
             self.assertIn("go.mod h1:keep", text)
             self.assertIn("golang.org/x/mod", text)
 
+    def test_benchmark_parser_skips_malformed_lines(self):
+        raw = "\n".join([
+            "not json at all",
+            "{broken",
+            json.dumps({"Action": "pass"}),
+            json.dumps({"Action": "output", "Output": "pkg.go:1: not a benchmark"}),
+            json.dumps({
+                "Action": "output",
+                "Output": "BenchmarkKeep-2  3  12 ns/op  4 B/op  1 allocs/op\n",
+            }),
+        ]) + "\n"
+        rows = benchstat_json.parse(io.StringIO(raw))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["name"], "BenchmarkKeep-2")
+        self.assertEqual(rows[0]["ops"], 3)
+
+    def test_benchmark_parser_keeps_duplicate_names(self):
+        raw = "\n".join([
+            json.dumps({"Action": "output", "Output": "BenchmarkDup-2  1  10 ns/op\n"}),
+            json.dumps({"Action": "output", "Output": "BenchmarkDup-2  2  20 ns/op\n"}),
+        ]) + "\n"
+        rows = benchstat_json.parse(io.StringIO(raw))
+        self.assertEqual([row["name"] for row in rows], ["BenchmarkDup-2", "BenchmarkDup-2"])
+        self.assertEqual([row["ops"] for row in rows], [1, 2])
+        self.assertEqual([row["ns_per_op"] for row in rows], [10.0, 20.0])
+
     def test_parser_script_exits_nonzero_without_rows(self):
-        result = subprocess.run(
-            [sys.executable, str(ROOT / "scripts/benchstat_json.py"), "--output", "/tmp/unused-bench.json"],
-            input="{}\n", text=True, capture_output=True,
-        )
-        self.assertEqual(result.returncode, 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "unused-bench.json"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/benchstat_json.py"), "--output", str(path)],
+                input="{}\n", text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("no benchmark rows found", result.stderr)
+            self.assertFalse(path.exists())
+
+    def test_parser_script_empty_stdin_does_not_create_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "empty-bench.json"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/benchstat_json.py"), "--output", str(path)],
+                input="", text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(path.exists())
+
+    def test_parser_script_writes_output_only_after_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bench.json"
+            raw = json.dumps({
+                "Action": "output",
+                "Output": "BenchmarkKeep-2  1  10 ns/op\n",
+            }) + "\n"
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "scripts/benchstat_json.py"), "--output", str(path)],
+                input=raw, text=True, capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(path.exists())
+            rows = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(rows[0]["name"], "BenchmarkKeep-2")
 
 
 if __name__ == "__main__":

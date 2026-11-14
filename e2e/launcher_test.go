@@ -21,13 +21,16 @@ import (
 	"time"
 )
 
+var lhE2EBin string
+
 func TestMain(m *testing.M) {
 	root := repoRoot()
-	binary := filepath.Join(root, "e2e", "bin", "lh-e2e")
-	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "mkdir e2e bin: %v\n", err)
+	dir, err := os.MkdirTemp("", "lh-e2e-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "temp dir: %v\n", err)
 		os.Exit(1)
 	}
+	binary := filepath.Join(dir, "lh-e2e")
 	cmd := exec.Command("go", "build", "-o", binary, "./cmd/la")
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "GOWORK=off")
@@ -36,12 +39,9 @@ func TestMain(m *testing.M) {
 		fmt.Fprintf(os.Stderr, "build lh: %v\n%s\n", err, out)
 		os.Exit(1)
 	}
-	if err := os.Setenv("LH_E2E_BIN", binary); err != nil {
-		fmt.Fprintf(os.Stderr, "set binary path: %v\n", err)
-		os.Exit(1)
-	}
+	lhE2EBin = binary
 	code := m.Run()
-	_ = os.Remove(binary)
+	_ = os.RemoveAll(dir)
 	os.Exit(code)
 }
 
@@ -192,7 +192,7 @@ func TestProviderUnauthorizedStartsAndRejectsChat(t *testing.T) {
 	status, body := postJSONStatus(t, srv.baseURL()+"/api/v1/chat/sync", map[string]any{
 		"message": "hello",
 	})
-	if status < 400 || !bytes.Contains(body, []byte("401")) && !bytes.Contains(body, []byte("unauthorized")) && !bytes.Contains(body, []byte("chat failed")) {
+	if status != http.StatusInternalServerError || !bytes.Contains(body, []byte("chat failed")) {
 		t.Fatalf("chat with rejected provider status=%d body=%s", status, body)
 	}
 	sessions, err := filepath.Glob(filepath.Join(home, ".luckyagent", "sessions", "*", "messages.jsonl"))
@@ -207,6 +207,174 @@ func TestProviderUnauthorizedStartsAndRejectsChat(t *testing.T) {
 		if bytes.Contains(data, []byte(`"role":"assistant"`)) {
 			t.Fatalf("assistant message persisted after failed chat: %s", data)
 		}
+	}
+}
+
+func TestMalformedChatJSONIsBadRequest(t *testing.T) {
+	home := t.TempDir()
+	writeConfig(t, home, nil)
+	srv := startServe(t, home)
+	defer srv.stop(t)
+
+	status, body := postRaw(t, srv.baseURL()+"/api/v1/chat/sync", "application/json", "{not json")
+	if status != http.StatusBadRequest || !bytes.Contains(body, []byte("invalid JSON request body")) {
+		t.Fatalf("malformed JSON status=%d body=%s", status, body)
+	}
+}
+
+func TestEmptyChatMessageIsBadRequest(t *testing.T) {
+	home := t.TempDir()
+	writeConfig(t, home, nil)
+	srv := startServe(t, home)
+	defer srv.stop(t)
+
+	status, body := postJSONStatus(t, srv.baseURL()+"/api/v1/chat/sync", map[string]any{"message": ""})
+	if status != http.StatusBadRequest || !bytes.Contains(body, []byte("message is required")) {
+		t.Fatalf("empty message status=%d body=%s", status, body)
+	}
+}
+
+func TestSSEChatStreamsComplete(t *testing.T) {
+	upstream := serveModel(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		if bytes.Contains(requestBody(r), []byte("Classify the user's request")) {
+			writeMaybeStream(w, r, `{"profile":"chat"}`)
+			return
+		}
+		if sessionRecapRequest(r) {
+			writeMaybeStream(w, r, "You asked for the stream answer.")
+			return
+		}
+		if completionReviewRequest(r) {
+			writeMaybeStream(w, r, `{"status":"complete","reason":"the stream answer was returned","evidence":["assistant returned the stream answer"]}`)
+			return
+		}
+		writeMaybeStream(w, r, "e2e stream answer")
+	})
+	home := t.TempDir()
+	writeConfig(t, home, chatConfig(upstream.URL+"/v1", "sk-e2e"))
+	srv := startServe(t, home)
+	defer srv.stop(t)
+	defer dumpServer(t, srv)
+
+	payload, err := json.Marshal(map[string]any{"message": "say the stream answer", "auto_approve": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.baseURL()+"/api/v1/chat", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	client := &http.Client{Timeout: 45 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("SSE chat: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("SSE status=%d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("content-type = %q", resp.Header.Get("Content-Type"))
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(body, []byte(`"type":"content"`)) && !bytes.Contains(body, []byte(`"type":"done"`)) {
+		t.Fatalf("missing content/done frame: %s", body)
+	}
+	if !bytes.Contains(body, []byte(`"type":"complete"`)) {
+		t.Fatalf("missing complete frame: %s", body)
+	}
+}
+
+func TestShutdownEndsInFlightChat(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var startedOnce, releaseOnce sync.Once
+	startEntered := func() { startedOnce.Do(func() { close(entered) }) }
+	unblockUpstream := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblockUpstream)
+	upstream := serveModel(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		startEntered()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		writeMaybeStream(w, r, "late")
+	})
+	home := t.TempDir()
+	writeConfig(t, home, chatConfig(upstream.URL+"/v1", "sk-e2e"))
+	srv := startServe(t, home)
+	t.Cleanup(func() {
+		if srv.cmd.Process == nil {
+			return
+		}
+		_ = syscall.Kill(-srv.cmd.Process.Pid, syscall.SIGKILL)
+		_ = srv.cmd.Wait()
+	})
+
+	payload, err := json.Marshal(map[string]any{"message": "hang please", "auto_approve": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.baseURL()+"/api/v1/chat", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	done := make(chan error, 1)
+	go func() {
+		client := &http.Client{Timeout: 20 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			done <- err
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		done <- nil
+	}()
+	select {
+	case <-entered:
+	case <-time.After(10 * time.Second):
+		unblockUpstream()
+		t.Fatal("in-flight chat did not reach upstream")
+	}
+	if srv.cmd.Process == nil {
+		t.Fatal("server process missing")
+	}
+	if err := syscall.Kill(-srv.cmd.Process.Pid, syscall.SIGINT); err != nil {
+		t.Fatalf("interrupt server: %v", err)
+	}
+	// Graceful shutdown waits for the in-flight handler. Unblock the
+	// fixture so that handler can finish; the client and process must then return.
+	unblockUpstream()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("in-flight chat hung after shutdown")
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- srv.cmd.Wait() }()
+	select {
+	case <-waited:
+	case <-time.After(8 * time.Second):
+		_ = syscall.Kill(-srv.cmd.Process.Pid, syscall.SIGKILL)
+		<-waited
+		t.Fatal("server did not exit after in-flight chat drained")
 	}
 }
 
@@ -400,6 +568,49 @@ func writeToolCompletion(w http.ResponseWriter, id, name, arguments string) {
 	})
 }
 
+func streamRequest(r *http.Request) bool {
+	return bytes.Contains(requestBody(r), []byte(`"stream":true`))
+}
+
+func writeMaybeStream(w http.ResponseWriter, r *http.Request, content string) {
+	if streamRequest(r) {
+		writeStreamCompletion(w, content)
+		return
+	}
+	writeCompletion(w, content)
+}
+
+func writeStreamCompletion(w http.ResponseWriter, content string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	payload, err := json.Marshal(map[string]any{
+		"choices": []any{map[string]any{
+			"index": 0,
+			"delta": map[string]any{"content": content},
+		}},
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	fmt.Fprintf(w, "data: %s\n\n", payload)
+	fmt.Fprint(w, "data: [DONE]\n\n")
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func postRaw(t *testing.T, url, contentType, body string) (int, []byte) {
+	t.Helper()
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Post(url, contentType, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST %s: %v", url, err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, data
+}
+
 func getJSON(t *testing.T, url string) map[string]any {
 	t.Helper()
 	resp, err := http.Get(url)
@@ -491,11 +702,10 @@ func freePort(t *testing.T) string {
 
 func lhBinary(t *testing.T) string {
 	t.Helper()
-	path := os.Getenv("LH_E2E_BIN")
-	if path == "" {
-		t.Fatal("LH_E2E_BIN is empty")
+	if lhE2EBin == "" {
+		t.Fatal("lh e2e binary is empty")
 	}
-	return path
+	return lhE2EBin
 }
 
 func repoRoot() string {
