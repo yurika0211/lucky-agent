@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,10 +101,13 @@ func TestForegroundTerminalStillTimesOut(t *testing.T) {
 
 func TestBackgroundTerminalCompleteNotifiesSession(t *testing.T) {
 	a, sess := newBackgroundTerminalAgent(t)
+	var mu sync.Mutex
 	var pushedSession, pushed string
 	a.SetSessionEventSink(func(sessionID, content string) {
+		mu.Lock()
 		pushedSession = sessionID
 		pushed = content
+		mu.Unlock()
 	})
 
 	started := runNamedTool(t, a, sess, "terminal", map[string]any{
@@ -116,14 +120,18 @@ func TestBackgroundTerminalCompleteNotifiesSession(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(3 * time.Second)
+	var gotSession, got string
 	for time.Now().Before(deadline) {
-		if strings.Contains(pushed, id) && (strings.Contains(pushed, "exited") || strings.Contains(pushed, "killed")) {
+		mu.Lock()
+		gotSession, got = pushedSession, pushed
+		mu.Unlock()
+		if strings.Contains(got, id) && (strings.Contains(got, "exited") || strings.Contains(got, "killed")) {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if pushedSession != sess.ID || !strings.Contains(pushed, id) {
-		t.Fatalf("push = session %q content %q", pushedSession, pushed)
+	if gotSession != sess.ID || !strings.Contains(got, id) {
+		t.Fatalf("push = session %q content %q", gotSession, got)
 	}
 	reloaded, ok := a.sessions.Get(sess.ID)
 	if !ok {
