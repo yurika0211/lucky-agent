@@ -50,7 +50,7 @@ func TestRequestProfileGateEndToEndSelectsCodeTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunLoopWithSession() error = %v", err)
 	}
-	if result.Profile != RequestProfileCodeTask || result.ProfileSource != "model_intent" {
+	if result.Profile != RequestProfileCodeTask || result.ProfileSource != "deterministic_code_intent" {
 		t.Fatalf("unexpected profile result: %+v", result)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/yurika0211/lucky-agent/agent/intentclassify"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/tool"
 	"github.com/yurika0211/luckyagent-tools/skillroute"
@@ -31,6 +32,7 @@ func (a *Agent) buildSkillRouteSystemHintWithOptions(userInput string, opts skil
 	if match == nil || match.skill == nil {
 		return ""
 	}
+	a.recordMatchedSkillRoute(match, userInput)
 	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyAgentMemoryBackendQuestion(userInput) {
 		return `Skill routing note:
 - This request is about the LuckyAgent memory backend, not an external Obsidian app vault.
@@ -59,24 +61,7 @@ func (a *Agent) buildSkillRouteSystemHintWithOptions(userInput string, opts skil
 }
 
 func isLuckyAgentMemoryBackendQuestion(input string) bool {
-	lower := strings.ToLower(strings.TrimSpace(input))
-	if lower == "" {
-		return false
-	}
-	hasMemory := strings.Contains(lower, "memory") ||
-		strings.Contains(lower, "记忆") ||
-		strings.Contains(lower, "回忆") ||
-		strings.Contains(lower, "recall") ||
-		strings.Contains(lower, "remember")
-	hasBackend := strings.Contains(lower, "luckyagent") ||
-		strings.Contains(lower, "记忆系统") ||
-		strings.Contains(lower, "记忆库") ||
-		strings.Contains(lower, "存储") ||
-		strings.Contains(lower, "后端") ||
-		strings.Contains(lower, "取代") ||
-		strings.Contains(lower, "生效") ||
-		strings.Contains(lower, "双链记忆")
-	return hasMemory && hasBackend
+	return intentclassify.Classify(input).Has(intentclassify.LabelLuckyAgentMemory)
 }
 
 // matchSkillRoute takes one skill snapshot and delegates matching to the
@@ -154,6 +139,7 @@ func (a *Agent) buildFunctionCallOptionsForInput(userInput string, tools []map[s
 	if match == nil {
 		return callOpts
 	}
+	a.recordMatchedSkillRoute(match, userInput)
 	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyAgentMemoryBackendQuestion(userInput) {
 		return callOpts
 	}

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yurika0211/lucky-agent/agent/intentclassify"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 )
 
@@ -29,11 +30,14 @@ func (a *Agent) classifyRequestProfileWithModel(ctx context.Context, input strin
 	if a == nil || !snapshot.valid() || cfg.Execution != nil || cfg.Foreground {
 		return classifyRequestProfile(input, cfg)
 	}
-	text := strings.ToLower(strings.TrimSpace(input))
-	if text == "" || isExplicitChat(text) {
+	classified := intentclassify.Classify(input)
+	if classified.Empty() || classified.HasRule(intentclassify.RuleExplicitChat) {
 		return classifyRequestProfile(input, cfg)
 	}
-	if _, ok := continuationProfile(text, cfg); ok {
+	if classified.HasRule(intentclassify.RuleProfileCode) || classified.HasRule(intentclassify.RuleProfileTool) {
+		return classifyRequestProfile(input, cfg)
+	}
+	if _, ok := continuationProfile(classified.Text, cfg); ok {
 		return classifyRequestProfile(input, cfg)
 	}
 
