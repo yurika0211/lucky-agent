@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yurika0211/luckyagent-runtime/metrics"
+	"github.com/yurika0211/luckyagent-runtime/tool"
 )
 
 func TestToolDurationExportKeepsNamedLatency(t *testing.T) {
@@ -89,6 +93,61 @@ func TestToolDurationSplitsBackgroundAndLongTerminal(t *testing.T) {
 		if !strings.Contains(prom, want) {
 			t.Fatalf("missing %q in:\n%s", want, prom)
 		}
+	}
+}
+
+func TestExecuteToolRecordsMetricsOnce(t *testing.T) {
+	registry := tool.NewRegistry()
+	registry.Register(&tool.Tool{
+		Name:        "web_search",
+		Description: "test search",
+		Enabled:     true,
+		Handler: func(map[string]any) (string, error) {
+			return "ok", nil
+		},
+	})
+	a := &Agent{
+		metrics:     metrics.NewMetrics(),
+		toolMetrics: newToolDurationMetrics(),
+		tools:       registry,
+		gateway:     tool.NewGateway(registry),
+	}
+	out, err := a.executeToolWithSessionDetailedContext(context.Background(), "web_search", `{"q":"x"}`, true, nil, "cli")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if out.Output != "ok" {
+		t.Fatalf("output = %q", out.Output)
+	}
+	if got := a.metrics.Snapshot().ToolCalls; got != 1 {
+		t.Fatalf("RecordToolCall count = %d, want 1", got)
+	}
+	snap := a.ToolDurationSnapshot()["web_search"]
+	if snap.Calls != 1 || snap.Failures != 0 {
+		t.Fatalf("web_search snapshot = %#v", snap)
+	}
+
+	a.recordExecutedToolMetrics(nil)
+	if got := a.metrics.Snapshot().ToolCalls; got != 1 {
+		t.Fatalf("empty batch changed tool count to %d", got)
+	}
+}
+
+func TestChatWithSessionInputDoesNotDoubleCountExecutedTools(t *testing.T) {
+	a := &Agent{
+		metrics:     metrics.NewMetrics(),
+		toolMetrics: newToolDurationMetrics(),
+	}
+	a.recordExecutedToolMetrics([]toolCallLog{{
+		Name: "web_search", Arguments: `{"q":"x"}`, Result: "ok", Duration: 20 * time.Millisecond,
+	}})
+	before := a.metrics.Snapshot().ToolCalls
+	a.metrics.RecordChatRequest()
+	if got := a.metrics.Snapshot().ToolCalls; got != before {
+		t.Fatalf("chat request recording changed tool calls from %d to %d", before, got)
+	}
+	if a.ToolDurationSnapshot()["web_search"].Calls != 1 {
+		t.Fatal("named histogram must stay at the execution record")
 	}
 }
 

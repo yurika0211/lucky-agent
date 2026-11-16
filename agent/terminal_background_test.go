@@ -157,10 +157,8 @@ func TestBackgroundTerminalMetricsSplitFromForeground(t *testing.T) {
 		"command": "printf fg\\n",
 		"timeout": 5,
 	})
-	a.recordExecutedToolMetrics([]toolCallLog{
-		{Name: bg.ToolCall.Name, Arguments: bg.ToolCall.Arguments, Result: bg.Result, Duration: bg.Duration},
-		{Name: fg.ToolCall.Name, Arguments: fg.ToolCall.Arguments, Result: fg.Result, Duration: fg.Duration},
-	})
+	_ = fg
+	// Execution already recorded both calls. A second batch record would double-count.
 	snap := a.ToolDurationSnapshot()
 	if snap["terminal_background"].Calls != 1 {
 		t.Fatalf("background calls = %#v", snap["terminal_background"])

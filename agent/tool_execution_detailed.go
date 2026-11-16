@@ -66,6 +66,16 @@ func (a *Agent) executeToolMaybeDedupDetailedContext(
 	return a.executeToolWithSessionDetailedContext(ctx, name, arguments, autoApprove, sess, sourceOpt...)
 }
 
+func toolMetricsResult(out detailedToolExecutionResult, err error) string {
+	if stringsTrimSpace(out.Output) != "" {
+		return out.Output
+	}
+	if err != nil {
+		return "Error: " + err.Error()
+	}
+	return ""
+}
+
 func (a *Agent) executeToolWithSessionDetailed(name, arguments string, autoApprove bool, sess *session.Session, sourceOpt ...string) (out detailedToolExecutionResult, err error) {
 	return a.executeToolWithSessionDetailedContext(context.Background(), name, arguments, autoApprove, sess, sourceOpt...)
 }
@@ -77,6 +87,15 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 			out.Duration = time.Since(started)
 		}
 		a.recordSkillToolUsage(name, arguments, out.Output, out.Duration, err)
+		// One record per execution, including deny and failure. Duplicate
+		// skips return before this function and are not counted. Callers
+		// must not record the same call again.
+		a.recordExecutedToolMetrics([]toolCallLog{{
+			Name:      name,
+			Arguments: arguments,
+			Result:    toolMetricsResult(out, err),
+			Duration:  out.Duration,
+		}})
 	}()
 	if ctx == nil {
 		ctx = context.Background()
