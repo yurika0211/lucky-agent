@@ -120,23 +120,22 @@ func TestNewSessionRecordsSessionOpen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &Agent{metrics: m, sessions: sessions}
-	_ = a.sessions.New()
-	a.recordSessionOpen()
-	if got := m.Snapshot().TotalSessions; got != 1 {
-		t.Fatalf("RecordSessionOpen count = %d, want 1", got)
-	}
-	sess := a.sessions.New()
-	// Production Chat calls New then recordSessionOpen. Cover that pair.
-	a.recordSessionOpen()
-	if err := a.saveSession(sess); err != nil {
+	mgr, err := config.NewManagerWithDir(t.TempDir())
+	if err != nil {
 		t.Fatal(err)
 	}
-	body := a.MetricsPrometheus()
-	if !strings.Contains(body, `lh_session_save_total{result="ok"}`) {
-		t.Fatalf("save metric missing: %s", body)
+	a := &Agent{metrics: m, sessions: sessions, cfg: mgr}
+	_, err = a.Chat(context.Background(), "hello")
+	if err == nil || !strings.Contains(err.Error(), "provider not initialized") {
+		t.Fatalf("Chat error = %v, want provider not initialized after New", err)
+	}
+	if got := m.Snapshot().TotalSessions; got != 1 {
+		t.Fatalf("Chat RecordSessionOpen count = %d, want 1", got)
+	}
+	if _, err := a.ChatStream(context.Background(), "hello again"); err == nil || !strings.Contains(err.Error(), "provider not initialized") {
+		t.Fatalf("ChatStream error = %v, want provider not initialized after New", err)
 	}
 	if got := m.Snapshot().TotalSessions; got != 2 {
-		t.Fatalf("second open count = %d, want 2", got)
+		t.Fatalf("ChatStream RecordSessionOpen count = %d, want 2", got)
 	}
 }

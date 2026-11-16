@@ -158,6 +158,9 @@ type streamConvergenceState struct {
 	roundStarted                   time.Time
 	firstChunkAt                   time.Time
 	runID                          string
+	// stopErr is the stream goroutine's single stop reason. Nil means the
+	// turn completed. The first error event wins.
+	stopErr                        *error
 	roundFrozen                    bool
 	frozenDurationMS               int64
 	frozenTTFTMS                   int64
@@ -626,7 +629,10 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 			),
 		)
 		defer span.End()
-		defer a.recordLoopStop("complete")
+		var streamStop error
+		defer func() {
+			a.recordLoopStop(loopStopReason(streamStop, ""))
+		}()
 
 		sanitizeLoopConfig(&loopCfg)
 		loopCfg.inheritProfile = a.lastRequestProfile(loopCfg.SessionID)
@@ -643,6 +649,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		loopCfg.eventContext = ctx
 		if a.useForeground(sess, loopCfg) {
 			result, err := a.runForeground(ctx, sess, input, loopCfg, turnProvider)
+			streamStop = err
 			if err != nil {
 				sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventError, Err: err})
 			} else {
@@ -688,7 +695,8 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		messages := a.buildContextMessagesForInputWithProvider(ctx, sess, input, buildOpts, turnProvider)
 		messages = appendRequestProfileClosingMessage(messages, loopCfg)
 		if err := sess.AddProviderMessageWithError(input.Message); err != nil {
-			sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventError, Err: sessionError(err)})
+			streamStop = sessionError(err)
+			sendForegroundEvent(ctx, events, ChatEvent{Type: ChatEventError, Err: streamStop})
 			return
 		}
 		callOpts := a.buildLoopCallOptions(routingText, loopCfg)
@@ -707,6 +715,7 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 			iterationTimeout:       loopCfg.Timeout,
 			artifactGuard:          artifact.NewGuard(routingText),
 			runID:                  loopCfg.RunID,
+			stopErr:                &streamStop,
 		}
 		logger.Debug("agent stream context prepared",
 			"session_id", sessionID,
@@ -759,9 +768,11 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 			return
 		}
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+			noteStreamStop(state, fmt.Errorf("memory gate did not produce final synthesis"))
 			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 			return
 		}
+		noteStreamStop(state, fmt.Errorf("max iterations reached"))
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 		return
 	}
@@ -809,6 +820,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
+		noteStreamStop(state, err)
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
@@ -850,6 +862,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 			if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
 				return
 			}
+			noteStreamStop(state, streamErr)
 			events <- ChatEvent{Type: ChatEventError, Err: streamErr}
 			return
 		}
@@ -923,6 +936,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, streamErr, content.String()) {
 			return
 		}
+		noteStreamStop(state, streamErr)
 		events <- ChatEvent{Type: ChatEventError, Err: streamErr}
 		return
 	}
@@ -1046,6 +1060,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 			}
 			if sess != nil {
 				if err := a.saveSession(sess); err != nil {
+					noteStreamStop(state, sessionError(err))
 					events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 					return
 				}
@@ -1064,6 +1079,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 					a.finalizeStreamWithState(events, sess, turnInput, message, state)
 					return
 				}
+				noteStreamStop(state, fmt.Errorf("max iterations reached"))
 				events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 				return
 			}
@@ -1156,9 +1172,11 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			return
 		}
 		if state.memoryGate != nil && state.memoryGate.shouldBlockFinal() {
+			noteStreamStop(state, fmt.Errorf("memory gate did not produce final synthesis"))
 			a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 			return
 		}
+		noteStreamStop(state, fmt.Errorf("max iterations reached"))
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 		return
 	}
@@ -1198,6 +1216,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		if a.finalizeStreamAfterInterruption(ctx, events, messages, callOpts, sess, turnInput, state, err, "") {
 			return
 		}
+		noteStreamStop(state, err)
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
@@ -1295,6 +1314,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		}
 		if sess != nil {
 			if err := a.saveSession(sess); err != nil {
+				noteStreamStop(state, sessionError(err))
 				events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 				return
 			}
@@ -1313,6 +1333,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 				a.finalizeStreamWithState(events, sess, turnInput, message, state)
 				return
 			}
+			noteStreamStop(state, fmt.Errorf("max iterations reached"))
 			events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 			return
 		}
@@ -1386,6 +1407,10 @@ func (a *Agent) finalizeStreamWithUsage(events chan<- ChatEvent, sess *session.S
 }
 
 func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, usage *provider.TokenUsage, generateRecap bool, durationMS, ttftMS int64, citationLogs ...[]toolCallLog) {
+	a.finalizeStreamWithRecapState(events, sess, turnInput, response, reasoningContent, usage, generateRecap, durationMS, ttftMS, nil, citationLogs...)
+}
+
+func (a *Agent) finalizeStreamWithRecapState(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, response string, reasoningContent string, usage *provider.TokenUsage, generateRecap bool, durationMS, ttftMS int64, state *streamConvergenceState, citationLogs ...[]toolCallLog) {
 	turnInput = turnInput.Normalize()
 	routingText := turnInput.RoutingText
 	if strings.TrimSpace(response) == "" {
@@ -1406,10 +1431,12 @@ func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.S
 		msg.DurationMS = durationMS
 		msg.TTFTMS = ttftMS
 		if err := sess.AddProviderMessageWithError(msg); err != nil {
+			noteStreamStop(state, sessionError(err))
 			events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 			return
 		}
 		if err := a.saveSession(sess); err != nil {
+			noteStreamStop(state, sessionError(err))
 			events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 			return
 		}
@@ -1445,7 +1472,7 @@ func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.S
 	if len(reasoning) > 0 {
 		reasoningContent = reasoning[0]
 	}
-	a.finalizeStreamWithRecap(events, sess, turnInput, response, reasoningContent, state.usage, !state.ephemeral, state.roundDurationMS(), state.roundTTFTMS(), state.citationToolCalls)
+	a.finalizeStreamWithRecapState(events, sess, turnInput, response, reasoningContent, state.usage, !state.ephemeral, state.roundDurationMS(), state.roundTTFTMS(), state, state.citationToolCalls)
 }
 
 // finalizeStreamAfterInterruption gives the model one final, tool-free chance
@@ -1464,6 +1491,7 @@ func (a *Agent) finalizeStreamAfterInterruption(
 	partial string,
 ) bool {
 	if errors.Is(context.Cause(ctx), errSessionCallCancelled) {
+		noteStreamStop(state, context.Canceled)
 		events <- ChatEvent{Type: ChatEventError, Err: context.Canceled}
 		return true
 	}
@@ -1535,8 +1563,16 @@ func (a *Agent) finalizeStreamInterruption(events chan<- ChatEvent, sess *sessio
 	if !isStreamInterruption(err) {
 		return false
 	}
+	noteStreamStop(state, err)
 	a.finalizeStreamWithState(events, sess, turnInput, streamInterruptionMessage(err, state, partial), state)
 	return true
+}
+
+func noteStreamStop(state *streamConvergenceState, err error) {
+	if state == nil || state.stopErr == nil || err == nil || *state.stopErr != nil {
+		return
+	}
+	*state.stopErr = err
 }
 
 func isStreamInterruption(err error) bool {

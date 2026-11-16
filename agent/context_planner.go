@@ -765,6 +765,9 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScop
 			return memoryEntryVisibleInScope(entry, scope)
 		},
 	})
+	if owner, ok := p.agent.(*Agent); ok {
+		owner.recordMemoryRecall()
+	}
 	results := route.Entries
 	if len(results) == 0 {
 		return provider.Message{}
@@ -775,9 +778,6 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScop
 		return provider.Message{}
 	}
 	route.Entries = results
-	if owner, ok := p.agent.(*Agent); ok {
-		owner.recordMemoryRecall()
-	}
 	route.EvidenceRefs = evidenceRefsForContext(results, 6)
 	route.TemporalNotes = nil
 	route.SupersededRefs = nil
