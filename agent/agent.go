@@ -574,9 +574,9 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 	a.saveConversationMemoryFromSession(sess, input, response)
 	a.applyMemoryMaintenance(maintenance)
 
-	// v0.36.0: 记录指标
+	// Tool calls are counted at executeToolWithSessionDetailedContext.
+	// Recording result.ToolCalls here would double-count Chat().
 	a.metrics.RecordChatRequest()
-	a.recordExecutedToolMetrics(result.ToolCalls)
 	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)
 
 	return response, nil
