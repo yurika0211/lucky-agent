@@ -775,6 +775,9 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string, scope TurnScop
 		return provider.Message{}
 	}
 	route.Entries = results
+	if owner, ok := p.agent.(*Agent); ok {
+		owner.recordMemoryRecall()
+	}
 	route.EvidenceRefs = evidenceRefsForContext(results, 6)
 	route.TemporalNotes = nil
 	route.SupersededRefs = nil
@@ -1139,6 +1142,9 @@ func (p *contextPlanner) buildRAGMessage(ctx context.Context, sess *session.Sess
 	}
 	retrievalQuery := p.rewriteRAGFollowUp(sess, query)
 	results, err := p.agent.RAG().Search(ctx, retrievalQuery)
+	if owner, ok := p.agent.(*Agent); ok {
+		owner.recordRAGSearch()
+	}
 	if err != nil || len(results) == 0 {
 		return provider.Message{}
 	}

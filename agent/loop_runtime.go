@@ -145,6 +145,30 @@ func (r *agentLoopRuntime) saveFinalAnswerDocument(sessionID, userInput, assista
 	return r.agent.saveFinalAnswerDocument(sessionID, userInput, assistantResponse)
 }
 
+func (r *agentLoopRuntime) saveSession(sess *session.Session) error {
+	if r == nil || r.agent == nil {
+		if sess == nil {
+			return nil
+		}
+		return sess.Save()
+	}
+	return r.agent.saveSession(sess)
+}
+
+func (r *agentLoopRuntime) recordLoopStop(reason string) {
+	if r == nil || r.agent == nil {
+		return
+	}
+	r.agent.recordLoopStop(reason)
+}
+
+func (r *agentLoopRuntime) recordUsageAndTTFT(usage *provider.TokenUsage, ttftMS int64) {
+	if r == nil || r.agent == nil {
+		return
+	}
+	r.agent.recordUsageAndTTFT(usage, ttftMS)
+}
+
 func (r *agentLoopRuntime) maybeRollSession(sess *session.Session) {
 	if r == nil || r.agent == nil {
 		return

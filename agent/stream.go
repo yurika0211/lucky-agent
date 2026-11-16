@@ -16,8 +16,11 @@ import (
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/sandbox"
 	"github.com/yurika0211/luckyagent-runtime/session"
+	"github.com/yurika0211/luckyagent-runtime/telemetry"
 	"github.com/yurika0211/luckyagent-runtime/turn"
 	"github.com/yurika0211/luckyagent-runtime/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ChatEvent 是流式对话事件，包含思考过程和内容
@@ -616,6 +619,14 @@ func (a *Agent) ChatWithSessionStreamForSession(ctx context.Context, sess *sessi
 		defer close(events)
 		defer finish()
 		defer snapshot.Close()
+		ctx, span := telemetry.StartSpan(ctx, "agent.loop",
+			trace.WithAttributes(
+				attribute.String("agent.session_id", sessionID),
+				attribute.Int("agent.max_iterations", loopCfg.MaxIterations),
+			),
+		)
+		defer span.End()
+		defer a.recordLoopStop("complete")
 
 		sanitizeLoopConfig(&loopCfg)
 		loopCfg.inheritProfile = a.lastRequestProfile(loopCfg.SessionID)
@@ -1034,7 +1045,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 				state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result, execResult.Duration)
 			}
 			if sess != nil {
-				if err := sess.Save(); err != nil {
+				if err := a.saveSession(sess); err != nil {
 					events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 					return
 				}
@@ -1283,7 +1294,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			state.rememberToolCallResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result, execResult.Duration)
 		}
 		if sess != nil {
-			if err := sess.Save(); err != nil {
+			if err := a.saveSession(sess); err != nil {
 				events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 				return
 			}
@@ -1398,7 +1409,7 @@ func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.S
 			events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 			return
 		}
-		if err := sess.Save(); err != nil {
+		if err := a.saveSession(sess); err != nil {
 			events <- ChatEvent{Type: ChatEventError, Err: sessionError(err)}
 			return
 		}
@@ -1415,7 +1426,13 @@ func (a *Agent) finalizeStreamWithRecap(events chan<- ChatEvent, sess *session.S
 		a.indexConversationTurn(routingText, response)
 	}
 
-	a.metrics.RecordChatRequest()
+	// HTTP SSE and handleChatSync already count at the app entry. Counting
+	// again here doubled lh_chat_requests_total. gRPC, WebSocket, and Telegram
+	// streams have no entry counter in this process, so they count once here.
+	if !streamRecordsChatAtEntry(turnInput.Scope.Platform) && a.metrics != nil {
+		a.metrics.RecordChatRequest()
+	}
+	a.recordUsageAndTTFT(usage, ttftMS)
 	events <- ChatEvent{Type: ChatEventDone, Content: response, Usage: assistantUsage(usage), CreatedAt: &createdAt}
 }
 

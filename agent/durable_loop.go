@@ -117,7 +117,7 @@ func (a *Agent) runDurableLoop(ctx context.Context, sess *session.Session, input
 			return fmt.Errorf("%w: checkpoint persistence failed: %v", autonomy.ErrBlocked, err)
 		}
 		if sess != nil {
-			if err := sess.Save(); err != nil {
+			if err := a.saveSession(sess); err != nil {
 				return fmt.Errorf("%w: session persistence failed: %w", autonomy.ErrBlocked, sessionError(err))
 			}
 		}

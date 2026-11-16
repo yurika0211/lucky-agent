@@ -19,6 +19,9 @@ var (
 	identifierURLPattern    = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"')\]]+`)
 	identifierCommitPattern = regexp.MustCompile(`\b[0-9a-f]{7,40}\b`)
 	identifierValuePattern  = valuePattern
+	// Tool status rows such as "- status error dur 11 sid 324151" match
+	// errorPattern but name no file, command, or stable error text.
+	ephemeralToolStatusPattern = regexp.MustCompile(`(?i)(?:^|[^\w])(?:status|dur|sid|attempt)(?:$|[^\w])`)
 )
 
 // maxCompactIdentifiers bounds the check so a large tool dump cannot turn one
@@ -35,6 +38,9 @@ const maxCompactErrorHeadRunes = 160
 func requiredCompactIdentifiers(messages []provider.Message) []string {
 	required := make([]string, 0, maxCompactIdentifiers)
 	for _, identifier := range compactIdentifiers(messages) {
+		if ephemeralToolStatusLine(identifier) {
+			continue
+		}
 		if identifierValuePattern.MatchString(identifier) &&
 			!errorPattern.MatchString(identifier) &&
 			!identifierPathPattern.MatchString(" "+identifier) &&
@@ -45,6 +51,14 @@ func requiredCompactIdentifiers(messages []provider.Message) []string {
 		required = append(required, identifier)
 	}
 	return required
+}
+
+func ephemeralToolStatusLine(identifier string) bool {
+	text := strings.TrimSpace(identifier)
+	if text == "" || toolLineIsCommand(text) || identifierURLPattern.MatchString(text) || identifierPathPattern.MatchString(" "+text) {
+		return false
+	}
+	return ephemeralToolStatusPattern.MatchString(text)
 }
 
 // compactIdentifiers returns the identifiers of the messages a summary covers.
@@ -107,6 +121,14 @@ func compactIdentifiers(messages []provider.Message) []string {
 // let a timestamp crowd out a path. Error heads, paths, URLs, commits, and
 // commands outrank bare measurements when the set is capped.
 func preferCompactIdentifiers(identifiers []string) []string {
+	kept := make([]string, 0, len(identifiers))
+	for _, identifier := range identifiers {
+		if ephemeralToolStatusLine(identifier) {
+			continue
+		}
+		kept = append(kept, identifier)
+	}
+	identifiers = kept
 	rank := func(identifier string) int {
 		switch {
 		case errorPattern.MatchString(identifier):

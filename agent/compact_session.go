@@ -196,7 +196,7 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 			return nil, err
 		}
 		sess.AddCompactBoundary(meta)
-		if err := sess.Save(); err != nil {
+		if err := a.saveSession(sess); err != nil {
 			err = fmt.Errorf("compact session: save boundary: %w", err)
 			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
 			return nil, err

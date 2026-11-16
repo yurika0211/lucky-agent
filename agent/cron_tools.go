@@ -104,6 +104,7 @@ func (a *Agent) recordCronRun(event cron.Event, runErr error) {
 	}
 	meta := job.Metadata
 	class, deliveryStatus, deliveryErr := classifyCronRunError(runErr)
+	a.recordCronResult(cronMetricResult(class, deliveryStatus))
 	if class == cronErrorClassDelivery && deliveryStatus == cronDeliveryUndelivered {
 		// The command finished. A missing gateway must not keep the task failed.
 		meta[cronMetaLastErrorClass] = cronErrorClassDelivery
@@ -140,6 +141,16 @@ func (a *Agent) recordCronRun(event cron.Event, runErr error) {
 		state.NextRun = &when
 		_ = a.cronEngine.RestoreJobState(event.JobID, state)
 	}
+}
+
+func cronMetricResult(class, deliveryStatus string) string {
+	if class == cronErrorClassDelivery && deliveryStatus == cronDeliveryUndelivered {
+		return "delivery_undelivered"
+	}
+	if class == cronErrorClassNone {
+		return "success"
+	}
+	return "error"
 }
 
 func classifyCronRunError(err error) (class, deliveryStatus, deliveryErr string) {

@@ -87,9 +87,9 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 	}
 	result, err := a.compactSessionWithProvider(compactCtx, sess, "auto", opts, turnProvider)
 	if err != nil {
-		if ctx != nil && ctx.Err() == context.Canceled {
-			return
-		}
+		// User cancel stops the chat turn. Local ForceLocal still writes a
+		// boundary on a context that is not canceled. The existing degrade
+		// path already uses Background when the parent is done.
 		a.recordAutoCompactFailure(sess.ID)
 		logger.Warn("auto compact failed", "session_id", sess.ID, "error", err)
 		// Degrade: local summary without the provider. Keeps the session usable
@@ -109,7 +109,9 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 			logger.Warn("auto compact local degrade failed", "session_id", sess.ID, "error", degErr)
 			return
 		}
-		a.resetAutoCompactFailure(sess.ID)
+		if ctx == nil || ctx.Err() != context.Canceled {
+			a.resetAutoCompactFailure(sess.ID)
+		}
 		logger.Info("auto compact degraded to local summary",
 			"session_id", sess.ID,
 			"boundary_id", degraded.BoundaryID,

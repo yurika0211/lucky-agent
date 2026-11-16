@@ -228,10 +228,17 @@ func (a *Agent) chatLoopIteration(ctx context.Context, messages []provider.Messa
 	if err != nil {
 		return nil, err
 	}
+	ctx, span := a.startProviderSpan(ctx, turnProvider.name())
+	defer span.End()
+	started := time.Now()
+	var resp *provider.Response
 	if fcProvider, ok := turnProvider.provider.(provider.FunctionCallingProvider); ok && len(opts.Tools) > 0 {
-		return fcProvider.ChatWithOptions(ctx, messages, opts)
+		resp, err = fcProvider.ChatWithOptions(ctx, messages, opts)
+	} else {
+		resp, err = turnProvider.provider.Chat(ctx, messages)
 	}
-	return turnProvider.provider.Chat(ctx, messages)
+	a.recordProviderChat(ctx, turnProvider.name(), started, err)
+	return resp, err
 }
 
 const maxAgentIterationSoftRetryTimeout = 60 * time.Second
@@ -303,10 +310,20 @@ func (a *Agent) streamLoopIteration(ctx context.Context, messages []provider.Mes
 	if err != nil {
 		return nil, err
 	}
+	ctx, span := a.startProviderSpan(ctx, turnProvider.name())
+	started := time.Now()
+	var ch <-chan provider.StreamChunk
 	if fcProvider, ok := turnProvider.provider.(provider.FunctionCallingProvider); ok && len(opts.Tools) > 0 {
-		return fcProvider.ChatStreamWithOptions(ctx, messages, opts)
+		ch, err = fcProvider.ChatStreamWithOptions(ctx, messages, opts)
+	} else {
+		ch, err = turnProvider.provider.ChatStream(ctx, messages)
 	}
-	return turnProvider.provider.ChatStream(ctx, messages)
+	if err != nil {
+		span.End()
+		a.recordProviderChat(ctx, turnProvider.name(), started, err)
+		return nil, err
+	}
+	return a.observeProviderStream(ch, span, turnProvider.name(), started), nil
 }
 
 func constrainForcedToolChoice(messages []provider.Message, opts provider.CallOptions) provider.CallOptions {

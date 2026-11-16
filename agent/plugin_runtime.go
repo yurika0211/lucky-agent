@@ -359,6 +359,7 @@ func (a *Agent) runPluginAgent(exec tool.ExecutionContext, name, task string) (s
 		return "", err
 	}
 	child := a.sessions.NewWithTitle("plugin-agent:" + name)
+	a.recordSessionOpen()
 	child.SetCwd(parent.GetCwd())
 	child.SetAgentProfile("plugin-agent:"+name, plugins.PromptBody(p.Content))
 	cfg.SessionID = child.ID

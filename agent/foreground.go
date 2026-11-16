@@ -340,8 +340,11 @@ func (a *Agent) finishForegroundMemory(sess *session.Session, input UserTurnInpu
 	if a.ragManager != nil && autoIndexFinalAnswersEnabled() {
 		a.indexConversationTurn(input.RoutingText, result.Response)
 	}
-	if a.metrics != nil {
+	if a.metrics != nil && !streamRecordsChatAtEntry(input.Scope.Platform) {
 		a.metrics.RecordChatRequest()
+	}
+	if result != nil {
+		a.recordUsageAndTTFT(result.Usage, result.LastTTFT)
 	}
 }
 

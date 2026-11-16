@@ -73,7 +73,7 @@ func (f *loopFinalizer) Finalize(response, reasoningContent string) error {
 		if err := f.sess.AddProviderMessageWithError(msg); err != nil {
 			return sessionError(err)
 		}
-		if err := f.sess.Save(); err != nil {
+		if err := saveRuntimeSession(f.runtime, f.sess); err != nil {
 			return sessionError(err)
 		}
 	}
