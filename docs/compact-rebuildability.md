@@ -55,3 +55,44 @@ control 是旧行压缩器，treatment 是形状改写后再走同一行压缩�
 离线完整请求样品 16593→2048 固定了 system 和 schema，只比较工具正文投影。
 它不是线上 p50，也不能说等待已经下降。
 这些 before/after 比较同一输入的原文与既有投影，不是本次提交相对主线基线的性能收益。
+
+## 无收益与观测
+
+提交 compact boundary 前，主仓先冻结一次非 history 上下文，再把同一份
+system、project、memory、RAG、skill hint 代入压缩前后的 history。history
+使用完整 transcript。after 候选复制完整历史，并在末尾追加一个
+boundary，与 `AddCompactBoundary` 相同。它不删除 raw，不搬动 retained tail，
+也不按正文搜索插入点。`CompactSegments` 用非 boundary 消息计数的绝对
+`[From, To)` 读取覆盖范围。旧 boundary 物理位置之前的 retained raw 仍留在
+原处。两侧都保留已有 boundary 和它们的附件。不把旧摘要再包一层。比较包含工具 schema 和 `prepareModelRequest` 的最后一层 fit。fit 返回
+错误时停止，不把残缺 candidate 当成成功。人工 compact 没有下一条 user 文本。
+自动 compact 带上触发该轮的 routing text。比较不包含本轮新附件：没有新的附件
+字节，也不为比较重跑媒体解析。ReadOnly 不写 memory hygiene、context cache 或
+skill-route 计数。
+
+压缩后的候选请求不小于压缩前时，返回 `ErrCompactNoBenefit`。错误文本包含
+`no-benefit: skipped`。不写 backup，不写 boundary，不报 saving。DryRun 同样
+返回这个错误，也不写。现有 API 在 `err != nil` 时返回 400，CLI 走既有失败通道。
+这个 400 是兼容既有端点处理，不是模型失败。自动路径用 `errors.Is` 识别后跳过，
+不计普通 failure，不走 ForceLocal。跳过复用既有自动 cooldown 计数，避免每轮
+重复同一次昂贵调用。
+
+成功 compact 的 `pre_token_estimate` / `post_token_estimate` 是同一次完整候选
+请求的 before/after。它们包含冻结的非 history 快照、history、schema 和
+`prepareModelRequest` 的 fit。这是本地估算，不是 provider usage。
+`summary_tokens` 只表示摘要正文。API、`CompactDisplay`、done/degraded/dry-run
+进度和 latest trace 都读这一对字段。文案写明 “full request estimate”，不宣称
+线上省了 token。
+
+`policy_version` 为 `checkpoint-segments-v2` 的记录用这个口径。更早的
+`checkpoint-segments-v1` 记录里，pre 是被覆盖消息的局部估算，post 等于摘要
+正文估算。读取旧 session 时保留原数字，不回写。
+
+start/progress 里的 `pre_token_estimate` 仍是摘要输入的局部估算，message 写明
+summary-input tokens。它和 done 事件不是同一口径。skip 事件上的 pre/post 已是
+完整请求估算，并且 message 写明这一点；skip 不写 metadata。
+
+摘要调用的 usage 只在真正写入 boundary 时进入 `CompactMetadata` /
+`CompactTrace` 的 `summary_usage`。没有可见 usage 时这些键省略，不用 0 冒充
+完整账。没有首 token 时间，不写 TTFT。失败或 skip 没有 boundary，进度和日志
+里仍能看到阶段、回调次数和原因。

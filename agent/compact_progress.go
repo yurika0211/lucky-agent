@@ -27,7 +27,7 @@ func CompactDisplay(result *CompactSessionResult) map[string]string {
 	case result.Trigger == "auto":
 		title = "Context auto-compressed"
 	}
-	subtitle := fmt.Sprintf("%d → %d tokens", result.PreTokenEstimate, result.PostTokenEstimate)
+	subtitle := fmt.Sprintf("full request estimate %d → %d tokens", result.PreTokenEstimate, result.PostTokenEstimate)
 	if result.DroppedMessages > 0 {
 		subtitle = fmt.Sprintf("%s · dropped %d msgs", subtitle, result.DroppedMessages)
 	}

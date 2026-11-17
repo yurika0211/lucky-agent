@@ -88,6 +88,10 @@ func (a *Agent) resolveCompactProvider(turnProvider providerSnapshot) providerSn
 // generateMapReduceCompactSummary owns only host provider/config assembly.
 // The shared engine does not receive Agent, session state, or credentials.
 func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions) (string, string, error) {
+	return a.generateMapReduceCompactSummaryObserved(ctx, messages, turnProvider, opts, nil)
+}
+
+func (a *Agent) generateMapReduceCompactSummaryObserved(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions, observed *compactSummaryObservation) (string, string, error) {
 	if len(messages) == 0 {
 		return "", "", fmt.Errorf("compact session: no textual content to summarize")
 	}
@@ -109,6 +113,9 @@ func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []
 		OnProgress: func(progress compactlib.Progress) { emitCompactProgress(opts, progress) },
 		Chat: func(ctx context.Context, request compactlib.ChatRequest) (string, error) {
 			response, err := a.chatLoopIteration(ctx, []provider.Message{{Role: "system", Content: request.SystemPrompt}, {Role: "user", Content: request.UserPrompt}}, provider.CallOptions{}, true, snap)
+			if observed != nil {
+				observed.add(response)
+			}
 			if err != nil {
 				return "", err
 			}

@@ -28,11 +28,22 @@ func (a *Agent) buildSkillRouteSystemHint(userInput string) string {
 }
 
 func (a *Agent) buildSkillRouteSystemHintWithOptions(userInput string, opts skillRouteOptions) string {
+	return a.skillRouteHint(userInput, opts, true)
+}
+
+// skillRouteHint renders the same hint the live turn injects. record is false
+// for a read-only compact comparison so matching does not write route metrics.
+func (a *Agent) skillRouteHint(userInput string, opts skillRouteOptions, record bool) string {
+	if a == nil {
+		return ""
+	}
 	match := a.matchSkillRoute(userInput)
 	if match == nil || match.skill == nil {
 		return ""
 	}
-	a.recordMatchedSkillRoute(match, userInput)
+	if record {
+		a.recordMatchedSkillRoute(match, userInput)
+	}
 	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyAgentMemoryBackendQuestion(userInput) {
 		return `Skill routing note:
 - This request is about the LuckyAgent memory backend, not an external Obsidian app vault.

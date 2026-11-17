@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -24,6 +25,11 @@ type CompactSessionResult struct {
 	ToMessage           int
 	ContentHash         string
 	PolicyVersion       string
+	// PreTokenEstimate and PostTokenEstimate are the same full candidate
+	// request estimates written to CompactMetadata. They include the frozen
+	// non-history snapshot, history, schema, and prepareModelRequest fit.
+	// They are local estimates, not provider usage. SummaryTokens is only
+	// the summary body. A recorded zero is a real estimate, not "missing".
 	PreTokenEstimate    int
 	PostTokenEstimate   int
 	SummaryTokens       int
@@ -33,9 +39,16 @@ type CompactSessionResult struct {
 	SummarySource       string
 	DryRun              bool
 	Backup              *session.BackupInfo
+	SummaryCalls        int
+	SummaryUsageRecords int
+	SummaryUsage        *provider.TokenUsage
 }
 
-const compactSegmentPolicyVersion = "checkpoint-segments-v1"
+// compactSegmentPolicyVersion marks boundaries whose pre/post estimates are
+// the full candidate request, not the covered-message and summary-body pair.
+// Older sessions keep checkpoint-segments-v1 and must be read as that older
+// pair. Readers do not rewrite those stored numbers.
+const compactSegmentPolicyVersion = "checkpoint-segments-v2"
 
 // compactRangeFingerprint identifies the messages a summary is about to cover.
 // A count check misses a rewrite that keeps the same number of messages.
@@ -62,6 +75,13 @@ type CompactSessionOptions struct {
 	DryRun            bool
 	RetainRecentTurns int
 	TargetTailTokens  int
+	// Query is the next-turn text included in the before/after request.
+	// Manual compact leaves it empty. Auto passes the routing text so the
+	// comparison uses the same current-turn baseline as the live loop.
+	Query string
+	// Loop carries the turn's tool allowlist into the benefit comparison.
+	// Manual compact leaves it empty and uses the default visible tool set.
+	Loop LoopConfig
 	// OnProgress reports compact phases to streaming clients (SSE/WebSocket).
 	OnProgress func(CompactProgress)
 }
@@ -113,17 +133,18 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	if len(compactInput) == 0 {
 		return nil, fmt.Errorf("compact session: retained tail leaves no complete messages to compact")
 	}
-	preTokens := estimateProviderMessages(est, compactInput)
+	sourceTokens := estimateProviderMessages(est, compactInput)
 	emitCompactProgress(opts, CompactProgress{
 		Phase:            "start",
 		Trigger:          trigger,
-		Message:          fmt.Sprintf("Compressing conversation context… (%d messages, ~%d tokens)", len(compactInput), preTokens),
-		PreTokenEstimate: preTokens,
+		Message:          fmt.Sprintf("Compressing conversation context… (%d messages, ~%d summary-input tokens)", len(compactInput), sourceTokens),
+		PreTokenEstimate: sourceTokens,
 		DroppedMessages:  len(compactInput),
 		RetainedMessages: len(retained),
 	})
 	summarySource := "llm"
 	var summary string
+	var observed *compactSummaryObservation
 	if opts.ForceLocal {
 		summarySource = "local"
 		summary = generateLocalCompactSummary(compactInput, est)
@@ -134,9 +155,10 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		}
 	} else {
 		var err error
-		summary, summarySource, err = a.generateCompactSummaryWithProvider(ctx, compactInput, turnProvider, opts)
+		summary, summarySource, observed, err = a.generateCompactSummaryObserved(ctx, compactInput, turnProvider, opts)
 		if err != nil {
-			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error(), PreTokenEstimate: preTokens})
+			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error(), PreTokenEstimate: sourceTokens})
+			a.logCompactAttempt(sess.ID, trigger, "failed", observed, len(sessionSegments(all)))
 			return nil, err
 		}
 		if strings.TrimSpace(summarySource) == "" {
@@ -146,9 +168,10 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	if validation := validateCompactSummary(summary, compactInput); !validation.Valid {
 		err := fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
 		emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
+		a.logCompactAttempt(sess.ID, trigger, "invalid-summary", observed, len(sessionSegments(all)))
 		return nil, err
 	}
-	postTokens := est.Estimate(summary)
+	summaryTokens := est.Estimate(summary)
 	attachments := buildPostCompactAttachments(sess, raw, est)
 	boundaryID := fmt.Sprintf("compact-%d", time.Now().UnixNano())
 	meta := session.CompactMetadata{
@@ -159,15 +182,52 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		ToMessage:           covered + len(compactInput),
 		PolicyVersion:       compactSegmentPolicyVersion,
 		CreatedAt:           time.Now(),
-		PreTokenEstimate:    preTokens,
-		PostTokenEstimate:   postTokens,
-		SummaryTokens:       postTokens,
+		SummaryTokens:       summaryTokens,
 		DroppedMessages:     len(compactInput),
 		RetainedMessages:    len(retained),
 		RestoredAttachments: len(attachments),
 		SummarySource:       summarySource,
 		Attachments:         attachments,
 	}
+	if observed != nil {
+		observed.apply(&meta, compactSegmentCount(all))
+	}
+	baseline := compactBenefitBaseline{
+		Query:         opts.Query,
+		Manual:        !strings.Contains(trigger, "auto"),
+		DisabledTools: opts.Loop.DisabledTools,
+		Loop:          opts.Loop,
+		RetainTurns:   opts.RetainRecentTurns,
+		TargetTail:    opts.TargetTailTokens,
+	}
+	_, _, _, _, beforeTokens, afterTokens, benefitErr := a.compareCompactBenefit(ctx, sess, all, raw, compactInput, retained, meta, baseline, turnProvider)
+	if errors.Is(benefitErr, ErrCompactNoBenefit) {
+		calls, records, _, _ := observed.snapshot()
+		logCompactNoBenefit(trigger, sess.ID, beforeTokens, afterTokens, opts.DryRun, calls, records)
+		if strings.Contains(trigger, "auto") && !strings.Contains(trigger, "degraded") {
+			a.noteCompactNoBenefit(sess.ID, trigger)
+		}
+		emitCompactProgress(opts, CompactProgress{
+			Phase:   "skipped",
+			Trigger: trigger,
+			Message: fmt.Sprintf("full request estimate %d → %d tokens, not provider usage; %s", beforeTokens, afterTokens, benefitErr.Error()),
+			Error:   benefitErr.Error(),
+			// Same full-request estimate as a written boundary. This skip
+			// writes no metadata, so the numbers exist only on this event.
+			PreTokenEstimate: beforeTokens,
+			PostTokenEstimate: afterTokens,
+			DroppedMessages:  len(compactInput),
+			RetainedMessages: len(retained),
+			SummarySource:    summarySource,
+		})
+		return nil, benefitErr
+	}
+	if benefitErr != nil {
+		emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: benefitErr.Error(), Error: benefitErr.Error()})
+		return nil, benefitErr
+	}
+	meta.PreTokenEstimate = beforeTokens
+	meta.PostTokenEstimate = afterTokens
 	meta.ContentHash = fmt.Sprintf("%x", makeContextCacheKey(map[string]any{
 		"from":        meta.FromMessage,
 		"to":          meta.ToMessage,
@@ -210,15 +270,18 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		ToMessage:           meta.ToMessage,
 		ContentHash:         meta.ContentHash,
 		PolicyVersion:       meta.PolicyVersion,
-		PreTokenEstimate:    preTokens,
-		PostTokenEstimate:   postTokens,
-		SummaryTokens:       postTokens,
+		PreTokenEstimate:    beforeTokens,
+		PostTokenEstimate:   afterTokens,
+		SummaryTokens:       summaryTokens,
 		DroppedMessages:     len(compactInput),
 		RetainedMessages:    len(retained),
 		RestoredAttachments: len(attachments),
 		SummarySource:       summarySource,
 		DryRun:              opts.DryRun,
 		Backup:              backup,
+		SummaryCalls:        meta.SummaryCalls,
+		SummaryUsageRecords: meta.SummaryUsageRecords,
+		SummaryUsage:        meta.SummaryUsage,
 	}
 	phase := "done"
 	if strings.Contains(summarySource, "local") && strings.Contains(trigger, "degraded") {
@@ -244,7 +307,39 @@ func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.
 // sliced on user-turn boundaries, summarized concurrently, then merged.
 // context.compact_model selects the summarizer model when set.
 func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions) (string, string, error) {
-	return a.generateMapReduceCompactSummary(ctx, messages, turnProvider, opts)
+	summary, source, _, err := a.generateCompactSummaryObserved(ctx, messages, turnProvider, opts)
+	return summary, source, err
+}
+
+func (a *Agent) generateCompactSummaryObserved(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions) (string, string, *compactSummaryObservation, error) {
+	observed := &compactSummaryObservation{}
+	observed.start()
+	summary, source, err := a.generateMapReduceCompactSummaryObserved(ctx, messages, turnProvider, opts, observed)
+	observed.finish()
+	return summary, source, observed, err
+}
+
+func sessionSegments(messages []provider.Message) []session.CompactMetadata {
+	segments, _, _ := session.CompactSegments(messages)
+	return segments
+}
+
+func (a *Agent) logCompactAttempt(sessionID, trigger, phase string, observed *compactSummaryObservation, segments int) {
+	calls, records, durationMS := 0, 0, int64(0)
+	var usage *provider.TokenUsage
+	if observed != nil {
+		calls, records, usage, durationMS = observed.snapshot()
+	}
+	logger.Info("compact attempt",
+		"session_id", sessionID,
+		"trigger", trigger,
+		"phase", phase,
+		"summary_calls", calls,
+		"summary_usage_records", records,
+		"summary_usage_present", usage != nil,
+		"summary_duration_ms", durationMS,
+		"summary_segments", segments,
+	)
 }
 
 func estimateProviderMessages(est *contextx.TokenEstimator, messages []provider.Message) int {

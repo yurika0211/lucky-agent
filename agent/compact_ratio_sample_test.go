@@ -69,8 +69,8 @@ func TestCompactRatioSampleMeasuresRetainedTail(t *testing.T) {
 	_, raw, _ := session.CompactSegments(sess.GetMessages())
 	tail := estimateProviderMessages(a.contextEst, raw)
 	projected := a.BuildContextPackerSnapshot(context.Background(), sess, TextUserTurnInput("continue the compact ratio fix"))
-	t.Logf("SAMPLE before=%d compact_input_pre=%d summary_post=%d stored_after=%d raw_tail=%d retained_messages=%d dropped=%d projected=%d ratio_vs_before=%.4f tail_ratio=%.4f summary=%q",
-		before, result.PreTokenEstimate, result.PostTokenEstimate, afterAll, tail, result.RetainedMessages, result.DroppedMessages, projected.TotalTokens,
+	t.Logf("SAMPLE before=%d full_request_pre=%d full_request_post=%d summary_tokens=%d stored_after=%d raw_tail=%d retained_messages=%d dropped=%d projected=%d ratio_vs_before=%.4f tail_ratio=%.4f summary=%q",
+		before, result.PreTokenEstimate, result.PostTokenEstimate, result.SummaryTokens, afterAll, tail, result.RetainedMessages, result.DroppedMessages, projected.TotalTokens,
 		float64(result.PostTokenEstimate)/float64(before), float64(tail)/float64(before), truncate(result.Summary, 180))
 	if !strings.Contains(result.Summary, "docs/compact-rebuildability.md") || !strings.Contains(result.Summary, "go test ./agent -run TestCompactRatio -count=1") {
 		t.Fatalf("mustkeep missing from summary: %s", truncate(result.Summary, 400))
