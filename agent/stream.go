@@ -1050,7 +1050,7 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 				if _, note := takeOpenUIDelta(execResult.ToolCall.Name, execResult.Result); note != execResult.Result {
 					execResult.Result = note
 				}
-				messages = append(messages, observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)))
+				messages = append(messages, liveToolPromptMessage(state.runID, execResult, sess != nil, &state.successfulSearchEvidence, &state.detailedSearchEvidence))
 				if sess != nil {
 					if !appendStreamSessionMessage(events, sess, observedToolMessage(state.runID, execResult, execResult.Result)) {
 						return
@@ -1070,6 +1070,9 @@ func (a *Agent) streamNativeAttempt(ctx context.Context, events chan<- ChatEvent
 			messages = appendLatestComputerObservation(messages, executed)
 			messages = appendComputerActDirective(messages, toolCalls)
 			messages = a.fitContextWindow(messages)
+			if sess == nil {
+				messages = dropUnreadToolResultRefs(messages)
+			}
 			messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
 			if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
 				return
@@ -1304,7 +1307,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			if _, note := takeOpenUIDelta(execResult.ToolCall.Name, execResult.Result); note != execResult.Result {
 				execResult.Result = note
 			}
-			messages = append(messages, observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)))
+			messages = append(messages, liveToolPromptMessage(state.runID, execResult, sess != nil, &state.successfulSearchEvidence, &state.detailedSearchEvidence))
 			if sess != nil {
 				if !appendStreamSessionMessage(events, sess, observedToolMessage(state.runID, execResult, execResult.Result)) {
 					return
@@ -1324,6 +1327,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		messages = appendLatestComputerObservation(messages, executed)
 		messages = appendComputerActDirective(messages, resp.ToolCalls)
 		messages = a.fitContextWindow(messages)
+		if sess == nil {
+			messages = dropUnreadToolResultRefs(messages)
+		}
 		messages = maybeAppendSearchSynthesisMessage(messages, &state.forceSearchSynthesis, state.successfulSearchEvidence, state.consecutiveToolOnlyIters)
 		if a.continueAfterStreamMemoryGate(ctx, events, messages, callOpts, sess, turnInput, round, remaining, state) {
 			return

@@ -1101,10 +1101,7 @@ func (a *Agent) processToolCallBatch(
 			loopState.artifactGuard.RecordToolResult(execResult.ToolCall.Name, execResult.ToolCall.Arguments, execResult.Result)
 		}
 
-		contextToolMsg := observedToolMessage(loopCfg.RunID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence))
-		if contextToolMsg.Content != execResult.Result {
-			contextToolMsg.Content += "\n[Full result: context_history_read action=result tool_call_id=" + execResult.ToolCall.ID + "]"
-		}
+		contextToolMsg := liveToolPromptMessage(loopCfg.RunID, execResult, sess != nil, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence)
 		sig := toolCallSignature(tcLog.Name, tcLog.Arguments)
 		if previous, seen := loopState.toolCallLastResult[sig]; !seen || previous != tcLog.Result {
 			loopState.toolCallRepeatCount[sig] = 0
@@ -1140,6 +1137,9 @@ func (a *Agent) processToolCallBatch(
 	messages = appendComputerActDirective(messages, resp.ToolCalls)
 	messages = a.drainParentMessagesAfterToolRound(messages, sess, loopCfg.delegateTaskID)
 	messages = a.fitContextWindow(messages)
+	if sess == nil {
+		messages = dropUnreadToolResultRefs(messages)
+	}
 	result.State = StateObserve
 
 	messages = maybeAppendSearchSynthesisMessage(messages, &loopState.forceSearchSynthesis, loopState.successfulSearchEvidence, loopState.consecutiveToolOnlyIters)

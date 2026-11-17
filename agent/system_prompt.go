@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yurika0211/luckyagent-runtime/prompt"
+	"github.com/yurika0211/luckyagent-runtime/sandbox"
 	"github.com/yurika0211/luckyagent-runtime/session"
 	"github.com/yurika0211/luckyagent-runtime/tool"
 	"github.com/yurika0211/luckyagent-runtime/utils"
@@ -117,6 +118,9 @@ func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemP
 	}
 	if meta := a.buildMetadataPromptBlockForProvider(opts.turnProvider); meta != "" {
 		parts = append(parts, meta)
+	}
+	if sandboxNote := a.buildSandboxModePromptBlock(); sandboxNote != "" {
+		parts = append(parts, sandboxNote)
 	}
 
 	platform := "cli"
@@ -396,6 +400,23 @@ func (a *Agent) buildMetadataPromptBlockForProvider(turnProvider providerSnapsho
 		return ""
 	}
 	return strings.Join(meta, "\n")
+}
+
+// buildSandboxModePromptBlock tells the model which shell boundary this turn
+// actually has. dev is the host shell. A command-text deny list is not a jail.
+func (a *Agent) buildSandboxModePromptBlock() string {
+	return sandboxModePrompt(a.SandboxMode())
+}
+
+func sandboxModePrompt(mode sandbox.Mode) string {
+	switch mode {
+	case sandbox.ModeWorkspaceWrite:
+		return "Execution boundary: workspace-write. Terminal has an OS jail and no network. File, MCP, and GUI tools are outside that jail. Not the default."
+	case sandbox.ModeIso:
+		return "Execution boundary: iso. Terminal has an OS jail and no network. Edits are discarded at turn end. File, MCP, and GUI tools are outside that jail."
+	default:
+		return "Execution boundary: dev (default, including unattended CLI/HTTP/Telegram/QQ). Terminal is host sh -c. No OS jail. A command-text check is not a sandbox. OS isolation starts only after /set workspace-write or /set iso."
+	}
 }
 
 func (a *Agent) enabledToolNamesExcept(disabled []string) []string {

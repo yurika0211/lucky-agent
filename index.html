@@ -1862,7 +1862,8 @@
               'lh init 初始化运行目录。',
               'lh config list/get/set 管理配置。',
               'lh chat 验证模型链路。',
-              'lh serve 和 lh msg-gateway start 启动运行入口。'
+              'lh serve 和 lh msg-gateway start 启动运行入口。',
+              '默认 sandbox 是 dev：终端命令是宿主 sh -c，没有 OS jail。OS 隔离只在 /set workspace-write 或 /set iso 之后出现。未值守的 CLI、HTTP、Telegram、QQ 也是 dev，直到有人显式切换。命令文本拦截不是 sandbox。'
             ],
             related: ['overview', 'source', 'api', 'telegram', 'napcat'],
             commands: [

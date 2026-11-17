@@ -22,3 +22,36 @@ LLM 摘要缺失标识符仍会被拒绝；自动压缩可以再走既有的本�
 
 共享 tools 引擎的整体转写窗口、旧轨迹回放指针等仍由配套 PR 处理，
 这里不代表 #337 的全部验收已完成。没有新增 runtime 配置字段。
+
+只在能读回全文的会话附 `context_history_read` 引用。无会话不发不可读引用，
+prompt 保留原文。
+
+`context.compact_model` 为空时仍使用当前已配置的 turn provider。本仓不猜测
+一个未配置的更快模型。需要更快摘要时，显式设置已配置的 `compact_model`。
+摘要预算按本次 `TranscriptRunes` 从 45s 线性升到 180s：0 或负数是 45s，
+48000 rune 及以上是 180s。用户取消仍立即停止，不放宽已取消的 deadline。
+host 把这个函数传给 tools `Config.SummaryBudget`。实际选中的模块用
+`GOWORK=off go list -m` 核对，不把某次功能分支提交写进产品说明。
+
+## 指标口径
+
+`agent/compact_ab.go` 的 `SavedRatio` 是 `(controlBytes-treatmentBytes)/controlBytes`。
+control 是旧行压缩器，treatment 是形状改写后再走同一行压缩器。至少 30 对才
+`RatioReady`。它只表示新压缩器相对旧行压缩器多省了多少，不是整段会话只省 1.3%。
+
+一份 ForceLocal 样品里，摘要估计 651、压缩前输入估计 111104。651/111104 只是
+摘要估算除以被摘要覆盖的输入估算。它不含保留的 tail、附件、system prompt 和
+工具 schema，也不能拿来和 `SavedRatio` 比较。
+
+历史 566 条正 input usage、86 个会话，来自 segment_v1 的 assistant usage 元数据。
+筛选是正 input，时间落在 2026-09-24 到 2026-11-07。分位数用 nearest-rank：
+升序后取 `ceil(n*p)-1`。按这个口径，p50 是 264544，p95 是 2550139，最大是
+11590241，grok-4.7 是 303/566。缓存命中比的 p50 约 0.957，均值约 0.879。
+其中 565/566 是下一条 user 之前的最后一个 assistant。这不是严格 turn id，
+也不是 566 次 provider 请求。正式最终 assistant usage 会把一轮里多次 provider
+响应累加。没有逐请求成本流水时，不能把这个 p50 当成单次 prompt。
+
+`SavedRatio` 约 0.013 只表示新压缩器相对旧行压缩器再省约 1.3% 字节。
+离线完整请求样品 16593→2048 固定了 system 和 schema，只比较工具正文投影。
+它不是线上 p50，也不能说等待已经下降。
+这些 before/after 比较同一输入的原文与既有投影，不是本次提交相对主线基线的性能收益。

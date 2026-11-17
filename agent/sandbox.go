@@ -11,6 +11,9 @@ import (
 )
 
 // SandboxMode returns the persisted global execution mode.
+// Missing runtime/security_mode.json means dev: terminal commands are host
+// sh -c. workspace-write and iso are the modes that wrap terminal in an OS
+// boundary. A command-text deny list is not that boundary.
 func (a *Agent) SandboxMode() sandbox.Mode {
 	if a == nil || a.sandbox == nil {
 		return sandbox.ModeDev
@@ -33,7 +36,7 @@ func (a *Agent) SetSandboxMode(raw string) error {
 	}
 	mode := sandbox.Mode(strings.ToLower(strings.TrimSpace(raw)))
 	if !mode.Valid() {
-		return fmt.Errorf("usage: /set dev|iso|workspace-write|status")
+		return fmt.Errorf("usage: /set dev|iso|workspace-write|status. dev is host sh -c with no OS jail; workspace-write and iso isolate terminal only")
 	}
 	return a.sandbox.Set(mode)
 }
