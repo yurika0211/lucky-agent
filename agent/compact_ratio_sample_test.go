@@ -173,6 +173,49 @@ func TestLiveToolResultUsesBoundedProjection(t *testing.T) {
 	}
 }
 
+func TestFitDropsUnreadToolRefWithoutMutatingInput(t *testing.T) {
+	a, _ := contextTestAgent(t)
+	a.contextWin = contextx.NewContextWindow(contextx.WindowConfig{
+		MaxTokens: 400, ReservedTokens: 80, Strategy: contextx.TrimLowPriority,
+	})
+	raw := strings.Repeat("noise line without an identifier\n", 400) + "docs/compact-rebuildability.md\n"
+	original := []provider.Message{{
+		Role: "tool", ToolCallID: "call-fit", Name: "file_read", Content: raw,
+	}}
+	before := original[0].Content
+	fitted := a.fitContextWindow(original)
+	cleaned := dropUnreadToolResultRefs(fitted)
+	if strings.Contains(cleaned[0].Content, "context_history_read") {
+		t.Fatalf("unread ref survived fit: %s", truncate(cleaned[0].Content, 200))
+	}
+	if original[0].Content != before {
+		t.Fatal("fit or drop rewrote the caller slice")
+	}
+	if len(fitted) == 0 || fitted[0].Content == before {
+		t.Fatal("fit did not shrink the oversized tool body")
+	}
+}
+
+func TestOfflineFixtureRequestShrinksProjectedToolBody(t *testing.T) {
+	est := contextx.NewTokenEstimator(8000)
+	system := provider.Message{Role: "system", Content: "You are LuckyAgent. Keep docs/compact-rebuildability.md."}
+	tail := provider.Message{Role: "user", Content: "continue the compact ratio fix"}
+	schema := []map[string]any{{
+		"type": "function",
+		"function": map[string]any{"name": "file_read", "description": "Read one workspace file."},
+	}}
+	raw := strings.Repeat("noise line without an identifier\n", 2000) + "docs/compact-rebuildability.md\ngo test ./agent -run TestCompactRatio -count=1\n"
+	projected := buildContextToolResult("file_read", raw, nil, nil)
+	full := []provider.Message{system, {Role: "tool", ToolCallID: "call-live", Name: "file_read", Content: raw}, tail}
+	shrunk := []provider.Message{system, {Role: "tool", ToolCallID: "call-live", Name: "file_read", Content: projected}, tail}
+	before := estimateProviderRequest(est, full, schema)
+	after := estimateProviderRequest(est, shrunk, schema)
+	t.Logf("OFFLINE_FIXTURE before=%d after=%d ratio=%.4f system_and_schema_fixed=true", before, after, float64(after)/float64(before))
+	if after >= before {
+		t.Fatalf("fixture did not shrink: before=%d after=%d", before, after)
+	}
+}
+
 func toolMessageByID(t *testing.T, messages []provider.Message, id string) provider.Message {
 	t.Helper()
 	for _, msg := range messages {

@@ -31,4 +31,19 @@ LLM 摘要缺失标识符仍会被拒绝；自动压缩可以再走既有的本�
 一个未配置的更快模型。需要更快摘要时，显式设置已配置的 `compact_model`。
 摘要预算按本次 `TranscriptRunes` 从 45s 线性升到 180s：0 或负数是 45s，
 48000 rune 及以上是 180s。用户取消仍立即停止，不放宽已取消的 deadline。
-这个预算依赖尚未发布的 tools `SummaryBudget`，当前 published 图还不能选中它。
+host 把这个函数传给 tools `Config.SummaryBudget`。tools 功能分支已发布，
+默认分支尚未合并。根 launcher 的 published 图还没有选中这次 agent 提交。
+
+## 指标口径
+
+`agent/compact_ab.go` 的 `SavedRatio` 是 `(controlBytes-treatmentBytes)/controlBytes`。
+control 是旧行压缩器，treatment 是形状改写后再走同一行压缩器。至少 30 对才
+`RatioReady`。它只表示新压缩器相对旧行压缩器多省了多少，不是整段会话只省 1.3%。
+
+一份 ForceLocal 样品里，摘要估计 651、压缩前输入估计 111104。651/111104 只是
+摘要估算除以被摘要覆盖的输入估算。它不含保留的 tail、附件、system prompt 和
+工具 schema，也不能拿来和 `SavedRatio` 比较。
+
+历史 usage 的 input p50 265k 提取源没有在本轮重测。最终 assistant usage 可以
+累计一整轮里多次 provider 请求。本轮的 16520→1769 是一条离线工具正文样品，
+不是线上 p50，也不能说真实 p50 已经下降。

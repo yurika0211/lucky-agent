@@ -103,6 +103,9 @@ func (a *Agent) generateMapReduceCompactSummary(ctx context.Context, messages []
 	engine := compactlib.New(compactlib.Config{
 		MaxChunkTokens: maxChunk, MaxParallel: maxParallel, Model: snap.model, AgentName: "LuckyAgent",
 		Estimator: est, Text: compactTextOptions(), Logger: logger.GetLogger(),
+		SummaryBudget: func(request compactlib.ChatRequest) time.Duration {
+			return compactSummaryBudgetForRunes(request.TranscriptRunes)
+		},
 		OnProgress: func(progress compactlib.Progress) { emitCompactProgress(opts, progress) },
 		Chat: func(ctx context.Context, request compactlib.ChatRequest) (string, error) {
 			response, err := a.chatLoopIteration(ctx, []provider.Message{{Role: "system", Content: request.SystemPrompt}, {Role: "user", Content: request.UserPrompt}}, provider.CallOptions{}, true, snap)
