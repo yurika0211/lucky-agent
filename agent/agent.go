@@ -99,6 +99,8 @@ type Agent struct {
 	// skillInstall is built lazily by SkillInstaller; it is guarded by skillMu.
 	skillInstall               *tool.InstallManager
 	metrics                    *metrics.Metrics // 指标收集器
+	executionMetricsStore      *executionMetrics
+	executionMetricsOnce       sync.Once
 	toolMetrics                *toolDurationMetrics
 	skillUsage                 *skillUsageStore
 	backgroundTerminalOnce     sync.Once
@@ -337,6 +339,7 @@ Chat 在新会话中执行一次完整对话。
 */
 func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 	sess := a.sessions.New()
+	a.recordSessionOpen()
 	return a.chatWithSessionInput(ctx, sess, TextUserTurnInput(userInput))
 }
 
@@ -555,7 +558,9 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 			return "", fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr)
 		}
 		// v0.36.0: 记录指标
-		a.metrics.RecordChatRequest()
+		if !streamRecordsChatAtEntry(input.Scope.Platform) && a.metrics != nil {
+			a.metrics.RecordChatRequest()
+		}
 		a.recordProactiveChatEvent(sess, input, response, 0, err)
 		return response, nil
 	}
@@ -576,7 +581,10 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 
 	// Tool calls are counted at executeToolWithSessionDetailedContext.
 	// Recording result.ToolCalls here would double-count Chat().
-	a.metrics.RecordChatRequest()
+	if !streamRecordsChatAtEntry(input.Scope.Platform) && a.metrics != nil {
+		a.metrics.RecordChatRequest()
+	}
+	a.recordUsageAndTTFT(result.Usage, result.LastTTFT)
 	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)
 
 	return response, nil
@@ -700,7 +708,7 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 	}
 
 	// 保存会话
-	if err := sess.Save(); err != nil {
+	if err := a.saveSession(sess); err != nil {
 		return "", sessionError(err)
 	}
 	a.maybeRollSession(sess)
@@ -718,6 +726,7 @@ func (a *Agent) chatStreamSimpleInputWithProvider(ctx context.Context, sess *ses
 // ChatStream 执行流式对话
 func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provider.StreamChunk, error) {
 	sess := a.sessions.New()
+	a.recordSessionOpen()
 	events, err := a.ChatWithSessionStream(ctx, sess.ID, userInput)
 	if err != nil {
 		return nil, err
@@ -897,8 +906,38 @@ func (a *Agent) saveConversationMemoryFromSession(sess *session.Session, turnInp
 			Options: memory.SaveOptions{Tags: tags}, EntryFilter: memory.ExactScope(tags),
 		}); err != nil {
 			logger.Warn("automatic memory capture failed", "category", userCategory, "error", err)
+		} else {
+			a.recordMemoryStore()
 		}
 	}
+}
+
+func (a *Agent) recordMemoryStore() {
+	if a == nil || a.metrics == nil {
+		return
+	}
+	a.metrics.RecordMemoryStore()
+}
+
+func (a *Agent) recordMemoryRecall() {
+	if a == nil || a.metrics == nil {
+		return
+	}
+	a.metrics.RecordMemoryRecall()
+}
+
+func (a *Agent) recordRAGSearch() {
+	if a == nil || a.metrics == nil {
+		return
+	}
+	a.metrics.RecordRAGSearch()
+}
+
+func (a *Agent) recordRAGIndex() {
+	if a == nil || a.metrics == nil {
+		return
+	}
+	a.metrics.RecordRAGIndex()
 }
 
 func shouldPersistUserTurnMemory(category string, input string) bool {
@@ -1233,7 +1272,7 @@ func (a *Agent) startAutonomy(ctx context.Context, force bool) error {
 
 	// Create executor adapter that bridges Agent to AgentExecutor interface
 	delegateCfg := a.delegate.Config()
-	executor := &agentExecutorAdapter{loop: a.loopRunner(), sessions: a.sessions, delegateConfig: &delegateCfg}
+	executor := &agentExecutorAdapter{loop: a.loopRunner(), sessions: a.sessions, delegateConfig: &delegateCfg, owner: a}
 	a.autonomy.SetExecutor(executor)
 
 	if a.autonomy.Status().Started {
@@ -1260,6 +1299,7 @@ type agentExecutorAdapter struct {
 	loop           *Loop
 	sessions       *session.Manager
 	delegateConfig *tool.DelegateConfig
+	owner          *Agent
 }
 
 /*
@@ -1330,6 +1370,9 @@ func (a *agentExecutorAdapter) NewSession(title string) string {
 		return ""
 	}
 	sess := a.sessions.NewWithTitle(title)
+	if a.owner != nil {
+		a.owner.recordSessionOpen()
+	}
 	return sess.ID
 }
 
@@ -1350,7 +1393,11 @@ func (a *agentExecutorAdapter) EnsureSession(id, title string) string {
 	// Worker sessions are UI entry points and may have no task messages of
 	// their own (work runs in isolated task sessions). Persist their metadata
 	// now so the deterministic id and role survive a process restart.
-	_ = sess.Save()
+	if a.owner != nil {
+		_ = a.owner.saveSession(sess)
+	} else {
+		_ = sess.Save()
+	}
 	return sess.ID
 }
 
@@ -1667,7 +1714,7 @@ func (a *Agent) MetricsPrometheus() string {
 	if a == nil {
 		return ""
 	}
-	return a.ToolMetricsPrometheus()
+	return a.ToolMetricsPrometheus() + a.executionMetrics().exportPrometheus()
 }
 
 // ToolDurationSnapshot returns per-tool success, failure, and latency.

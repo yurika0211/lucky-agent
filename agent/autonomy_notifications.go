@@ -61,6 +61,9 @@ func (a *Agent) notifyAutonomyWorkerResult(ctx context.Context, result *autonomy
 	if result != nil && result.State == autonomy.TaskReady {
 		return
 	}
+	if result != nil {
+		a.recordAutonomyResult(string(result.State))
+	}
 	message := a.formatAutonomyWorkerNotification(result)
 	if strings.TrimSpace(message) == "" {
 		return

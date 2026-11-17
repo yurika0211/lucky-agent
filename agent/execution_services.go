@@ -70,6 +70,7 @@ func (a *Agent) bindOptionalExecutionServices() {
 				sess.SetTitle("delegate-task")
 			} else {
 				sess = sessions.NewWithTitle("delegate-task")
+				a.recordSessionOpen()
 			}
 			taskID := tool.DelegateTaskID(ctx)
 			worktree, snap, prepErr := a.prepareDelegatedWorkspace(ctx, taskID, contextStr, sess)
@@ -162,7 +163,7 @@ func (a *Agent) bindOptionalExecutionServices() {
 		delegateMgr.SetQueueExecutor(a.executeQueuedDelegate)
 	}
 	if a.autonomy != nil {
-		a.autonomy.SetExecutor(&agentExecutorAdapter{loop: loop, sessions: sessions, delegateConfig: &delegateCfg})
+		a.autonomy.SetExecutor(&agentExecutorAdapter{loop: loop, sessions: sessions, delegateConfig: &delegateCfg, owner: a})
 	}
 	if a.collabMgr != nil {
 		a.collabMgr.SetHandler(collaborationHandler{agent: a})

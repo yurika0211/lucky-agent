@@ -519,31 +519,6 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 	} else {
 		turnProvider = l.runtime.providerSnapshotForProfile(turnProvider, profile.Profile)
 	}
-	if loopCfg.Execution != nil {
-		l.runtime.applyIntentToolGating(&loopCfg, routingText)
-		l.runtime.applyVisionToolPolicy(&loopCfg, turnProvider)
-		if l.options.RunDurable == nil {
-			return nil, fmt.Errorf("durable loop coordinator not initialized")
-		}
-		return l.options.RunDurable(ctx, sess, turnInput, loopCfg, turnProvider)
-	}
-	if l.options.UseForeground != nil && l.options.UseForeground(sess, loopCfg) {
-		if l.options.RunForeground == nil {
-			return nil, fmt.Errorf("foreground loop coordinator not initialized")
-		}
-		return l.options.RunForeground(ctx, sess, turnInput, loopCfg, turnProvider)
-	}
-	l.runtime.applyIntentToolGating(&loopCfg, routingText)
-	l.runtime.applyVisionToolPolicy(&loopCfg, turnProvider)
-	l.runtime.applyStoryModePolicy(sess, &loopCfg, routingText)
-	loopCfg.eventContext = withPluginCallPolicy(ctx, loopCfg, turnInput.Scope, routingText)
-
-	if l.options.EnsureAutonomy != nil {
-		if startErr := l.options.EnsureAutonomy(ctx); startErr != nil {
-			return nil, fmt.Errorf("start autonomy: %w", startErr)
-		}
-	}
-
 	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID
@@ -556,6 +531,39 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 		),
 	)
 	defer span.End()
+	defer func() {
+		recordRuntimeLoopStop(l.runtime, loopStopReason(err, ""))
+	}()
+
+	if loopCfg.Execution != nil {
+		l.runtime.applyIntentToolGating(&loopCfg, routingText)
+		l.runtime.applyVisionToolPolicy(&loopCfg, turnProvider)
+		if l.options.RunDurable == nil {
+			err = fmt.Errorf("durable loop coordinator not initialized")
+			return nil, err
+		}
+		result, err = l.options.RunDurable(ctx, sess, turnInput, loopCfg, turnProvider)
+		return result, err
+	}
+	if l.options.UseForeground != nil && l.options.UseForeground(sess, loopCfg) {
+		if l.options.RunForeground == nil {
+			err = fmt.Errorf("foreground loop coordinator not initialized")
+			return nil, err
+		}
+		result, err = l.options.RunForeground(ctx, sess, turnInput, loopCfg, turnProvider)
+		return result, err
+	}
+	l.runtime.applyIntentToolGating(&loopCfg, routingText)
+	l.runtime.applyVisionToolPolicy(&loopCfg, turnProvider)
+	l.runtime.applyStoryModePolicy(sess, &loopCfg, routingText)
+	loopCfg.eventContext = withPluginCallPolicy(ctx, loopCfg, turnInput.Scope, routingText)
+
+	if l.options.EnsureAutonomy != nil {
+		if startErr := l.options.EnsureAutonomy(ctx); startErr != nil {
+			return nil, fmt.Errorf("start autonomy: %w", startErr)
+		}
+	}
+
 	logger.Info("agent loop started",
 		"session_id", sessionID,
 		"provider", turnProvider.name(),
@@ -611,6 +619,9 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 			attribute.Int64("agent.duration_ms", time.Since(startAt).Milliseconds()),
 		)
 		logger.Info("agent loop finished", fields...)
+		if result != nil {
+			recordRuntimeUsage(l.runtime, result.Usage, result.LastTTFT)
+		}
 	}()
 
 	result = &LoopResult{
@@ -755,7 +766,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 		result.Response = memoryGate.incompleteMessage()
 		result.State = StateDone
 		if sess != nil {
-			if saveErr := sess.Save(); saveErr != nil {
+			if saveErr := saveRuntimeSession(l.runtime, sess); saveErr != nil {
 				return result, sessionError(saveErr)
 			}
 			l.runtime.maybeRollSession(sess)
@@ -769,7 +780,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 
 	// v0.24.1: 保存会话到磁盘
 	if sess != nil {
-		if saveErr := sess.Save(); saveErr != nil {
+		if saveErr := saveRuntimeSession(l.runtime, sess); saveErr != nil {
 			return result, sessionError(saveErr)
 		}
 		l.runtime.maybeRollSession(sess)
@@ -1652,6 +1663,8 @@ func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 		if _, err := a.ragManager.IndexText(source, title, content); err != nil {
 			// 索引失败不影响主流程，静默忽略
 			_ = ctx.Err()
+		} else {
+			a.recordRAGIndex()
 		}
 	}()
 }

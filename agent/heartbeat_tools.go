@@ -220,6 +220,7 @@ func (a *Agent) heartbeatSession() *session.Session {
 	}
 
 	sess := a.sessions.NewWithTitle("heartbeat")
+	a.recordSessionOpen()
 	a.heartbeatSessionID = sess.ID
 	return sess
 }
