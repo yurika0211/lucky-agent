@@ -23,18 +23,15 @@ LLM 摘要缺失标识符仍会被拒绝；自动压缩可以再走既有的本�
 共享 tools 引擎的整体转写窗口、旧轨迹回放指针等仍由配套 PR 处理，
 这里不代表 #337 的全部验收已完成。没有新增 runtime 配置字段。
 
-同一轮里，只有当前会话会保存工具全文时，送回模型的那一份才使用有界投影，
-并附上 `context_history_read` 读回引用。没有持久会话时，prompt 保留原文，
-不发出读不回的引用。
+只在能读回全文的会话附 `context_history_read` 引用。无会话不发不可读引用，
+prompt 保留原文。
 
 `context.compact_model` 为空时仍使用当前已配置的 turn provider。本仓不猜测
 一个未配置的更快模型。需要更快摘要时，显式设置已配置的 `compact_model`。
 摘要预算按本次 `TranscriptRunes` 从 45s 线性升到 180s：0 或负数是 45s，
 48000 rune 及以上是 180s。用户取消仍立即停止，不放宽已取消的 deadline。
-host 把这个函数传给 tools `Config.SummaryBudget`。tools 功能分支已发布，
-默认分支尚未合并。根 `go.mod` 通过可下载伪版本选择 agent 提交
-`a84ac8cacf679bd95276fe8ff0794e6cdab21ab9`，该模块再选择 tools
-`2a4fb0e8959be0b0dafb32debaa613fefad76e89`。这是功能分支 pin，不是默认分支合并。
+host 把这个函数传给 tools `Config.SummaryBudget`。实际选中的模块用
+`GOWORK=off go list -m` 核对，不把某次功能分支提交写进产品说明。
 
 ## 指标口径
 
@@ -57,3 +54,4 @@ control 是旧行压缩器，treatment 是形状改写后再走同一行压缩�
 `SavedRatio` 约 0.013 只表示新压缩器相对旧行压缩器再省约 1.3% 字节。
 离线完整请求样品 16593→2048 固定了 system 和 schema，只比较工具正文投影。
 它不是线上 p50，也不能说等待已经下降。
+这些 before/after 比较同一输入的原文与既有投影，不是本次提交相对主线基线的性能收益。
