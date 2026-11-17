@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/yurika0211/luckyagent-runtime/config"
 	"github.com/yurika0211/luckyagent-runtime/contextx"
@@ -155,5 +156,32 @@ func TestCompactSessionMapReduceWritesBoundary(t *testing.T) {
 	}
 	if !session.IsCompactBoundary(sess.GetMessages()[len(sess.GetMessages())-1]) {
 		t.Fatal("expected compact boundary written")
+	}
+}
+
+func TestCompactSummaryBudgetScalesWithTranscriptRunes(t *testing.T) {
+	if compactSummaryBudgetForRunes(0) != 45*time.Second {
+		t.Fatal("zero runes")
+	}
+	if compactSummaryBudgetForRunes(-1) != 45*time.Second {
+		t.Fatal("negative runes")
+	}
+	mid := compactSummaryBudgetForRunes(24_000)
+	if mid <= 45*time.Second || mid >= 180*time.Second {
+		t.Fatalf("mid=%s", mid)
+	}
+	if compactSummaryBudgetForRunes(48_000) != 180*time.Second {
+		t.Fatal("cap")
+	}
+	if compactSummaryBudgetForRunes(90_000) != 180*time.Second {
+		t.Fatal("above cap")
+	}
+	prev := 45 * time.Second
+	for _, runes := range []int{1, 1000, 12000, 24000, 47999} {
+		got := compactSummaryBudgetForRunes(runes)
+		if got < prev || got > 180*time.Second {
+			t.Fatalf("runes=%d got=%s prev=%s", runes, got, prev)
+		}
+		prev = got
 	}
 }

@@ -23,11 +23,12 @@ LLM 摘要缺失标识符仍会被拒绝；自动压缩可以再走既有的本�
 共享 tools 引擎的整体转写窗口、旧轨迹回放指针等仍由配套 PR 处理，
 这里不代表 #337 的全部验收已完成。没有新增 runtime 配置字段。
 
-同一轮里，工具结果写入会话时仍保存全文。送回模型的那一份使用和历史回放
-相同的有界投影，并附上 `context_history_read` 读回引用。这样一次大结果不会
-在下一次 compact boundary 之前整段留在 prompt 里。
+同一轮里，只有当前会话会保存工具全文时，送回模型的那一份才使用有界投影，
+并附上 `context_history_read` 读回引用。没有持久会话时，prompt 保留原文，
+不发出读不回的引用。
 
-`context.compact_model` 为空时仍使用当前 chat 模型。本仓不猜测一个未配置的
-更快模型。摘要调用的 45 秒硬上限在 `luckyagent-tools/compact` 的
-`SummaryTimeout`，本仓只透出该常量，不能按 chunk 放大。用户取消仍按父
-context 的 cancel 立即停止，不放宽 deadline。
+`context.compact_model` 为空时仍使用当前已配置的 turn provider。本仓不猜测
+一个未配置的更快模型。需要更快摘要时，显式设置已配置的 `compact_model`。
+摘要预算按本次 `TranscriptRunes` 从 45s 线性升到 180s：0 或负数是 45s，
+48000 rune 及以上是 180s。用户取消仍立即停止，不放宽已取消的 deadline。
+这个预算依赖尚未发布的 tools `SummaryBudget`，当前 published 图还不能选中它。

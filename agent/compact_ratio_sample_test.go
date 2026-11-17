@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/yurika0211/luckyagent-runtime/contextx"
 	"github.com/yurika0211/luckyagent-runtime/provider"
+	"github.com/yurika0211/luckyagent-runtime/tool"
 	"github.com/yurika0211/luckyagent-runtime/session"
 )
 
@@ -108,27 +110,76 @@ func TestLiveToolResultUsesBoundedProjection(t *testing.T) {
 	const goal = "docs/compact-rebuildability.md"
 	const failing = "go test ./agent -run TestCompactRatio -count=1"
 	raw := strings.Repeat("noise line without an identifier\n", 2000) + goal + "\n" + failing + "\n"
-	projected := buildContextToolResult("file_read", raw, nil, nil)
-	if !strings.Contains(projected, goal) || !strings.Contains(projected, failing) {
-		t.Fatalf("live projection dropped mustkeep evidence: %s", truncate(projected, 300))
-	}
-	if len(projected) >= len(raw)/2 {
-		t.Fatalf("live projection did not shrink: raw=%d projected=%d", len(raw), len(projected))
-	}
-	msg := attachFullToolResultRef(provider.Message{Role: "tool", Content: projected}, executedToolCall{
-		ToolCall: provider.ToolCall{ID: "call-live"},
-		Result:   raw,
+	a, sess := contextTestAgent(t)
+	a.tools.Register(&tool.Tool{
+		Name: "file_read", Enabled: true, Permission: tool.PermAuto,
+		Handler: func(map[string]any) (string, error) { return raw, nil },
 	})
-	if !strings.Contains(msg.Content, "context_history_read action=result tool_call_id=call-live") {
-		t.Fatalf("missing readback ref: %s", truncate(msg.Content, 200))
+	resp := &provider.Response{ToolCalls: []provider.ToolCall{{
+		ID: "call-live", Name: "file_read", Arguments: `{"path":"docs/compact-rebuildability.md"}`,
+	}}}
+	cfg := DefaultLoopConfig()
+	cfg.AutoApprove = true
+
+	without, finalized, _ := a.processToolCallBatch(resp, cfg, &LoopResult{}, nil, nil, newLoopRuntimeState(), nil, "read the compact note")
+	if finalized {
+		t.Fatal("tool batch finalized")
+	}
+	prompt := toolMessageByID(t, without, "call-live")
+	if strings.Contains(prompt.Content, "context_history_read") {
+		t.Fatalf("nil session invented a readback ref: %s", truncate(prompt.Content, 240))
+	}
+	if !strings.Contains(prompt.Content, goal) || !strings.Contains(prompt.Content, failing) || !strings.Contains(prompt.Content, "noise line without an identifier") {
+		t.Fatalf("nil session dropped standalone evidence: %s", truncate(prompt.Content, 240))
+	}
+
+	with, _, _ := a.processToolCallBatch(resp, cfg, &LoopResult{}, sess, nil, newLoopRuntimeState(), nil, "read the compact note")
+	stored := toolMessageByID(t, with, "call-live")
+	if !strings.Contains(stored.Content, "context_history_read action=result tool_call_id=call-live") {
+		t.Fatalf("session prompt missing readback ref: %s", truncate(stored.Content, 240))
+	}
+	if !strings.Contains(stored.Content, goal) || !strings.Contains(stored.Content, failing) {
+		t.Fatalf("session projection dropped mustkeep: %s", truncate(stored.Content, 240))
+	}
+	var recovered strings.Builder
+	offset := 0
+	for page := 0; page < 20; page++ {
+		body, err := readContextHistory(sess, map[string]any{"action": "result", "tool_call_id": "call-live", "offset": offset, "limit": 6000})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload struct {
+			Content    string `json:"content"`
+			NextOffset int    `json:"next_offset"`
+		}
+		if err := json.Unmarshal([]byte(body), &payload); err != nil {
+			t.Fatal(err)
+		}
+		recovered.WriteString(payload.Content)
+		if payload.NextOffset < 0 {
+			break
+		}
+		offset = payload.NextOffset
+	}
+	if !strings.Contains(recovered.String(), goal) || !strings.Contains(recovered.String(), failing) || len(recovered.String()) < len(raw)/2 {
+		t.Fatalf("stored body not readable: %s", truncate(recovered.String(), 240))
 	}
 	est := contextx.NewTokenEstimator(8000)
 	before := est.Estimate(raw)
-	after := est.Estimate(projected)
+	after := est.Estimate(stored.Content)
 	t.Logf("LIVE_TURN before_tokens=%d after_tokens=%d ratio=%.4f", before, after, float64(after)/float64(before))
-	// Measured 2026-11-17 on this fixture: before=16520 after=1975 ratio=0.1196.
-	// The session still stores the full body. The readback ref is on the prompt copy.
 	if after >= before/5 {
 		t.Fatalf("live turn still carries most of the dump: before=%d after=%d", before, after)
 	}
+}
+
+func toolMessageByID(t *testing.T, messages []provider.Message, id string) provider.Message {
+	t.Helper()
+	for _, msg := range messages {
+		if msg.Role == "tool" && msg.ToolCallID == id {
+			return msg
+		}
+	}
+	t.Fatalf("tool message %s missing", id)
+	return provider.Message{}
 }

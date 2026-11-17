@@ -316,7 +316,7 @@ func (a *Agent) executeMemoryGateForLoop(
 			Duration:  execResult.Duration,
 		}
 		result.ToolCalls = append(result.ToolCalls, tcLog)
-		contextToolMsg := attachFullToolResultRef(observedToolMessage(loopCfg.RunID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence)), execResult)
+		contextToolMsg := liveToolPromptMessage(loopCfg.RunID, execResult, sess != nil, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence)
 		loopState.toolCallLastResult[toolCallSignature(tcLog.Name, tcLog.Arguments)] = tcLog.Result
 		if key := normalizedToolTarget(tcLog.Name, tcLog.Arguments); key != "" {
 			loopState.toolURLLastResult[key] = tcLog.Result
@@ -332,6 +332,9 @@ func (a *Agent) executeMemoryGateForLoop(
 
 	messages = append(messages, gate.synthesisPrompt())
 	messages = a.fitContextWindow(messages)
+	if sess == nil {
+		messages = dropUnreadToolResultRefs(messages)
+	}
 	result.State = StateObserve
 	return messages, true
 }
@@ -376,7 +379,7 @@ func (a *Agent) continueAfterStreamMemoryGate(
 	for _, execResult := range executed {
 		emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata, execResult.Duration)
 		stored := observedToolMessage(state.runID, execResult, execResult.Result)
-		messages = append(messages, attachFullToolResultRef(observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)), execResult))
+		messages = append(messages, liveToolPromptMessage(state.runID, execResult, sess != nil, &state.successfulSearchEvidence, &state.detailedSearchEvidence))
 		if sess != nil {
 			if !appendStreamSessionMessage(events, sess, stored) {
 				return true
@@ -387,6 +390,9 @@ func (a *Agent) continueAfterStreamMemoryGate(
 
 	messages = append(messages, state.memoryGate.synthesisPrompt())
 	messages = a.fitContextWindow(messages)
+	if sess == nil {
+		messages = dropUnreadToolResultRefs(messages)
+	}
 	if remaining <= 1 {
 		a.finalizeStreamWithState(events, sess, turnInput, state.memoryGate.incompleteMessage(), state)
 		return true

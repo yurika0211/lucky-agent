@@ -779,10 +779,17 @@ func (a *Agent) executeToolCallsOrderedGuardedContext(
 }
 
 func buildContextToolResult(toolName, rawResult string, successfulSearchEvidence, detailedSearchEvidence *int) string {
-	// The session keeps the full tool body. The next model turn only needs the
-	// same bounded projection history replay already uses, otherwise one large
-	// result stays in the live prompt until a later compact boundary.
-	contextResult := compactToolResultForContextKey(toolName, rawResult, "", strings.HasPrefix(strings.TrimSpace(rawResult), "[Tool Error:"))
+	return projectToolResultForPrompt(toolName, rawResult, true, successfulSearchEvidence, detailedSearchEvidence)
+}
+
+// projectToolResultForPrompt bounds a tool body only when the caller can read
+// the original back from the current session. Without that store, the prompt
+// keeps the original text so it does not point at missing evidence.
+func projectToolResultForPrompt(toolName, rawResult string, canReadBack bool, successfulSearchEvidence, detailedSearchEvidence *int) string {
+	contextResult := rawResult
+	if canReadBack {
+		contextResult = compactToolResultForContextKey(toolName, rawResult, "", strings.HasPrefix(strings.TrimSpace(rawResult), "[Tool Error:"))
+	}
 	if isUsefulSearchEvidence(toolName, rawResult) {
 		if successfulSearchEvidence != nil {
 			*successfulSearchEvidence = *successfulSearchEvidence + 1
@@ -798,9 +805,22 @@ func buildContextToolResult(toolName, rawResult string, successfulSearchEvidence
 	return contextResult
 }
 
+// liveToolPromptMessage is the tool body the next model call sees.
+// canReadBack is true only after the caller will persist the original result
+// on the current session. Otherwise the prompt keeps that original text and
+// does not invent a context_history_read pointer.
+func liveToolPromptMessage(runID string, exec executedToolCall, canReadBack bool, successfulSearchEvidence, detailedSearchEvidence *int) provider.Message {
+	body := projectToolResultForPrompt(exec.ToolCall.Name, exec.Result, canReadBack, successfulSearchEvidence, detailedSearchEvidence)
+	msg := observedToolMessage(runID, exec, body)
+	if !canReadBack {
+		return msg
+	}
+	return attachFullToolResultRef(msg, exec)
+}
+
 // attachFullToolResultRef points the model at the stored body when the live
-// turn already replaced it with a shorter projection. The session message keeps
-// the original result; this suffix exists only on the in-memory prompt.
+// turn already replaced it with a shorter projection. Call it only when that
+// body is readable from the current session.
 func attachFullToolResultRef(msg provider.Message, exec executedToolCall) provider.Message {
 	if msg.Content == exec.Result || strings.TrimSpace(exec.ToolCall.ID) == "" {
 		return msg
@@ -811,6 +831,31 @@ func attachFullToolResultRef(msg provider.Message, exec executedToolCall) provid
 	}
 	msg.Content += ref
 	return msg
+}
+
+// dropUnreadToolResultRefs removes readback pointers when no session stored
+// the original tool body. The fitter may still add one while shrinking a
+// window; that pointer would 404.
+func dropUnreadToolResultRefs(messages []provider.Message) []provider.Message {
+	const marker = "context_history_read action=result tool_call_id="
+	out := append([]provider.Message(nil), messages...)
+	for i, msg := range out {
+		if msg.Role != "tool" || !strings.Contains(msg.Content, marker) {
+			continue
+		}
+		var b strings.Builder
+		for _, line := range strings.Split(msg.Content, "\n") {
+			if strings.Contains(line, marker) {
+				continue
+			}
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(line)
+		}
+		out[i].Content = b.String()
+	}
+	return out
 }
 
 func maybeAppendSearchSynthesisMessage(messages []provider.Message, forceSearchSynthesis *bool, successfulSearchEvidence, consecutiveToolOnlyIters int) []provider.Message {
