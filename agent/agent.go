@@ -127,6 +127,7 @@ type Agent struct {
 	taskStore                  taskstore.Store
 	autoCompactMu              sync.Mutex
 	autoCompactFailures        map[string]int
+	autoCompactNoBenefitUntil  map[string]time.Time
 	activeModel                string
 	activeAPIBase              string
 	// requestProfiles remembers the last profile per session. In memory only;

@@ -469,7 +469,14 @@ Compact request body:
 ```
 
 Compact response includes token estimates, `summary_source`, and a client-oriented
-`display` object (`title`, `subtitle`, `message`).
+`display` object (`title`, `subtitle`, `message`). On `policy_version`
+`checkpoint-segments-v2`, `pre_token_estimate` and `post_token_estimate` are the
+full candidate request before and after compact. They are local estimates, not
+provider usage. `summary_tokens` is only the summary body. A done, degraded, or
+dry-run `display.message` says `full request estimate`. A start event's
+`pre_token_estimate` is the summary-input estimate, and its message says
+`summary-input tokens`. Older `checkpoint-segments-v1` records keep the covered
+message estimate in pre and the summary-body estimate in post.
 
 During streaming chat (`POST /api/v1/chat` SSE or WebSocket), automatic compact
 emits events with `type: "compact"` and a payload:
@@ -478,7 +485,7 @@ emits events with `type: "compact"` and a payload:
 {
   "phase": "start|progress|done|failed|degraded",
   "trigger": "auto",
-  "message": "Compressing conversation context…",
+  "message": "Context compressed · full request estimate 12000 → 900 tokens",
   "pre_token_estimate": 12000,
   "post_token_estimate": 900,
   "dropped_messages": 40,

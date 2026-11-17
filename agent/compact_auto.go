@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/yurika0211/luckyagent-runtime/config"
@@ -83,9 +84,16 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 	opts := CompactSessionOptions{
 		RetainRecentTurns: cfg.AutoCompactRetainTurns,
 		TargetTailTokens:  targetTailTokens,
+		Query:             routingText,
 		OnProgress:        onProgress,
 	}
 	result, err := a.compactSessionWithProvider(compactCtx, sess, "auto", opts, turnProvider)
+	if errors.Is(err, ErrCompactNoBenefit) {
+		// compactSessionWithProvider already recorded the cooldown and wrote
+		// nothing. Do not record a second failure, and do not enter ForceLocal.
+		logger.Info("auto compact skipped: no-benefit", "session_id", sess.ID, "error", err)
+		return
+	}
 	if err != nil {
 		// User cancel stops the chat turn. Local ForceLocal still writes a
 		// boundary on a context that is not canceled. The existing degrade
@@ -173,6 +181,9 @@ func (a *Agent) shouldAutoCompactSession(sess *session.Session, routingText stri
 	estimated := estimateProviderMessages(planner.est, checkMessages)
 	maxTokens := a.contextInputLimit()
 	emergency := estimated >= maxTokens
+	if !emergency && a.autoCompactNoBenefitCooling(sess.ID) {
+		return false
+	}
 	minMessages := cfg.AutoCompactMinMessages
 	if minMessages <= 0 {
 		minMessages = 24

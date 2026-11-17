@@ -1894,6 +1894,8 @@ type staticChatProvider struct {
 	name    string
 	content string
 	err     error
+	calls   int
+	sawErr  error
 }
 
 func (p *staticChatProvider) Name() string { return p.name }
@@ -1902,7 +1904,9 @@ func isIntentClassifyCall(messages []provider.Message) bool {
 }
 
 func (p *staticChatProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	p.calls++
 	if p.err != nil {
+		p.sawErr = p.err
 		return nil, p.err
 	}
 	return &provider.Response{Content: p.content}, nil
@@ -1933,8 +1937,8 @@ func TestCompactSessionRejectsLowQualitySummary(t *testing.T) {
 
 func TestCompactSessionAcceptsValidatedSummary(t *testing.T) {
 	sess := session.NewSession("compact-good", t.TempDir())
-	sess.AddMessage("user", "Fix internal/agent/context_planner.go and run go test ./internal/agent.")
-	sess.AddToolMessage("terminal", "go test ./internal/agent passed after preserving latest user turn.")
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and run go test ./internal/agent. "+strings.Repeat("planner-note ", 180))
+	sess.AddToolMessage("terminal", "go test ./internal/agent passed after preserving latest user turn. "+strings.Repeat("pass-line ", 80))
 	summary := strings.Join([]string{
 		"Current user goal:",
 		"Continue implementing LuckyAgent compact behavior and keep internal/agent/context_planner.go consistent with session compact boundaries.",
@@ -1997,9 +2001,9 @@ func TestCompactSessionProviderFailureDoesNotWriteBoundary(t *testing.T) {
 
 func TestCompactSessionForceLocalWritesFallbackBoundary(t *testing.T) {
 	sess := session.NewSession("compact-local", t.TempDir())
-	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks.")
-	sess.AddMessage("assistant", "Updated Agent.CompactSession options and prepared local fallback handling.")
-	sess.AddToolMessage("terminal", "go test ./internal/agent failed before fallback validation was implemented")
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks. "+strings.Repeat("local note ", 400))
+	sess.AddMessage("assistant", "Updated Agent.CompactSession options and prepared local fallback handling. "+strings.Repeat("fallback ", 200))
+	sess.AddToolMessage("terminal", "go test ./internal/agent failed before fallback validation was implemented "+strings.Repeat("log ", 200))
 
 	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
 	result, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
@@ -2022,16 +2026,16 @@ func TestCompactSessionForceLocalWritesFallbackBoundary(t *testing.T) {
 
 func TestCompactSessionCreatesIndependentImmutableSegments(t *testing.T) {
 	sess := session.NewSession("compact-segments", t.TempDir())
-	sess.AddMessage("user", "first segment request about alpha.go")
-	sess.AddMessage("assistant", "first segment answer about alpha.go")
+	sess.AddMessage("user", "first segment request about alpha.go "+strings.Repeat("alpha detail ", 300))
+	sess.AddMessage("assistant", "first segment answer about alpha.go "+strings.Repeat("alpha answer ", 200))
 	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
 	first, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
 	if err != nil {
 		t.Fatalf("first compact segment: %v", err)
 	}
 
-	sess.AddMessage("user", "second segment request about beta.go")
-	sess.AddMessage("assistant", "second segment answer about beta.go")
+	sess.AddMessage("user", "second segment request about beta.go "+strings.Repeat("beta detail ", 300))
+	sess.AddMessage("assistant", "second segment answer about beta.go "+strings.Repeat("beta answer ", 200))
 	second, err := a.CompactSessionWithOptions(context.Background(), sess, "manual", CompactSessionOptions{ForceLocal: true})
 	if err != nil {
 		t.Fatalf("second compact segment: %v", err)
@@ -2073,8 +2077,8 @@ func TestSelectCompactSegmentInputRetainsRecentCompleteTurns(t *testing.T) {
 
 func TestCompactSessionDryRunDoesNotWriteBoundary(t *testing.T) {
 	sess := session.NewSession("compact-dry-run", t.TempDir())
-	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks.")
-	sess.AddToolMessage("terminal", "go test ./internal/agent passed for dry-run compact behavior")
+	sess.AddMessage("user", "Fix internal/agent/context_planner.go and commit small chunks. "+strings.Repeat("dry note ", 400))
+	sess.AddToolMessage("terminal", "go test ./internal/agent passed for dry-run compact behavior "+strings.Repeat("dry ", 200))
 	before := sess.MessageCount()
 
 	a := &Agent{contextEst: contextx.NewTokenEstimator(4096)}
@@ -2104,20 +2108,36 @@ func TestCompactSessionDryRunDoesNotWriteBoundary(t *testing.T) {
 }
 
 func TestMaybeAutoCompactSessionWritesBoundary(t *testing.T) {
+	// Originally verified that a threshold-triggered auto compact writes one
+	// llm boundary and one pre-compaction backup of the original 14 messages.
+	// It still does that. The previous fixture set target 0.2 against
+	// threshold 0.01. Auto treats that pair as illegal and falls back to
+	// target 0.50, so a 15488 input budget kept a 6544 token tail over the
+	// whole 7-turn history. Get/SetConfig only clone; they do not fill
+	// defaults. The fixture now uses the diagnosed legal pair: window
+	// 16000/512, threshold 0.01, target 0.009, summary reserve 1, retain 6.
+	// That leaves the last complete turn and compacts the older six.
 	cfg, err := config.NewManagerWithDir(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
-	_ = cfg.Set("context.auto_compact", "true")
-	_ = cfg.Set("context.max_context_tokens", "2000")
-	_ = cfg.Set("context.auto_compact_threshold", "0.1")
-	_ = cfg.Set("context.auto_compact_min_messages", "2")
-	_ = cfg.Set("context.auto_compact_cooldown_turns", "1")
+	loaded := cfg.Get()
+	loaded.Context.MaxContextTokens = 16000
+	loaded.Context.AutoCompact = true
+	loaded.Context.AutoCompactThreshold = 0.01
+	loaded.Context.AutoCompactTargetRatio = 0.009
+	loaded.Context.AutoCompactMinMessages = 2
+	loaded.Context.AutoCompactCooldownTurns = 1
+	loaded.Context.AutoCompactReservedSummaryTokens = 1
+	loaded.Context.AutoCompactRetainTurns = 6
+	loaded.ContextBudget.ReservedRatio = 512.0 / 16000.0
+	cfg.SetConfig(loaded)
 
 	sess := session.NewSession("auto-compact", t.TempDir())
-	longText := strings.Repeat("Fix internal/agent/context_planner.go and verify go test ./internal/agent. ", 20)
-	sess.AddMessage("user", longText)
-	sess.AddToolMessage("terminal", "go test ./internal/agent passed for auto compact behavior")
+	for i := 0; i < 7; i++ {
+		sess.AddMessage("user", fmt.Sprintf("turn %d fix internal/agent/context_planner.go and verify go test ./internal/agent. %s", i, strings.Repeat("turn-note ", 30)))
+		sess.AddMessage("assistant", fmt.Sprintf("turn %d answer go test ./internal/agent passed for auto compact behavior", i))
+	}
 	summary := strings.Join([]string{
 		"Current user goal:",
 		"Continue implementing LuckyAgent auto compact for internal/agent/context_planner.go and session compact boundaries.",
@@ -2134,28 +2154,39 @@ func TestMaybeAutoCompactSessionWritesBoundary(t *testing.T) {
 		"Uncertain facts:",
 		"No provider-specific behavior was verified.",
 	}, "\n")
+	prov := &staticChatProvider{name: "static", content: summary}
 	a := &Agent{
 		cfg:                 cfg,
-		provider:            &staticChatProvider{name: "static", content: summary},
-		contextEst:          contextx.NewTokenEstimator(4096),
+		provider:            prov,
+		contextEst:          contextx.NewTokenEstimator(16000),
+		contextWin:          contextx.NewContextWindow(contextx.WindowConfig{MaxTokens: 16000, ReservedTokens: 512}),
 		autoCompactFailures: make(map[string]int),
+	}
+	if got := a.autoCompactConfig().AutoCompactTargetRatio; got != 0.009 {
+		t.Fatalf("fixture target ratio = %v, want 0.009; Get/SetConfig must not refill defaults", got)
 	}
 
 	a.maybeAutoCompactSession(context.Background(), sess, "continue", false)
+	if prov.calls == 0 {
+		t.Fatal("auto compact did not call the summary provider")
+	}
 
 	trace, ok := sess.LatestCompactTrace()
 	if !ok {
 		t.Fatal("expected auto compact boundary")
 	}
-	if trace.Trigger != "auto" || trace.SummarySource != "llm" || trace.DroppedMessages != 2 {
+	if trace.Trigger != "auto" || trace.SummarySource != "llm" || trace.DroppedMessages < 1 || trace.RetainedMessages < 1 {
 		t.Fatalf("unexpected auto compact trace: %+v", trace)
+	}
+	if trace.FromMessage != 0 || trace.ToMessage != trace.DroppedMessages {
+		t.Fatalf("covered range does not match dropped messages: %+v", trace)
 	}
 	backups, err := sess.ListBackups()
 	if err != nil {
 		t.Fatalf("ListBackups: %v", err)
 	}
-	if len(backups) != 1 || backups[0].Trigger != "auto" || backups[0].MessageCount != 2 {
-		t.Fatalf("expected one pre-compaction backup, got %+v", backups)
+	if len(backups) != 1 || backups[0].Trigger != "auto" || backups[0].MessageCount != 14 {
+		t.Fatalf("expected one pre-compaction backup of the original 14 messages, got %+v", backups)
 	}
 }
 
@@ -2185,27 +2216,48 @@ func TestMaybeAutoCompactSessionSkipsShortSessionWithinBudget(t *testing.T) {
 }
 
 func TestMaybeAutoCompactSessionDegradesToLocalOnProviderFailure(t *testing.T) {
+	// Originally verified that a provider error still writes one local
+	// auto-degraded boundary and resets the failure count. It still does
+	// that. The old fixture had no context window, so the host budget was
+	// 1500 and rejected the summary request at about 1728 tokens before the
+	// fake provider ran. The same legal 16000/512 window now leaves room for
+	// that request. The original one long user message plus tool result is
+	// larger than the 138 token tail, so the whole turn is the compact
+	// source. The fake Chat records the configured error before local
+	// fallback. Validation and the net-benefit gate stay on.
 	cfg, err := config.NewManagerWithDir(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
-	_ = cfg.Set("context.auto_compact", "true")
-	_ = cfg.Set("context.max_context_tokens", "2000")
-	_ = cfg.Set("context.auto_compact_threshold", "0.1")
-	_ = cfg.Set("context.auto_compact_min_messages", "2")
-	_ = cfg.Set("context.auto_compact_cooldown_turns", "1")
+	loaded := cfg.Get()
+	loaded.Context.MaxContextTokens = 16000
+	loaded.Context.AutoCompact = true
+	loaded.Context.AutoCompactThreshold = 0.01
+	loaded.Context.AutoCompactTargetRatio = 0.009
+	loaded.Context.AutoCompactMinMessages = 2
+	loaded.Context.AutoCompactCooldownTurns = 1
+	loaded.Context.AutoCompactReservedSummaryTokens = 1
+	loaded.Context.AutoCompactRetainTurns = 6
+	loaded.ContextBudget.ReservedRatio = 512.0 / 16000.0
+	cfg.SetConfig(loaded)
 
 	sess := session.NewSession("auto-compact-degrade", t.TempDir())
-	sess.AddMessage("user", strings.Repeat("Fix internal/agent/context_planner.go and run go test ./internal/agent. ", 20))
+	sess.AddMessage("user", strings.Repeat("Fix internal/agent/context_planner.go and run go test ./internal/agent. ", 80))
 	sess.AddToolMessage("terminal", "go test ./internal/agent failed: context deadline exceeded during prior compact")
+	wantErr := fmt.Errorf("context deadline exceeded")
+	prov := &staticChatProvider{name: "static", err: wantErr}
 	a := &Agent{
 		cfg:                 cfg,
-		provider:            &staticChatProvider{name: "static", err: fmt.Errorf("context deadline exceeded")},
-		contextEst:          contextx.NewTokenEstimator(4096),
+		provider:            prov,
+		contextEst:          contextx.NewTokenEstimator(16000),
+		contextWin:          contextx.NewContextWindow(contextx.WindowConfig{MaxTokens: 16000, ReservedTokens: 512}),
 		autoCompactFailures: make(map[string]int),
 	}
 
 	a.maybeAutoCompactSession(context.Background(), sess, "continue", false)
+	if prov.calls == 0 || prov.sawErr == nil || prov.sawErr.Error() != wantErr.Error() {
+		t.Fatalf("provider failure was not observed: calls=%d saw=%v", prov.calls, prov.sawErr)
+	}
 
 	trace, ok := sess.LatestCompactTrace()
 	if !ok {
@@ -2216,6 +2268,13 @@ func TestMaybeAutoCompactSessionDegradesToLocalOnProviderFailure(t *testing.T) {
 	}
 	if a.autoCompactFailureCount(sess.ID) != 0 {
 		t.Fatalf("successful degrade should reset failure count, got %d", a.autoCompactFailureCount(sess.ID))
+	}
+	backups, err := sess.ListBackups()
+	if err != nil {
+		t.Fatalf("ListBackups: %v", err)
+	}
+	if len(backups) != 1 || backups[0].MessageCount != 2 {
+		t.Fatalf("expected one pre-compaction backup of the original 2 messages, got %+v", backups)
 	}
 }
 

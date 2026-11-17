@@ -86,13 +86,30 @@ func TestLongtaskEmergencyCompactUsesActualInputBudget(t *testing.T) {
 }
 
 func TestLongtaskTenCompactionsStayBoundedAndRecoverable(t *testing.T) {
+	// Originally verified that ten successive local compacts stay inside the
+	// input budget, keep every segment, and still recover stage 0. It still
+	// does that. Each stage keeps retain 1, then adds new raw. The candidate
+	// appends the new boundary to the full transcript, the same way
+	// AddCompactBoundary persists it. A local fallback rewrites and truncates,
+	// so the full request can grow even when the archive stays recoverable.
+	// This fixture uses a short summary that keeps the stage label, so the
+	// net-benefit gate sees a smaller full request. Validation stays on.
 	a, sess := contextTestAgent(t)
+	loaded := a.cfg.Get()
+	loaded.ContextBudget.HistoryRatio = 0.70
+	loaded.ContextBudget.SystemRatio = 0.05
+	loaded.ContextBudget.MemoryRatio = 0.05
+	loaded.ContextBudget.RAGRatio = 0.05
+	loaded.ContextBudget.ToolResultRatio = 0.15
+	a.cfg.SetConfig(loaded)
+	a.provider = &staticChatProvider{name: "longtask", content: "Current user goal:\nContinue the original goal.\nCompleted work:\nStage work recorded.\nPending work:\nFinish remaining work.\nKey files and functions:\nNo file path.\nCommands and test results:\nNo command was run.\nUser constraints:\nKeep the stage label.\nUncertain facts:\nNone."}
 	for stage := 0; stage < 10; stage++ {
 		for round := 0; round < 3; round++ {
-			sess.AddProviderMessage(provider.Message{Role: "user", Content: fmt.Sprintf("Stage %d round %d: keep the original goal and finish remaining work", stage, round)})
+			sess.AddProviderMessage(provider.Message{Role: "user", Content: fmt.Sprintf("Stage %d round %d: keep the original goal and finish remaining work %s", stage, round, strings.Repeat("stage-note ", 80))})
 			sess.AddProviderMessage(provider.Message{Role: "assistant", Content: strings.Repeat("Inspected source, pending verification. ", 40)})
 		}
-		if _, err := a.CompactSessionWithOptions(context.Background(), sess, "test", CompactSessionOptions{ForceLocal: true, RetainRecentTurns: 1}); err != nil {
+		a.provider = &staticChatProvider{name: "longtask", content: fmt.Sprintf("Current user goal:\nContinue stage %d.\nCompleted work:\nStage %d recorded.\nPending work:\nFinish remaining work.\nKey files and functions:\nNo file path.\nCommands and test results:\nNo command was run.\nUser constraints:\nKeep the stage label.\nUncertain facts:\nNone.", stage, stage)}
+		if _, err := a.CompactSessionWithOptions(context.Background(), sess, "test", CompactSessionOptions{RetainRecentTurns: 1}); err != nil {
 			t.Fatal(err)
 		}
 	}

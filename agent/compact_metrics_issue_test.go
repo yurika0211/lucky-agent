@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -36,27 +37,40 @@ func TestRequiredCompactIdentifiersSkipEphemeralStatusLine(t *testing.T) {
 }
 
 func TestAutoCompactCancelStillForceLocal(t *testing.T) {
+	// Originally verified that a canceled parent still writes a local
+	// boundary through ForceLocal. It still does that, and identifier
+	// validation stays on. The old three-message fixture fit inside an
+	// illegal target-0.2 tail. The diagnosed legal pair is window 16000/512,
+	// threshold 0.01, target 0.009, summary reserve 1, retain 6. The same
+	// seven-turn shape leaves the last complete turn and compacts the older
+	// turns, which still contain /srv/app/main.go.
 	mgr, err := config.NewManagerWithDir(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.DefaultConfig()
+	cfg.Context.MaxContextTokens = 16000
 	cfg.Context.AutoCompact = true
 	cfg.Context.AutoCompactMinMessages = 1
 	cfg.Context.AutoCompactThreshold = 0.01
+	cfg.Context.AutoCompactTargetRatio = 0.009
 	cfg.Context.AutoCompactCooldownTurns = 1
+	cfg.Context.AutoCompactReservedSummaryTokens = 1
+	cfg.Context.AutoCompactRetainTurns = 6
+	cfg.ContextBudget.ReservedRatio = 512.0 / 16000.0
 	mgr.SetConfig(cfg)
 
 	sess := session.NewSession("compact-cancel", t.TempDir())
-	sess.AddMessage("user", "keep /srv/app/main.go")
-	sess.AddMessage("assistant", "noted /srv/app/main.go")
-	sess.AddToolMessage("terminal", "error: operation failed at /srv/app/main.go")
+	for i := 0; i < 7; i++ {
+		sess.AddMessage("user", fmt.Sprintf("turn %d keep /srv/app/main.go %s", i, strings.Repeat("turn-note ", 30)))
+		sess.AddMessage("assistant", fmt.Sprintf("turn %d noted /srv/app/main.go", i))
+	}
 
 	a := &Agent{
 		cfg:        mgr,
 		provider:   &staticChatProvider{name: "static", err: context.Canceled},
-		contextEst: contextx.NewTokenEstimator(64),
-		contextWin: contextx.NewContextWindow(contextx.WindowConfig{MaxTokens: 64, ReservedTokens: 8}),
+		contextEst: contextx.NewTokenEstimator(16000),
+		contextWin: contextx.NewContextWindow(contextx.WindowConfig{MaxTokens: 16000, ReservedTokens: 512}),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

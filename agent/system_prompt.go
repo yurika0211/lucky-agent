@@ -58,6 +58,9 @@ func (a *Agent) buildSystemPrompt(sess *session.Session) string {
 }
 
 func (a *Agent) buildSystemPromptWithOptions(sess *session.Session, opts systemPromptOptions) string {
+	if a == nil {
+		return ""
+	}
 	parts := make([]string, 0, 16)
 	toolNames := a.enabledToolNamesExcept(opts.DisabledTools)
 	manualBlock := a.buildLuckyAgentManualPrompt(sess)

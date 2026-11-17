@@ -244,56 +244,16 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 	}
 
 	messages := make([]provider.Message, 0, 8)
-
-	// 构建系统提示词
-	systemPrompt := ""
-	if p.agent != nil {
-		systemPrompt = p.agent.buildSystemPromptWithOptions(sess, systemPromptOptions{
-			DisabledTools:      p.options.DisabledTools,
-			OmitProjectContext: true,
-			turnProvider:       p.turnProvider,
-		})
-	}
-	systemParts := []string{p.fitTextToBudget(aOrEmpty(systemPrompt), p.budget.System)}
-	if !p.turnProvider.valid() {
-		if tools := p.buildToolCatalog(p.options.DisabledTools); tools != "" {
-			systemParts = append(systemParts, tools)
-		}
-	} else if _, ok := p.turnProvider.provider.(provider.FunctionCallingProvider); !ok {
-		if tools := p.buildToolCatalog(p.options.DisabledTools); tools != "" {
-			systemParts = append(systemParts, tools)
-		}
-	}
-	systemContent := strings.TrimSpace(strings.Join(utils.FilterNonEmptyTrimmed(systemParts), "\n\n"))
-	if systemContent != "" {
-		messages = append(messages, provider.Message{Role: "system", Content: systemContent})
-	}
-	if source, ok := p.agent.(interface{ buildPinnedProjectPrompt(*session.Session) string }); ok {
-		if project := source.buildPinnedProjectPrompt(sess); project != "" {
-			messages = append(messages, provider.Message{Role: "system", Content: p.fitProjectContextToBudget(project, p.budget.Project)})
-		}
-	}
+	stable, evidence, skillHint := p.frozenNonHistoryContext(ctx, sess, routingText, input.Scope)
+	messages = append(messages, stable...)
 	// Keep the append-only session history ahead of query-dependent evidence so
 	// provider prefix caches survive changes in memory and RAG retrieval.
 	if p.options.IncludeHistory && sess != nil {
 		messages = append(messages, p.buildHistoryMessages(sess, routingText)...)
 	}
-	messages = append(messages, p.buildMemoryMessagesForSession(sess, routingText, input.Scope)...)
-	if p.options.IncludeRAG {
-		if ragMsg := p.buildRAGMessage(ctx, sess, routingText); ragMsg.Content != "" {
-			messages = append(messages, ragMsg)
-		}
-	}
-
-	// Skill routing is query-dependent. Keep it after the stable system prompt
-	// and append-only history so changing the current request does not alter the
-	// provider's reusable leading prefix.
-	if p.agent != nil {
-		if skillHint := strings.TrimSpace(p.agent.buildSkillRouteSystemHintWithOptions(routingText, skillRouteOptions{
-			DisabledTools: p.options.DisabledTools,
-		})); skillHint != "" {
-			messages = append(messages, provider.Message{Role: "system", Content: skillHint})
-		}
+	messages = append(messages, evidence...)
+	if skillHint.Content != "" {
+		messages = append(messages, skillHint)
 	}
 
 	if p.agent == nil {
@@ -342,6 +302,90 @@ func (p *contextPlanner) BuildInput(ctx context.Context, sess *session.Session, 
 		}
 	}
 	return messages
+}
+
+// frozenNonHistoryContext builds the system, project, memory, RAG, and skill
+// messages once. Compact benefit comparison reuses this snapshot on both
+// sides so a second memory or RAG lookup cannot change the fit. ReadOnly
+// skips the skill-route metric write. Memory hygiene and the context cache
+// stay in BuildInput and do not run here.
+func (p *contextPlanner) frozenNonHistoryContext(ctx context.Context, sess *session.Session, routingText string, scope TurnScope) (stable, evidence []provider.Message, skillHint provider.Message) {
+	if p == nil {
+		return nil, nil, provider.Message{}
+	}
+	if system := p.fitSystemPrompt(sess); system.Content != "" {
+		stable = append(stable, system)
+	}
+	if project := p.fitPinnedProjectPrompt(sess); project.Content != "" {
+		stable = append(stable, project)
+	}
+	evidence = p.buildMemoryMessagesForSession(sess, routingText, scope)
+	if p.options.IncludeRAG {
+		if ragMsg := p.buildRAGMessage(ctx, sess, routingText); ragMsg.Content != "" {
+			evidence = append(evidence, ragMsg)
+		}
+	}
+	if p.agent == nil || strings.TrimSpace(routingText) == "" {
+		return stable, evidence, provider.Message{}
+	}
+	hint := ""
+	if p.options.ReadOnly {
+		if router, ok := p.agent.(interface {
+			skillRouteHint(string, skillRouteOptions, bool) string
+		}); ok {
+			hint = router.skillRouteHint(routingText, skillRouteOptions{DisabledTools: p.options.DisabledTools}, false)
+		}
+	} else {
+		hint = p.agent.buildSkillRouteSystemHintWithOptions(routingText, skillRouteOptions{
+			DisabledTools: p.options.DisabledTools,
+		})
+	}
+	hint = strings.TrimSpace(hint)
+	if hint == "" {
+		return stable, evidence, provider.Message{}
+	}
+	return stable, evidence, provider.Message{Role: "system", Content: hint}
+}
+
+func (p *contextPlanner) fitSystemPrompt(sess *session.Session) provider.Message {
+	if p == nil || p.agent == nil {
+		return provider.Message{}
+	}
+	systemPrompt := p.agent.buildSystemPromptWithOptions(sess, systemPromptOptions{
+		DisabledTools:      p.options.DisabledTools,
+		OmitProjectContext: true,
+		turnProvider:       p.turnProvider,
+	})
+	systemParts := []string{p.fitTextToBudget(aOrEmpty(systemPrompt), p.budget.System)}
+	if !p.turnProvider.valid() {
+		if tools := p.buildToolCatalog(p.options.DisabledTools); tools != "" {
+			systemParts = append(systemParts, tools)
+		}
+	} else if _, ok := p.turnProvider.provider.(provider.FunctionCallingProvider); !ok {
+		if tools := p.buildToolCatalog(p.options.DisabledTools); tools != "" {
+			systemParts = append(systemParts, tools)
+		}
+	}
+	systemContent := strings.TrimSpace(strings.Join(utils.FilterNonEmptyTrimmed(systemParts), "\n\n"))
+	if systemContent == "" {
+		return provider.Message{}
+	}
+	return provider.Message{Role: "system", Content: systemContent}
+}
+
+func (p *contextPlanner) fitPinnedProjectPrompt(sess *session.Session) provider.Message {
+	if p == nil || p.agent == nil {
+		return provider.Message{}
+	}
+	source, ok := p.agent.(interface{ buildPinnedProjectPrompt(*session.Session) string })
+	if !ok {
+		return provider.Message{}
+	}
+	project := source.buildPinnedProjectPrompt(sess)
+	if project == "" {
+		return provider.Message{}
+	}
+	return provider.Message{Role: "system", Content: p.fitProjectContextToBudget(project, p.budget.Project)}
 }
 
 /**
@@ -1302,16 +1346,54 @@ func (p *contextPlanner) fitStableHistoryTail(messages []provider.Message, token
 	if len(messages) == 0 || tokenBudget <= 0 {
 		return nil
 	}
-	compacted := make([]provider.Message, len(messages))
+	// A message longer than 800 bytes used to be prefix-cut before the budget
+	// check. When sanitized copies already fit, keep them whole. Source
+	// messages are never mutated. Sanitizing still drops stale MEDIA paths.
+	copies := make([]provider.Message, len(messages))
 	for i, msg := range messages {
-		compacted[i] = p.compactHistoryMessage(msg)
+		copies[i] = p.projectHistoryMessage(msg)
 	}
-	if estimateProviderMessages(p.est, compacted) <= tokenBudget {
-		return compacted
+	if estimateProviderMessages(p.est, copies) <= tokenBudget {
+		return copies
 	}
 
-	starts := make([]int, 0, len(compacted)/2+1)
-	for i, msg := range compacted {
+	starts := historyTurnStarts(copies)
+	for _, start := range starts {
+		candidate := copies[start:]
+		if estimateProviderMessages(p.est, candidate) <= tokenBudget {
+			return append([]provider.Message(nil), candidate...)
+		}
+	}
+	// The newest complete turn still exceeds the history budget. Project that
+	// turn only. Tool bodies keep their existing projection and readback.
+	// User and assistant prose is not prefix-cut: if a projection cannot keep
+	// the text, the message stays readable through the session, and a tool
+	// result keeps its context_history_read pointer.
+	lastStart := starts[len(starts)-1]
+	return p.projectOverBudgetTurn(copies[lastStart:], tokenBudget)
+}
+
+func copyHistoryMessages(messages []provider.Message) []provider.Message {
+	out := make([]provider.Message, len(messages))
+	for i, msg := range messages {
+		out[i] = cloneHistoryMessage(msg)
+	}
+	return out
+}
+
+func cloneHistoryMessage(msg provider.Message) provider.Message {
+	if len(msg.ContentParts) > 0 {
+		msg.ContentParts = append([]provider.ContentPart(nil), msg.ContentParts...)
+	}
+	if len(msg.ToolCalls) > 0 {
+		msg.ToolCalls = append([]provider.ToolCall(nil), msg.ToolCalls...)
+	}
+	return msg
+}
+
+func historyTurnStarts(messages []provider.Message) []int {
+	starts := make([]int, 0, len(messages)/2+1)
+	for i, msg := range messages {
 		if msg.Role == "user" {
 			starts = append(starts, i)
 		}
@@ -1319,17 +1401,59 @@ func (p *contextPlanner) fitStableHistoryTail(messages []provider.Message, token
 	if len(starts) == 0 || starts[0] != 0 {
 		starts = append([]int{0}, starts...)
 	}
-	for _, start := range starts {
-		candidate := compacted[start:]
+	return starts
+}
+
+// projectOverBudgetTurn keeps tool pairing and structured parts. It applies
+// the existing tool-result projection only when a tool body itself exceeds
+// the remaining budget. User and assistant text is kept whole or omitted as
+// a whole message; it is not silently prefix-cut.
+func (p *contextPlanner) projectOverBudgetTurn(turn []provider.Message, tokenBudget int) []provider.Message {
+	projected := make([]provider.Message, len(turn))
+	for i, msg := range turn {
+		// The caller already sanitized and projected tool bodies once.
+		projected[i] = msg
+	}
+	if estimateProviderMessages(p.est, projected) <= tokenBudget {
+		return projected
+	}
+	// Drop oldest non-tool messages inside the turn until it fits, but never
+	// orphan a tool result from the assistant call that produced it.
+	for drop := 0; drop < len(projected); drop++ {
+		candidate := projected[drop:]
+		if !historyTurnKeepsToolPairing(candidate) {
+			continue
+		}
 		if estimateProviderMessages(p.est, candidate) <= tokenBudget {
 			return append([]provider.Message(nil), candidate...)
 		}
 	}
-	// Keep the latest complete turn even when it alone exceeds the local history
-	// budget. The final context fitter may trim content, but must not orphan a
-	// tool result from its assistant tool-call message.
-	lastStart := starts[len(starts)-1]
-	return append([]provider.Message(nil), compacted[lastStart:]...)
+	return projected
+}
+
+func historyTurnKeepsToolPairing(messages []provider.Message) bool {
+	seenCall := false
+	for _, msg := range messages {
+		if len(msg.ToolCalls) > 0 {
+			seenCall = true
+		}
+		if msg.Role == "tool" && !seenCall {
+			return false
+		}
+	}
+	return true
+}
+
+// projectHistoryMessage sanitizes replayed history and projects oversized tool
+// bodies through the existing tool compressor. User and assistant prose is
+// copied whole. Structured parts stay on the copy.
+func (p *contextPlanner) projectHistoryMessage(msg provider.Message) provider.Message {
+	msg = cloneHistoryMessage(msg)
+	msg.Content = artifact.SanitizeHistory(msg.Content)
+	if msg.Role == "tool" {
+		msg.Content = compactToolResultForContext(msg.Name, msg.Content)
+	}
+	return msg
 }
 
 func formatPostCompactRestore(attachments []session.CompactAttachment) string {
@@ -1585,23 +1709,12 @@ func (p *contextPlanner) persistCompressedSummary(ctx context.Context, sess *ses
 }
 
 /*
-compactHistoryMessage 对历史消息做必要的压缩与清洗。
+compactHistoryMessage sanitizes one history copy. It no longer prefix-cuts
+user or assistant prose at 800 bytes. Callers that still need the old tool
+projection use projectHistoryMessage. Source messages are not mutated.
 */
 func (p *contextPlanner) compactHistoryMessage(msg provider.Message) provider.Message {
-	// Temporary computer screenshots must never be replayed as current delivery
-	// instructions. Drop stale MEDIA paths while preserving valid artifact refs.
-	msg.Content = artifact.SanitizeHistory(msg.Content)
-	if len(msg.ContentParts) > 0 {
-		msg.ContentParts = nil
-	}
-	if msg.Role == "tool" {
-		msg.Content = compactToolResultForContext(msg.Name, msg.Content)
-		return msg
-	}
-	if len(msg.Content) > 800 {
-		msg.Content = p.fitTextToBudget(msg.Content, 240)
-	}
-	return msg
+	return p.projectHistoryMessage(msg)
 }
 
 /*
