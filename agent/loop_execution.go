@@ -779,6 +779,9 @@ func (a *Agent) executeToolCallsOrderedGuardedContext(
 }
 
 func buildContextToolResult(toolName, rawResult string, successfulSearchEvidence, detailedSearchEvidence *int) string {
+	// The session keeps the full tool body. The next model turn only needs the
+	// same bounded projection history replay already uses, otherwise one large
+	// result stays in the live prompt until a later compact boundary.
 	contextResult := compactToolResultForContextKey(toolName, rawResult, "", strings.HasPrefix(strings.TrimSpace(rawResult), "[Tool Error:"))
 	if isUsefulSearchEvidence(toolName, rawResult) {
 		if successfulSearchEvidence != nil {
@@ -793,6 +796,21 @@ func buildContextToolResult(toolName, rawResult string, successfulSearchEvidence
 		}
 	}
 	return contextResult
+}
+
+// attachFullToolResultRef points the model at the stored body when the live
+// turn already replaced it with a shorter projection. The session message keeps
+// the original result; this suffix exists only on the in-memory prompt.
+func attachFullToolResultRef(msg provider.Message, exec executedToolCall) provider.Message {
+	if msg.Content == exec.Result || strings.TrimSpace(exec.ToolCall.ID) == "" {
+		return msg
+	}
+	ref := "\n[Full result: context_history_read action=result tool_call_id=" + exec.ToolCall.ID + "]"
+	if strings.Contains(msg.Content, ref) {
+		return msg
+	}
+	msg.Content += ref
+	return msg
 }
 
 func maybeAppendSearchSynthesisMessage(messages []provider.Message, forceSearchSynthesis *bool, successfulSearchEvidence, consecutiveToolOnlyIters int) []provider.Message {

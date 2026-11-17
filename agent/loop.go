@@ -1102,9 +1102,7 @@ func (a *Agent) processToolCallBatch(
 		}
 
 		contextToolMsg := observedToolMessage(loopCfg.RunID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence))
-		if contextToolMsg.Content != execResult.Result {
-			contextToolMsg.Content += "\n[Full result: context_history_read action=result tool_call_id=" + execResult.ToolCall.ID + "]"
-		}
+		contextToolMsg = attachFullToolResultRef(contextToolMsg, execResult)
 		sig := toolCallSignature(tcLog.Name, tcLog.Arguments)
 		if previous, seen := loopState.toolCallLastResult[sig]; !seen || previous != tcLog.Result {
 			loopState.toolCallRepeatCount[sig] = 0

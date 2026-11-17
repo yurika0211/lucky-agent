@@ -22,3 +22,12 @@ LLM 摘要缺失标识符仍会被拒绝；自动压缩可以再走既有的本�
 
 共享 tools 引擎的整体转写窗口、旧轨迹回放指针等仍由配套 PR 处理，
 这里不代表 #337 的全部验收已完成。没有新增 runtime 配置字段。
+
+同一轮里，工具结果写入会话时仍保存全文。送回模型的那一份使用和历史回放
+相同的有界投影，并附上 `context_history_read` 读回引用。这样一次大结果不会
+在下一次 compact boundary 之前整段留在 prompt 里。
+
+`context.compact_model` 为空时仍使用当前 chat 模型。本仓不猜测一个未配置的
+更快模型。摘要调用的 45 秒硬上限在 `luckyagent-tools/compact` 的
+`SummaryTimeout`，本仓只透出该常量，不能按 chunk 放大。用户取消仍按父
+context 的 cancel 立即停止，不放宽 deadline。

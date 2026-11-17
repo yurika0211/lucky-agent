@@ -316,7 +316,7 @@ func (a *Agent) executeMemoryGateForLoop(
 			Duration:  execResult.Duration,
 		}
 		result.ToolCalls = append(result.ToolCalls, tcLog)
-		contextToolMsg := observedToolMessage(loopCfg.RunID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence))
+		contextToolMsg := attachFullToolResultRef(observedToolMessage(loopCfg.RunID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &loopState.successfulSearchEvidence, &loopState.detailedSearchEvidence)), execResult)
 		loopState.toolCallLastResult[toolCallSignature(tcLog.Name, tcLog.Arguments)] = tcLog.Result
 		if key := normalizedToolTarget(tcLog.Name, tcLog.Arguments); key != "" {
 			loopState.toolURLLastResult[key] = tcLog.Result
@@ -376,7 +376,7 @@ func (a *Agent) continueAfterStreamMemoryGate(
 	for _, execResult := range executed {
 		emitChatToolResultEvent(events, execResult.ToolCall.Name, execResult.Result, execResult.Metadata, execResult.Duration)
 		stored := observedToolMessage(state.runID, execResult, execResult.Result)
-		messages = append(messages, observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)))
+		messages = append(messages, attachFullToolResultRef(observedToolMessage(state.runID, execResult, buildContextToolResult(execResult.ToolCall.Name, execResult.Result, &state.successfulSearchEvidence, &state.detailedSearchEvidence)), execResult))
 		if sess != nil {
 			if !appendStreamSessionMessage(events, sess, stored) {
 				return true
