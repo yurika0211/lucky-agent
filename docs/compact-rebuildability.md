@@ -32,7 +32,9 @@ LLM 摘要缺失标识符仍会被拒绝；自动压缩可以再走既有的本�
 摘要预算按本次 `TranscriptRunes` 从 45s 线性升到 180s：0 或负数是 45s，
 48000 rune 及以上是 180s。用户取消仍立即停止，不放宽已取消的 deadline。
 host 把这个函数传给 tools `Config.SummaryBudget`。tools 功能分支已发布，
-默认分支尚未合并。根 launcher 的 published 图还没有选中这次 agent 提交。
+默认分支尚未合并。根 `go.mod` 通过可下载伪版本选择 agent 提交
+`a84ac8cacf679bd95276fe8ff0794e6cdab21ab9`，该模块再选择 tools
+`2a4fb0e8959be0b0dafb32debaa613fefad76e89`。这是功能分支 pin，不是默认分支合并。
 
 ## 指标口径
 
@@ -44,6 +46,14 @@ control 是旧行压缩器，treatment 是形状改写后再走同一行压缩�
 摘要估算除以被摘要覆盖的输入估算。它不含保留的 tail、附件、system prompt 和
 工具 schema，也不能拿来和 `SavedRatio` 比较。
 
-历史 usage 的 input p50 265k 提取源没有在本轮重测。最终 assistant usage 可以
-累计一整轮里多次 provider 请求。本轮的 16520→1769 是一条离线工具正文样品，
-不是线上 p50，也不能说真实 p50 已经下降。
+历史 566 条正 input usage、86 个会话，来自 segment_v1 的 assistant usage 元数据。
+筛选是正 input，时间落在 2026-09-24 到 2026-11-07。分位数用 nearest-rank：
+升序后取 `ceil(n*p)-1`。按这个口径，p50 是 264544，p95 是 2550139，最大是
+11590241，grok-4.7 是 303/566。缓存命中比的 p50 约 0.957，均值约 0.879。
+其中 565/566 是下一条 user 之前的最后一个 assistant。这不是严格 turn id，
+也不是 566 次 provider 请求。正式最终 assistant usage 会把一轮里多次 provider
+响应累加。没有逐请求成本流水时，不能把这个 p50 当成单次 prompt。
+
+`SavedRatio` 约 0.013 只表示新压缩器相对旧行压缩器再省约 1.3% 字节。
+离线完整请求样品 16593→2048 固定了 system 和 schema，只比较工具正文投影。
+它不是线上 p50，也不能说等待已经下降。
