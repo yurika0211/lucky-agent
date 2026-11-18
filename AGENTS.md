@@ -35,8 +35,10 @@ published commit versions; never commit machine-specific replacements.
 
 ## Construction and lifecycle
 
-`agent.NewWithDependencies(Options, *Dependencies)` binds prepared runtime
-components without backend construction, network startup or file writes.
+`agent.NewWithInputs(Options, *Inputs)` binds prepared resources without backend
+construction, network startup or file writes. Adapt runtime bootstrap bundles
+with `InputsFromComponents`. The compatibility entry point `NewWithDependencies`
+uses that same adapter.
 Only config, provider, sessions and the tool registry are required; memory and
 scheduler/child-task engines are optional. Request budget and completion proof
 policies live in separate services; preserve their sync/stream/recovery contracts.

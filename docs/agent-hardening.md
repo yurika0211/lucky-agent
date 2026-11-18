@@ -34,7 +34,7 @@
 
 ## 可选资源与职责
 
-`NewWithDependencies` 只强制配置、provider、session manager 和工具注册表。记忆、
+`NewWithInputs` 的四项必需组件是配置、provider、session manager 和工具注册表。记忆、
 RAG、delegate/autonomy/cron、MCP、media 和完整工具服务可省略。没有提供的产品引擎
 不会被构造或注册；已有完整 bootstrap 的行为保持兼容。默认只补齐内存中的预算、
 gateway 和 metrics。`execution_services.go` 管理可选引擎与 Agent 执行器的绑定。

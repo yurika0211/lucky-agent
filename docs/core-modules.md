@@ -48,9 +48,11 @@ replacement to an application-service directory.
 
 ## Construction and ownership
 
-The app's bootstrap prepares resources using `runtime/bootstrap.Open`, passes
-them to `agent.NewWithDependencies(Options, *Dependencies)`, then explicitly
-activates application services using `Components.Start` and `StartupHooks`.
+The app's bootstrap prepares resources using `runtime/bootstrap.Open`, maps them
+with `agent.InputsFromComponents`, calls `agent.NewWithInputs`, then activates
+application services using `Components.Start` and `StartupHooks`.
+Custom hosts can supply `agent.Inputs` directly. Existing callers of
+`agent.NewWithDependencies` use the same mapping and constructor.
 The injected core constructor does not create backends, write files or start
 MCP/proactive/heartbeat services. Borrowed resources stay with the caller;
 `TakeOwnership` transfers their cleanup only on successful construction.
