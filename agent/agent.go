@@ -44,8 +44,8 @@ import (
 
 // Agent 是 LuckyAgent 的核心 Agent
 type Agent struct {
-	components       *bootstrap.Components
-	ownComponents    bool
+	injectedInputs   bool
+	closeResources   func() error
 	closeOnce        sync.Once
 	closeError       error
 	foregroundActive sync.Map // session ID -> active caller; removed when the request ends
@@ -303,7 +303,7 @@ func (a *Agent) ReloadConfig() (config.ReloadResult, error) {
 }
 
 // New creates the default application runtime for compatibility.
-// Prefer NewWithDependencies for embedding or app/bootstrap.New for a full app.
+// Prefer NewWithInputs for embedding or app/bootstrap.New for a full app.
 func New(cfg *config.Manager) (*Agent, error) { return newAgent(cfg, nil) }
 
 // NewWithMemory accepts a complete memory runtime; Agent takes ownership of its
@@ -1869,14 +1869,14 @@ func (a *Agent) Close() error {
 	}
 	a.stopBackgroundTerminalWatchers()
 	a.recaps.close()
-	if a.components != nil {
+	if a.injectedInputs {
 		a.closeOnce.Do(func() {
 			a.stopAutonomyResultReporter()
 			if a.heartbeatSvc != nil {
 				a.closeError = a.heartbeatSvc.Stop()
 			}
-			if a.ownComponents {
-				if err := a.components.Close(); err != nil && a.closeError == nil {
+			if a.closeResources != nil {
+				if err := a.closeResources(); err != nil && a.closeError == nil {
 					a.closeError = err
 				}
 			}

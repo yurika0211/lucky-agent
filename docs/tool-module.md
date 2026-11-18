@@ -15,8 +15,8 @@ adapter. MCP connection lifecycle is in runtime/mcpclient. The Aestus SDK remain
 inside runtime/memoryaestus; public memory contracts come from tools/memory.
 Tool command parsing and HTTP/platform rendering stay outside the Agent.
 
-New embedding code can prepare runtime components and pass them to
-`agent.NewWithDependencies`. Default full applications use app/bootstrap.New.
+New embedding code can pass an `agent.Inputs` value by pointer to
+`agent.NewWithInputs`. Default full applications use app/bootstrap.New.
 Resource activation is explicit and ownership is transferred only after a
 successful core construction.
 

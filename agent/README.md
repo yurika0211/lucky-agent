@@ -14,27 +14,20 @@ module never imports the application module.
 ## Explicit injection
 
 ```go
-resources, err := bootstrap.Open(manager, nil) // runtime/bootstrap
-if err != nil {
-    return err
+inputs := &agent.Inputs{
+    Config: manager, Provider: model, Sessions: sessions, Tools: tools,
 }
-instance, err := agent.NewWithDependencies(agent.Options{TakeOwnership: true}, resources)
+instance, err := agent.NewWithInputs(agent.Options{}, inputs)
 if err != nil {
-    _ = resources.Close()
     return err
 }
 defer instance.Close()
 ```
 
-`NewWithDependencies` binds already-prepared dependencies. It does not create
-backend resources, start MCP/proactive/heartbeat services, or write files.
-Obtaining `StartupHooks` also has no activation side effects. Applications may
-explicitly call `resources.Start(ctx, instance.StartupHooks())` when they want
-the full configured product lifecycle.
-
-Resources remain caller-owned unless `TakeOwnership` is true; ownership transfers
-only on successful construction. Closing an owned instance closes the prepared
-resource bundle once. Closing a borrowed instance leaves that bundle open.
+`NewWithInputs` borrows the supplied resources by default. To transfer ownership,
+set `Options.TakeOwnership` and provide `Inputs.CloseResources`. The caller
+retains responsibility if construction fails. After successful transfer,
+`instance.Close()` calls the supplied cleanup once.
 
 The minimum injected resources are configuration, a provider, a session manager,
 and a tool registry. Memory stores/summaries, RAG, tool services, delegate,
@@ -43,12 +36,12 @@ not constructed or registered. The core supplies in-memory context accounting,
 a tool gateway and metrics when these are absent. This reduces runtime setup;
 the existing Go module dependency graph still includes the full adapters.
 
-```go
-deps := &agent.Dependencies{Config: manager, Sessions: sessions}
-deps.Provider.Provider = model
-deps.Support.Tools = tools
-instance, err := agent.NewWithDependencies(agent.Options{}, deps)
-```
+For a full runtime bundle prepared by `runtime/bootstrap.Open`, use
+`agent.InputsFromComponents(resources)` to map all configured services and their
+cleanup into these same inputs. Construction and activation are separate.
+Call `resources.Start(ctx, instance.StartupHooks())` to start configured services.
+The existing `NewWithDependencies` entry point accepts the original runtime
+bundle and uses the same adapter.
 
 Request budgeting and completion review have independent, storage-free service
 boundaries. Each turn captures its provider, input budget and explicitly required
