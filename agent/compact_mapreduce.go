@@ -104,14 +104,31 @@ func (a *Agent) generateMapReduceCompactSummaryObserved(ctx context.Context, mes
 		est = contextx.NewTokenEstimator(4096)
 	}
 	maxChunk, maxParallel := a.compactConfigLimits()
+	input := toCompactMessages(messages)
+	evidence, err := planCompactEvidence(ctx, input, est, maxChunk, requiredCompactIdentifiers(messages))
+	if err != nil {
+		return "", "", err
+	}
+	if evidence == nil {
+		if ctx != nil && ctx.Err() != nil {
+			return "", "", ctx.Err()
+		}
+		emitCompactProgress(opts, CompactProgress{Phase: "progress", Message: "Using a local summary because the map inputs cannot preserve all required source evidence"})
+		return generateLocalCompactSummary(messages, est), "local", nil
+	}
 	engine := compactlib.New(compactlib.Config{
 		MaxChunkTokens: maxChunk, MaxParallel: maxParallel, Model: snap.model, AgentName: "LuckyAgent",
 		Estimator: est, Text: compactTextOptions(), Logger: logger.GetLogger(),
 		SummaryBudget: func(request compactlib.ChatRequest) time.Duration {
-			return compactSummaryBudgetForRunes(request.TranscriptRunes)
+			prepared, _ := evidence.prepare(request)
+			return compactSummaryBudgetForRunes(prepared.TranscriptRunes)
 		},
 		OnProgress: func(progress compactlib.Progress) { emitCompactProgress(opts, progress) },
 		Chat: func(ctx context.Context, request compactlib.ChatRequest) (string, error) {
+			request, ok := evidence.prepare(request)
+			if !ok {
+				return "", fmt.Errorf("compact request cannot carry the required source evidence within budget")
+			}
 			response, err := a.chatLoopIteration(ctx, []provider.Message{{Role: "system", Content: request.SystemPrompt}, {Role: "user", Content: request.UserPrompt}}, provider.CallOptions{}, true, snap)
 			if observed != nil {
 				observed.add(response)
@@ -125,7 +142,7 @@ func (a *Agent) generateMapReduceCompactSummaryObserved(ctx context.Context, mes
 			return response.Content, nil
 		},
 	})
-	return engine.Generate(ctx, toCompactMessages(messages))
+	return engine.Generate(ctx, input)
 }
 
 const (

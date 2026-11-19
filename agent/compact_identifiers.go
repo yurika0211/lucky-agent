@@ -21,7 +21,11 @@ var (
 	identifierValuePattern  = valuePattern
 	// Tool status rows such as "- status error dur 11 sid 324151" match
 	// errorPattern but name no file, command, or stable error text.
-	ephemeralToolStatusPattern = regexp.MustCompile(`(?i)(?:^|[^\w])(?:status|dur|sid|attempt)(?:$|[^\w])`)
+	ephemeralToolStatusPattern = regexp.MustCompile(`(?i)^-?\s*status(?:\s*[:=]\s*|\s+)\w+(?:\s+(?:dur|sid|attempt)(?:\s*[:=]\s*|\s+)[\d.]+[a-z]*)*\s*$`)
+	// file_read emits the path and range before numbered file contents.
+	sourceFileReadHeader = regexp.MustCompile(`(?i)^File: [^\r\n]+\.(?:[cm]?[jt]sx?|go|py|rs|java|kt|swift|c|cc|cpp|h|hpp|cs|rb|sh|bash|php)\r?\nSize: \d+ bytes\r?\nShowing from line \d+, max \d+ lines\b`)
+	metricDeclaration    = regexp.MustCompile(`^# (?:HELP|TYPE) [a-zA-Z_:][a-zA-Z0-9_:]*\s+`)
+	zeroFailedCount      = regexp.MustCompile(`(?i)(?:^|[,;:(])\s*0\s+failed\s*(?:$|[,;.)])`)
 )
 
 // maxCompactIdentifiers bounds the check so a large tool dump cannot turn one
@@ -79,6 +83,7 @@ func compactIdentifiers(messages []provider.Message) []string {
 		out = append(out, candidate)
 	}
 	for _, message := range messages {
+		sourceRead := message.Role == "tool" && message.Name == "file_read" && sourceFileReadHeader.MatchString(message.Content)
 		for _, line := range strings.Split(message.Content, "\n") {
 			if toolLineIsCommand(line) {
 				command := strings.TrimSpace(line)
@@ -87,10 +92,21 @@ func compactIdentifiers(messages []provider.Message) []string {
 			}
 			// The first line of an error is what a follow-up turn re-reads, so it
 			// counts as an identifier even without a path or a value on it.
-			if !errorPattern.MatchString(line) {
+			trimmed := strings.TrimSpace(line)
+			if !errorPattern.MatchString(trimmed) {
 				continue
 			}
-			trimmed := strings.TrimSpace(line)
+			if message.Role == "tool" {
+				// A source listing or a metric declaration documents possible
+				// failures. Its paths and URLs are still extracted below.
+				if (sourceRead && shapeNumberedLine.MatchString(trimmed)) || metricDeclaration.MatchString(trimmed) {
+					continue
+				}
+				// A successful count can share a line with an actual diagnostic.
+				if zeroFailedCount.MatchString(trimmed) && !errorPattern.MatchString(zeroFailedCount.ReplaceAllString(trimmed, " ")) {
+					continue
+				}
+			}
 			if runes := []rune(trimmed); len(runes) > maxCompactErrorHeadRunes {
 				trimmed = string(runes[:maxCompactErrorHeadRunes])
 			}
