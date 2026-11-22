@@ -28,7 +28,13 @@ func (a *Agent) installedSkillMutation(name string, args map[string]any) (string
 		if !ok || strings.TrimSpace(raw) == "" {
 			continue
 		}
-		candidate, err := filepath.Abs(filepath.Clean(strings.TrimSpace(raw)))
+		candidateRaw := strings.TrimSpace(raw)
+		if !filepath.IsAbs(candidateRaw) {
+			if cwd, ok := args["_cwd"].(string); ok && strings.TrimSpace(cwd) != "" {
+				candidateRaw = filepath.Join(cwd, candidateRaw)
+			}
+		}
+		candidate, err := filepath.Abs(filepath.Clean(candidateRaw))
 		if err != nil {
 			continue
 		}
