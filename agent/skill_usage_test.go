@@ -193,6 +193,19 @@ func TestSkillUsageSkipsObsidianMemoryBackendRoute(t *testing.T) {
 	}
 }
 
+func TestAnnounceSkillUseNamesActualSkillAndDeduplicates(t *testing.T) {
+	a := &Agent{}
+	if got := a.announceSkillUse("skill_read", `{"name":"obsidian","action":"read"}`); got != "已采用 skill obsidian 的指导。" {
+		t.Fatalf("unexpected first notice: %q", got)
+	}
+	if got := a.announceSkillUse("skill_obsidian_run", `{}`); got != "" {
+		t.Fatalf("repeated skill notice was not deduplicated: %q", got)
+	}
+	if got := a.announceSkillUse("skill_deep-research_run", `{}`); got != "已采用 skill deep-research。" {
+		t.Fatalf("skill switch notice missing: %q", got)
+	}
+}
+
 var errSkillBoom = errString("boom")
 
 type errString string
