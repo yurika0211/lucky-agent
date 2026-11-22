@@ -94,6 +94,33 @@ func (a *Agent) CancelSession(sessionID string) bool {
 	return cancelled
 }
 
+// DeleteSession applies the stronger session-deletion boundary: cancel active
+// calls and owned delegated tasks, then discard any unmerged delegate
+// worktrees. Ordinary CancelSession intentionally keeps those worktrees for a
+// later resume; callers should use this method only after the session tombstone
+// has been committed.
+func (a *Agent) DeleteSession(sessionID string) bool {
+	if a == nil || strings.TrimSpace(sessionID) == "" {
+		return false
+	}
+	cancelled := a.CancelSession(sessionID)
+	for _, taskID := range a.delegateTasksForSession(sessionID) {
+		if a.delegate != nil {
+			if err := a.delegate.CancelTask(taskID, "session deleted"); err == nil {
+				cancelled = true
+			}
+		}
+		if item, ok := a.worktrees.get(taskID); ok {
+			if item.Path != "" {
+				_ = removeDelegateWorktree(item.ParentRoot, item.Path)
+			}
+			a.worktrees.forget(taskID)
+		}
+		a.forgetDelegateOwner(taskID)
+	}
+	return cancelled
+}
+
 func (r *agentLoopRuntime) beginSessionCall(ctx context.Context, sess *session.Session) (context.Context, func(), error) {
 	if r == nil || r.agent == nil {
 		return nil, nil, fmt.Errorf("agent loop runtime not initialized")
