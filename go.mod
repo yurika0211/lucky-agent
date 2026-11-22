@@ -2,7 +2,7 @@ module github.com/yurika0211/lucky-agent
 
 go 1.25.0
 
-require github.com/yurika0211/luckyagent-app v0.4.7-0.20261122193757-a7faf1bb7169
+require github.com/yurika0211/luckyagent-app v0.4.7-0.20261122195054-722a2c00f036
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
@@ -51,7 +51,7 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yuin/goldmark v1.3.5 // indirect
 	github.com/yurika0211/aestus v0.1.1-0.20261031163709-5ea8b187b6af // indirect
-	github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261122193439-42057bfb4bc6 // indirect
+	github.com/yurika0211/lucky-agent/agent v0.3.3-0.20261122194935-354ef9a2c7b1 // indirect
 	github.com/yurika0211/luckyagent-api v0.2.6-0.20261122175128-6df0d18ff2ac // indirect
 	github.com/yurika0211/luckyagent-gateway v0.2.4 // indirect
 	github.com/yurika0211/luckyagent-orchestrator v0.1.3 // indirect
