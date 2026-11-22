@@ -3,6 +3,7 @@ package agent
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -38,11 +39,13 @@ type SkillUsageSnapshot struct {
 }
 
 type skillUsageStore struct {
-	mu             sync.Mutex
-	path           string
-	events         []skillUsageEvent
-	lastRouteSkill string
-	lastRouteAt    time.Time
+	mu              sync.Mutex
+	path            string
+	events          []skillUsageEvent
+	lastRouteSkill  string
+	lastRouteAt     time.Time
+	lastNoticeSkill string
+	lastNoticeAt    time.Time
 }
 
 func newSkillUsageStore(path string) *skillUsageStore {
@@ -118,6 +121,43 @@ func (a *Agent) recordSkillToolUsage(name, arguments, output string, d time.Dura
 		result = "error"
 	}
 	a.ensureSkillUsageStore().record(skill, action, result, d)
+}
+
+// announceSkillUse returns a short user-facing notice once per selected skill
+// in a task window. It is deliberately separate from usage metrics: reading a
+// skill guide and running a skill both announce the actual skill name, while
+// repeated internal calls stay quiet.
+func (a *Agent) announceSkillUse(name, arguments string) string {
+	if a == nil {
+		return ""
+	}
+	name = strings.TrimSpace(name)
+	var skill string
+	if name == "skill_read" {
+		skill = skillNameFromReadArguments(arguments)
+	} else {
+		skill, _ = splitSkillExecName(name)
+	}
+	skill = strings.TrimSpace(skill)
+	if skill == "" {
+		return ""
+	}
+	store := a.ensureSkillUsageStore()
+	if store == nil {
+		return ""
+	}
+	now := time.Now()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.lastNoticeSkill == skill && !store.lastNoticeAt.IsZero() && now.Sub(store.lastNoticeAt) < skillUsageRouteWindow {
+		return ""
+	}
+	store.lastNoticeSkill = skill
+	store.lastNoticeAt = now
+	if name == "skill_read" {
+		return fmt.Sprintf("已采用 skill %s 的指导。", skill)
+	}
+	return fmt.Sprintf("已采用 skill %s。", skill)
 }
 
 func (s *skillUsageStore) record(skill, action, result string, d time.Duration) {

@@ -86,6 +86,15 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		if out.Duration <= 0 {
 			out.Duration = time.Since(started)
 		}
+		if err == nil {
+			if notice := a.announceSkillUse(name, arguments); notice != "" {
+				if strings.TrimSpace(out.Output) == "" {
+					out.Output = notice
+				} else {
+					out.Output = notice + "\n" + out.Output
+				}
+			}
+		}
 		a.recordSkillToolUsage(name, arguments, out.Output, out.Duration, err)
 		// One record per execution, including deny and failure. Duplicate
 		// skips return before this function and are not counted. Callers
