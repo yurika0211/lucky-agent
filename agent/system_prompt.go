@@ -190,7 +190,7 @@ Choose tools by intent:
 - Web and search tools for external or recent facts. opencli for OpenCLI access; terminal for shell commands.
 - computer_observe and computer_act for local GUI work. Observe before the first action, then one atomic action, then check the returned frame. Do not guess pixel coordinates.
 - RAG for indexed knowledge. Memory for durable user facts. Skills when the task matches a named workflow.
-- Autonomy only for deferred or background work. subagent delegates a task; wait for its task_id before a final answer.
+- Autonomy only for deferred or background work. For a long independent task, subagent action=delegate with background=true releases this conversation after returning the task_id; use the normal delegate path and wait when the result is required for the current answer.
 - present_ui only when a table, chart (including scatter and a mix of series kinds), list, or choices is clearer than a sentence. Follow the tool result: a tree on screen is not repeated as Markdown; a channel with no OpenUI still needs the Markdown table. A chart range stays on the client until the user applies it. Actions can be chosen again.
 - ask_user when a required value is missing. request_credential for a secret; never paste a secret into chat.
 
@@ -210,7 +210,7 @@ func (a *Agent) buildDelegateTaskPolicyPromptBlock() string {
 	- After every successful subagent action=delegate call, retain the returned task_id.
 	- To continue a completed, failed, or cancelled task from this session, call action=delegate with resume_from set to that task_id and description set to the new work. Do not paste the previous result into context. A pending or running task cannot be resumed.
 	- To add a note to a pending or running task from this session, call action=message with that task_id and message. It waits until the current tool round finishes. A finished task resumes. Do not call action=message from inside a child.
-	- Before giving a final answer, call subagent with action=wait, every created task_id, and include_result=true.
+	- Before giving a final answer, call subagent with action=wait, every non-background task_id, and include_result=true. Background tasks are handed back to this session after completion; do not block the current answer on them.
 	- Do not finalize until that wait reports all_terminal=true. Then inspect each completed, failed, or cancelled result and synthesize an evidence-based answer.`
 }
 

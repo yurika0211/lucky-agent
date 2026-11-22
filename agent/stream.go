@@ -153,6 +153,7 @@ type streamConvergenceState struct {
 	iterationTimeout               time.Duration
 	artifactGuard                  *artifact.Guard
 	pendingDelegateTaskIDs         map[string]struct{}
+	backgroundDelegateTaskIDs      map[string]struct{}
 	usage                          *provider.TokenUsage
 	roundUsage                     *provider.TokenUsage
 	roundStarted                   time.Time
@@ -160,10 +161,10 @@ type streamConvergenceState struct {
 	runID                          string
 	// stopErr is the stream goroutine's single stop reason. Nil means the
 	// turn completed. The first error event wins.
-	stopErr                        *error
-	roundFrozen                    bool
-	frozenDurationMS               int64
-	frozenTTFTMS                   int64
+	stopErr          *error
+	roundFrozen      bool
+	frozenDurationMS int64
+	frozenTTFTMS     int64
 }
 
 func (s *streamConvergenceState) noteRoundStart() {
@@ -273,6 +274,7 @@ func (s *streamConvergenceState) recordDelegateTaskToolResult(name, arguments, r
 	}
 	var payload struct {
 		TaskID      string `json:"task_id"`
+		Background  bool   `json:"background"`
 		AllTerminal bool   `json:"all_terminal"`
 		Tasks       []struct {
 			TaskID string `json:"task_id"`
@@ -292,10 +294,17 @@ func (s *streamConvergenceState) recordDelegateTaskToolResult(name, arguments, r
 	switch action {
 	case "delegate":
 		if taskID := strings.TrimSpace(payload.TaskID); taskID != "" {
-			if s.pendingDelegateTaskIDs == nil {
-				s.pendingDelegateTaskIDs = make(map[string]struct{})
+			if payload.Background {
+				if s.backgroundDelegateTaskIDs == nil {
+					s.backgroundDelegateTaskIDs = make(map[string]struct{})
+				}
+				s.backgroundDelegateTaskIDs[taskID] = struct{}{}
+			} else {
+				if s.pendingDelegateTaskIDs == nil {
+					s.pendingDelegateTaskIDs = make(map[string]struct{})
+				}
+				s.pendingDelegateTaskIDs[taskID] = struct{}{}
 			}
-			s.pendingDelegateTaskIDs[taskID] = struct{}{}
 		}
 	case "wait":
 		if !payload.AllTerminal {
@@ -304,6 +313,7 @@ func (s *streamConvergenceState) recordDelegateTaskToolResult(name, arguments, r
 		for _, task := range payload.Tasks {
 			if taskID := strings.TrimSpace(task.TaskID); taskID != "" && isTerminalDelegateTaskStatus(task.Status) {
 				delete(s.pendingDelegateTaskIDs, taskID)
+				delete(s.backgroundDelegateTaskIDs, taskID)
 			}
 		}
 	}
