@@ -37,7 +37,7 @@
 | `delegate.max_children` | `3` | 每次协作允许的最大子任务数。 |
 | `delegate.builtin_agents` | `true` | 没有同名角色文件时，`explore` 和 `plan` 使用内置只读角色。设为 `false` 后这两个名字按未知角色失败。 |
 | `delegate.child.max_iterations` | `5` | 子 Agent Loop 最大迭代次数。 |
-| `delegate.child.timeout_seconds` | `60` | 子 Agent Loop 单轮超时。 |
+| `delegate.child.timeout_seconds` | `60` | 兼容配置字段；子 Agent Loop 的整段期限跟随 `delegate.timeout_seconds`，避免第二把整段杀钟。 |
 | `delegate.child.auto_approve` | `false` | 子 Agent 是否自动批准工具调用，建议保持关闭。 |
 | `delegate.child.repeat_tool_call_limit` | `3` | 子 Agent 重复工具调用上限。 |
 | `delegate.child.tool_only_iteration_limit` | `3` | 子 Agent 连续纯工具轮次上限。 |

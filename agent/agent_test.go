@@ -2997,7 +2997,7 @@ func TestBuildDelegateRuntimeConfigUsesConfig(t *testing.T) {
 	}
 
 	childLoop := buildDelegateChildLoopConfig(got, false)
-	if childLoop.MaxIterations != 12 || childLoop.Timeout != 90*time.Second || !childLoop.AutoApprove || childLoop.RepeatToolCallLimit != 4 || childLoop.ToolOnlyIterationLimit != 5 || childLoop.DuplicateFetchLimit != 2 {
+	if childLoop.MaxIterations != 12 || childLoop.Timeout != 240*time.Second || !childLoop.AutoApprove || childLoop.RepeatToolCallLimit != 4 || childLoop.ToolOnlyIterationLimit != 5 || childLoop.DuplicateFetchLimit != 2 {
 		t.Fatalf("unexpected child loop config: %#v", childLoop)
 	}
 	for _, name := range []string{"terminal", "subagent", "delegate_parallel", "delegate_to_skill", "delegate_to_mcp", "wait_for_tasks"} {
