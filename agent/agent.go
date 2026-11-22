@@ -107,6 +107,8 @@ type Agent struct {
 	// user approved. AutoApprove must not turn this into a blanket permission.
 	skillMutationApprovalMu    sync.Mutex
 	skillMutationApprovals     map[string]time.Time
+	delegateOwnerMu            sync.Mutex
+	delegateOwners             map[string]string
 	backgroundTerminalOnce     sync.Once
 	backgroundTerminalStopOnce sync.Once
 	backgroundTerminalStop     chan struct{}

@@ -73,6 +73,7 @@ func (a *Agent) bindOptionalExecutionServices() {
 				a.recordSessionOpen()
 			}
 			taskID := tool.DelegateTaskID(ctx)
+			defer a.forgetDelegateOwner(taskID)
 			worktree, snap, prepErr := a.prepareDelegatedWorkspace(ctx, taskID, contextStr, sess)
 			if prepErr != nil {
 				return "", prepErr

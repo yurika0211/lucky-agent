@@ -67,6 +67,43 @@ func (b *delegateWorktreeBook) forget(taskID string) {
 	delete(b.items, taskID)
 }
 
+func (a *Agent) rememberDelegateOwner(taskID, sessionID string) {
+	if a == nil || strings.TrimSpace(taskID) == "" || strings.TrimSpace(sessionID) == "" {
+		return
+	}
+	a.delegateOwnerMu.Lock()
+	defer a.delegateOwnerMu.Unlock()
+	if a.delegateOwners == nil {
+		a.delegateOwners = make(map[string]string)
+	}
+	a.delegateOwners[strings.TrimSpace(taskID)] = strings.TrimSpace(sessionID)
+}
+
+func (a *Agent) forgetDelegateOwner(taskID string) {
+	if a == nil {
+		return
+	}
+	a.delegateOwnerMu.Lock()
+	defer a.delegateOwnerMu.Unlock()
+	delete(a.delegateOwners, strings.TrimSpace(taskID))
+}
+
+func (a *Agent) delegateTasksForSession(sessionID string) []string {
+	if a == nil {
+		return nil
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	a.delegateOwnerMu.Lock()
+	defer a.delegateOwnerMu.Unlock()
+	var taskIDs []string
+	for taskID, owner := range a.delegateOwners {
+		if owner == sessionID {
+			taskIDs = append(taskIDs, taskID)
+		}
+	}
+	return taskIDs
+}
+
 // installDelegateIsolation wraps subagent so action=delegate accepts an
 // optional isolation value even when the published tool schema omits it.
 // Only none and worktree are valid. Untyped/code delegates default to worktree;
@@ -114,7 +151,13 @@ func (a *Agent) installDelegateIsolation() {
 			if parent := callerWorkspace(exec.Context); parent != "" {
 				forward["context"] = appendDelegateContext(delegateStringArg(forward, "context"), delegateSharedContextKey+"\nparent="+parent)
 			}
-			return inner(exec, forward)
+			result, err := inner(exec, forward)
+			if err == nil {
+				if taskID := delegateTaskIDFromOutput(result.Output); taskID != "" {
+					a.rememberDelegateOwner(taskID, exec.SessionID)
+				}
+			}
+			return result, err
 		}
 		parent, err := parentGitCheckout(exec.Context)
 		if err != nil {
@@ -129,6 +172,7 @@ func (a *Agent) installDelegateIsolation() {
 		}
 		if taskID := delegateTaskIDFromOutput(result.Output); taskID != "" {
 			a.worktrees.remember(taskID, delegateWorktree{ParentRoot: parent})
+			a.rememberDelegateOwner(taskID, exec.SessionID)
 		}
 		return result, nil
 	}
