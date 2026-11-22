@@ -188,6 +188,21 @@ func TestStreamConvergenceRequiresWaitForDelegatedTasks(t *testing.T) {
 	}
 }
 
+func TestStreamConvergenceDoesNotBlockOnBackgroundDelegate(t *testing.T) {
+	state := &streamConvergenceState{}
+	state.rememberToolCallResult("subagent", `{"action":"delegate","background":true}`, `{"task_id":"task-bg","background":true}`, 0)
+	if state.hasPendingDelegateTasks() {
+		t.Fatal("background delegate must release the current answer")
+	}
+	if _, blocked := state.pendingDelegateWaitMessage(); blocked {
+		t.Fatal("background delegate must not force wait_for_tasks")
+	}
+	state.rememberToolCallResult("subagent", `{"action":"wait"}`, `{"all_terminal":true,"tasks":[{"task_id":"task-bg","status":"completed"}]}`, 0)
+	if _, ok := state.backgroundDelegateTaskIDs["task-bg"]; ok {
+		t.Fatal("terminal wait should clear background task tracking")
+	}
+}
+
 func TestContainsComputerToolCall(t *testing.T) {
 	if containsComputerUseToolCall([]provider.ToolCall{{Name: "terminal"}, {Name: "file_read"}}) {
 		t.Fatal("did not expect a non-computer batch to be marked as desktop control")

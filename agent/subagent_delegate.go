@@ -112,6 +112,7 @@ func (a *Agent) toolsOrNil() *tool.Registry {
 // that disappears between create and start still fails closed only when the
 // name itself can no longer be loaded.
 func (a *Agent) childLoopForDelegate(delegateCfg tool.DelegateConfig, allowRecursive bool, contextStr, workspace string) (LoopConfig, string, error) {
+	contextStr, _ = stripBackgroundDelegateMarker(contextStr)
 	roleName, model, prompt, markedWorkspace, clean := takeSubagentRoleMarker(contextStr)
 	if roleName == "" {
 		if !a.builtinAgentsEnabled() {
@@ -142,6 +143,25 @@ type subagentRoleMarker struct {
 	Model     string `json:"model,omitempty"`
 	Prompt    string `json:"prompt,omitempty"`
 	Workspace string `json:"workspace,omitempty"`
+}
+
+const backgroundDelegateMarker = "\x00background_delegate"
+
+func withBackgroundDelegateMarker(contextStr string) string {
+	if strings.Contains(contextStr, backgroundDelegateMarker) {
+		return contextStr
+	}
+	if strings.TrimSpace(contextStr) == "" {
+		return backgroundDelegateMarker
+	}
+	return strings.TrimSpace(contextStr) + "\n" + backgroundDelegateMarker
+}
+
+func stripBackgroundDelegateMarker(contextStr string) (string, bool) {
+	if !strings.Contains(contextStr, backgroundDelegateMarker) {
+		return contextStr, false
+	}
+	return strings.TrimSpace(strings.ReplaceAll(contextStr, backgroundDelegateMarker, "")), true
 }
 
 // withSubagentRoleMarker appends a private trailer the child executor reads
@@ -194,6 +214,11 @@ func (a *Agent) installSubagentDelegateGuard() {
 		Description: "Only for subagent_type=explore. quick, medium, or very_thorough. Changes how widely explore searches. Rejected for plan and for a delegate without a type.",
 		Required:    false,
 	}
+	current.Parameters["background"] = tool.Param{
+		Type:        "boolean",
+		Description: "For an independent long-running task, return its task_id and release this conversation. The original session receives a completion handoff later.",
+		Required:    false,
+	}
 	inner := current.ContextDetailedHandler
 	current.ContextDetailedHandler = func(exec tool.ExecutionContext, args map[string]any) (tool.ToolCallResult, error) {
 		if strings.EqualFold(delegateStringArg(args, "action"), "status") {
@@ -205,7 +230,12 @@ func (a *Agent) installSubagentDelegateGuard() {
 			return result, nil
 		}
 		if strings.EqualFold(delegateStringArg(args, "action"), "delegate") {
+			background := delegateBoolArg(args, "background")
 			workspace := subagentRoleWorkspace(a.delegateParentSession(exec.SessionID))
+			if background {
+				args = cloneDelegateArgs(args)
+				args["context"] = withBackgroundDelegateMarker(delegateStringArg(args, "context"))
+			}
 			role, err := a.prepareSubagentDelegate(args, workspace)
 			if err != nil {
 				return tool.ToolCallResult{}, err
@@ -215,8 +245,25 @@ func (a *Agent) installSubagentDelegateGuard() {
 				args["context"] = withSubagentRoleMarker(delegateStringArg(args, "context"), role, workspace)
 			}
 		}
-		return inner(exec, args)
+		result, err := inner(exec, args)
+		if err == nil && strings.EqualFold(delegateStringArg(args, "action"), "delegate") && delegateBoolArg(args, "background") {
+			result.Output = annotateBackgroundDelegateResult(result.Output)
+		}
+		return result, err
 	}
+}
+
+func annotateBackgroundDelegateResult(raw string) string {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil || payload == nil {
+		return raw
+	}
+	payload["background"] = true
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
 }
 
 func (a *Agent) delegateHome() string {
