@@ -26,6 +26,7 @@ const (
 // delegateWorktree is one child checkout created from the parent HEAD.
 // ParentRoot is the checkout the child must not write back into.
 type delegateWorktree struct {
+	TaskID     string
 	Path       string
 	BaseCommit string
 	ParentRoot string
@@ -216,10 +217,14 @@ func (a *Agent) finishDelegatedWorktree(item delegateWorktree, childErr error) s
 	}
 	keep := childErr != nil || worktreeHasChanges(item.Path, item.BaseCommit)
 	if !keep {
+		a.worktrees.forget(item.TaskID)
 		if err := removeDelegateWorktree(item.ParentRoot, item.Path); err != nil {
 			return fmt.Sprintf("isolation=worktree base_commit=%s worktree_path=%s cleanup_error=%s", item.BaseCommit, item.Path, err.Error())
 		}
 		return fmt.Sprintf("isolation=worktree base_commit=%s worktree_removed=true", item.BaseCommit)
+	}
+	if item.TaskID != "" {
+		a.worktrees.remember(item.TaskID, item)
 	}
 	return fmt.Sprintf("isolation=worktree base_commit=%s worktree_path=%s", item.BaseCommit, item.Path)
 }
@@ -293,7 +298,7 @@ func createDelegateWorktree(parent, taskID string) (delegateWorktree, error) {
 		_ = removeDelegateWorktree(parent, path)
 		return delegateWorktree{}, fmt.Errorf("snapshot delegate worktree: %w", err)
 	}
-	return delegateWorktree{Path: path, BaseCommit: commit, ParentRoot: parent}, nil
+	return delegateWorktree{TaskID: taskID, Path: path, BaseCommit: commit, ParentRoot: parent}, nil
 }
 
 // seedDelegateWorktree copies tracked staged/unstaged changes and non-ignored

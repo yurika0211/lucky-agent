@@ -36,6 +36,7 @@ func (a *Agent) bindOptionalToolServices() {
 	// a task is created.
 	a.installSubagentDelegateGuard()
 	a.installDelegateIsolation()
+	a.installDelegateReviewTool()
 	a.installSubagentMessage()
 }
 
