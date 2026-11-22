@@ -150,7 +150,12 @@ func buildDelegateChildLoopConfig(delegateCfg tool.DelegateConfig, allowRecursiv
 	loopCfg := DefaultLoopConfig()
 	loopCfg.Source = "subagent"
 	loopCfg.MaxIterations = delegateCfg.ChildMaxIterations
-	loopCfg.Timeout = delegateCfg.ChildTimeout
+	// The delegate task context already carries the task budget. ChildTimeout
+	// used to be copied here as a second whole-loop deadline, so a 60-second
+	// default could kill a child before its 120-second task budget. Keep the
+	// loop cap aligned with that task budget; the caller context remains the
+	// final cancellation boundary for a per-task override.
+	loopCfg.Timeout = delegateCfg.Timeout
 	loopCfg.AutoApprove = delegateCfg.ChildAutoApprove
 	loopCfg.RepeatToolCallLimit = delegateCfg.ChildRepeatToolLimit
 	loopCfg.ToolOnlyIterationLimit = delegateCfg.ChildToolOnlyLimit
