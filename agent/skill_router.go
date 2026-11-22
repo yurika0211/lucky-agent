@@ -8,6 +8,7 @@ import (
 	"github.com/yurika0211/lucky-agent/agent/intentclassify"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/tool"
+	"github.com/yurika0211/luckyagent-tools/memory"
 	"github.com/yurika0211/luckyagent-tools/skillroute"
 )
 
@@ -94,8 +95,63 @@ func (a *Agent) matchSkillRoute(userInput string) *skillRouteMatch {
 		return nil
 	}
 	skill := skills[matched.Index]
+	if preferred := a.preferredSkillFromMemory(userInput, skills); preferred != nil {
+		skill = preferred
+		return &skillRouteMatch{skill: skill, score: matched.Score + 1000, reason: "long-term preference", preferredRun: a.visibleSkillRunTool(skill.Name, nil)}
+	}
 	preferred := a.visibleSkillRunTool(skill.Name, nil)
 	return &skillRouteMatch{skill: skill, score: matched.Score, explicit: matched.Explicit, reason: matched.Reason, preferredRun: preferred}
+}
+
+func (a *Agent) preferredSkillFromMemory(userInput string, skills []*tool.SkillInfo) *tool.SkillInfo {
+	if a == nil || a.memory == nil || strings.TrimSpace(userInput) == "" {
+		return nil
+	}
+	return preferredSkillFromEntries(userInput, skills, a.memory.ByTierWithOptions(memory.TierLong, memory.RouteOptions{}))
+}
+
+func preferredSkillFromEntries(userInput string, skills []*tool.SkillInfo, entries []memory.Entry) *tool.SkillInfo {
+	if strings.TrimSpace(userInput) == "" || len(skills) == 0 || len(entries) == 0 {
+		return nil
+	}
+	var selected *tool.SkillInfo
+	bestImportance := -1.0
+	for _, entry := range entries {
+		if !strings.EqualFold(strings.TrimSpace(entry.Category), "preference") || (entry.Status != "" && !strings.EqualFold(entry.Status, "active")) {
+			continue
+		}
+		content := strings.ToLower(entry.Content)
+		for _, skill := range skills {
+			if skill == nil || !skillMatchesText(content, skill) || !skillRouteMatchesInput(userInput, skill) {
+				continue
+			}
+			if entry.Importance > bestImportance {
+				selected, bestImportance = skill, entry.Importance
+			}
+		}
+	}
+	return selected
+}
+
+func skillMatchesText(content string, skill *tool.SkillInfo) bool {
+	if skill == nil {
+		return false
+	}
+	for _, value := range append([]string{skill.Name, skill.Description, skill.Summary}, skill.Aliases...) {
+		value = strings.TrimSpace(value)
+		if value != "" && strings.Contains(content, strings.ToLower(value)) {
+			return true
+		}
+	}
+	return false
+}
+
+func skillRouteMatchesInput(input string, skill *tool.SkillInfo) bool {
+	if skill == nil {
+		return false
+	}
+	descriptor := skillroute.Descriptor{Name: skill.Name, Aliases: skill.Aliases, Description: skill.Description, Summary: routeFriendlySkillSummary(skill)}
+	return skillroute.Match(input, []skillroute.Descriptor{descriptor}) != nil
 }
 
 func (a *Agent) hasModelVisibleTool(name string) bool {

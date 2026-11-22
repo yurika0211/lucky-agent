@@ -7,6 +7,7 @@ import (
 	"github.com/yurika0211/luckyagent-runtime/function"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/tool"
+	"github.com/yurika0211/luckyagent-tools/memory"
 )
 
 func TestBuildSkillRouteSystemHint_ExplicitSkillMention(t *testing.T) {
@@ -34,6 +35,18 @@ func TestBuildSkillRouteSystemHint_ExplicitSkillMention(t *testing.T) {
 	}
 	if !strings.Contains(hint, "skill_obsidian_run") {
 		t.Fatalf("expected preferred run tool, got %q", hint)
+	}
+}
+
+func TestPreferredSkillFromLongTermMemoryWinsAmongMatchingSkills(t *testing.T) {
+	skills := []*tool.SkillInfo{
+		{Name: "web-search", Description: "Search the web"},
+		{Name: "research", Description: "Research papers"},
+	}
+	entries := []memory.Entry{{Category: "preference", Content: "用户偏好使用 web-search skill", Importance: 0.9, Status: "active"}}
+	got := preferredSkillFromEntries("请用 web-search 帮我搜索一下最新资料", skills, entries)
+	if got == nil || got.Name != "web-search" {
+		t.Fatalf("long-term skill preference was not selected: %#v", got)
 	}
 }
 
