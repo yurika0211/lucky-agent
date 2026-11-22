@@ -173,6 +173,17 @@ func TestBuildSkillRouteSystemHint_NoStrongMatch(t *testing.T) {
 	}
 }
 
+func TestBuildSkillRouteSystemHintMentionsSafeComparisonCandidates(t *testing.T) {
+	a := &Agent{skills: []*tool.SkillInfo{
+		{Name: "alpha", Description: "research evidence sources report"},
+		{Name: "beta", Description: "research evidence"},
+	}}
+	hint := a.buildSkillRouteSystemHint("collect research evidence report")
+	if !strings.Contains(hint, "No long-term preference") || !strings.Contains(hint, "cost × time") {
+		t.Fatalf("expected safe comparison guidance, got %q", hint)
+	}
+}
+
 func TestBuildFunctionCallOptionsForInput_ExplicitSkillForcesSkillRead(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})

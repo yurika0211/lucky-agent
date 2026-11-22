@@ -68,6 +68,17 @@ func (a *Agent) skillRouteHint(userInput string, opts skillRouteOptions, record 
 	if summary := routeFriendlySkillSummary(match.skill); summary != "" {
 		lines = append(lines, "- Skill summary: "+summary)
 	}
+	if !match.explicit && !strings.EqualFold(strings.TrimSpace(match.reason), "long-term preference") {
+		candidates := a.skillRouteCandidates(userInput)
+		if len(candidates) >= 2 {
+			lines = append(lines, fmt.Sprintf("- No long-term preference is available. Candidate skills are %q and %q.", candidates[0].skill.Name, candidates[1].skill.Name))
+			if a.hasModelVisibleTool(skillComparisonToolName) {
+				lines = append(lines, "- If and only if the task is idempotent and safe to repeat, call skill_compare with these two candidates and safe_to_repeat=true. It runs isolated children, compares completion evidence first, then score = cost × time; an incomplete, partial, failed, or unmeasured result cannot win. Never double-run messages, deployments, purchases, or other non-idempotent effects; choose one instead.")
+			} else {
+				lines = append(lines, "- If and only if the task is idempotent and safe to repeat, run both candidates with the same goal and comparable budget in isolated child tasks. Compare completion evidence first, then compare score = cost × time; an incomplete or partial result cannot win. Never double-run messages, deployments, purchases, or other non-idempotent effects; choose one instead.")
+			}
+		}
+	}
 	lines = append(lines, "- Do not ignore better direct evidence, but bias toward this skill workflow unless the task clearly does not fit.")
 	return strings.Join(lines, "\n")
 }
@@ -103,6 +114,35 @@ func (a *Agent) matchSkillRoute(userInput string) *skillRouteMatch {
 	return &skillRouteMatch{skill: skill, score: matched.Score, explicit: matched.Explicit, reason: matched.Reason, preferredRun: preferred}
 }
 
+func (a *Agent) skillRouteCandidates(userInput string) []*skillRouteMatch {
+	if a == nil {
+		return nil
+	}
+	skills := a.snapshotSkills()
+	descriptors := make([]skillroute.Descriptor, len(skills))
+	for i, skill := range skills {
+		if skill == nil {
+			continue
+		}
+		descriptors[i] = skillroute.Descriptor{Name: skill.Name, Aliases: skill.Aliases, Description: skill.Description, Summary: routeFriendlySkillSummary(skill)}
+	}
+	ranked := skillroute.Matches(userInput, descriptors)
+	result := make([]*skillRouteMatch, 0, 2)
+	for _, candidate := range ranked {
+		if candidate == nil || candidate.Index < 0 || candidate.Index >= len(skills) || skills[candidate.Index] == nil {
+			continue
+		}
+		result = append(result, &skillRouteMatch{
+			skill: skills[candidate.Index], score: candidate.Score, explicit: candidate.Explicit,
+			reason: candidate.Reason, preferredRun: a.visibleSkillRunTool(skills[candidate.Index].Name, nil),
+		})
+		if len(result) == 2 {
+			break
+		}
+	}
+	return result
+}
+
 func (a *Agent) preferredSkillFromMemory(userInput string, skills []*tool.SkillInfo) *tool.SkillInfo {
 	if a == nil || a.memory == nil || strings.TrimSpace(userInput) == "" {
 		return nil
@@ -114,10 +154,31 @@ func preferredSkillFromEntries(userInput string, skills []*tool.SkillInfo, entri
 	if strings.TrimSpace(userInput) == "" || len(skills) == 0 || len(entries) == 0 {
 		return nil
 	}
+	// A user-authored preference always outranks a system comparison. The
+	// latter is useful only when the user has not stated a preference; treating
+	// both as equal would let an automated experiment silently override it.
+	userPreferred := preferredSkillFromEntriesFiltered(userInput, skills, entries, false)
+	if userPreferred != nil {
+		return userPreferred
+	}
+	return preferredSkillFromEntriesFiltered(userInput, skills, entries, true)
+}
+
+func preferredSkillFromEntriesFiltered(userInput string, skills []*tool.SkillInfo, entries []memory.Entry, comparisonOnly bool) *tool.SkillInfo {
 	var selected *tool.SkillInfo
 	bestImportance := -1.0
 	for _, entry := range entries {
 		if !strings.EqualFold(strings.TrimSpace(entry.Category), "preference") || (entry.Status != "" && !strings.EqualFold(entry.Status, "active")) {
+			continue
+		}
+		isComparison := false
+		for _, tag := range entry.Tags {
+			if strings.EqualFold(strings.TrimSpace(tag), "system_comparison") {
+				isComparison = true
+				break
+			}
+		}
+		if comparisonOnly != isComparison {
 			continue
 		}
 		content := strings.ToLower(entry.Content)
