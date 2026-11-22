@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -177,6 +178,7 @@ func TestDelegateWithoutIsolationWritesParentWorkspace(t *testing.T) {
 	})
 	started := delegateInRepo(t, agent, repo, map[string]any{
 		"description": "write shared.txt",
+		"isolation":   "none",
 		"timeout":     30,
 	})
 	status := waitDelegate(t, agent, started.TaskID)
@@ -189,6 +191,41 @@ func TestDelegateWithoutIsolationWritesParentWorkspace(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join(repo, "shared.txt"))
 	if err != nil || string(body) != "parent\n" {
 		t.Fatalf("parent file: %q err=%v cwd-result=%s", body, err, status.Result)
+	}
+}
+
+func TestDefaultDelegateWorktreeSnapshotsParentChanges(t *testing.T) {
+	repo := initTempGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("uncommitted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "untracked.txt"), []byte("snapshot\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var childRoot string
+	agent := newWorktreeTestAgent(t, func(ctx context.Context, sess *session.Session) error {
+		childRoot = sess.GetCwd()
+		for _, name := range []string{"tracked.txt", "untracked.txt"} {
+			body, err := os.ReadFile(filepath.Join(childRoot, name))
+			if err != nil || string(body) == "" {
+				return fmt.Errorf("snapshot %s missing: %v", name, err)
+			}
+		}
+		return nil
+	})
+	started := delegateInRepo(t, agent, repo, map[string]any{
+		"description": "update code files",
+		"timeout":     30,
+	})
+	status := waitDelegate(t, agent, started.TaskID)
+	if status.Status != "completed" || !strings.Contains(status.Result, "worktree_path=") {
+		t.Fatalf("default worktree status=%s result=%s error=%s", status.Status, status.Result, status.Error)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "untracked.txt")); err != nil {
+		t.Fatalf("parent snapshot file disappeared: %v", err)
+	}
+	if childRoot == repo || childRoot == "" {
+		t.Fatalf("child did not receive an isolated cwd: %q", childRoot)
 	}
 }
 
