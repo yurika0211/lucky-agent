@@ -139,6 +139,21 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		return a.executeRequestCredentialHITL(ctx, sessionID, scrubCredentialArgs(args))
 	}
 
+	// AutoApprove covers ordinary tool permissions, but an installed skill is a
+	// user-owned artifact. Changing it requires a separate, exact approval even
+	// when the caller approved the skill's execution or enabled AutoApprove.
+	mutationKey, mutationReason := a.installedSkillMutation(name, args)
+	if mutationKey != "" && !a.skillMutationApprovalSeen(mutationKey) {
+		allowed, meta, gateErr := a.waitHITLApproval(ctx, sessionID, name, args, mutationReason, "skill_modify")
+		if gateErr != nil {
+			return detailedToolExecutionResult{Metadata: meta}, gateErr
+		}
+		if !allowed {
+			return detailedToolExecutionResult{Output: "Error: installed skill modification denied by user", Metadata: meta}, fmt.Errorf("installed skill modification denied by user")
+		}
+		a.rememberSkillMutationApproval(mutationKey)
+		autoApprove = true
+	}
 	if allowed, meta, gateErr := a.gateToolApproval(ctx, sessionID, name, args, autoApprove); !allowed {
 		if gateErr != nil {
 			return detailedToolExecutionResult{Metadata: meta}, gateErr

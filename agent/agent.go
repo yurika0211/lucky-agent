@@ -97,12 +97,16 @@ type Agent struct {
 	// one" and leave the tool Registry holding a mix of both.
 	skillLoadMu sync.Mutex
 	// skillInstall is built lazily by SkillInstaller; it is guarded by skillMu.
-	skillInstall               *tool.InstallManager
-	metrics                    *metrics.Metrics // 指标收集器
-	executionMetricsStore      *executionMetrics
-	executionMetricsOnce       sync.Once
-	toolMetrics                *toolDurationMetrics
-	skillUsage                 *skillUsageStore
+	skillInstall          *tool.InstallManager
+	metrics               *metrics.Metrics // 指标收集器
+	executionMetricsStore *executionMetrics
+	executionMetricsOnce  sync.Once
+	toolMetrics           *toolDurationMetrics
+	skillUsage            *skillUsageStore
+	// skillMutationApprovals records the exact installed-skill file change a
+	// user approved. AutoApprove must not turn this into a blanket permission.
+	skillMutationApprovalMu    sync.Mutex
+	skillMutationApprovals     map[string]time.Time
 	backgroundTerminalOnce     sync.Once
 	backgroundTerminalStopOnce sync.Once
 	backgroundTerminalStop     chan struct{}
