@@ -69,7 +69,8 @@ func (b *delegateWorktreeBook) forget(taskID string) {
 
 // installDelegateIsolation wraps subagent so action=delegate accepts an
 // optional isolation value even when the published tool schema omits it.
-// Only none and worktree are valid. Omitting the field stays none.
+// Only none and worktree are valid. Untyped/code delegates default to worktree;
+// read-only explore/plan roles remain shared unless explicitly overridden.
 func (a *Agent) installDelegateIsolation() {
 	if a == nil || a.tools == nil || a.delegate == nil {
 		return
@@ -86,7 +87,7 @@ func (a *Agent) installDelegateIsolation() {
 	}
 	copied["isolation"] = tool.Param{
 		Type:        "string",
-		Description: "Workspace isolation for action=delegate: none (default, share the parent workspace) or worktree (git worktree from the parent HEAD). Other values fail.",
+		Description: "Workspace isolation for action=delegate: worktree (default for code tasks, including the dispatch snapshot) or none (shared parent workspace). Explore/plan roles default to none. Other values fail.",
 		Required:    false,
 		Default:     delegateIsolationNone,
 	}
@@ -100,7 +101,7 @@ func (a *Agent) installDelegateIsolation() {
 		if !strings.EqualFold(delegateStringArg(args, "action"), "delegate") {
 			return inner(exec, args)
 		}
-		mode, err := parseDelegateIsolation(args["isolation"])
+		mode, err := delegateIsolationForArgs(args)
 		if err != nil {
 			return tool.ToolCallResult{}, err
 		}
@@ -156,6 +157,20 @@ func parseDelegateIsolation(raw any) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid isolation %q (use none or worktree)", text)
 	}
+}
+
+func delegateIsolationForArgs(args map[string]any) (string, error) {
+	if raw, ok := args["isolation"]; ok && raw != nil && strings.TrimSpace(fmt.Sprint(raw)) != "" {
+		return parseDelegateIsolation(raw)
+	}
+	// Read-only built-in roles keep a shared checkout. Untyped delegates are
+	// code-capable by default and receive a worktree unless explicitly opted
+	// out with isolation=none.
+	role := strings.ToLower(strings.TrimSpace(delegateStringArg(args, "subagent_type")))
+	if role == "explore" || role == "plan" {
+		return delegateIsolationNone, nil
+	}
+	return delegateIsolationWorktree, nil
 }
 
 func (a *Agent) prepareDelegatedWorkspace(ctx context.Context, taskID, contextStr string, sess *session.Session) (delegateWorktree, *sandbox.Snapshot, error) {
@@ -274,7 +289,114 @@ func createDelegateWorktree(parent, taskID string) (delegateWorktree, error) {
 	if _, err := gitOutput(context.Background(), parent, "worktree", "add", "--detach", path, commit); err != nil {
 		return delegateWorktree{}, fmt.Errorf("create delegate worktree: %s", trimGitError(err))
 	}
+	if err := seedDelegateWorktree(parent, path); err != nil {
+		_ = removeDelegateWorktree(parent, path)
+		return delegateWorktree{}, fmt.Errorf("snapshot delegate worktree: %w", err)
+	}
 	return delegateWorktree{Path: path, BaseCommit: commit, ParentRoot: parent}, nil
+}
+
+// seedDelegateWorktree copies tracked staged/unstaged changes and non-ignored
+// untracked files into the child checkout without touching the parent's index
+// or working tree. The snapshot is taken once at dispatch time.
+func seedDelegateWorktree(parent, child string) error {
+	patch, err := gitOutputBytes(context.Background(), parent, "diff", "--binary", "HEAD")
+	if err != nil {
+		return err
+	}
+	if len(patch) > 0 {
+		if err := runGitInput(context.Background(), child, patch, "apply", "--binary"); err != nil {
+			return fmt.Errorf("apply tracked changes: %w", err)
+		}
+	}
+	files, err := gitOutputBytes(context.Background(), parent, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return err
+	}
+	for _, raw := range strings.Split(string(files), "\x00") {
+		rel := strings.TrimSpace(raw)
+		if rel == "" || filepath.IsAbs(rel) || rel == "." || strings.HasPrefix(filepath.Clean(rel), ".."+string(os.PathSeparator)) {
+			continue
+		}
+		src := filepath.Join(parent, filepath.FromSlash(rel))
+		dst := filepath.Join(child, filepath.FromSlash(rel))
+		if err := copyDelegateSnapshotPath(src, dst); err != nil {
+			return fmt.Errorf("copy untracked %s: %w", rel, err)
+		}
+	}
+	return nil
+}
+
+func copyDelegateSnapshotPath(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return err
+		}
+		return os.Symlink(target, dst)
+	}
+	if info.IsDir() {
+		return filepath.Walk(src, func(path string, item os.FileInfo, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			rel, err := filepath.Rel(src, path)
+			if err != nil {
+				return err
+			}
+			target := filepath.Join(dst, rel)
+			if item.IsDir() {
+				return os.MkdirAll(target, item.Mode().Perm())
+			}
+			return copyDelegateSnapshotPath(path, target)
+		})
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, info.Mode().Perm())
+}
+
+func gitOutputBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, fmt.Errorf("%s", msg)
+	}
+	return stdout.Bytes(), nil
+}
+
+func runGitInput(ctx context.Context, dir string, input []byte, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	cmd.Stdin = bytes.NewReader(input)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
 }
 
 func delegateWorktreePath(parent, taskID string) (string, error) {
