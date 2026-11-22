@@ -30,6 +30,7 @@ func (a *Agent) bindOptionalToolServices() {
 	}
 	a.toolServices.Heartbeat = tool.NewHeartbeatToolService(a.handleHeartbeatTrigger, a.handleHeartbeatStatus)
 	a.toolServices.RegisterCoreTools(a.tools)
+	a.installSkillComparisonTool()
 	a.installBackgroundTerminalNotify()
 	// Role validation wraps the published handler first. Isolation wraps that
 	// guard so both checks run, and a bad isolation value still fails before
