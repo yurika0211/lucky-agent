@@ -693,8 +693,10 @@ in `~/.luckyagent/diagnostics/perf.db`, separate from sessions, credentials, and
 RAG storage. `(capture_id, sequence)` is idempotent. Repeating the same batch
 returns `status: "duplicate"`; reusing the key with a different payload returns
 `409`. The service stores the raw data for seven days by default and logs
-acceptance, duplicates, rejection, retries, and expiry cleanup. There is no
-client-facing read endpoint or server-side analysis in this contract.
+acceptance, duplicates, rejection, retries, and expiry cleanup. Operators can
+override the retention in whole days with `LUCKYAGENT_PERF_DIAGNOSTICS_RETENTION_DAYS`
+(1 to 3650). There is no client-facing read endpoint or server-side analysis
+in this contract.
 
 ## Context
 
