@@ -683,6 +683,20 @@ Sensitive values, including API keys, are never returned.
 | `GET` | `/api/v1/health/ready` | Readiness check |
 | `GET` | `/api/v1/health/detail` | Detailed health information |
 | `GET` | `/api/v1/metrics` | Metrics snapshot |
+| `POST` | `/api/v1/diagnostics/perf` | Store one compressed Android performance-diagnostics batch |
+
+`POST /api/v1/diagnostics/perf` is an authenticated, write-only endpoint used by
+the Android client when performance diagnostics are explicitly enabled. The
+request carries `capture_id`, `sequence`, diagnostic metadata, a base64-encoded
+compressed JSONL payload, and its SHA-256 digest. The server stores raw batches
+in `~/.luckyagent/diagnostics/perf.db`, separate from sessions, credentials, and
+RAG storage. `(capture_id, sequence)` is idempotent. Repeating the same batch
+returns `status: "duplicate"`; reusing the key with a different payload returns
+`409`. The service stores the raw data for seven days by default and logs
+acceptance, duplicates, rejection, retries, and expiry cleanup. Operators can
+override the retention in whole days with `LUCKYAGENT_PERF_DIAGNOSTICS_RETENTION_DAYS`
+(1 to 3650). There is no client-facing read endpoint or server-side analysis
+in this contract.
 
 ## Context
 
