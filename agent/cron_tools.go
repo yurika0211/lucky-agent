@@ -635,7 +635,14 @@ func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNot
 	}
 	sessionID := strings.TrimSpace(metadata["session_id"])
 	platformHint := strings.ToLower(strings.TrimSpace(metadata["platform"]))
-	if sessionID != "" && (platformHint == "" || platformHint == "android" || platformHint == "app") {
+	// Android cron results are persisted in the account-level result store and
+	// drained by the Android worker. Do not also append the result to the live
+	// session: that path has no durable ACK and would produce a duplicate (or
+	// lose the result when the app is backgrounded).
+	if platformHint == "android" {
+		return nil
+	}
+	if sessionID != "" && (platformHint == "" || platformHint == "app") {
 		if err := a.deliverCronToSession(sessionID, message); err != nil {
 			return err
 		}
