@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -79,23 +80,47 @@ func (a *Agent) AddCronJob(id, name, description, mode, command string, metadata
 
 // PauseCronJob pauses a job and persists the change. The job is no longer due.
 func (a *Agent) PauseCronJob(id string) error {
-	return a.mutateCronJob(id, func(id string) error {
+	if err := a.mutateCronJob(id, func(id string) error {
 		if err := a.cronEngine.PauseJob(id); err != nil {
 			return err
 		}
 		a.quiescePausedCronJobs()
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+	if a.cronResults != nil {
+		if err := a.cronResults.PauseTask(id); err != nil && !errors.Is(err, cron.ErrResultNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 // ResumeCronJob resumes a job and persists the change.
 func (a *Agent) ResumeCronJob(id string) error {
-	return a.mutateCronJob(id, a.cronEngine.ResumeJob)
+	if err := a.mutateCronJob(id, a.cronEngine.ResumeJob); err != nil {
+		return err
+	}
+	if a.cronResults != nil {
+		if err := a.cronResults.ResumeTask(id); err != nil && !errors.Is(err, cron.ErrResultNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 // RemoveCronJob removes a job and persists the change.
 func (a *Agent) RemoveCronJob(id string) error {
-	return a.mutateCronJob(id, a.cronEngine.RemoveJob)
+	if err := a.mutateCronJob(id, a.cronEngine.RemoveJob); err != nil {
+		return err
+	}
+	if a.cronResults != nil {
+		if err := a.cronResults.DeleteTask(id); err != nil && !errors.Is(err, cron.ErrResultNotFound) {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *Agent) mutateCronJob(id string, mutate func(string) error) error {

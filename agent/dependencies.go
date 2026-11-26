@@ -45,6 +45,7 @@ func InputsFromComponents(c *Dependencies) *Inputs {
 		ProactiveRuntime: c.ProactiveRuntime,
 		Cron:             c.Support.CronEngine,
 		CronStore:        c.CronStore,
+		CronResults:      c.CronResults,
 		Autonomy:         c.Support.AutonomyKit,
 		Computer:         c.Support.ComputerMgr,
 		CloseResources:   c.Close,
