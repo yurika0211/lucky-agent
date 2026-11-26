@@ -34,8 +34,9 @@ Rules in that contract:
 - Charts that omit the new fields stay on the old apply path.
 
 The nested Agent module now selects the merged runtime pseudo-version. The
-launcher root also selects that runtime commit; the app consumer is updated in
-its chart-action PR after its persistence changes are merged.
+launcher root also selects that runtime commit. App PR 53 is merged as
+`315517dbc06d` and persists chart versions/action IDs; Android PR 229 is
+merged as `2274a6382856` and sends the versioned action.
 
 ## Still outside this repository
 
