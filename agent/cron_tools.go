@@ -72,20 +72,107 @@ func (a *Agent) installCronEventHandler() {
 		switch event.Type {
 		case cron.EventJobStarted:
 			fmt.Printf("[cron] job %s started\n", event.JobName)
+			a.beginCronResultExecution(event)
 		case cron.EventJobCompleted:
 			fmt.Printf("[cron] job %s completed\n", event.JobName)
+			a.finishCronResultExecution(event, nil)
 			a.recordCronRun(event, nil)
 			if err := a.saveCronJobs(); err != nil {
 				fmt.Printf("[cron] save failed: %v\n", err)
 			}
 		case cron.EventJobFailed:
 			fmt.Printf("[cron] job %s failed: %v\n", event.JobName, event.Error)
+			a.finishCronResultExecution(event, event.Error)
 			a.recordCronRun(event, event.Error)
 			if err := a.saveCronJobs(); err != nil {
 				fmt.Printf("[cron] save failed: %v\n", err)
 			}
 		}
 	})
+}
+
+// beginCronResultExecution mirrors the scheduler's in-process claim into the
+// account-level store. The scheduled slot, rather than wall-clock delivery
+// time, is the idempotency key.
+func (a *Agent) beginCronResultExecution(event cron.Event) {
+	if a == nil || a.cronResults == nil || a.cronEngine == nil || event.JobID == "" || event.ScheduledAt.IsZero() {
+		return
+	}
+	job, ok := a.cronEngine.GetJob(event.JobID)
+	if !ok || job == nil {
+		return
+	}
+	if _, err := a.cronResults.EnsureTask(cron.Task{
+		ID: event.JobID, Name: job.Name, Description: job.Description,
+		Schedule: cron.DescribeSchedule(job.Schedule), Status: cron.TaskActive,
+		Channels: cronResultChannels(job.Metadata), NextRunAt: job.NextRun,
+	}); err != nil {
+		fmt.Printf("[cron] result task %s unavailable: %v\n", event.JobID, err)
+		return
+	}
+	execution, _, err := a.cronResults.Claim(event.JobID, event.ScheduledAt, event.Time)
+	if err != nil {
+		fmt.Printf("[cron] result execution %s unavailable: %v\n", event.JobID, err)
+		return
+	}
+	a.cronResultMu.Lock()
+	if a.cronResultExecutions == nil {
+		a.cronResultExecutions = make(map[string]string)
+	}
+	a.cronResultExecutions[event.JobID] = execution.ID
+	a.cronResultMu.Unlock()
+}
+
+func (a *Agent) finishCronResultExecution(event cron.Event, runErr error) {
+	if a == nil || a.cronResults == nil || event.JobID == "" {
+		return
+	}
+	a.cronResultMu.Lock()
+	executionID := a.cronResultExecutions[event.JobID]
+	delete(a.cronResultExecutions, event.JobID)
+	payload := a.cronResultPayloads[event.JobID]
+	delete(a.cronResultPayloads, event.JobID)
+	a.cronResultMu.Unlock()
+	if executionID == "" {
+		return
+	}
+	if runErr == nil && strings.EqualFold(payload.Outcome, "failed") {
+		runErr = errors.New(strings.TrimSpace(payload.RawResult))
+	}
+	if runErr != nil && strings.EqualFold(payload.Outcome, "succeeded") {
+		class, _, _ := classifyCronRunError(runErr)
+		if class == cronErrorClassDelivery {
+			// The command result is durable even when a channel cannot deliver.
+			runErr = nil
+		}
+	}
+	if _, err := a.cronResults.Complete(executionID, payload.RawResult, runErr, event.Time); err != nil {
+		fmt.Printf("[cron] result execution %s commit failed: %v\n", executionID, err)
+	}
+}
+
+func (a *Agent) recordCronDeliveryPayload(payload cronNotificationPayload) {
+	if a == nil || payload.JobID == "" {
+		return
+	}
+	a.cronResultMu.Lock()
+	if a.cronResultPayloads == nil {
+		a.cronResultPayloads = make(map[string]cronNotificationPayload)
+	}
+	a.cronResultPayloads[payload.JobID] = payload
+	a.cronResultMu.Unlock()
+}
+
+func cronResultChannels(metadata map[string]string) []string {
+	channel := strings.ToLower(strings.TrimSpace(firstCronMetadataValue(metadata, "platform", "channel")))
+	switch channel {
+	case "tg", "telegram":
+		return []string{"telegram"}
+	case "qq", "napcat":
+		return []string{"qq"}
+	default:
+		return []string{"android"}
+	}
 }
 
 // recordCronRun separates a command failure from a delivery failure and stops
@@ -538,6 +625,7 @@ func combineCronTaskAndNotificationError(taskErr, notificationErr error) error {
 }
 
 func (a *Agent) sendCronNotification(metadata map[string]string, payload cronNotificationPayload) error {
+	a.recordCronDeliveryPayload(payload)
 	message := a.formatCronNotification(payload)
 	if a == nil || strings.TrimSpace(message) == "" {
 		return nil

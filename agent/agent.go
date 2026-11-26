@@ -117,6 +117,10 @@ type Agent struct {
 	proactiveRuntime           *proactive.RuntimeService
 	cronEngine                 *cron.Engine // 定时任务引擎
 	cronStore                  *cron.Store
+	cronResults                *cron.ResultStore // account-level Task/Execution/Delivery records
+	cronResultMu               sync.Mutex
+	cronResultExecutions       map[string]string
+	cronResultPayloads         map[string]cronNotificationPayload
 	autonomy                   *autonomy.AutonomyKit // 自主工作套件
 	computerMgr                *computer.Manager
 	sandbox                    *sandbox.Manager
@@ -1745,6 +1749,15 @@ func (a *Agent) CronEngine() *cron.Engine {
 // CronStore 返回 cron 持久化存储
 func (a *Agent) CronStore() *cron.Store {
 	return a.cronStore
+}
+
+// CronResults returns the account-level Task/Execution/Delivery store used by
+// scheduled jobs. It is optional for embedders that only need the scheduler.
+func (a *Agent) CronResults() *cron.ResultStore {
+	if a == nil {
+		return nil
+	}
+	return a.cronResults
 }
 
 // Memory 返回记忆存储
