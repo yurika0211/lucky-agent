@@ -69,7 +69,7 @@ func (r cronTaskRuntime) buildTask(id string, mode cronTaskMode, command string,
 					Outcome:   "succeeded",
 					RawResult: out,
 				}); err != nil {
-					return fmt.Errorf("deliver cron result: %w", err)
+					return &cronDeliveryError{err: err}
 				}
 			}
 			return nil
@@ -113,7 +113,7 @@ func (r cronTaskRuntime) buildTask(id string, mode cronTaskMode, command string,
 					Outcome:   "succeeded",
 					RawResult: out,
 				}); err != nil {
-					return fmt.Errorf("deliver cron result: %w", err)
+					return &cronDeliveryError{err: err}
 				}
 			}
 			return nil

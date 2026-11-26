@@ -4070,6 +4070,10 @@ func TestCronAgentNotificationFailureReturnsJobError(t *testing.T) {
 	if !errors.Is(err, deliveryErr) {
 		t.Fatalf("expected job error to retain delivery failure %v, got %v", deliveryErr, err)
 	}
+	var typedDeliveryErr *cronDeliveryError
+	if !errors.As(err, &typedDeliveryErr) {
+		t.Fatalf("expected typed cron delivery failure, got %T (%v)", err, err)
+	}
 	if !strings.Contains(err.Error(), "deliver cron result") || !strings.Contains(err.Error(), "napcat") {
 		t.Fatalf("expected actionable NapCat delivery error, got %v", err)
 	}
