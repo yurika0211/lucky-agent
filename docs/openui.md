@@ -21,7 +21,9 @@ still get a receipt that asks for the full Markdown answer, including the table.
 An empty or invalid tree stays on the Markdown path.
 
 Chart lifecycle (#509) is not finished in this launcher. The versioned
-`chart_id` / `data|teaching` contract is proposed in
-`luckyagent-runtime` PR 44 and carried on the wire by `luckyagent-api`
-PR 18. See `docs/issue-509-chart-lifecycle.md`. Do not treat a prompt
-rule as the version check.
+`chart_id` / `data|teaching` contract is merged in runtime PR 44 and carried
+on the wire by API PR 18; the nested Agent selects the merged runtime commit.
+The app action PR adds durable chart version/idempotency state, while the
+remaining session child-result and Android history work is still open. See
+`docs/issue-509-chart-lifecycle.md`. Do not treat a prompt rule as the
+version check.

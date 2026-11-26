@@ -17,12 +17,14 @@ require `chart_id`, `schema_version`, `data_version`, or a `data` /
 
 Doing those checks only in the prompt would let a client ignore them.
 
-## Contract, not yet selected by this launcher
+## Contract selected by the providers
 
 The shared contract is proposed in:
 
-- runtime: https://github.com/yurika0211/luckyagent-runtime/pull/44 (`fef22d0`)
-- API wire fields: https://github.com/yurika0211/luckyagent-api/pull/18 (`a5f7e8e`)
+- runtime: https://github.com/yurika0211/luckyagent-runtime/pull/44, merged as
+  `0e54c7042b85`
+- API wire fields: https://github.com/yurika0211/luckyagent-api/pull/18, merged as
+  `30bec2c5c740`
 
 Rules in that contract:
 
@@ -31,14 +33,15 @@ Rules in that contract:
 - A chart `ui_action` must carry `chart_id`, both versions, and `apply` or `observe`.
 - Charts that omit the new fields stay on the old apply path.
 
-This launcher must not replace its runtime module with that branch.
-Select the commit only after the PR is merged and tagged.
+The nested Agent module now selects the merged runtime pseudo-version. The
+launcher root also selects that runtime commit; the app consumer is updated in
+its chart-action PR after its persistence changes are merged.
 
 ## Still outside this repository
 
 | Piece | Owner | Not done |
 | --- | --- | --- |
-| Persist the tree and the applied version | app / API | No child turn, no idempotent Apply |
+| Persist the tree and the applied version | app / API | App PR 53 persists chart versions and action IDs; the session still needs a durable child-turn/result record |
 | Reject an old `data_version` against stored state | app | The catalog only checks the shape |
 | Recompute one `chart_id` | app | No algorithm boundary here |
 | Long-press form, draft, cache | Android | Client must not infer edit rights |

@@ -49,6 +49,11 @@ func TestPresentUIDescriptionCarriesChartPolicy(t *testing.T) {
 	if !strings.Contains(registered.Description, "scatter") || !strings.Contains(registered.Description, "window") {
 		t.Fatalf("description missing chart policy: %s", registered.Description)
 	}
+	for _, phrase := range []string{"one main chart", "chart_id", "schema_version", "data_version", "data|teaching", "data_source", "operation=apply", "operation=observe"} {
+		if !strings.Contains(registered.Description, phrase) {
+			t.Fatalf("description missing versioned chart rule %q: %s", phrase, registered.Description)
+		}
+	}
 	if !strings.Contains(registered.Description, presentUIPolicy) {
 		t.Fatal("description does not reference presentUIPolicy")
 	}
