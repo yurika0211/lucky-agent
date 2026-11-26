@@ -19,3 +19,9 @@ repeated as the same Markdown table, chart, or list. The receipt says so.
 Telegram, CLI, TUI, and the other channels that do not implement the catalog
 still get a receipt that asks for the full Markdown answer, including the table.
 An empty or invalid tree stays on the Markdown path.
+
+Chart lifecycle (#509) is not finished in this launcher. The versioned
+`chart_id` / `data|teaching` contract is proposed in
+`luckyagent-runtime` PR 44 and carried on the wire by `luckyagent-api`
+PR 18. See `docs/issue-509-chart-lifecycle.md`. Do not treat a prompt
+rule as the version check.
