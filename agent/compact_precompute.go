@@ -13,24 +13,24 @@ import (
 // The published runtime ContextConfig cannot carry these keys. They live in
 // config.example.json and are read here with the defaults from #528.
 const (
-	defaultCompactBackground             = true
-	defaultCompactPrecomputeLeadTokens   = 60000
-	defaultCompactPrecomputeMaxFailures  = 2
-	defaultCompactCacheMarginSeconds     = 30
-	defaultCompactKeepTokens             = 15000
-	defaultCompactChunkFallback          = true
-	defaultCompactCacheLifetime          = 5 * time.Minute
-	compactEvidenceBlockHeader           = "Source evidence:"
+	defaultCompactBackground            = true
+	defaultCompactPrecomputeLeadTokens  = 60000
+	defaultCompactPrecomputeMaxFailures = 2
+	defaultCompactCacheMarginSeconds    = 30
+	defaultCompactKeepTokens            = 15000
+	defaultCompactChunkFallback         = true
+	defaultCompactCacheLifetime         = 5 * time.Minute
+	compactEvidenceBlockHeader          = "Source evidence:"
 )
 
 type compactSettings struct {
-	Background       bool
-	LeadTokens       int
-	MaxFailures      int
-	CacheMargin      time.Duration
-	KeepTokens       int
-	ChunkFallback    bool
-	CacheLifetime    time.Duration
+	Background    bool
+	LeadTokens    int
+	MaxFailures   int
+	CacheMargin   time.Duration
+	KeepTokens    int
+	ChunkFallback bool
+	CacheLifetime time.Duration
 }
 
 func (a *Agent) compactSettings() compactSettings {
@@ -116,10 +116,10 @@ type precomputedCompact struct {
 }
 
 type compactPrecomputeState struct {
-	mu         sync.Mutex
-	current    map[string]*precomputedCompact
-	failures   map[string]int
-	stopped    map[string]bool
+	mu            sync.Mutex
+	current       map[string]*precomputedCompact
+	failures      map[string]int
+	stopped       map[string]bool
 	generation    map[string]uint64
 	measuredAt    map[string]time.Time
 	cacheLifetime time.Duration
@@ -148,16 +148,20 @@ func (a *Agent) noteMeasuredPrompt(sessionID string, at time.Time) {
 	state.mu.Unlock()
 }
 
-// recordMeasuredPromptUsage stores the time of a provider response that
-// reported prompt tokens. recordUsageAndTTFT is the only caller. A response
-// with no prompt tokens is not a measurement.
+// recordMeasuredPromptUsage stores the time a provider round finished for
+// this session. Cache freshness is that completion time. Token counts are
+// optional: a native stream that returns no usage is still a measurement.
+// The caller skips a failed or cancelled round before calling this.
 func (a *Agent) recordMeasuredPromptUsage(sessionID string, usage *provider.TokenUsage) {
-	if a == nil || sessionID == "" || usage == nil {
+	if a == nil || sessionID == "" {
+		if a != nil {
+			sessionID = a.activeCompactSessionID()
+		}
+	}
+	if sessionID == "" {
 		return
 	}
-	if usage.InputTokens <= 0 && usage.TotalTokens <= 0 {
-		return
-	}
+	_ = usage
 	a.noteMeasuredPrompt(sessionID, time.Now())
 	if ttl := a.modelCacheLifetime(); ttl > 0 {
 		state := a.compactPrecompute()

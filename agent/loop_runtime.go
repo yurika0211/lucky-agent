@@ -170,10 +170,14 @@ func (r *agentLoopRuntime) setMeasuredSession(sessionID string) {
 }
 
 func (r *agentLoopRuntime) recordUsageAndTTFT(usage *provider.TokenUsage, ttftMS int64) {
+	r.recordUsageAndTTFTForSession("", usage, ttftMS)
+}
+
+func (r *agentLoopRuntime) recordUsageAndTTFTForSession(sessionID string, usage *provider.TokenUsage, ttftMS int64) {
 	if r == nil || r.agent == nil {
 		return
 	}
-	r.agent.recordUsageAndTTFT(usage, ttftMS)
+	r.agent.recordUsageAndTTFTForSession(sessionID, usage, ttftMS)
 }
 
 func (r *agentLoopRuntime) maybeRollSession(sess *session.Session) {
