@@ -89,7 +89,13 @@ func (p *compactEvidencePlan) prepare(request compactlib.ChatRequest) (compactli
 	var ok bool
 	if request.Kind == "merge" {
 		body := strings.TrimPrefix(request.UserPrompt, compactlib.MergePrompt("", "LuckyAgent"))
-		extra, ok = compactEvidenceAppendix(missingCompactIdentifiers(body, p.required), request.TranscriptRunes)
+		var missing []string
+		for _, identifier := range p.required {
+			if !strings.Contains(body, identifier) {
+				missing = append(missing, identifier)
+			}
+		}
+		extra, ok = compactEvidenceAppendix(missing, request.TranscriptRunes)
 	} else {
 		extra, ok = p.segments[sha256.Sum256([]byte(request.UserPrompt))]
 	}

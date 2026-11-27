@@ -159,10 +159,14 @@ func TestValidateCompactSummaryAllowsRewrittenMeasurement(t *testing.T) {
 	if got := validateCompactSummary(rewritten, messages); !got.Valid {
 		t.Fatalf("rewritten measurement rejected: %s", got.Reason)
 	}
-	droppedPath := strings.ReplaceAll(rewritten, "/home/dev/workspace/lucky-agent/agent/compact_adapter.go", "the adapter file")
-	got := validateCompactSummary(droppedPath, messages)
+	record := joinCompactRecord(rewritten, compactEvidenceBlock(messages))
+	if got := validateCompactSummary(record, messages); !got.Valid {
+		t.Fatalf("evidence-backed rewrite rejected: %s", got.Reason)
+	}
+	incomplete := joinCompactRecord(rewritten, "Source evidence:\n- none")
+	got := validateCompactSummary(incomplete, messages)
 	if got.Valid {
-		t.Fatal("dropped path was accepted")
+		t.Fatal("incomplete evidence block was accepted")
 	}
 	if !strings.Contains(got.Reason, "compact_adapter.go") {
 		t.Fatalf("failure does not name the path: %q", got.Reason)
@@ -195,17 +199,21 @@ func TestValidateCompactSummaryRejectsDroppedIdentifier(t *testing.T) {
 	messages := compactSampleMessages()
 
 	positive := compactSampleSummaryBody + "\n\npending work: rerun the suite."
-	if got := validateCompactSummary(positive, messages); !got.Valid {
+	if got := validateCompactSummary(joinCompactRecord(positive, compactEvidenceBlock(messages)), messages); !got.Valid {
 		t.Fatalf("positive sample rejected: %s", got.Reason)
 	}
 
-	negative := strings.ReplaceAll(positive, "error: undefined: compactlib.Validate", "the suite failed")
+	negative := joinCompactRecord(positive, "Source evidence:\n- the suite failed")
 	got := validateCompactSummary(negative, messages)
 	if got.Valid {
 		t.Fatal("negative sample accepted after dropping a source identifier")
 	}
 	if !strings.Contains(got.Reason, "compactlib.Validate") {
 		t.Fatalf("failure does not name the dropped identifier: %q", got.Reason)
+	}
+	invented := positive + "\ncited: tool-that-never-ran"
+	if got := validateCompactSummary(invented, messages); got.Valid {
+		t.Fatal("summary citing an identifier absent from the source was accepted")
 	}
 }
 
@@ -215,15 +223,16 @@ func TestCompactValidatorStrength(t *testing.T) {
 	messages := compactSampleMessages()
 	base := compactSampleSummaryBody + "\n\npending work: rerun the suite."
 
+	evidence := compactEvidenceBlock(messages)
 	negatives := []string{
-		strings.ReplaceAll(base, "go test ./internal/agent", "the test command"),
-		strings.ReplaceAll(base, "/home/dev/workspace/lucky-agent/agent/compact_adapter.go", "the adapter file"),
-		strings.ReplaceAll(base, "compactlib.Validate", "the validator"),
+		joinCompactRecord(base, "Source evidence:\n- the test command"),
+		joinCompactRecord(base, "Source evidence:\n- the adapter file"),
+		joinCompactRecord(base, "Source evidence:\n- the validator"),
 	}
 	positives := []string{
-		base,
-		strings.ReplaceAll(base, "已确认改动落在", "变更位置为"),
-		strings.ReplaceAll(base, "修复构建失败", "修好构建异常"),
+		joinCompactRecord(base, evidence),
+		joinCompactRecord(strings.ReplaceAll(base, "已确认改动落在", "变更位置为"), evidence),
+		joinCompactRecord(strings.ReplaceAll(base, "修复构建失败", "修好构建异常"), evidence),
 	}
 
 	agree := 0

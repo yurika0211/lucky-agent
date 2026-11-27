@@ -37,8 +37,13 @@ func repairCompactSummary(summary string, messages []provider.Message) (string, 
 	}
 
 	identifiers := requiredCompactIdentifiers(messages)
-	summary = trimCompactSummary(summary, compactlib.MaxSummaryRunes)
-	summary = appendMissingCompactIdentifiers(summary, identifiers)
+	body, _ := splitCompactRecord(summary)
+	summary = trimCompactSummary(body, compactlib.MaxSummaryRunes)
+	summary = joinCompactRecord(summary, compactEvidenceBlock(messages))
+	summary = appendMissingCompactIdentifiers(compactBodyForLength(summary), identifiers)
+	if !strings.Contains(summary, compactEvidenceBlockHeader) {
+		summary = joinCompactRecord(summary, compactEvidenceBlock(messages))
+	}
 
 	if validation := validateCompactSummary(summary, messages); !validation.Valid {
 		return original, false
@@ -209,7 +214,7 @@ func compactSectionSpan(summary, heading string) (start, end int, ok bool) {
 // appendix would pass the rune cap, the body is trimmed first; if it still
 // cannot fit, the summary is returned unchanged.
 func appendMissingCompactIdentifiers(summary string, identifiers []string) string {
-	missing := missingCompactIdentifiers(summary, identifiers)
+	missing := missingEvidenceIdentifiers(summary, identifiers)
 	if len(missing) == 0 {
 		return summary
 	}
@@ -255,7 +260,7 @@ func trimCompactSummaryRunes(summary string, maxRunes int) string {
 // fits under the rune cap. It uses the same section order as a repaired model
 // summary, then a rune tail cut only when a section has no bullet left.
 func fitCompactSummaryAppendix(summary string, identifiers []string) string {
-	if len(missingCompactIdentifiers(summary, identifiers)) == 0 {
+	if len(missingEvidenceIdentifiers(summary, identifiers)) == 0 {
 		if len([]rune(summary)) > compactlib.MaxSummaryRunes {
 			return trimCompactSummary(summary, compactlib.MaxSummaryRunes)
 		}

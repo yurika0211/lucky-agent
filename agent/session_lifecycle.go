@@ -103,6 +103,7 @@ func (a *Agent) DeleteSession(sessionID string) bool {
 	if a == nil || strings.TrimSpace(sessionID) == "" {
 		return false
 	}
+	a.invalidatePrecomputedCompact(sessionID, "session deleted")
 	cancelled := a.CancelSession(sessionID)
 	for _, taskID := range a.delegateTasksForSession(sessionID) {
 		if a.delegate != nil {

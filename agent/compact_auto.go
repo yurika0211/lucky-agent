@@ -33,6 +33,7 @@ func (a *Agent) maybeRollSession(sess *session.Session) {
 		logger.Warn("session auto roll failed", "session_id", sess.ID, "error", err)
 		return
 	}
+	a.invalidatePrecomputedCompact(sess.ID, "session rolled")
 	if !result.Rolled {
 		return
 	}
@@ -59,6 +60,7 @@ func (a *Agent) maybeAutoCompactSession(ctx context.Context, sess *session.Sessi
 // start/progress/done events for UI display.
 func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *session.Session, routingText string, ephemeral bool, turnProvider providerSnapshot, onProgress func(CompactProgress)) {
 	if !a.shouldAutoCompactSession(sess, routingText, ephemeral) {
+		a.maybeOfferCompactPrecompute(ctx, sess, routingText, ephemeral, turnProvider)
 		return
 	}
 	if !turnProvider.valid() {
@@ -89,8 +91,8 @@ func (a *Agent) maybeAutoCompactSessionWithProvider(ctx context.Context, sess *s
 	}
 	result, err := a.compactSessionWithProvider(compactCtx, sess, "auto", opts, turnProvider)
 	if errors.Is(err, ErrCompactNoBenefit) {
-		// compactSessionWithProvider already recorded the cooldown and wrote
-		// nothing. Do not record a second failure, and do not enter ForceLocal.
+		// A candidate that is not smaller writes nothing. Do not record a
+		// second failure, do not enter cooldown, and do not enter ForceLocal.
 		logger.Info("auto compact skipped: no-benefit", "session_id", sess.ID, "error", err)
 		return
 	}
@@ -206,6 +208,21 @@ func (a *Agent) shouldAutoCompactSession(sess *session.Session, routingText stri
 		return false
 	}
 	return float64(estimated)/float64(maxTokens) >= threshold
+}
+
+func (a *Agent) maybeOfferCompactPrecompute(ctx context.Context, sess *session.Session, routingText string, ephemeral bool, turnProvider providerSnapshot) {
+	if a == nil || sess == nil || ephemeral || !turnProvider.valid() {
+		return
+	}
+	raw, _, _, _ := session.MessagesAfterLastCompactBoundary(sess.GetMessages())
+	if len(raw) == 0 {
+		return
+	}
+	est := a.contextEst
+	estimated := estimateProviderMessages(est, append(append([]provider.Message{}, raw...), provider.Message{Role: "user", Content: routingText}))
+	ceiling := a.contextInputLimit()
+	anchor := compactAnchor(raw)
+	a.maybeStartCompactPrecompute(ctx, sess.ID, anchor, compactModelName(a.resolveCompactProvider(turnProvider)), estimated, ceiling, raw, turnProvider)
 }
 
 func (a *Agent) autoCompactConfig() config.ContextConfig {
