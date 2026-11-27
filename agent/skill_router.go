@@ -1,7 +1,12 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -12,12 +17,28 @@ import (
 	"github.com/yurika0211/luckyagent-tools/skillroute"
 )
 
+// ErrPreferenceLookup is returned when long-term preference memory cannot be
+// read. Callers must not treat it as "the user has no preference".
+var ErrPreferenceLookup = errors.New("long-term preference lookup failed")
+
+type preferenceLookupError struct{ cause error }
+
+func (e *preferenceLookupError) Error() string {
+	if e == nil || e.cause == nil {
+		return ErrPreferenceLookup.Error()
+	}
+	return ErrPreferenceLookup.Error() + ": " + e.cause.Error()
+}
+func (e *preferenceLookupError) Unwrap() error { return ErrPreferenceLookup }
+
 type skillRouteMatch struct {
-	skill        *tool.SkillInfo
-	score        int
-	explicit     bool
-	reason       string
-	preferredRun string
+	skill            *tool.SkillInfo
+	score            int
+	explicit         bool
+	reason           string
+	preferredRun     string
+	preferredMissing bool
+	preferenceErr    error
 }
 
 type skillRouteOptions struct {
@@ -44,6 +65,17 @@ func (a *Agent) skillRouteHint(userInput string, opts skillRouteOptions, record 
 	}
 	if record {
 		a.recordMatchedSkillRoute(match, userInput)
+		if match.preferenceErr != nil || match.preferredMissing {
+			if _, _, err := a.resolvePreferredSkillInstall(context.Background(), "", userInput); err != nil && match.preferenceErr == nil {
+				match.preferenceErr = err
+			}
+		}
+	}
+	if match.preferenceErr != nil {
+		return "Skill routing note:\n- Long-term preference memory could not be read. Do not treat this as the user having no preference, and do not install or substitute another skill."
+	}
+	if match.preferredMissing && match.skill != nil {
+		return fmt.Sprintf("Skill routing note:\n- The user's long-term preference names skill %q, which is not installed.\n- Explain the missing skill and its install source, then wait for an exact approval before installing it.\n- If the user refuses, stop and ask what to do next. Do not continue with a different skill.", match.skill.Name)
 	}
 	if strings.EqualFold(strings.TrimSpace(match.skill.Name), "obsidian") && isLuckyAgentMemoryBackendQuestion(userInput) {
 		return `Skill routing note:
@@ -106,12 +138,19 @@ func (a *Agent) matchSkillRoute(userInput string) *skillRouteMatch {
 		return nil
 	}
 	skill := skills[matched.Index]
-	if preferred := a.preferredSkillFromMemory(userInput, skills); preferred != nil {
+	preferred, prefErr := a.preferredSkillFromMemory(userInput, skills)
+	if prefErr != nil {
+		return &skillRouteMatch{skill: skill, score: matched.Score, explicit: matched.Explicit, reason: "preference lookup failed", preferredRun: a.visibleSkillRunTool(skill.Name, nil), preferenceErr: prefErr}
+	}
+	if preferred != nil {
+		if !a.skillInstalled(preferred) {
+			return &skillRouteMatch{skill: preferred, score: matched.Score + 1000, reason: "preferred skill not installed", preferredMissing: true}
+		}
 		skill = preferred
 		return &skillRouteMatch{skill: skill, score: matched.Score + 1000, reason: "long-term preference", preferredRun: a.visibleSkillRunTool(skill.Name, nil)}
 	}
-	preferred := a.visibleSkillRunTool(skill.Name, nil)
-	return &skillRouteMatch{skill: skill, score: matched.Score, explicit: matched.Explicit, reason: matched.Reason, preferredRun: preferred}
+	runTool := a.visibleSkillRunTool(skill.Name, nil)
+	return &skillRouteMatch{skill: skill, score: matched.Score, explicit: matched.Explicit, reason: matched.Reason, preferredRun: runTool}
 }
 
 func (a *Agent) skillRouteCandidates(userInput string) []*skillRouteMatch {
@@ -143,11 +182,135 @@ func (a *Agent) skillRouteCandidates(userInput string) []*skillRouteMatch {
 	return result
 }
 
-func (a *Agent) preferredSkillFromMemory(userInput string, skills []*tool.SkillInfo) *tool.SkillInfo {
+func (a *Agent) preferredSkillFromMemory(userInput string, skills []*tool.SkillInfo) (*tool.SkillInfo, error) {
 	if a == nil || a.memory == nil || strings.TrimSpace(userInput) == "" {
+		return nil, nil
+	}
+	entries, err := a.longTermPreferenceEntries()
+	if err != nil {
+		return nil, err
+	}
+	return preferredSkillFromEntries(userInput, skills, entries), nil
+}
+
+// longTermPreferenceEntries reads long-term memory through the store the agent
+// actually uses. An empty result with a nil error means no preference was
+// stored. A non-nil error means the read failed and must stop skill selection.
+func (a *Agent) longTermPreferenceEntries() ([]memory.Entry, error) {
+	if a == nil || a.memory == nil {
+		return nil, nil
+	}
+	entries, err := readLongTermPreferenceEntries(a.memory)
+	if err != nil {
+		return nil, &preferenceLookupError{cause: err}
+	}
+	return entries, nil
+}
+
+// readLongTermPreferenceEntries separates a failed vault read from an empty
+// preference list on the store in use. ByTierWithOptions returns only a slice,
+// so a later disk failure is checked on that same store before the slice is
+// treated as "no preference".
+func readLongTermPreferenceEntries(store memory.RuntimeStore) ([]memory.Entry, error) {
+	if store == nil {
+		return nil, nil
+	}
+	if reader, ok := store.(interface {
+		ByTierWithOptionsErr(memory.Tier, memory.RouteOptions) ([]memory.Entry, error)
+	}); ok {
+		return reader.ByTierWithOptionsErr(memory.TierLong, memory.RouteOptions{})
+	}
+	if err := preferenceStoreReadError(store); err != nil {
+		return nil, err
+	}
+	return store.ByTierWithOptions(memory.TierLong, memory.RouteOptions{}), nil
+}
+
+func preferenceStoreReadError(store memory.RuntimeStore) error {
+	located, ok := store.(interface{ Dir() string })
+	if !ok || located == nil {
 		return nil
 	}
-	return preferredSkillFromEntries(userInput, skills, a.memory.ByTierWithOptions(memory.TierLong, memory.RouteOptions{}))
+	dir := strings.TrimSpace(located.Dir())
+	if dir == "" {
+		return nil
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("memory vault %s is not a directory", dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			return openErr
+		}
+		_, readErr := io.ReadAll(file)
+		_ = file.Close()
+		if readErr != nil {
+			return readErr
+		}
+	}
+	return nil
+}
+
+func (a *Agent) skillInstalled(skill *tool.SkillInfo) bool {
+	if skill == nil || strings.TrimSpace(skill.Name) == "" || a == nil {
+		return false
+	}
+	for _, installed := range a.snapshotSkills() {
+		if installed != nil && strings.EqualFold(strings.TrimSpace(installed.Name), strings.TrimSpace(skill.Name)) && strings.TrimSpace(installed.Dir) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// resolvePreferredSkillInstall asks before installing a preferred skill that
+// is not on disk. Refusal returns blocked=true and does not select a substitute.
+func (a *Agent) resolvePreferredSkillInstall(ctx context.Context, sessionID, userInput string) (blocked bool, notice string, err error) {
+	match := a.matchSkillRoute(userInput)
+	if match == nil {
+		return false, "", nil
+	}
+	if match.preferenceErr != nil {
+		return true, "长期偏好读取失败，不能当成没有偏好，也不会改用其他技能。", match.preferenceErr
+	}
+	if !match.preferredMissing || match.skill == nil {
+		return false, "", nil
+	}
+	name := strings.TrimSpace(match.skill.Name)
+	source := "未记录安装来源"
+	if dir := strings.TrimSpace(match.skill.Dir); dir != "" {
+		source = dir
+	}
+	reason := fmt.Sprintf("长期偏好指定的 skill %q 尚未安装。来源：%s。批准后才会安装；拒绝后不会改用其他技能。", name, source)
+	allowed, _, gateErr := a.waitHITLApproval(ctx, sessionID, "skill_install", map[string]any{
+		"skill": name, "source": source,
+	}, reason, "skill_install")
+	if gateErr != nil {
+		return true, reason, gateErr
+	}
+	if !allowed {
+		return true, fmt.Sprintf("未安装 skill %q。请说明接下来怎么处理；不会改用其他技能。", name), nil
+	}
+	if a.skillInstaller == nil {
+		return true, fmt.Sprintf("已批准安装 skill %q，但当前没有安装器，未做任何安装。", name), fmt.Errorf("skill installer unavailable")
+	}
+	if err := a.skillInstaller(ctx, name, source); err != nil {
+		return true, fmt.Sprintf("安装 skill %q 失败：%s", name, err.Error()), err
+	}
+	return false, fmt.Sprintf("已按批准安装 skill %q。", name), nil
 }
 
 func preferredSkillFromEntries(userInput string, skills []*tool.SkillInfo, entries []memory.Entry) *tool.SkillInfo {

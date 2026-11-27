@@ -1,13 +1,19 @@
 package agent
 
 import (
+	"context"
+	"errors"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yurika0211/luckyagent-runtime/function"
+	"github.com/yurika0211/luckyagent-runtime/memoryaestus"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/tool"
 	"github.com/yurika0211/luckyagent-tools/memory"
+	memorydiagnostic "github.com/yurika0211/luckyagent-tools/memory/diagnostic"
 )
 
 func TestBuildSkillRouteSystemHint_ExplicitSkillMention(t *testing.T) {
@@ -35,6 +41,179 @@ func TestBuildSkillRouteSystemHint_ExplicitSkillMention(t *testing.T) {
 	}
 	if !strings.Contains(hint, "skill_obsidian_run") {
 		t.Fatalf("expected preferred run tool, got %q", hint)
+	}
+}
+
+type preferenceMemory struct {
+	entries []memory.Entry
+	err     error
+	saved   []string
+}
+
+func (m *preferenceMemory) ByTierWithOptions(memory.Tier, memory.RouteOptions) []memory.Entry {
+	return m.entries
+}
+func (m *preferenceMemory) ByTierWithOptionsErr(memory.Tier, memory.RouteOptions) ([]memory.Entry, error) {
+	if m.err != nil {
+		return nil, m.err
+	}
+	return m.entries, nil
+}
+func (m *preferenceMemory) Recent(int) []memory.Entry                         { return nil }
+func (m *preferenceMemory) RouteWithOptions(string, memory.RouteOptions) memory.RouteAnalysis {
+	return memory.RouteAnalysis{}
+}
+func (m *preferenceMemory) RecordActivationFeedback(string, []memory.Entry, string, float64, time.Time) {
+}
+func (m *preferenceMemory) Recall(context.Context, memory.RecallRequest) ([]memory.SearchResult, error) {
+	return nil, nil
+}
+func (m *preferenceMemory) Remember(_ context.Context, req memory.RememberRequest) (memory.RememberResult, error) {
+	m.saved = append(m.saved, req.Content)
+	return memory.RememberResult{}, nil
+}
+func (m *preferenceMemory) AnalyzeMemoryContent(string) []memory.HygieneIssue { return nil }
+func (m *preferenceMemory) AuditHygiene(memory.HygieneOptions) memory.HygieneReport {
+	return memory.HygieneReport{}
+}
+func (m *preferenceMemory) QuarantineDirty(memory.HygieneOptions) (memory.HygieneReport, error) {
+	return memory.HygieneReport{}, nil
+}
+func (m *preferenceMemory) DeleteDirty(memory.HygieneOptions) (memory.HygieneReport, error) {
+	return memory.HygieneReport{}, nil
+}
+func (m *preferenceMemory) RestoreHygiene(memory.HygieneOptions) (memory.HygieneReport, error) {
+	return memory.HygieneReport{}, nil
+}
+func (m *preferenceMemory) RecordTurn(string) memory.MaintenanceEvent { return memory.MaintenanceEvent{} }
+func (m *preferenceMemory) ForgetSession(string)                      {}
+func (m *preferenceMemory) Decay(float64) int                         { return 0 }
+func (m *preferenceMemory) Expire() int                               { return 0 }
+func (m *preferenceMemory) Promote(string) error                      { return nil }
+func (m *preferenceMemory) CompactShortTerm(context.Context, int, int) (int, error) {
+	return 0, nil
+}
+func (m *preferenceMemory) Count() int                                 { return len(m.entries) }
+func (m *preferenceMemory) Stats() map[memory.Tier]int                 { return nil }
+func (m *preferenceMemory) Get(string) (*memory.Entry, error)          { return nil, nil }
+func (m *preferenceMemory) GraphTopology(memory.GraphTopologyOptions) memory.GraphTopology {
+	return memory.GraphTopology{}
+}
+func (m *preferenceMemory) Source() memory.SourceInfo { return memory.SourceInfo{} }
+func (m *preferenceMemory) BuildSearchTrace(string, string, string, memory.SearchOptions, []memory.SearchResult, time.Duration) memory.SearchTrace {
+	return memory.SearchTrace{}
+}
+func (m *preferenceMemory) TidalStats() (memorydiagnostic.TidalStoreStats, bool, error) {
+	return memorydiagnostic.TidalStoreStats{}, false, nil
+}
+func (m *preferenceMemory) Close() error { return nil }
+
+func TestPreferredSkillLookupFailureIsNotNoPreference(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
+	store := &preferenceMemory{err: errors.New("disk read failed")}
+	a := &Agent{
+		tools: reg, memory: store,
+		skills: []*tool.SkillInfo{{Name: "web-search", Description: "Search the web", Dir: t.TempDir()}},
+	}
+	hint := a.buildSkillRouteSystemHint("请用 web-search 搜索")
+	if !strings.Contains(hint, "could not be read") {
+		t.Fatalf("read failure was treated as no preference: %q", hint)
+	}
+	if strings.Contains(hint, "No long-term preference is available") {
+		t.Fatalf("read failure offered the no-preference path: %q", hint)
+	}
+	blocked, notice, err := a.resolvePreferredSkillInstall(context.Background(), "s", "请用 web-search 搜索")
+	if !blocked || err == nil || !errors.Is(err, ErrPreferenceLookup) {
+		t.Fatalf("blocked=%v notice=%q err=%v", blocked, notice, err)
+	}
+}
+
+func TestPreferredMissingSkillAsksAndRefusalDoesNotSubstitute(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
+	installed := &tool.SkillInfo{Name: "research", Description: "Research papers", Dir: t.TempDir()}
+	missing := &tool.SkillInfo{Name: "web-search", Description: "Search the web"}
+	store := &preferenceMemory{entries: []memory.Entry{{
+		Category: "preference", Content: "用户偏好使用 web-search skill", Importance: 0.9, Status: "active",
+	}}}
+	installedCalled := false
+	a := &Agent{
+		tools: reg, memory: store, hitl: newHITLGate(), skills: []*tool.SkillInfo{installed, missing},
+		skillInstaller: func(context.Context, string, string) error { installedCalled = true; return nil },
+	}
+	hint := a.skillRouteHint("请用 web-search 搜索资料", skillRouteOptions{}, false)
+	if !strings.Contains(hint, "not installed") || strings.Contains(hint, "research") && strings.Contains(hint, "matches the \"research\"") {
+		t.Fatalf("missing preference substituted another skill: %q", hint)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		blocked, notice, err := a.resolvePreferredSkillInstall(context.Background(), "s1", "请用 web-search 搜索资料")
+		if !blocked || err != nil || installedCalled {
+			t.Errorf("refusal installed or substituted: blocked=%v notice=%q err=%v installed=%v", blocked, notice, err, installedCalled)
+		}
+		if !strings.Contains(notice, "不会改用其他技能") {
+			t.Errorf("notice=%q", notice)
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	var pending []tool.PendingApproval
+	for time.Now().Before(deadline) {
+		pending = a.hitl.list()
+		if len(pending) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(pending) != 1 || !strings.Contains(pending[0].Reason, "web-search") {
+		t.Fatalf("approval prompt=%#v", pending)
+	}
+	if _, err := a.hitl.Resolve(pending[0].ID, "deny", ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("install wait did not finish")
+	}
+}
+
+func TestRealMemoryVaultReadFailureDoesNotSelectAnotherSkill(t *testing.T) {
+	dir := t.TempDir()
+	store, err := memoryaestus.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Remember(context.Background(), memory.RememberRequest{
+		Content: "用户偏好使用 web-search skill", Category: "preference", Tier: memory.TierLong, Importance: 0.9,
+		Options: memory.SaveOptions{Status: "active"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
+	a := &Agent{
+		tools: reg, memory: store,
+		skills: []*tool.SkillInfo{
+			{Name: "web-search", Description: "Search the web", Dir: t.TempDir()},
+			{Name: "research", Description: "Research papers", Dir: t.TempDir()},
+		},
+	}
+	hint := a.buildSkillRouteSystemHint("请用 web-search 搜索资料")
+	if !strings.Contains(hint, "could not be read") {
+		t.Fatalf("unreadable vault was treated as no preference: %q", hint)
+	}
+	if strings.Contains(hint, "No long-term preference") || strings.Contains(hint, `matches the "research"`) {
+		t.Fatalf("read failure substituted another skill: %q", hint)
+	}
+	_, err = a.preferredSkillFromMemory("请用 web-search 搜索资料", a.snapshotSkills())
+	if !errors.Is(err, ErrPreferenceLookup) {
+		t.Fatalf("preferredSkillFromMemory err=%v", err)
 	}
 }
 

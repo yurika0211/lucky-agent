@@ -86,8 +86,11 @@ func (a *Agent) executeToolWithSessionDetailedContext(ctx context.Context, name,
 		if out.Duration <= 0 {
 			out.Duration = time.Since(started)
 		}
-		if err == nil {
+		if err == nil && !strings.Contains(out.Output, "Error:") {
 			if notice := a.announceSkillUse(name, arguments); notice != "" {
+				if emit := hitlEmitterFrom(ctx); emit != nil {
+					emit(ChatEvent{Type: ChatEventThinking, Name: "skill_use", Content: notice})
+				}
 				if strings.TrimSpace(out.Output) == "" {
 					out.Output = notice
 				} else {

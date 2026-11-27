@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yurika0211/luckyagent-tools/cron"
 )
@@ -103,7 +104,11 @@ func (a *Agent) ResumeCronJob(id string) error {
 		return err
 	}
 	if a.cronResults != nil {
-		if err := a.cronResults.ResumeTask(id); err != nil && !errors.Is(err, cron.ErrResultNotFound) {
+		nextRun := time.Time{}
+		if job, ok := a.cronEngine.GetJob(id); ok && job != nil {
+			nextRun = job.NextRun
+		}
+		if err := a.cronResults.ResumeTask(id, nextRun); err != nil && !errors.Is(err, cron.ErrResultNotFound) {
 			return err
 		}
 	}
