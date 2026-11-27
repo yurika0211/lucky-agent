@@ -176,6 +176,9 @@ func (a *Agent) recordUsageAndTTFT(usage *provider.TokenUsage, ttftMS int64) {
 	if a == nil {
 		return
 	}
+	if usage != nil && (usage.InputTokens > 0 || usage.TotalTokens > 0) {
+		a.recordMeasuredPromptUsage(a.activeCompactSessionID(), usage)
+	}
 	m := a.executionMetrics()
 	if usage != nil {
 		if usage.InputTokens > 0 {

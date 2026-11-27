@@ -120,8 +120,9 @@ type compactPrecomputeState struct {
 	current    map[string]*precomputedCompact
 	failures   map[string]int
 	stopped    map[string]bool
-	generation map[string]uint64
-	measuredAt map[string]time.Time
+	generation    map[string]uint64
+	measuredAt    map[string]time.Time
+	cacheLifetime time.Duration
 }
 
 func (a *Agent) compactPrecompute() *compactPrecomputeState {
@@ -138,13 +139,65 @@ func (a *Agent) compactPrecompute() *compactPrecomputeState {
 }
 
 func (a *Agent) noteMeasuredPrompt(sessionID string, at time.Time) {
-	if a == nil || sessionID == "" {
+	if a == nil || sessionID == "" || at.IsZero() {
 		return
 	}
 	state := a.compactPrecompute()
 	state.mu.Lock()
 	state.measuredAt[sessionID] = at
 	state.mu.Unlock()
+}
+
+// recordMeasuredPromptUsage stores the time of a provider response that
+// reported prompt tokens. recordUsageAndTTFT is the only caller. A response
+// with no prompt tokens is not a measurement.
+func (a *Agent) recordMeasuredPromptUsage(sessionID string, usage *provider.TokenUsage) {
+	if a == nil || sessionID == "" || usage == nil {
+		return
+	}
+	if usage.InputTokens <= 0 && usage.TotalTokens <= 0 {
+		return
+	}
+	a.noteMeasuredPrompt(sessionID, time.Now())
+	if ttl := a.modelCacheLifetime(); ttl > 0 {
+		state := a.compactPrecompute()
+		state.mu.Lock()
+		state.cacheLifetime = ttl
+		state.mu.Unlock()
+	}
+}
+
+func (a *Agent) activeCompactSessionID() string {
+	if a == nil {
+		return ""
+	}
+	a.precomputeMu.RLock()
+	id := a.measuredSessionID
+	a.precomputeMu.RUnlock()
+	return id
+}
+
+func (a *Agent) setMeasuredSession(sessionID string) {
+	if a == nil {
+		return
+	}
+	a.precomputeMu.Lock()
+	a.measuredSessionID = sessionID
+	a.precomputeMu.Unlock()
+}
+
+func (a *Agent) modelCacheLifetime() time.Duration {
+	if a == nil || a.cfg == nil {
+		return 0
+	}
+	cfg := a.cfg.Get()
+	if cfg == nil {
+		return 0
+	}
+	if n, ok := compactExtraInt(cfg.Extra, "context.compact_cache_lifetime_seconds"); ok && n > 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 0
 }
 
 func (a *Agent) invalidatePrecomputedCompact(sessionID, reason string) {
@@ -173,6 +226,9 @@ func (a *Agent) maybeStartCompactPrecompute(ctx context.Context, sessionID, anch
 	}
 	state := a.compactPrecompute()
 	state.mu.Lock()
+	if state.cacheLifetime > 0 {
+		settings.CacheLifetime = state.cacheLifetime
+	}
 	if state.stopped[sessionID] {
 		state.mu.Unlock()
 		return
@@ -181,12 +237,17 @@ func (a *Agent) maybeStartCompactPrecompute(ctx context.Context, sessionID, anch
 		state.mu.Unlock()
 		return
 	}
-	measured := state.measuredAt[sessionID]
-	if !measured.IsZero() && time.Since(measured) > settings.CacheLifetime-settings.CacheMargin {
-		state.mu.Unlock()
-		logger.Info("precomputed compact skipped", "session_id", sessionID, "reason", "measured prompt response is older than cache lifetime minus margin")
+	measured, measuredOK := state.measuredAt[sessionID]
+	state.mu.Unlock()
+	if !measuredOK || measured.IsZero() {
+		logger.Info("compact precompute skipped: no measurement", "session_id", sessionID, "reason", "no measurement")
 		return
 	}
+	if time.Since(measured) > settings.CacheLifetime-settings.CacheMargin {
+		logger.Info("compact precompute skipped: cache expired", "session_id", sessionID, "reason", "measured prompt response is older than cache lifetime minus margin")
+		return
+	}
+	state.mu.Lock()
 	lead := settings.LeadTokens
 	cycle := ceiling
 	if cycle < 0 {

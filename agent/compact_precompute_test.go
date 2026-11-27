@@ -8,6 +8,7 @@ import (
 
 	"github.com/yurika0211/luckyagent-runtime/contextx"
 	"github.com/yurika0211/luckyagent-runtime/provider"
+	"github.com/yurika0211/luckyagent-runtime/session"
 )
 
 func TestPrecomputedCompactHitDoesNotCallModelAgain(t *testing.T) {
@@ -35,11 +36,45 @@ func TestPrecomputedCompactMissFallsThrough(t *testing.T) {
 
 func TestPrecomputeSkipsWhenMeasuredPromptIsOlderThanCache(t *testing.T) {
 	agent := &Agent{}
-	agent.noteMeasuredPrompt("s", time.Now().Add(-6*time.Minute))
+	agent.recordMeasuredPromptUsage("s", &provider.TokenUsage{InputTokens: 10})
+	agent.precompute.mu.Lock()
+	agent.precompute.measuredAt["s"] = time.Now().Add(-6 * time.Minute)
+	agent.precompute.mu.Unlock()
 	agent.maybeStartCompactPrecompute(context.Background(), "s", "anchor", "grok", 100, 100, []provider.Message{{Role: "user", Content: "stay"}}, providerSnapshot{})
 	if agent.precompute.current["s"] != nil {
 		t.Fatal("stale measured prompt started a precompute")
 	}
+}
+
+func TestPrecomputeMeasurementGatesStart(t *testing.T) {
+	messages := []provider.Message{{Role: "user", Content: "stay"}}
+	start := func(agent *Agent, id string) {
+		agent.maybeStartCompactPrecompute(context.Background(), id, "anchor", "grok", 100, 100, messages, providerSnapshot{provider: &staticChatProvider{content: validCompactSummaryText()}, model: "grok"})
+	}
+
+	missing := &Agent{}
+	start(missing, "missing")
+	if missing.precompute != nil && missing.precompute.current["missing"] != nil {
+		t.Fatal("missing measurement started a precompute")
+	}
+
+	stale := &Agent{}
+	stale.recordMeasuredPromptUsage("stale", &provider.TokenUsage{InputTokens: 12})
+	stale.precompute.mu.Lock()
+	stale.precompute.measuredAt["stale"] = time.Now().Add(-6 * time.Minute)
+	stale.precompute.mu.Unlock()
+	start(stale, "stale")
+	if stale.precompute.current["stale"] != nil {
+		t.Fatal("expired measurement started a precompute")
+	}
+
+	fresh := &Agent{provider: &staticChatProvider{content: validCompactSummaryText()}, contextEst: contextx.NewTokenEstimator(4096)}
+	fresh.recordMeasuredPromptUsage("fresh", &provider.TokenUsage{InputTokens: 20})
+	start(fresh, "fresh")
+	if fresh.precompute == nil || fresh.precompute.current["fresh"] == nil {
+		t.Fatal("fresh measurement did not start a precompute")
+	}
+	fresh.waitPrecompute("fresh")
 }
 
 func TestPrecomputeStopsAfterTwoFailures(t *testing.T) {
@@ -87,6 +122,45 @@ func TestCompactCutDoesNotLandOnToolResult(t *testing.T) {
 	if retained[0].Role == "tool" {
 		t.Fatal("cut landed on a tool result")
 	}
+}
+
+func TestLocalExpansionDoesNotEnterCooldown(t *testing.T) {
+	est := contextx.NewTokenEstimator(4096)
+	messages := []provider.Message{{Role: "user", Content: "x"}}
+	source := estimateProviderMessages(est, messages)
+	summary := strings.Repeat("expanded local summary ", 40)
+	if est.Estimate(summary) < source {
+		t.Fatalf("fixture did not expand: source=%d summary=%d", source, est.Estimate(summary))
+	}
+	agent := &Agent{contextEst: est, autoCompactFailures: map[string]int{}}
+	beforeCount := sessMessageCount(t)
+	sess := beforeCount.sess
+	sess.AddMessage("user", "x")
+	failures := agent.autoCompactFailureCount(sess.ID)
+	_, err := agent.compactSessionWithProvider(context.Background(), sess, "auto-degraded", CompactSessionOptions{ForceLocal: true}, providerSnapshot{})
+	if err == nil || !strings.Contains(err.Error(), "no-benefit") {
+		t.Fatalf("expanded local candidate error = %v", err)
+	}
+	if agent.autoCompactNoBenefitCooling(sess.ID) {
+		t.Fatal("expanded local candidate entered no-benefit cooldown")
+	}
+	if got := agent.autoCompactFailureCount(sess.ID); got != failures {
+		t.Fatalf("failure count changed: %d -> %d", failures, got)
+	}
+	if _, ok := sess.LatestCompactTrace(); ok || sess.MessageCount() != beforeCount.n+1 {
+		t.Fatalf("boundary written: messages %d -> %d", beforeCount.n, sess.MessageCount())
+	}
+}
+
+type countedSession struct {
+	sess *session.Session
+	n    int
+}
+
+func sessMessageCount(t *testing.T) countedSession {
+	t.Helper()
+	sess := session.NewSession("local-expand", t.TempDir())
+	return countedSession{sess: sess, n: sess.MessageCount()}
 }
 
 func TestLocalExpansionIsRejected(t *testing.T) {

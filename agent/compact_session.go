@@ -175,7 +175,7 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		}
 		if !localCompactFits(sourceTokens, est.Estimate(summary)) {
 			err := compactNoBenefitError(sourceTokens, est.Estimate(summary))
-			logger.Info("compact skipped: no-benefit", "session_id", sess.ID, "before_tokens", sourceTokens, "after_tokens", est.Estimate(summary))
+			logger.Info("compact skipped: no-benefit", "session_id", sess.ID, "before_tokens", sourceTokens, "after_tokens", est.Estimate(summary), "cooldown", false)
 			return nil, err
 		}
 		evidence = compactEvidenceBlock(compactInput)
@@ -257,7 +257,7 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	if errors.Is(benefitErr, ErrCompactNoBenefit) {
 		calls, records, _, _ := observed.snapshot()
 		logCompactNoBenefit(trigger, sess.ID, beforeTokens, afterTokens, opts.DryRun, calls, records)
-		if strings.Contains(trigger, "auto") && !strings.Contains(trigger, "degraded") {
+		if strings.Contains(trigger, "auto") && !strings.Contains(trigger, "degraded") && !strings.Contains(summarySource, "local") {
 			a.noteCompactNoBenefit(sess.ID, trigger)
 		}
 		emitCompactProgress(opts, CompactProgress{

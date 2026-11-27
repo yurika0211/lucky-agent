@@ -344,6 +344,9 @@ func (a *Agent) finishForegroundMemory(sess *session.Session, input UserTurnInpu
 		a.metrics.RecordChatRequest()
 	}
 	if result != nil {
+		if sess != nil {
+			a.setMeasuredSession(sess.ID)
+		}
 		a.recordUsageAndTTFT(result.Usage, result.LastTTFT)
 	}
 }
