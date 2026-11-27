@@ -5,6 +5,14 @@
 估算输入 token。普通对话、自动压缩、持久任务继续执行和验收都采用这一口径。
 `limits.max_tokens` 仍是单次回答的输出上限。
 
+`config.example.json` 是纯 JSON，不能在 `context_budget` 旁边写注释。这五项和预留是两套数：
+
+- `system_ratio`、`memory_ratio`、`rag_ratio`、`history_ratio`、`tool_result_ratio` 是上下文份额。五项之和不为 1 时，加载会把它们归一化。
+- `reserved_ratio` 是回复预留，不参与这五项的加总，单独要求落在 `(0, 1)`。
+- 示例里五项之和恰好为 1，只是默认值碰巧如此，不是校验条件。
+
+默认比例保持 `0.15 / 0.10 / 0.20 / 0.25 / 0.30`，预留保持 `0.25`。公开示例不写某一台机器归一化之后的比例。
+
 旧 JSON 只有顶层 `max_tokens` 时会迁移为上下文上限；两个字段都显式存在时，
 `context.max_context_tokens` 优先。旧 `lh config set max_tokens` 会同步两者；
 新配置应使用 `lh config set context.max_context_tokens 16000`。
