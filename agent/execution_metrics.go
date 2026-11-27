@@ -115,7 +115,13 @@ func recordRuntimeLoopStop(runtime any, reason string) {
 	}
 }
 
-func recordRuntimeUsage(runtime any, usage *provider.TokenUsage, ttftMS int64) {
+func recordRuntimeUsage(runtime any, sessionID string, usage *provider.TokenUsage, ttftMS int64) {
+	if owner, ok := runtime.(interface {
+		recordUsageAndTTFTForSession(string, *provider.TokenUsage, int64)
+	}); ok {
+		owner.recordUsageAndTTFTForSession(sessionID, usage, ttftMS)
+		return
+	}
 	if owner, ok := runtime.(interface {
 		recordUsageAndTTFT(*provider.TokenUsage, int64)
 	}); ok {
@@ -176,8 +182,19 @@ func (a *Agent) recordUsageAndTTFT(usage *provider.TokenUsage, ttftMS int64) {
 	if a == nil {
 		return
 	}
+	sessionID := ""
 	if usage != nil && (usage.InputTokens > 0 || usage.TotalTokens > 0) {
-		a.recordMeasuredPromptUsage(a.activeCompactSessionID(), usage)
+		sessionID = a.activeCompactSessionID()
+	}
+	a.recordUsageAndTTFTForSession(sessionID, usage, ttftMS)
+}
+
+func (a *Agent) recordUsageAndTTFTForSession(sessionID string, usage *provider.TokenUsage, ttftMS int64) {
+	if a == nil {
+		return
+	}
+	if sessionID != "" {
+		a.recordMeasuredPromptUsage(sessionID, usage)
 	}
 	m := a.executionMetrics()
 	if usage != nil {

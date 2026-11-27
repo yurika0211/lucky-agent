@@ -77,6 +77,50 @@ func TestPrecomputeMeasurementGatesStart(t *testing.T) {
 	fresh.waitPrecompute("fresh")
 }
 
+func TestPrecomputeMeasurementWithoutUsage(t *testing.T) {
+	messages := []provider.Message{{Role: "user", Content: "stay"}}
+	agent := &Agent{provider: &staticChatProvider{content: validCompactSummaryText()}, contextEst: contextx.NewTokenEstimator(4096)}
+	agent.recordUsageAndTTFTForSession("s", nil, 0)
+	agent.maybeStartCompactPrecompute(context.Background(), "s", "anchor", "grok", 100, 100, messages, providerSnapshot{provider: agent.provider, model: "grok"})
+	if agent.precompute == nil || agent.precompute.current["s"] == nil {
+		t.Fatal("a finished round with nil usage was skipped as no measurement")
+	}
+	agent.waitPrecompute("s")
+}
+
+func TestPrecomputeMeasurementIsPerSession(t *testing.T) {
+	messages := []provider.Message{{Role: "user", Content: "stay"}}
+	agent := &Agent{provider: &staticChatProvider{content: validCompactSummaryText()}, contextEst: contextx.NewTokenEstimator(4096)}
+	agent.recordUsageAndTTFTForSession("A", nil, 0)
+	agent.setMeasuredSession("B")
+	agent.recordUsageAndTTFT(nil, 0)
+	agent.maybeStartCompactPrecompute(context.Background(), "B", "anchor", "grok", 100, 100, messages, providerSnapshot{provider: agent.provider, model: "grok"})
+	if agent.precompute != nil && agent.precompute.current["B"] != nil {
+		t.Fatal("session B started from session A's measurement")
+	}
+	agent.maybeStartCompactPrecompute(context.Background(), "A", "anchor", "grok", 100, 100, messages, providerSnapshot{provider: agent.provider, model: "grok"})
+	if agent.precompute == nil || agent.precompute.current["A"] == nil {
+		t.Fatal("session B replaced session A's measurement")
+	}
+	agent.waitPrecompute("A")
+}
+
+func TestLoopRuntimeRecordsMeasurementWithoutUsage(t *testing.T) {
+	agent := &Agent{provider: &staticChatProvider{content: validCompactSummaryText()}, contextEst: contextx.NewTokenEstimator(4096)}
+	runtime := newAgentLoopRuntime(agent)
+	recordRuntimeUsage(runtime, "loop-session", nil, 0)
+	messages := []provider.Message{{Role: "user", Content: "stay"}}
+	agent.maybeStartCompactPrecompute(context.Background(), "loop-session", "anchor", "grok", 100, 100, messages, providerSnapshot{provider: agent.provider, model: "grok"})
+	if agent.precompute == nil || agent.precompute.current["loop-session"] == nil {
+		t.Fatal("loop end with nil usage did not record this session")
+	}
+	agent.maybeStartCompactPrecompute(context.Background(), "other", "anchor", "grok", 100, 100, messages, providerSnapshot{provider: agent.provider, model: "grok"})
+	if agent.precompute.current["other"] != nil {
+		t.Fatal("loop measurement was stored on another session")
+	}
+	agent.waitPrecompute("loop-session")
+}
+
 func TestPrecomputeStopsAfterTwoFailures(t *testing.T) {
 	agent := &Agent{
 		provider:   &staticChatProvider{name: "fail", err: context.DeadlineExceeded},
