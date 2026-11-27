@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -190,6 +192,47 @@ func TestSkillUsageSkipsObsidianMemoryBackendRoute(t *testing.T) {
 	a.buildFunctionCallOptionsForInput("这个双链记忆系统现在是否生效，记忆库在哪", nil)
 	if rows := a.SkillUsageSnapshot(); len(rows) != 0 {
 		t.Fatalf("memory-backend route recorded: %#v", rows)
+	}
+}
+
+func TestSkillUseNoticeIsASeparateProgressEvent(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true, Handler: func(map[string]any) (string, error) {
+		return "summary", nil
+	}})
+	reg.Register(&tool.Tool{Name: "file_read", Enabled: true, Handler: func(map[string]any) (string, error) {
+		return "file", nil
+	}})
+	a := &Agent{tools: reg, gateway: tool.NewGateway(reg)}
+	var events []ChatEvent
+	ctx := withHITLEmitter(context.Background(), func(ev ChatEvent) { events = append(events, ev) })
+	out, err := a.executeToolWithSessionDetailedContext(ctx, "skill_read", `{"name":"obsidian","action":"read"}`, true, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Name != "skill_use" || !strings.Contains(events[0].Content, "obsidian") {
+		t.Fatalf("progress events=%#v", events)
+	}
+	if !strings.Contains(out.Output, "obsidian") {
+		t.Fatalf("tool output lost the skill name: %s", out.Output)
+	}
+	events = nil
+	if _, err := a.executeToolWithSessionDetailedContext(ctx, "file_read", `{"path":"notes.md"}`, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("unused candidate announced: %#v", events)
+	}
+	reg.Register(&tool.Tool{Name: "skill_missing_run", Enabled: false, Handler: func(map[string]any) (string, error) {
+		return "", fmt.Errorf("skill missing is not installed")
+	}})
+	if _, err := a.executeToolWithSessionDetailedContext(ctx, "skill_missing_run", `{}`, true, nil); err == nil {
+		t.Fatal("unavailable skill reported success")
+	}
+	for _, ev := range events {
+		if strings.Contains(ev.Content, "已采用") {
+			t.Fatalf("unavailable skill announced use: %#v", events)
+		}
 	}
 }
 

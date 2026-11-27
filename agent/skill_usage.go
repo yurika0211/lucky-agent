@@ -142,6 +142,11 @@ func (a *Agent) announceSkillUse(name, arguments string) string {
 	if skill == "" {
 		return ""
 	}
+	if a.tools != nil {
+		if registered, ok := a.tools.Get(name); ok && registered != nil && !registered.Enabled {
+			return ""
+		}
+	}
 	store := a.ensureSkillUsageStore()
 	if store == nil {
 		return ""

@@ -70,6 +70,9 @@ type Agent struct {
 	toolServices     *tool.Services
 	gateway          *tool.Gateway           // 统一工具网关
 	hitl             *HITLGate               // 本地工具审批和 ask_user 等待
+	skillInstaller   func(ctx context.Context, name, source string) error
+	delegatePaused     sync.Map // task id -> paused after a no-progress review
+	delegateCleanupErr error
 	hooks            *hook.Runner            // 工具执行前后的 hook 运行器
 	msgGateway       *gateway.GatewayManager // 消息平台网关
 	sessionEvents    func(sessionID, content string)
