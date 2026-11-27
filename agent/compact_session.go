@@ -18,13 +18,13 @@ import (
 )
 
 type CompactSessionResult struct {
-	BoundaryID          string
-	Trigger             string
-	Summary             string
-	FromMessage         int
-	ToMessage           int
-	ContentHash         string
-	PolicyVersion       string
+	BoundaryID    string
+	Trigger       string
+	Summary       string
+	FromMessage   int
+	ToMessage     int
+	ContentHash   string
+	PolicyVersion string
 	// PreTokenEstimate and PostTokenEstimate are the same full candidate
 	// request estimates written to CompactMetadata. They include the frozen
 	// non-history snapshot, history, schema, and prepareModelRequest fit.
@@ -166,10 +166,17 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		}
 	}
 	if validation := validateCompactSummary(summary, compactInput); !validation.Valid {
-		err := fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
-		emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
-		a.logCompactAttempt(sess.ID, trigger, "invalid-summary", observed, len(sessionSegments(all)))
-		return nil, err
+		repaired, ok := repairCompactSummary(summary, compactInput)
+		if !ok {
+			err := fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
+			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
+			a.logCompactAttempt(sess.ID, trigger, "invalid-summary", observed, len(sessionSegments(all)))
+			return nil, err
+		}
+		summary = repaired
+		if !strings.Contains(summarySource, "repaired") {
+			summarySource = strings.TrimSpace(summarySource) + "+repaired"
+		}
 	}
 	summaryTokens := est.Estimate(summary)
 	attachments := buildPostCompactAttachments(sess, raw, est)
@@ -214,11 +221,11 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 			Error:   benefitErr.Error(),
 			// Same full-request estimate as a written boundary. This skip
 			// writes no metadata, so the numbers exist only on this event.
-			PreTokenEstimate: beforeTokens,
+			PreTokenEstimate:  beforeTokens,
 			PostTokenEstimate: afterTokens,
-			DroppedMessages:  len(compactInput),
-			RetainedMessages: len(retained),
-			SummarySource:    summarySource,
+			DroppedMessages:   len(compactInput),
+			RetainedMessages:  len(retained),
+			SummarySource:     summarySource,
 		})
 		return nil, benefitErr
 	}
