@@ -1476,7 +1476,7 @@ func (a *Agent) finalizeStreamWithRecapState(events chan<- ChatEvent, sess *sess
 		a.metrics.RecordChatRequest()
 	}
 	if sess != nil {
-		a.setMeasuredSession(sess.ID)
+		a.noteTurnFinished(sess.ID)
 	}
 	a.recordUsageAndTTFT(usage, ttftMS)
 	events <- ChatEvent{Type: ChatEventDone, Content: response, Usage: assistantUsage(usage), CreatedAt: &createdAt}

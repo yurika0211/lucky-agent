@@ -46,6 +46,35 @@ func TestPrecomputeSkipsWhenMeasuredPromptIsOlderThanCache(t *testing.T) {
 	}
 }
 
+func TestTurnFinishWithoutUsageMeasuresThatSession(t *testing.T) {
+	agent := &Agent{}
+	agent.recordUsageAndTTFT(nil, 0)
+	agent.maybeStartCompactPrecompute(context.Background(), "s", "anchor", "grok", 100, 100, []provider.Message{{Role: "user", Content: "stay"}}, providerSnapshot{})
+	if agent.precompute != nil && agent.precompute.current["s"] != nil {
+		t.Fatal("a turn that never finished started precompute")
+	}
+
+	agent.noteTurnFinished("sess-a")
+	agent.noteTurnFinished("sess-b")
+	agent.recordUsageAndTTFT(nil, 0)
+	agent.recordUsageAndTTFT(&provider.TokenUsage{}, 0)
+
+	start := func(id string) {
+		agent.maybeStartCompactPrecompute(context.Background(), id, "anchor", "grok", 100, 100, []provider.Message{{Role: "user", Content: "stay"}}, providerSnapshot{provider: &staticChatProvider{content: validCompactSummaryText()}, model: "grok"})
+	}
+	agent.provider = &staticChatProvider{content: validCompactSummaryText()}
+	agent.contextEst = contextx.NewTokenEstimator(4096)
+	start("sess-a")
+	start("sess-b")
+	if agent.precompute == nil || agent.precompute.current["sess-a"] == nil || agent.precompute.current["sess-b"] == nil {
+		t.Fatal("finishing two sessions without usage did not measure both")
+	}
+	start("sess-c")
+	if agent.precompute.current["sess-c"] != nil {
+		t.Fatal("a session that did not finish was measured by the other session")
+	}
+}
+
 func TestPrecomputeMeasurementGatesStart(t *testing.T) {
 	messages := []provider.Message{{Role: "user", Content: "stay"}}
 	start := func(agent *Agent, id string) {
