@@ -59,8 +59,20 @@ func TestTurnFinishWithoutUsageMeasuresThatSession(t *testing.T) {
 	agent.recordUsageAndTTFT(nil, 0)
 	agent.recordUsageAndTTFT(&provider.TokenUsage{}, 0)
 
+	// Default lead is 60000. Ceiling 128000 keeps that lead, because half the
+	// ceiling is larger. Start requires estimated >= 68000. 1000 does not.
+	const ceiling = 128000
+	below := func(id string) {
+		agent.maybeStartCompactPrecompute(context.Background(), id, "anchor", "grok", 1000, ceiling, []provider.Message{{Role: "user", Content: "stay"}}, providerSnapshot{provider: &staticChatProvider{content: validCompactSummaryText()}, model: "grok"})
+	}
 	start := func(id string) {
-		agent.maybeStartCompactPrecompute(context.Background(), id, "anchor", "grok", 100, 100, []provider.Message{{Role: "user", Content: "stay"}}, providerSnapshot{provider: &staticChatProvider{content: validCompactSummaryText()}, model: "grok"})
+		agent.maybeStartCompactPrecompute(context.Background(), id, "anchor", "grok", 68000, ceiling, []provider.Message{{Role: "user", Content: "stay"}}, providerSnapshot{provider: &staticChatProvider{content: validCompactSummaryText()}, model: "grok"})
+	}
+	agent.provider = &staticChatProvider{content: validCompactSummaryText()}
+	agent.contextEst = contextx.NewTokenEstimator(4096)
+	below("sess-a")
+	if agent.precompute != nil && agent.precompute.current["sess-a"] != nil {
+		t.Fatal("a measured session below the lead window started precompute")
 	}
 	agent.provider = &staticChatProvider{content: validCompactSummaryText()}
 	agent.contextEst = contextx.NewTokenEstimator(4096)
