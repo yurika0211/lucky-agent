@@ -124,6 +124,65 @@ func TestCompactCutDoesNotLandOnToolResult(t *testing.T) {
 	}
 }
 
+func TestLocalCandidateNoBenefitSkipsCooldownAfterBenefitCheck(t *testing.T) {
+	est := contextx.NewTokenEstimator(4096)
+	sess := session.NewSession("local-benefit-cooldown", t.TempDir())
+	sess.AddMessage("user", "note")
+	sess.AddMessage("assistant", "ack")
+	beforeMessages := sess.MessageCount()
+	agent := &Agent{
+		contextEst:          est,
+		autoCompactFailures: map[string]int{},
+		provider:            &staticChatProvider{name: "static", content: validCompactSummaryText()},
+	}
+	raw := sess.GetMessages()
+	keep := agent.compactSettings().KeepTokens
+	historyTokens := estimateProviderMessages(est, raw)
+	if keep >= historyTokens && historyTokens > 1 {
+		keep = historyTokens / 2
+		if keep < 1 {
+			keep = 1
+		}
+	}
+	compactInput, retained := selectCompactSegmentInput(raw, est, 0, keep)
+	if len(compactInput) == 0 {
+		t.Fatal("fixture left nothing to compact")
+	}
+	summary := validCompactSummaryText() + "\n" + strings.Repeat("expanded local candidate ", 40)
+	anchor := compactAnchor(compactInput)
+	agent.compactPrecompute()
+	agent.precompute.current[sess.ID] = &precomputedCompact{
+		anchor:    anchor,
+		model:     "grok",
+		summary:   summary,
+		evidence:  compactEvidenceBlock(compactInput),
+		source:    "local",
+		tailLimit: keep,
+		ready:     true,
+		done:      closedChan(),
+	}
+	failures := agent.autoCompactFailureCount(sess.ID)
+	_, err := agent.compactSessionWithProvider(context.Background(), sess, "auto", CompactSessionOptions{}, providerSnapshot{provider: agent.provider, model: "grok"})
+	if err == nil || !strings.Contains(err.Error(), "no-benefit") {
+		t.Fatalf("local candidate after benefit check = %v", err)
+	}
+	if agent.autoCompactNoBenefitCooling(sess.ID) {
+		t.Fatal("local candidate entered no-benefit cooldown after the benefit check")
+	}
+	if got := agent.autoCompactFailureCount(sess.ID); got != failures {
+		t.Fatalf("failure count changed: %d -> %d", failures, got)
+	}
+	if _, ok := sess.LatestCompactTrace(); ok || sess.MessageCount() != beforeMessages {
+		t.Fatalf("boundary written: messages %d -> %d", beforeMessages, sess.MessageCount())
+	}
+	if calls := agent.provider.(*staticChatProvider).calls; calls != 0 {
+		t.Fatalf("benefit-check path called the model %d times", calls)
+	}
+	if estimateProviderMessages(est, retained) > keep {
+		t.Fatalf("tail %d exceeds keep %d", estimateProviderMessages(est, retained), keep)
+	}
+}
+
 func TestLocalExpansionDoesNotEnterCooldown(t *testing.T) {
 	est := contextx.NewTokenEstimator(4096)
 	messages := []provider.Message{{Role: "user", Content: "x"}}
