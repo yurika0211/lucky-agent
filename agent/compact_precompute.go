@@ -44,30 +44,110 @@ func (a *Agent) compactSettings() compactSettings {
 		CacheLifetime: defaultCompactCacheLifetime,
 	}
 	if a == nil || a.cfg == nil {
+		a.logCompactSettings(settings, "no config manager", compactDefaultKeys(settings), nil)
 		return settings
 	}
 	cfg := a.cfg.Get()
 	if cfg == nil {
+		a.logCompactSettings(settings, "empty config", compactDefaultKeys(settings), nil)
 		return settings
 	}
+
+	// #531: these six keys are formal config.ContextConfig fields now, so read
+	// them from there. Reading Extra first meant `lh config set` wrote a key
+	// the compaction path could not see.
+	resolved := cfg.Context.CompactSettings()
+	settings.Background = resolved.Background
+	settings.LeadTokens = resolved.PrecomputeLeadTokens
+	settings.MaxFailures = resolved.PrecomputeMaxFailures
+	settings.CacheMargin = time.Duration(resolved.CacheMarginSeconds) * time.Second
+	settings.KeepTokens = resolved.KeepTokens
+	settings.ChunkFallback = resolved.ChunkFallback
+
+	// Compatibility: config files written before the formal fields existed carry
+	// the same keys in Extra. Apply them only while the formal field still holds
+	// its default, so an explicit setting always wins.
+	var legacy []string
 	extra := cfg.Extra
-	if !compactExtraBool(extra, "context.compact_background", settings.Background) {
-		settings.Background = false
+	if _, ok := extra["context.compact_background"]; ok && settings.Background == defaultCompactBackground {
+		settings.Background = compactExtraBool(extra, "context.compact_background", settings.Background)
+		legacy = append(legacy, "compact_background")
 	}
-	if n, ok := compactExtraInt(extra, "context.compact_precompute_lead_tokens"); ok && n > 0 {
+	if n, ok := compactExtraInt(extra, "context.compact_precompute_lead_tokens"); ok && n > 0 && settings.LeadTokens == defaultCompactPrecomputeLeadTokens {
 		settings.LeadTokens = n
+		legacy = append(legacy, "compact_precompute_lead_tokens")
 	}
-	if n, ok := compactExtraInt(extra, "context.compact_precompute_max_failures"); ok && n > 0 {
+	if n, ok := compactExtraInt(extra, "context.compact_precompute_max_failures"); ok && n > 0 && settings.MaxFailures == defaultCompactPrecomputeMaxFailures {
 		settings.MaxFailures = n
+		legacy = append(legacy, "compact_precompute_max_failures")
 	}
-	if n, ok := compactExtraInt(extra, "context.compact_cache_margin_seconds"); ok && n >= 0 {
+	if n, ok := compactExtraInt(extra, "context.compact_cache_margin_seconds"); ok && n >= 0 && int(settings.CacheMargin/time.Second) == defaultCompactCacheMarginSeconds {
 		settings.CacheMargin = time.Duration(n) * time.Second
+		legacy = append(legacy, "compact_cache_margin_seconds")
 	}
-	if n, ok := compactExtraInt(extra, "context.compact_keep_tokens"); ok && n > 0 {
+	if n, ok := compactExtraInt(extra, "context.compact_keep_tokens"); ok && n > 0 && settings.KeepTokens == defaultCompactKeepTokens {
 		settings.KeepTokens = n
+		legacy = append(legacy, "compact_keep_tokens")
 	}
-	settings.ChunkFallback = compactExtraBool(extra, "context.compact_chunk_fallback", settings.ChunkFallback)
+	if _, ok := extra["context.compact_chunk_fallback"]; ok && settings.ChunkFallback == defaultCompactChunkFallback {
+		settings.ChunkFallback = compactExtraBool(extra, "context.compact_chunk_fallback", settings.ChunkFallback)
+		legacy = append(legacy, "compact_chunk_fallback")
+	}
+
+	a.logCompactSettings(settings, "", compactDefaultKeys(settings), legacy)
 	return settings
+}
+
+// compactDefaultKeys names the knobs still sitting on the built-in defaults, so
+// the one-shot log can say which values came from the config and which did not.
+func compactDefaultKeys(settings compactSettings) []string {
+	var keys []string
+	if settings.Background == defaultCompactBackground {
+		keys = append(keys, "compact_background")
+	}
+	if settings.LeadTokens == defaultCompactPrecomputeLeadTokens {
+		keys = append(keys, "compact_precompute_lead_tokens")
+	}
+	if settings.MaxFailures == defaultCompactPrecomputeMaxFailures {
+		keys = append(keys, "compact_precompute_max_failures")
+	}
+	if int(settings.CacheMargin/time.Second) == defaultCompactCacheMarginSeconds {
+		keys = append(keys, "compact_cache_margin_seconds")
+	}
+	if settings.KeepTokens == defaultCompactKeepTokens {
+		keys = append(keys, "compact_keep_tokens")
+	}
+	if settings.ChunkFallback == defaultCompactChunkFallback {
+		keys = append(keys, "compact_chunk_fallback")
+	}
+	return keys
+}
+
+// compactSettingsLogOnce keeps this out of the turn loop but still leaves one
+// line per process saying what compaction actually used.
+var compactSettingsLogOnce sync.Once
+
+func (a *Agent) logCompactSettings(settings compactSettings, reason string, fromDefault, legacy []string) {
+	compactSettingsLogOnce.Do(func() {
+		fields := []any{
+			"background", settings.Background,
+			"precompute_lead_tokens", settings.LeadTokens,
+			"precompute_max_failures", settings.MaxFailures,
+			"cache_margin_seconds", int(settings.CacheMargin / time.Second),
+			"keep_tokens", settings.KeepTokens,
+			"chunk_fallback", settings.ChunkFallback,
+		}
+		if reason != "" {
+			fields = append(fields, "reason", reason)
+		}
+		if len(fromDefault) > 0 {
+			fields = append(fields, "using_default", strings.Join(fromDefault, ","))
+		}
+		if len(legacy) > 0 {
+			fields = append(fields, "legacy_extra", strings.Join(legacy, ","))
+		}
+		logger.Info("compact config: resolved", fields...)
+	})
 }
 
 func compactExtraBool(extra map[string]string, key string, fallback bool) bool {
