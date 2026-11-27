@@ -39,28 +39,60 @@ func TestPresentUIKeepsTableAndStripsTreeFromModelNote(t *testing.T) {
 	}
 }
 
-func TestPresentUIDescriptionCarriesChartPolicy(t *testing.T) {
+func TestPresentUIDescriptionPointsAtOpenUISkill(t *testing.T) {
 	a := &Agent{tools: tool.NewRegistry()}
 	a.registerPresentUITool()
 	registered, ok := a.tools.Get(presentUIToolName)
 	if !ok {
 		t.Fatal("present_ui was not registered")
 	}
-	if !strings.Contains(registered.Description, "scatter") || !strings.Contains(registered.Description, "window") {
-		t.Fatalf("description missing chart policy: %s", registered.Description)
+	desc := registered.Description
+	for _, want := range []string{"tree", "skill_read", "openui"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q: %s", want, desc)
+		}
 	}
-	if !strings.Contains(registered.Description, presentUIPolicy) {
-		t.Fatal("description does not reference presentUIPolicy")
+	for _, absent := range []string{
+		"OpenUI policy:",
+		"Do not invent Box",
+		"values.window",
+		"bar|line|area|pie|scatter",
+	} {
+		if strings.Contains(desc, absent) {
+			t.Fatalf("description still contains policy text %q: %s", absent, desc)
+		}
 	}
-	if !strings.Contains(registered.Description, "series") &&
-		!strings.Contains(registered.Description, "start") &&
-		!strings.Contains(registered.Description, "mix") {
-		t.Fatal("description missing mix, series, or start")
+}
+
+func TestOpenUIPolicyStaysOutOfInjectedContext(t *testing.T) {
+	a := &Agent{tools: tool.NewRegistry()}
+	a.registerPresentUITool()
+	registered, ok := a.tools.Get(presentUIToolName)
+	if !ok {
+		t.Fatal("present_ui was not registered")
 	}
-	if !strings.Contains(registered.Description, "again") &&
-		!strings.Contains(registered.Description, "stays") &&
-		!strings.Contains(registered.Description, "keep") {
-		t.Fatal("description missing actions keep-tree language")
+	policy := a.buildToolPolicyPromptBlock()
+	for _, label := range []struct {
+		name string
+		text string
+	}{
+		{"tool description", registered.Description},
+		{"tool policy", policy},
+	} {
+		for _, absent := range []string{
+			"OpenUI policy:",
+			"Do not invent Box",
+			"bar|line|area|pie|scatter",
+			"values.window",
+			"Table: columns, rows",
+		} {
+			if strings.Contains(label.text, absent) {
+				t.Fatalf("%s still contains policy text %q", label.name, absent)
+			}
+		}
+	}
+	if !strings.Contains(policy, "openui") || !strings.Contains(policy, "present_ui") {
+		t.Fatalf("tool policy should point at the openui skill: %s", policy)
 	}
 }
 
