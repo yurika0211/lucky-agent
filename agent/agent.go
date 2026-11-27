@@ -142,6 +142,9 @@ type Agent struct {
 	taskStore                  taskstore.Store
 	autoCompactMu              sync.Mutex
 	autoCompactFailures        map[string]int
+	precompute                 *compactPrecomputeState
+	precomputeMu               sync.RWMutex
+	measuredSessionID          string
 	autoCompactNoBenefitUntil  map[string]time.Time
 	activeModel                string
 	activeAPIBase              string
@@ -605,6 +608,7 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 	if !streamRecordsChatAtEntry(input.Scope.Platform) && a.metrics != nil {
 		a.metrics.RecordChatRequest()
 	}
+	a.setMeasuredSession(sess.ID)
 	a.recordUsageAndTTFT(result.Usage, result.LastTTFT)
 	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)
 

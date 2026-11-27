@@ -174,17 +174,125 @@ func preferCompactIdentifiers(identifiers []string) []string {
 
 // Identifiers are exact evidence: changing path or command-flag case can name
 // a different file or operation even if surrounding prose is reworded.
+// The summary body does not have to repeat them. The evidence block does.
 func missingCompactIdentifiers(summary string, identifiers []string) []string {
+	return missingEvidenceIdentifiers(evidenceBlockText(summary), identifiers)
+}
+
+func evidenceBlockText(record string) string {
+	_, block := splitCompactRecord(record)
+	if strings.TrimSpace(block) != "" {
+		return block
+	}
+	if strings.Contains(record, "Source identifiers") {
+		return record
+	}
+	return ""
+}
+
+func missingEvidenceIdentifiers(block string, identifiers []string) []string {
 	if len(identifiers) == 0 {
 		return nil
 	}
-	missing := make([]string, 0, len(identifiers))
+	if strings.TrimSpace(block) == "" {
+		return append([]string(nil), identifiers...)
+	}
+	var missing []string
 	for _, identifier := range identifiers {
-		if !strings.Contains(summary, identifier) {
+		if !strings.Contains(block, identifier) {
 			missing = append(missing, identifier)
 		}
 	}
 	return missing
+}
+
+func compactEvidenceBlock(messages []provider.Message) string {
+	identifiers := requiredCompactIdentifiers(messages)
+	if len(identifiers) == 0 {
+		return compactEvidenceBlockHeader + "\n- none"
+	}
+	return compactEvidenceBlockHeader + "\n- " + strings.Join(identifiers, "\n- ")
+}
+
+func joinCompactRecord(summary, evidence string) string {
+	summary = strings.TrimSpace(summary)
+	evidence = strings.TrimSpace(evidence)
+	if evidence == "" {
+		return summary
+	}
+	return summary + "\n\n" + evidence
+}
+
+func splitCompactRecord(record string) (body, evidence string) {
+	index := strings.Index(record, "\n"+compactEvidenceBlockHeader)
+	if index < 0 && strings.HasPrefix(record, compactEvidenceBlockHeader) {
+		return "", record
+	}
+	if index < 0 {
+		return record, ""
+	}
+	return record[:index], record[index+1:]
+}
+
+func inventedIdentifiers(body string, known []provider.Message) []string {
+	seen := map[string]struct{}{}
+	for _, message := range known {
+		seen[message.Content] = struct{}{}
+		for _, call := range message.ToolCalls {
+			seen[call.Name] = struct{}{}
+			seen[call.Arguments] = struct{}{}
+		}
+	}
+	var invented []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		name := ""
+		switch {
+		case strings.HasPrefix(line, "tool:"):
+			name = strings.TrimSpace(strings.TrimPrefix(line, "tool:"))
+		case strings.HasPrefix(line, "cited:"):
+			name = strings.TrimSpace(strings.TrimPrefix(line, "cited:"))
+		default:
+			continue
+		}
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok || strings.Contains(sourceText(known), name) {
+			continue
+		}
+		invented = append(invented, name)
+	}
+	return invented
+}
+
+func sourceText(messages []provider.Message) string {
+	var b strings.Builder
+	for _, message := range messages {
+		b.WriteString(message.Content)
+		b.WriteByte('\n')
+		for _, call := range message.ToolCalls {
+			b.WriteString(call.Name)
+			b.WriteByte('\n')
+			b.WriteString(call.Arguments)
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+// compactCutIsExchange reports whether a retained tail starts on a user or
+// assistant message. A tool result is not a legal cut.
+func compactRecordRebuildable(summary, evidence string, retained []provider.Message) bool {
+	return strings.TrimSpace(summary) != "" && strings.TrimSpace(evidence) != "" && compactCutIsExchange(retained)
+}
+
+func compactCutIsExchange(retained []provider.Message) bool {
+	if len(retained) == 0 {
+		return true
+	}
+	role := retained[0].Role
+	return role == "user" || role == "assistant"
 }
 
 // compactIdentifierReason names the first few missing identifiers so a failed

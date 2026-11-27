@@ -39,6 +39,12 @@ func compactNoBenefitError(before, after int) error {
 	return fmt.Errorf("%w; candidate request %d tokens is not smaller than %d", ErrCompactNoBenefit, after, before)
 }
 
+// localCompactFits reports whether a local candidate is smaller than the
+// source it replaces. A larger candidate must not become a boundary.
+func localCompactFits(before, after int) bool {
+	return after > 0 && after < before
+}
+
 // compactSummaryObservation aggregates host Chat callbacks for one compact.
 // Map/reduce may call Chat concurrently. Missing usage stays nil; a zero
 // TokenUsage is recorded only when a callback actually carried usage.
@@ -74,6 +80,10 @@ func (o *compactSummaryObservation) finish() {
 		return
 	}
 	o.duration = time.Since(o.started)
+}
+
+func (o *compactSummaryObservation) noteCall(resp *provider.Response) {
+	o.add(resp)
 }
 
 func (o *compactSummaryObservation) add(resp *provider.Response) {

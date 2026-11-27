@@ -84,6 +84,7 @@ type CompactSessionOptions struct {
 	Loop LoopConfig
 	// OnProgress reports compact phases to streaming clients (SSE/WebSocket).
 	OnProgress func(CompactProgress)
+	observe    *compactSummaryObservation
 }
 
 // CompactSession summarizes raw session history since the latest compact
@@ -125,7 +126,21 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	if est == nil {
 		est = contextx.NewTokenEstimator(4096)
 	}
-	compactInput, retained := selectCompactSegmentInput(raw, est, opts.RetainRecentTurns, opts.TargetTailTokens)
+	keepTokens := a.compactSettings().KeepTokens
+	if opts.TargetTailTokens > 0 && opts.TargetTailTokens < keepTokens {
+		keepTokens = opts.TargetTailTokens
+	}
+	historyTokens := estimateProviderMessages(est, raw)
+	if keepTokens >= historyTokens && historyTokens > 1 {
+		keepTokens = historyTokens / 2
+		if keepTokens < 1 {
+			keepTokens = 1
+		}
+	}
+	compactInput, retained := selectCompactSegmentInput(raw, est, opts.RetainRecentTurns, keepTokens)
+	if !compactCutIsExchange(retained) {
+		return nil, fmt.Errorf("compact session: cut landed on a tool result")
+	}
 	coveredFingerprint := compactRangeFingerprint(raw, 0, len(compactInput))
 	if coveredFingerprint == "" {
 		return nil, fmt.Errorf("compact session: cannot fingerprint source messages")
@@ -144,7 +159,12 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	})
 	summarySource := "llm"
 	var summary string
+	var evidence string
 	var observed *compactSummaryObservation
+	anchor := compactAnchor(compactInput)
+	model := compactModelName(a.resolveCompactProvider(turnProvider))
+	tailTokens := estimateProviderMessages(est, retained)
+	manual := strings.Contains(trigger, "manual")
 	if opts.ForceLocal {
 		summarySource = "local"
 		summary = generateLocalCompactSummary(compactInput, est)
@@ -153,10 +173,30 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
 			return nil, err
 		}
-	} else {
+		if !localCompactFits(sourceTokens, est.Estimate(summary)) {
+			err := compactNoBenefitError(sourceTokens, est.Estimate(summary))
+			logger.Info("compact skipped: no-benefit", "session_id", sess.ID, "before_tokens", sourceTokens, "after_tokens", est.Estimate(summary), "cooldown", false)
+			return nil, err
+		}
+		evidence = compactEvidenceBlock(compactInput)
+	} else if !manual {
+		if swapped, swappedEvidence, swappedSource, ok := a.takePrecomputedCompact(sess.ID, anchor, model, tailTokens, keepTokens); ok {
+			summary, evidence, summarySource = swapped, swappedEvidence, "precomputed:"+swappedSource
+			logger.Info("compact path", "session_id", sess.ID, "mode", "precomputed")
+		}
+	}
+	if summary == "" && !opts.ForceLocal {
 		var err error
-		summary, summarySource, observed, err = a.generateCompactSummaryObserved(ctx, compactInput, turnProvider, opts)
+		summary, evidence, summarySource, observed, err = a.generateCompactSummaryObserved(ctx, compactInput, turnProvider, opts)
+		if evidence == "" {
+			evidence = compactEvidenceBlock(compactInput)
+		}
+		logger.Info("compact path", "session_id", sess.ID, "mode", "synchronous")
 		if err != nil {
+			if errors.Is(err, ErrCompactNoBenefit) {
+				logger.Info("compact skipped: no-benefit", "session_id", sess.ID, "error", err)
+				return nil, err
+			}
 			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error(), PreTokenEstimate: sourceTokens})
 			a.logCompactAttempt(sess.ID, trigger, "failed", observed, len(sessionSegments(all)))
 			return nil, err
@@ -165,8 +205,8 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 			summarySource = "llm"
 		}
 	}
-	if validation := validateCompactSummary(summary, compactInput); !validation.Valid {
-		repaired, ok := repairCompactSummary(summary, compactInput)
+	if validation := validateCompactSummary(joinCompactRecord(summary, evidence), compactInput); !validation.Valid {
+		repaired, ok := repairCompactSummary(joinCompactRecord(summary, evidence), compactInput)
 		if !ok {
 			err := fmt.Errorf("compact session: invalid summary: %s", validation.Reason)
 			emitCompactProgress(opts, CompactProgress{Phase: "failed", Trigger: trigger, Message: err.Error(), Error: err.Error()})
@@ -178,13 +218,19 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 			summarySource = strings.TrimSpace(summarySource) + "+repaired"
 		}
 	}
-	summaryTokens := est.Estimate(summary)
+	summaryTokens := est.Estimate(compactBodyForLength(summary))
 	attachments := buildPostCompactAttachments(sess, raw, est)
 	boundaryID := fmt.Sprintf("compact-%d", time.Now().UnixNano())
+	if strings.TrimSpace(evidence) == "" {
+		return nil, fmt.Errorf("compact session: evidence block missing")
+	}
+	if !compactRecordRebuildable(summary, evidence, retained) {
+		return nil, fmt.Errorf("compact session: summary, evidence, and retained tail are all required")
+	}
 	meta := session.CompactMetadata{
 		ID:                  boundaryID,
 		Trigger:             trigger,
-		Summary:             summary,
+		Summary:             joinCompactRecord(summary, evidence),
 		FromMessage:         covered,
 		ToMessage:           covered + len(compactInput),
 		PolicyVersion:       compactSegmentPolicyVersion,
@@ -211,7 +257,7 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	if errors.Is(benefitErr, ErrCompactNoBenefit) {
 		calls, records, _, _ := observed.snapshot()
 		logCompactNoBenefit(trigger, sess.ID, beforeTokens, afterTokens, opts.DryRun, calls, records)
-		if strings.Contains(trigger, "auto") && !strings.Contains(trigger, "degraded") {
+		if strings.Contains(trigger, "auto") && !strings.Contains(trigger, "degraded") && !strings.Contains(summarySource, "local") {
 			a.noteCompactNoBenefit(sess.ID, trigger)
 		}
 		emitCompactProgress(opts, CompactProgress{
@@ -239,9 +285,11 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 		"from":        meta.FromMessage,
 		"to":          meta.ToMessage,
 		"summary":     meta.Summary,
+		"evidence":    evidence,
 		"attachments": meta.Attachments,
 		"policy":      meta.PolicyVersion,
 	}))
+	meta.Summary = joinCompactRecord(summary, evidence)
 	// Backup only after a valid summary exists so timed-out LLM calls do not
 	// copy multi-megabyte sessions for a boundary that will never be written.
 	var backup *session.BackupInfo
@@ -272,7 +320,7 @@ func (a *Agent) compactSessionWithProvider(ctx context.Context, sess *session.Se
 	result := &CompactSessionResult{
 		BoundaryID:          boundaryID,
 		Trigger:             trigger,
-		Summary:             summary,
+		Summary:             joinCompactRecord(summary, evidence),
 		FromMessage:         meta.FromMessage,
 		ToMessage:           meta.ToMessage,
 		ContentHash:         meta.ContentHash,
@@ -303,7 +351,24 @@ func selectCompactSegmentInput(raw []provider.Message, est *contextx.TokenEstima
 	if len(raw) == 0 {
 		return nil, nil
 	}
-	return append([]provider.Message(nil), raw[:len(input)]...), append([]provider.Message(nil), raw[len(raw)-len(tail):]...)
+	compacted := append([]provider.Message(nil), raw[:len(input)]...)
+	retained := append([]provider.Message(nil), raw[len(raw)-len(tail):]...)
+	return moveCompactCutToExchange(compacted, retained)
+}
+
+// moveCompactCutToExchange walks a tool-result cut back onto the user or
+// assistant message that owns it. compact_keep_tokens wins over retain turns
+// because the caller already folded that choice into targetTailTokens.
+func moveCompactCutToExchange(compacted, retained []provider.Message) ([]provider.Message, []provider.Message) {
+	for len(retained) > 0 && !compactCutIsExchange(retained) {
+		last := compacted[len(compacted)-1]
+		compacted = compacted[:len(compacted)-1]
+		retained = append([]provider.Message{last}, retained...)
+		if len(compacted) == 0 {
+			break
+		}
+	}
+	return compacted, retained
 }
 
 func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.Message) (string, string, error) {
@@ -314,16 +379,17 @@ func (a *Agent) generateCompactSummary(ctx context.Context, messages []provider.
 // sliced on user-turn boundaries, summarized concurrently, then merged.
 // context.compact_model selects the summarizer model when set.
 func (a *Agent) generateCompactSummaryWithProvider(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions) (string, string, error) {
-	summary, source, _, err := a.generateCompactSummaryObserved(ctx, messages, turnProvider, opts)
+	summary, _, source, _, err := a.generateCompactSummaryObserved(ctx, messages, turnProvider, opts)
 	return summary, source, err
 }
 
-func (a *Agent) generateCompactSummaryObserved(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions) (string, string, *compactSummaryObservation, error) {
+func (a *Agent) generateCompactSummaryObserved(ctx context.Context, messages []provider.Message, turnProvider providerSnapshot, opts CompactSessionOptions) (string, string, string, *compactSummaryObservation, error) {
 	observed := &compactSummaryObservation{}
 	observed.start()
-	summary, source, err := a.generateMapReduceCompactSummaryObserved(ctx, messages, turnProvider, opts, observed)
+	opts.observe = observed
+	summary, evidence, source, err := a.summarizeCompactRange(ctx, messages, turnProvider, opts)
 	observed.finish()
-	return summary, source, observed, err
+	return summary, evidence, source, observed, err
 }
 
 func sessionSegments(messages []provider.Message) []session.CompactMetadata {
