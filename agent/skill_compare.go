@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	delegateruntime "github.com/yurika0211/luckyagent-orchestrator/delegate"
@@ -21,12 +22,51 @@ import (
 // evidence comparison because it owns the Agent loop and memory store.
 const skillComparisonToolName = "skill_compare"
 
+// skillComparisonContextMarker keeps a comparison child on the ordinary tool
+// set. An untyped delegate otherwise becomes the read-only explore role.
+const skillComparisonContextMarker = "\x00skill_comparison"
+
 // repeatSafety is the host decision for a dual run. The published tool still
 // accepts safe_to_repeat from the caller; when RepeatSafety is set, that
 // decision replaces the description-word list.
 type skillRepeatSafetyFunc func(description string) (safe bool, reason string)
 
 var skillRepeatSafety skillRepeatSafetyFunc
+
+// skillComparisonMeter records cost and time produced while a candidate runs.
+// The delegate status response does not always carry those numbers.
+type skillComparisonMeter struct {
+	mu      sync.Mutex
+	calls   map[string]int
+	elapsed map[string]int64
+}
+
+func (m *skillComparisonMeter) record(taskID string, calls int, elapsedMS int64) {
+	if m == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.calls == nil {
+		m.calls = map[string]int{}
+		m.elapsed = map[string]int64{}
+	}
+	if calls > 0 {
+		m.calls[taskID] = calls
+	}
+	if elapsedMS > 0 {
+		m.elapsed[taskID] = elapsedMS
+	}
+}
+
+func (m *skillComparisonMeter) get(taskID string) (int, int64) {
+	if m == nil {
+		return 0, 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.calls[taskID], m.elapsed[taskID]
+}
 
 type skillComparisonCandidate struct {
 	Skill           string   `json:"skill"`
@@ -114,6 +154,8 @@ func (a *Agent) compareSkills(exec tool.ExecutionContext, args map[string]any) (
 	if a.delegate == nil {
 		return "", fmt.Errorf("refusing dual run: delegation is unavailable")
 	}
+	meter := &skillComparisonMeter{}
+	a.comparisonMeter = meter
 
 	ctx := exec.Context
 	if ctx == nil {
@@ -125,15 +167,16 @@ func (a *Agent) compareSkills(exec tool.ExecutionContext, args map[string]any) (
 	timeout := comparisonTimeout(args, a.delegate.Config().Timeout)
 	delegate := tool.DelegateTaskTool(a.delegate)
 	start := func(skill string) (delegateruntime.StartResponse, error) {
-		contextText := fmt.Sprintf("This is one isolated candidate of a safe skill comparison. Use only the %q skill. Do not send, write, modify, deploy, purchase, schedule, or otherwise cause an external side effect. If the goal would require a side effect, stop and report that the candidate is unsafe or incomplete. Return concrete completion evidence and any files/tests actually inspected.", skill)
+		contextText := skillComparisonContextMarker + "\n" + fmt.Sprintf("This is one isolated candidate of a safe skill comparison. Use only the %q skill. Do not send, write, modify, deploy, purchase, schedule, or otherwise cause an external side effect. If the goal would require a side effect, stop and report that the candidate is unsafe or incomplete. Return concrete completion evidence and any files/tests actually inspected.", skill)
 		result, err := delegate.ContextDetailedHandler(tool.ExecutionContext{
 			Context: ctx, SessionID: exec.SessionID, Source: exec.Source, UserID: exec.UserID,
 			UserRequest: description, AutoApprove: true, Sandbox: exec.Sandbox,
 		}, map[string]any{
-			"description": fmt.Sprintf("Use skill %s to complete this repeat-safe task: %s", skill, description),
-			"context":     contextText,
-			"timeout":     int(timeout.Seconds()),
-			"mode":        "single",
+			"description":  fmt.Sprintf("Use skill %s to complete this repeat-safe task: %s", skill, description),
+			"context":      contextText,
+			"timeout":      int(timeout.Seconds()),
+			"mode":         "single",
+			"max_children": 1,
 		})
 		if err != nil {
 			return delegateruntime.StartResponse{}, err
@@ -172,8 +215,8 @@ func (a *Agent) compareSkills(exec tool.ExecutionContext, args map[string]any) (
 		byID[status.TaskID] = status
 	}
 	candidates := []skillComparisonCandidate{
-		comparisonCandidate(skillA, byID[first.TaskID]),
-		comparisonCandidate(skillB, byID[second.TaskID]),
+		comparisonCandidate(skillA, a.measuredDelegateStatus(byID[first.TaskID])),
+		comparisonCandidate(skillB, a.measuredDelegateStatus(byID[second.TaskID])),
 	}
 	response := skillComparisonResponse{
 		ComparisonID: comparisonID(description, skillA, skillB),
@@ -205,6 +248,56 @@ func (a *Agent) compareSkills(exec tool.ExecutionContext, args map[string]any) (
 		response.MemorySaved = a.saveSkillComparisonPreference(description, candidates[winner], candidates[1-winner])
 	}
 	return marshalSkillComparison(response)
+}
+
+// measuredDelegateStatus copies cost and elapsed time from the delegate task
+// the child execution recorded. Wait responses can omit both.
+func (a *Agent) measuredDelegateStatus(status delegateruntime.StatusResponse) delegateruntime.StatusResponse {
+	if a == nil || strings.TrimSpace(status.TaskID) == "" {
+		return status
+	}
+	if a.delegate != nil {
+		raw, err := a.delegate.HandleStatus(map[string]any{"task_id": status.TaskID, "include_result": true})
+		if err == nil {
+			var measured delegateruntime.StatusResponse
+			if json.Unmarshal([]byte(raw), &measured) == nil {
+				if measured.ToolCalls > 0 {
+					status.ToolCalls = measured.ToolCalls
+				}
+				if measured.ElapsedMS > 0 {
+					status.ElapsedMS = measured.ElapsedMS
+				}
+				if strings.TrimSpace(measured.Error) != "" && strings.TrimSpace(status.Error) == "" {
+					status.Error = measured.Error
+				}
+				if strings.TrimSpace(measured.Result) != "" && strings.TrimSpace(status.Result) == "" {
+					status.Result = measured.Result
+				}
+			}
+		}
+	}
+	if a.comparisonMeter != nil {
+		calls, elapsed := a.comparisonMeter.get(status.TaskID)
+		if status.ToolCalls == 0 && calls > 0 {
+			status.ToolCalls = calls
+		}
+		if status.ElapsedMS == 0 && elapsed > 0 {
+			status.ElapsedMS = elapsed
+		}
+	}
+	return status
+}
+
+// RecordSkillComparisonCost stores the cost and time a candidate execution
+// produced. compareSkills reads it when the delegate status omits both.
+func (a *Agent) RecordSkillComparisonCost(taskID string, toolCalls int, elapsed time.Duration) {
+	if a == nil {
+		return
+	}
+	if a.comparisonMeter == nil {
+		a.comparisonMeter = &skillComparisonMeter{}
+	}
+	a.comparisonMeter.record(taskID, toolCalls, elapsed.Milliseconds())
 }
 
 func comparisonCandidate(skill string, status delegateruntime.StatusResponse) skillComparisonCandidate {

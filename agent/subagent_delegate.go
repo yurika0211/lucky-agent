@@ -115,7 +115,7 @@ func (a *Agent) childLoopForDelegate(delegateCfg tool.DelegateConfig, allowRecur
 	contextStr, _ = stripBackgroundDelegateMarker(contextStr)
 	roleName, model, prompt, markedWorkspace, clean := takeSubagentRoleMarker(contextStr)
 	if roleName == "" {
-		if !a.builtinAgentsEnabled() {
+		if strings.Contains(contextStr, skillComparisonContextMarker) || !a.builtinAgentsEnabled() {
 			return buildDelegateChildLoopConfig(delegateCfg, allowRecursive), clean, nil
 		}
 		roleName = defaultUntypedSubagentRole

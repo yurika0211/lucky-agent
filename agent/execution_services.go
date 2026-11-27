@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/yurika0211/luckyagent-runtime/session"
 	"github.com/yurika0211/luckyagent-runtime/tool"
@@ -130,6 +131,7 @@ func (a *Agent) bindOptionalExecutionServices() {
 			if contextStr != "" {
 				prompt = fmt.Sprintf("%s\n\nContext: %s", description, contextStr)
 			}
+			started := time.Now()
 			var result *LoopResult
 			if a.delegateChildRun != nil {
 				result, err = a.delegateChildRun(ctx, sess, TextUserTurnInput(prompt), cfg)
@@ -142,6 +144,9 @@ func (a *Agent) bindOptionalExecutionServices() {
 					lastTool = result.ToolCalls[n-1].Name
 				}
 				delegateMgr.RecordExecutionMetrics(taskID, len(result.ToolCalls), lastTool)
+				// Skill comparison reads cost × time from the child that produced
+				// them. Status snapshots can omit both after the wait returns.
+				a.RecordSkillComparisonCost(taskID, len(result.ToolCalls), time.Since(started))
 			}
 			response := ""
 			if result != nil {

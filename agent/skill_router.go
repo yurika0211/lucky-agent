@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 
@@ -190,22 +193,75 @@ func (a *Agent) preferredSkillFromMemory(userInput string, skills []*tool.SkillI
 	return preferredSkillFromEntries(userInput, skills, entries), nil
 }
 
-// longTermPreferenceEntries reads long-term memory. An empty result with a nil
-// error means no preference was stored. A non-nil error means the read failed.
+// longTermPreferenceEntries reads long-term memory through the store the agent
+// actually uses. An empty result with a nil error means no preference was
+// stored. A non-nil error means the read failed and must stop skill selection.
 func (a *Agent) longTermPreferenceEntries() ([]memory.Entry, error) {
 	if a == nil || a.memory == nil {
 		return nil, nil
 	}
-	if reader, ok := a.memory.(interface {
+	entries, err := readLongTermPreferenceEntries(a.memory)
+	if err != nil {
+		return nil, &preferenceLookupError{cause: err}
+	}
+	return entries, nil
+}
+
+// readLongTermPreferenceEntries separates a failed vault read from an empty
+// preference list on the store in use. ByTierWithOptions returns only a slice,
+// so a later disk failure is checked on that same store before the slice is
+// treated as "no preference".
+func readLongTermPreferenceEntries(store memory.RuntimeStore) ([]memory.Entry, error) {
+	if store == nil {
+		return nil, nil
+	}
+	if reader, ok := store.(interface {
 		ByTierWithOptionsErr(memory.Tier, memory.RouteOptions) ([]memory.Entry, error)
 	}); ok {
-		entries, err := reader.ByTierWithOptionsErr(memory.TierLong, memory.RouteOptions{})
-		if err != nil {
-			return nil, &preferenceLookupError{cause: err}
-		}
-		return entries, nil
+		return reader.ByTierWithOptionsErr(memory.TierLong, memory.RouteOptions{})
 	}
-	return a.memory.ByTierWithOptions(memory.TierLong, memory.RouteOptions{}), nil
+	if err := preferenceStoreReadError(store); err != nil {
+		return nil, err
+	}
+	return store.ByTierWithOptions(memory.TierLong, memory.RouteOptions{}), nil
+}
+
+func preferenceStoreReadError(store memory.RuntimeStore) error {
+	located, ok := store.(interface{ Dir() string })
+	if !ok || located == nil {
+		return nil
+	}
+	dir := strings.TrimSpace(located.Dir())
+	if dir == "" {
+		return nil
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("memory vault %s is not a directory", dir)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		file, openErr := os.Open(path)
+		if openErr != nil {
+			return openErr
+		}
+		_, readErr := io.ReadAll(file)
+		_ = file.Close()
+		if readErr != nil {
+			return readErr
+		}
+	}
+	return nil
 }
 
 func (a *Agent) skillInstalled(skill *tool.SkillInfo) bool {

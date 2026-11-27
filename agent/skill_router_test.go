@@ -3,11 +3,13 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yurika0211/luckyagent-runtime/function"
+	"github.com/yurika0211/luckyagent-runtime/memoryaestus"
 	"github.com/yurika0211/luckyagent-runtime/provider"
 	"github.com/yurika0211/luckyagent-runtime/tool"
 	"github.com/yurika0211/luckyagent-tools/memory"
@@ -174,6 +176,44 @@ func TestPreferredMissingSkillAsksAndRefusalDoesNotSubstitute(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("install wait did not finish")
+	}
+}
+
+func TestRealMemoryVaultReadFailureDoesNotSelectAnotherSkill(t *testing.T) {
+	dir := t.TempDir()
+	store, err := memoryaestus.NewStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Remember(context.Background(), memory.RememberRequest{
+		Content: "用户偏好使用 web-search skill", Category: "preference", Tier: memory.TierLong, Importance: 0.9,
+		Options: memory.SaveOptions{Status: "active"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
+	a := &Agent{
+		tools: reg, memory: store,
+		skills: []*tool.SkillInfo{
+			{Name: "web-search", Description: "Search the web", Dir: t.TempDir()},
+			{Name: "research", Description: "Research papers", Dir: t.TempDir()},
+		},
+	}
+	hint := a.buildSkillRouteSystemHint("请用 web-search 搜索资料")
+	if !strings.Contains(hint, "could not be read") {
+		t.Fatalf("unreadable vault was treated as no preference: %q", hint)
+	}
+	if strings.Contains(hint, "No long-term preference") || strings.Contains(hint, `matches the "research"`) {
+		t.Fatalf("read failure substituted another skill: %q", hint)
+	}
+	_, err = a.preferredSkillFromMemory("请用 web-search 搜索资料", a.snapshotSkills())
+	if !errors.Is(err, ErrPreferenceLookup) {
+		t.Fatalf("preferredSkillFromMemory err=%v", err)
 	}
 }
 

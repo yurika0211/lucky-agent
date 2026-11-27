@@ -40,6 +40,11 @@ func (a *Agent) installDelegateReviewTool() {
 	})
 }
 
+// ReviewDelegatedTask is the acceptance boundary used before a held task continues.
+func (a *Agent) ReviewDelegatedTask(ctx context.Context, sessionID string, args map[string]any) (string, error) {
+	return a.reviewDelegatedTask(ctx, sessionID, args)
+}
+
 func (a *Agent) reviewDelegatedTask(ctx context.Context, sessionID string, args map[string]any) (string, error) {
 	taskID := strings.TrimSpace(delegateStringArg(args, "task_id"))
 	action := strings.ToLower(strings.TrimSpace(delegateStringArg(args, "action")))
@@ -116,8 +121,30 @@ func (a *Agent) reviewDelegatedTask(ctx context.Context, sessionID string, args 
 		Description: status.Description, Output: status.Result, Input: status.ResultSummary,
 		State: collab.TaskCompleted, AcceptanceCriteria: []string{"fulfil the delegated task and provide evidence for changed files and verification"},
 	}, status.Result); err != nil {
+		// Acceptance failure returns the task to the child. The parent checkout
+		// is left untouched and the retained worktree stays in place.
+		reason := err.Error()
 		response["merged"] = false
-		response["reason"] = err.Error()
+		if hasWorktree {
+			response["kept_worktree"] = item.Path
+		}
+		reworkArgs := map[string]any{"progress": delegateStringArg(args, "progress")}
+		if strings.TrimSpace(delegateStringArg(reworkArgs, "progress")) == "" {
+			reworkArgs["progress"] = "acceptance rejected"
+		}
+		reworked, reworkErr := a.reviewRework(item, hasWorktree, "rework", reworkArgs, response)
+		if reworkErr != nil {
+			return "", reworkErr
+		}
+		var decoded map[string]any
+		if unmarshalErr := json.Unmarshal([]byte(reworked), &decoded); unmarshalErr == nil {
+			decoded["merged"] = false
+			decoded["reason"] = reason
+			decoded["acceptance"] = "rejected"
+			return marshalReviewResponse(decoded)
+		}
+		response["rework"] = true
+		response["reason"] = reason
 		return marshalReviewResponse(response)
 	}
 	patch, err := gitOutputBytes(ctx, item.Path, "diff", "--binary", item.BaseCommit)
@@ -132,6 +159,7 @@ func (a *Agent) reviewDelegatedTask(ctx context.Context, sessionID string, args 
 	if err := runGitInput(ctx, item.ParentRoot, patch, "apply", "--3way", "--binary"); err != nil {
 		response["merged"] = false
 		response["conflict"] = true
+		response["kept_worktree"] = item.Path
 		response["reason"] = err.Error()
 		return marshalReviewResponse(response)
 	}
