@@ -278,3 +278,55 @@ func TestBoundSessionCallsCannotAdoptReusedID(t *testing.T) {
 		t.Fatal("rejected bound call left an active registration")
 	}
 }
+
+func TestDeleteSessionCleanupFailureDoesNotReportSuccess(t *testing.T) {
+	repo := initTempGitRepo(t)
+	item, err := createDelegateWorktree(repo, "task-delete")
+	if err != nil {
+		t.Fatal(err)
+	}
+	locked := filepath.Join(item.Path, "locked-dir")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(item.Path, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(item.Path, 0o755) })
+	a := &Agent{}
+	a.worktrees.remember("task-delete", item)
+	a.rememberDelegateOwner("task-delete", "sess-a")
+	if a.DeleteSession("sess-a") {
+		t.Fatal("cleanup failure reported delete success")
+	}
+	if a.SessionCleanupError() == nil {
+		t.Fatal("cleanup error was discarded")
+	}
+	if _, ok := a.worktrees.get("task-delete"); !ok {
+		t.Fatal("failed cleanup forgot the worktree")
+	}
+}
+
+func TestDeleteSessionRemovesOwnedWorktree(t *testing.T) {
+	repo := initTempGitRepo(t)
+	item, err := createDelegateWorktree(repo, "task-owned")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(item.Path, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a := &Agent{}
+	a.worktrees.remember("task-owned", item)
+	a.rememberDelegateOwner("task-owned", "sess-a")
+	a.rememberDelegateOwner("task-other", "sess-b")
+	if !a.DeleteSession("sess-a") && a.SessionCleanupError() != nil {
+		t.Fatal(a.SessionCleanupError())
+	}
+	if _, err := os.Stat(item.Path); !os.IsNotExist(err) {
+		t.Fatalf("owned worktree remains: %v", err)
+	}
+	if _, ok := a.worktrees.get("task-owned"); ok {
+		t.Fatal("owned worktree stayed registered")
+	}
+}

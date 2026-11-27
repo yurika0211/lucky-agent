@@ -112,13 +112,28 @@ func (a *Agent) DeleteSession(sessionID string) bool {
 		}
 		if item, ok := a.worktrees.get(taskID); ok {
 			if item.Path != "" {
-				_ = removeDelegateWorktree(item.ParentRoot, item.Path)
+				if err := removeDelegateWorktree(item.ParentRoot, item.Path); err != nil {
+					a.delegateCleanupErr = err
+					continue
+				}
 			}
 			a.worktrees.forget(taskID)
 		}
 		a.forgetDelegateOwner(taskID)
 	}
+	if a.delegateCleanupErr != nil {
+		return false
+	}
 	return cancelled
+}
+
+// SessionCleanupError reports a delete that stopped work but left a worktree
+// or child process behind. Callers must not report that delete as success.
+func (a *Agent) SessionCleanupError() error {
+	if a == nil {
+		return nil
+	}
+	return a.delegateCleanupErr
 }
 
 func (r *agentLoopRuntime) beginSessionCall(ctx context.Context, sess *session.Session) (context.Context, func(), error) {
