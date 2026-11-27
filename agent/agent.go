@@ -44,50 +44,50 @@ import (
 
 // Agent 是 LuckyAgent 的核心 Agent
 type Agent struct {
-	injectedInputs     bool
-	closeResources     func() error
-	closeOnce          sync.Once
-	closeError         error
-	foregroundActive   sync.Map // session ID -> active caller; removed when the request ends
-	sessionCalls       sync.Map // *sessionCall -> active model/tool request
-	recaps             *recapService
-	loopMu             sync.Mutex
-	loop               *Loop
-	cfg                *config.Manager
-	soul               *soul.Soul
-	tmplMgr            *soul.TemplateManager  // SOUL 模板管理器
-	provider           provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
-	providerMu         sync.RWMutex           // protects the default provider/model selection
-	registry           *provider.Registry     // provider 注册表
-	catalog            *provider.ModelCatalog // 模型目录
-	modelDiscovery     *provider.ModelDiscovery
-	tokenStore         *provider.TokenStore // token 存储
-	memory             memory.RuntimeStore
-	shortTerms         memory.SessionShortTermStore
-	midTerm            memory.MidTermStore // 中期会话摘要存储
-	sessions           *session.Manager
-	tools              *tool.Registry
-	toolServices       *tool.Services
-	gateway            *tool.Gateway // 统一工具网关
-	hitl               *HITLGate     // 本地工具审批和 ask_user 等待
-	skillInstaller     func(ctx context.Context, name, source string) error
+	injectedInputs   bool
+	closeResources   func() error
+	closeOnce        sync.Once
+	closeError       error
+	foregroundActive sync.Map // session ID -> active caller; removed when the request ends
+	sessionCalls     sync.Map // *sessionCall -> active model/tool request
+	recaps           *recapService
+	loopMu           sync.Mutex
+	loop             *Loop
+	cfg              *config.Manager
+	soul             *soul.Soul
+	tmplMgr          *soul.TemplateManager  // SOUL 模板管理器
+	provider         provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	providerMu       sync.RWMutex           // protects the default provider/model selection
+	registry         *provider.Registry     // provider 注册表
+	catalog          *provider.ModelCatalog // 模型目录
+	modelDiscovery   *provider.ModelDiscovery
+	tokenStore       *provider.TokenStore // token 存储
+	memory           memory.RuntimeStore
+	shortTerms       memory.SessionShortTermStore
+	midTerm          memory.MidTermStore // 中期会话摘要存储
+	sessions         *session.Manager
+	tools            *tool.Registry
+	toolServices     *tool.Services
+	gateway          *tool.Gateway           // 统一工具网关
+	hitl             *HITLGate               // 本地工具审批和 ask_user 等待
+	skillInstaller   func(ctx context.Context, name, source string) error
 	comparisonMeter    *skillComparisonMeter
 	collaborationModel func(context.Context, string, string, providerSnapshot) (string, error)
 	delegatePaused     sync.Map // task id -> paused after a no-progress review
 	delegateCleanupErr error
-	hooks              *hook.Runner            // 工具执行前后的 hook 运行器
-	msgGateway         *gateway.GatewayManager // 消息平台网关
-	sessionEvents      func(sessionID, content string)
-	mcpClient          *mcpclient.Manager      // Runtime-owned MCP connections
-	delegate           *tool.DelegateManager   // 子代理委派管理器
-	contextWin         *contextx.ContextWindow // 上下文窗口管理器
-	contextEst         *contextx.TokenEstimator
-	ragManager         *rag.RAGManager         // RAG 知识库管理器
-	ragPersist         *rag.Persistence        // RAG 持久化
-	streamIndexer      *rag.StreamIndexer      // 流式索引器
-	embedderReg        *embedder.Registry      // 嵌入模型注册表
-	collabReg          *collab.Registry        // Agent 协作注册表
-	collabMgr          *collab.DelegateManager // 协作任务管理器
+	hooks            *hook.Runner            // 工具执行前后的 hook 运行器
+	msgGateway       *gateway.GatewayManager // 消息平台网关
+	sessionEvents    func(sessionID, content string)
+	mcpClient        *mcpclient.Manager      // Runtime-owned MCP connections
+	delegate         *tool.DelegateManager   // 子代理委派管理器
+	contextWin       *contextx.ContextWindow // 上下文窗口管理器
+	contextEst       *contextx.TokenEstimator
+	ragManager       *rag.RAGManager         // RAG 知识库管理器
+	ragPersist       *rag.Persistence        // RAG 持久化
+	streamIndexer    *rag.StreamIndexer      // 流式索引器
+	embedderReg      *embedder.Registry      // 嵌入模型注册表
+	collabReg        *collab.Registry        // Agent 协作注册表
+	collabMgr        *collab.DelegateManager // 协作任务管理器
 	// skillMu guards the published skill fields below. It is a plain data guard:
 	// never call into SkillRegistry or tool.Registry while holding it, or you
 	// introduce a lock order that nothing else in the process observes.

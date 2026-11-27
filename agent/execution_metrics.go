@@ -117,9 +117,9 @@ func recordRuntimeLoopStop(runtime any, reason string) {
 
 func recordRuntimeUsage(runtime any, sessionID string, usage *provider.TokenUsage, ttftMS int64) {
 	if owner, ok := runtime.(interface {
-		recordUsageAndTTFT(string, *provider.TokenUsage, int64)
+		recordUsageAndTTFTForSession(string, *provider.TokenUsage, int64)
 	}); ok {
-		owner.recordUsageAndTTFT(sessionID, usage, ttftMS)
+		owner.recordUsageAndTTFTForSession(sessionID, usage, ttftMS)
 		return
 	}
 	if owner, ok := runtime.(interface {

@@ -105,6 +105,22 @@ func TestPrecomputeMeasurementIsPerSession(t *testing.T) {
 	agent.waitPrecompute("A")
 }
 
+func TestLoopRuntimeRecordsMeasurementWithoutUsage(t *testing.T) {
+	agent := &Agent{provider: &staticChatProvider{content: validCompactSummaryText()}, contextEst: contextx.NewTokenEstimator(4096)}
+	runtime := newAgentLoopRuntime(agent)
+	recordRuntimeUsage(runtime, "loop-session", nil, 0)
+	messages := []provider.Message{{Role: "user", Content: "stay"}}
+	agent.maybeStartCompactPrecompute(context.Background(), "loop-session", "anchor", "grok", 100, 100, messages, providerSnapshot{provider: agent.provider, model: "grok"})
+	if agent.precompute == nil || agent.precompute.current["loop-session"] == nil {
+		t.Fatal("loop end with nil usage did not record this session")
+	}
+	agent.maybeStartCompactPrecompute(context.Background(), "other", "anchor", "grok", 100, 100, messages, providerSnapshot{provider: agent.provider, model: "grok"})
+	if agent.precompute.current["other"] != nil {
+		t.Fatal("loop measurement was stored on another session")
+	}
+	agent.waitPrecompute("loop-session")
+}
+
 func TestPrecomputeStopsAfterTwoFailures(t *testing.T) {
 	agent := &Agent{
 		provider:   &staticChatProvider{name: "fail", err: context.DeadlineExceeded},
