@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -39,28 +41,82 @@ func TestPresentUIKeepsTableAndStripsTreeFromModelNote(t *testing.T) {
 	}
 }
 
-func TestPresentUIDescriptionCarriesChartPolicy(t *testing.T) {
+func TestPresentUIDescriptionPointsAtOpenUISkill(t *testing.T) {
 	a := &Agent{tools: tool.NewRegistry()}
 	a.registerPresentUITool()
 	registered, ok := a.tools.Get(presentUIToolName)
 	if !ok {
 		t.Fatal("present_ui was not registered")
 	}
-	if !strings.Contains(registered.Description, "scatter") || !strings.Contains(registered.Description, "window") {
-		t.Fatalf("description missing chart policy: %s", registered.Description)
+	desc := registered.Description
+	for _, want := range []string{"tree", "skill_read", "openui"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("description missing %q: %s", want, desc)
+		}
 	}
-	if !strings.Contains(registered.Description, presentUIPolicy) {
-		t.Fatal("description does not reference presentUIPolicy")
+	for _, absent := range []string{
+		"OpenUI policy:",
+		"Do not invent Box",
+		"values.window",
+		"bar|line|area|pie|scatter",
+	} {
+		if strings.Contains(desc, absent) {
+			t.Fatalf("description still contains policy text %q: %s", absent, desc)
+		}
 	}
-	if !strings.Contains(registered.Description, "series") &&
-		!strings.Contains(registered.Description, "start") &&
-		!strings.Contains(registered.Description, "mix") {
-		t.Fatal("description missing mix, series, or start")
+}
+
+func TestOpenUISkillCarriesNodeRules(t *testing.T) {
+	path := filepath.Join("..", "skills", "openui", "SKILL.md")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(registered.Description, "again") &&
-		!strings.Contains(registered.Description, "stays") &&
-		!strings.Contains(registered.Description, "keep") {
-		t.Fatal("description missing actions keep-tree language")
+	text := string(body)
+	for _, want := range []string{
+		"name: openui",
+		"Table: columns, rows",
+		"bar|line|area|pie|scatter",
+		"waiting_input",
+		"Do not invent Box, Row, Carousel, AppBlock, or HTML as the tree.",
+		"Do not repeat an accepted Table, Chart, or List",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("skill %s missing %q", path, want)
+		}
+	}
+	if strings.Contains(text, "## Tools") || strings.Contains(text, "## tools") {
+		t.Fatal("openui skill must not declare a Tools section")
+	}
+
+	a := &Agent{tools: tool.NewRegistry()}
+	a.registerPresentUITool()
+	registered, ok := a.tools.Get(presentUIToolName)
+	if !ok {
+		t.Fatal("present_ui was not registered")
+	}
+	if strings.Contains(registered.Description, "Do not invent Box") || strings.Contains(registered.Description, "OpenUI policy:") {
+		t.Fatalf("tool description still contains the skill policy: %s", registered.Description)
+	}
+}
+
+func TestOpenUISkillRouteMatchesChartAndTable(t *testing.T) {
+	info, err := tool.NewSkillLoader(filepath.Join("..", "skills")).Load(filepath.Join("..", "skills", "openui", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name != "openui" {
+		t.Fatalf("loaded name = %q", info.Name)
+	}
+	reg := tool.NewRegistry()
+	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
+	a := &Agent{tools: reg, skills: []*tool.SkillInfo{info}}
+	hint := a.buildSkillRouteSystemHint("draw a chart and a table of the results")
+	if !strings.Contains(hint, `matches the "openui" skill`) {
+		t.Fatalf("expected keyword match for openui, got %q", hint)
+	}
+	if strings.Contains(strings.ToLower(hint), "explicitly mentions") {
+		t.Fatalf("chart and table should match by description overlap, got %q", hint)
 	}
 }
 
