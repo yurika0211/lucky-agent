@@ -148,14 +148,11 @@ func (a *Agent) noteMeasuredPrompt(sessionID string, at time.Time) {
 	state.mu.Unlock()
 }
 
-// recordMeasuredPromptUsage stores the time of a provider response that
-// reported prompt tokens. recordUsageAndTTFT is the only caller. A response
-// with no prompt tokens is not a measurement.
-func (a *Agent) recordMeasuredPromptUsage(sessionID string, usage *provider.TokenUsage) {
-	if a == nil || sessionID == "" || usage == nil {
-		return
-	}
-	if usage.InputTokens <= 0 && usage.TotalTokens <= 0 {
+// noteTurnFinished records that this session's provider turn just finished.
+// Cache heat is the time since that response, not whether the provider sent
+// a token count. Native streams often omit usage.
+func (a *Agent) noteTurnFinished(sessionID string) {
+	if a == nil || sessionID == "" {
 		return
 	}
 	a.noteMeasuredPrompt(sessionID, time.Now())
@@ -165,6 +162,16 @@ func (a *Agent) recordMeasuredPromptUsage(sessionID string, usage *provider.Toke
 		state.cacheLifetime = ttl
 		state.mu.Unlock()
 	}
+}
+
+// recordMeasuredPromptUsage keeps the old name for tests that already pass a
+// session id. Empty usage still counts: the response happened.
+func (a *Agent) recordMeasuredPromptUsage(sessionID string, usage *provider.TokenUsage) {
+	if a == nil || sessionID == "" {
+		return
+	}
+	_ = usage
+	a.noteTurnFinished(sessionID)
 }
 
 func (a *Agent) activeCompactSessionID() string {

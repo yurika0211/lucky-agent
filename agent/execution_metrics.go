@@ -123,6 +123,12 @@ func recordRuntimeUsage(runtime any, usage *provider.TokenUsage, ttftMS int64) {
 	}
 }
 
+func recordRuntimeTurnFinished(runtime any, sessionID string) {
+	if owner, ok := runtime.(interface{ noteTurnFinished(string) }); ok {
+		owner.noteTurnFinished(sessionID)
+	}
+}
+
 func (a *Agent) recordSessionOpen() {
 	if a == nil || a.metrics == nil {
 		return
@@ -175,9 +181,6 @@ func (a *Agent) startProviderSpan(ctx context.Context, name string) (context.Con
 func (a *Agent) recordUsageAndTTFT(usage *provider.TokenUsage, ttftMS int64) {
 	if a == nil {
 		return
-	}
-	if usage != nil && (usage.InputTokens > 0 || usage.TotalTokens > 0) {
-		a.recordMeasuredPromptUsage(a.activeCompactSessionID(), usage)
 	}
 	m := a.executionMetrics()
 	if usage != nil {

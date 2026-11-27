@@ -608,7 +608,9 @@ func (a *Agent) chatWithSessionInput(ctx context.Context, sess *session.Session,
 	if !streamRecordsChatAtEntry(input.Scope.Platform) && a.metrics != nil {
 		a.metrics.RecordChatRequest()
 	}
-	a.setMeasuredSession(sess.ID)
+	if sess != nil {
+		a.noteTurnFinished(sess.ID)
+	}
 	a.recordUsageAndTTFT(result.Usage, result.LastTTFT)
 	a.recordProactiveChatEvent(sess, input, response, len(result.ToolCalls), nil)
 

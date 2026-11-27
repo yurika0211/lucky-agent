@@ -46,6 +46,81 @@ func TestPrecomputeSkipsWhenMeasuredPromptIsOlderThanCache(t *testing.T) {
 	}
 }
 
+func TestTurnFinishWithoutUsageMeasuresThatSession(t *testing.T) {
+	// Ceiling 128000 keeps the default lead of 60000, because half the ceiling
+	// is larger. Start requires estimated >= ceiling-lead, which is 68000.
+	// 1000 stays below that window. 68000 is inside it.
+	const ceiling = 128000
+	agent := &Agent{
+		provider:   &staticChatProvider{content: validCompactSummaryText()},
+		contextEst: contextx.NewTokenEstimator(ceiling),
+		contextWin: contextx.NewContextWindow(contextx.WindowConfig{MaxTokens: ceiling, Strategy: contextx.TrimLowPriority}),
+	}
+	dir := t.TempDir()
+	sessA := mustSession(t, dir, "sess-a")
+	sessB := mustSession(t, dir, "sess-b")
+	snap := providerSnapshot{provider: agent.provider, model: "grok"}
+	transcript := func(sess *session.Session) []provider.Message {
+		t.Helper()
+		raw, _, _, _ := session.MessagesAfterLastCompactBoundary(sess.GetMessages())
+		return raw
+	}
+
+	agent.recordUsageAndTTFT(nil, 0)
+	agent.maybeOfferCompactPrecompute(context.Background(), sessA, "stay", false, snap)
+	if agent.precompute != nil && agent.precompute.current[sessA.ID] != nil {
+		t.Fatal("a turn that never finished started precompute")
+	}
+
+	finish := func(sess *session.Session) {
+		events := make(chan ChatEvent, 4)
+		agent.finalizeStreamWithUsage(events, sess, UserTurnInput{}, "answer", "", nil)
+		<-events
+	}
+
+	finish(sessA)
+	finish(sessB)
+	agent.recordUsageAndTTFT(nil, 0)
+	agent.recordUsageAndTTFT(&provider.TokenUsage{}, 0)
+
+	belowText := strings.Repeat("x", 1000)
+	belowEstimate := estimateProviderMessages(agent.contextEst, append(append([]provider.Message{}, transcript(sessA)...), provider.Message{Role: "user", Content: belowText}))
+	if belowEstimate >= ceiling-60000 {
+		t.Fatalf("below-window text estimated %d, which is inside the lead", belowEstimate)
+	}
+	agent.maybeOfferCompactPrecompute(context.Background(), sessA, belowText, false, snap)
+	if agent.precompute != nil && agent.precompute.current[sessA.ID] != nil {
+		t.Fatal("a measured session below the lead window started precompute")
+	}
+	insideText := strings.Repeat("x", 68000*4)
+	insideEstimate := estimateProviderMessages(agent.contextEst, append(append([]provider.Message{}, transcript(sessA)...), provider.Message{Role: "user", Content: insideText}))
+	if insideEstimate < ceiling-60000 {
+		t.Fatalf("inside-window text estimated %d, which is below the lead", insideEstimate)
+	}
+	agent.maybeOfferCompactPrecompute(context.Background(), sessA, insideText, false, snap)
+	agent.maybeOfferCompactPrecompute(context.Background(), sessB, insideText, false, snap)
+	if agent.precompute == nil || agent.precompute.current[sessA.ID] == nil || agent.precompute.current[sessB.ID] == nil {
+		t.Fatal("finishing two sessions without usage did not measure both")
+	}
+	if agent.precompute.current[sessA.ID].anchor != compactAnchor(transcript(sessA)) || agent.precompute.current[sessB.ID].anchor != compactAnchor(transcript(sessB)) {
+		t.Fatal("precompute did not keep the session transcript anchor")
+	}
+	sessC := mustSession(t, dir, "sess-c")
+	agent.maybeOfferCompactPrecompute(context.Background(), sessC, insideText, false, snap)
+	if agent.precompute.current[sessC.ID] != nil {
+		t.Fatal("a session that did not finish was measured by the other session")
+	}
+}
+
+func mustSession(t *testing.T, dir, id string) *session.Session {
+	t.Helper()
+	sess := session.NewSession(id, dir)
+	if err := sess.AddProviderMessageWithError(provider.Message{Role: "user", Content: "stay"}); err != nil {
+		t.Fatal(err)
+	}
+	return sess
+}
+
 func TestPrecomputeMeasurementGatesStart(t *testing.T) {
 	messages := []provider.Message{{Role: "user", Content: "stay"}}
 	start := func(agent *Agent, id string) {

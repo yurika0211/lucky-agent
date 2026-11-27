@@ -169,6 +169,13 @@ func (r *agentLoopRuntime) setMeasuredSession(sessionID string) {
 	r.agent.setMeasuredSession(sessionID)
 }
 
+func (r *agentLoopRuntime) noteTurnFinished(sessionID string) {
+	if r == nil || r.agent == nil {
+		return
+	}
+	r.agent.noteTurnFinished(sessionID)
+}
+
 func (r *agentLoopRuntime) recordUsageAndTTFT(usage *provider.TokenUsage, ttftMS int64) {
 	if r == nil || r.agent == nil {
 		return

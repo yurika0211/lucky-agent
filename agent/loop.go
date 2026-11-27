@@ -620,9 +620,7 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 		)
 		logger.Info("agent loop finished", fields...)
 		if result != nil {
-			if marker, ok := l.runtime.(interface{ setMeasuredSession(string) }); ok {
-				marker.setMeasuredSession(sessionID)
-			}
+			recordRuntimeTurnFinished(l.runtime, sessionID)
 			recordRuntimeUsage(l.runtime, result.Usage, result.LastTTFT)
 		}
 	}()
