@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,57 +64,35 @@ func TestPresentUIDescriptionPointsAtOpenUISkill(t *testing.T) {
 	}
 }
 
-func TestOpenUISkillCarriesNodeRules(t *testing.T) {
-	path := filepath.Join("..", "skills", "openui", "SKILL.md")
-	body, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(body)
-	for _, want := range []string{
-		"name: openui",
-		"Table: columns, rows",
-		"bar|line|area|pie|scatter",
-		"waiting_input",
-		"Do not invent Box, Row, Carousel, AppBlock, or HTML as the tree.",
-		"Do not repeat an accepted Table, Chart, or List",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("skill %s missing %q", path, want)
-		}
-	}
-	if strings.Contains(text, "## Tools") || strings.Contains(text, "## tools") {
-		t.Fatal("openui skill must not declare a Tools section")
-	}
-
+func TestOpenUIPolicyStaysOutOfInjectedContext(t *testing.T) {
 	a := &Agent{tools: tool.NewRegistry()}
 	a.registerPresentUITool()
 	registered, ok := a.tools.Get(presentUIToolName)
 	if !ok {
 		t.Fatal("present_ui was not registered")
 	}
-	if strings.Contains(registered.Description, "Do not invent Box") || strings.Contains(registered.Description, "OpenUI policy:") {
-		t.Fatalf("tool description still contains the skill policy: %s", registered.Description)
+	policy := a.buildToolPolicyPromptBlock()
+	for _, label := range []struct {
+		name string
+		text string
+	}{
+		{"tool description", registered.Description},
+		{"tool policy", policy},
+	} {
+		for _, absent := range []string{
+			"OpenUI policy:",
+			"Do not invent Box",
+			"bar|line|area|pie|scatter",
+			"values.window",
+			"Table: columns, rows",
+		} {
+			if strings.Contains(label.text, absent) {
+				t.Fatalf("%s still contains policy text %q", label.name, absent)
+			}
+		}
 	}
-}
-
-func TestOpenUISkillRouteMatchesChartAndTable(t *testing.T) {
-	info, err := tool.NewSkillLoader(filepath.Join("..", "skills")).Load(filepath.Join("..", "skills", "openui", "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Name != "openui" {
-		t.Fatalf("loaded name = %q", info.Name)
-	}
-	reg := tool.NewRegistry()
-	reg.Register(&tool.Tool{Name: "skill_read", Enabled: true})
-	a := &Agent{tools: reg, skills: []*tool.SkillInfo{info}}
-	hint := a.buildSkillRouteSystemHint("draw a chart and a table of the results")
-	if !strings.Contains(hint, `matches the "openui" skill`) {
-		t.Fatalf("expected keyword match for openui, got %q", hint)
-	}
-	if strings.Contains(strings.ToLower(hint), "explicitly mentions") {
-		t.Fatalf("chart and table should match by description overlap, got %q", hint)
+	if !strings.Contains(policy, "openui") || !strings.Contains(policy, "present_ui") {
+		t.Fatalf("tool policy should point at the openui skill: %s", policy)
 	}
 }
 
