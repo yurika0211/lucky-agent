@@ -1478,7 +1478,13 @@ func (a *Agent) finalizeStreamWithRecapState(events chan<- ChatEvent, sess *sess
 	if sess != nil {
 		a.setMeasuredSession(sess.ID)
 	}
-	a.recordUsageAndTTFT(usage, ttftMS)
+	if !streamRoundCancelled(state) {
+		sessionID := ""
+		if sess != nil {
+			sessionID = sess.ID
+		}
+		a.recordUsageAndTTFTForSession(sessionID, usage, ttftMS)
+	}
 	events <- ChatEvent{Type: ChatEventDone, Content: response, Usage: assistantUsage(usage), CreatedAt: &createdAt}
 }
 
@@ -1585,6 +1591,13 @@ func (a *Agent) finalizeStreamInterruption(events chan<- ChatEvent, sess *sessio
 	noteStreamStop(state, err)
 	a.finalizeStreamWithState(events, sess, turnInput, streamInterruptionMessage(err, state, partial), state)
 	return true
+}
+
+func streamRoundCancelled(state *streamConvergenceState) bool {
+	if state == nil || state.stopErr == nil || *state.stopErr == nil {
+		return false
+	}
+	return errors.Is(*state.stopErr, context.Canceled) || errors.Is(*state.stopErr, errSessionCallCancelled)
 }
 
 func noteStreamStop(state *streamConvergenceState, err error) {

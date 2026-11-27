@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"net/url"
@@ -75,6 +76,16 @@ func (s LoopState) String() string {
 	default:
 		return "Unknown"
 	}
+}
+
+func loopResultCancelled(result *LoopResult, err error) bool {
+	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, errSessionCallCancelled)) {
+		return true
+	}
+	if result == nil || result.Response == "" {
+		return false
+	}
+	return strings.Contains(result.Response, "canceled before a complete final answer")
 }
 
 func providerNameForLog(p provider.Provider) string {
@@ -619,11 +630,11 @@ func (l *Loop) RunWithProviderSnapshot(ctx context.Context, sess *session.Sessio
 			attribute.Int64("agent.duration_ms", time.Since(startAt).Milliseconds()),
 		)
 		logger.Info("agent loop finished", fields...)
-		if result != nil {
+		if result != nil && !loopResultCancelled(result, err) {
 			if marker, ok := l.runtime.(interface{ setMeasuredSession(string) }); ok {
 				marker.setMeasuredSession(sessionID)
 			}
-			recordRuntimeUsage(l.runtime, result.Usage, result.LastTTFT)
+			recordRuntimeUsage(l.runtime, sessionID, result.Usage, result.LastTTFT)
 		}
 	}()
 

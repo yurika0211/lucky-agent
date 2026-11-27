@@ -347,7 +347,11 @@ func (a *Agent) finishForegroundMemory(sess *session.Session, input UserTurnInpu
 		if sess != nil {
 			a.setMeasuredSession(sess.ID)
 		}
-		a.recordUsageAndTTFT(result.Usage, result.LastTTFT)
+		sessionID := ""
+		if sess != nil {
+			sessionID = sess.ID
+		}
+		a.recordUsageAndTTFTForSession(sessionID, result.Usage, result.LastTTFT)
 	}
 }
 
