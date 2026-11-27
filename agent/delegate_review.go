@@ -29,8 +29,9 @@ func (a *Agent) installDelegateReviewTool() {
 		Enabled:     true,
 		Parameters: map[string]tool.Param{
 			"task_id":    {Type: "string", Description: "Terminal delegated task id.", Required: true},
-			"action":     {Type: "string", Description: "inspect, merge, or discard.", Required: true},
+			"action":     {Type: "string", Description: "inspect, merge, discard, rework, or resume.", Required: true},
 			"acceptance": {Type: "string", Description: "Optional acceptance note for the parent review.", Required: false},
+			"progress":   {Type: "string", Description: "rework only: none pauses; any other value records another attempt.", Required: false},
 		},
 		ContextDetailedHandler: func(exec tool.ExecutionContext, args map[string]any) (tool.ToolCallResult, error) {
 			out, err := a.reviewDelegatedTask(exec.Context, exec.SessionID, args)
@@ -45,7 +46,7 @@ func (a *Agent) reviewDelegatedTask(ctx context.Context, sessionID string, args 
 	if taskID == "" {
 		return "", fmt.Errorf("task_id is required")
 	}
-	if action != "inspect" && action != "merge" && action != "discard" {
+	if action != "inspect" && action != "merge" && action != "discard" && action != "rework" && action != "resume" {
 		return "", fmt.Errorf("unsupported review action %q", action)
 	}
 	statusJSON, err := a.delegate.HandleStatusForSession(map[string]any{"task_id": taskID, "include_result": true}, strings.TrimSpace(sessionID))
@@ -75,6 +76,9 @@ func (a *Agent) reviewDelegatedTask(ctx context.Context, sessionID string, args 
 		response["result_summary"] = status.ResultSummary
 		response["result"] = status.Result
 		return marshalReviewResponse(response)
+	}
+	if action == "rework" || action == "resume" {
+		return a.reviewRework(item, hasWorktree, action, args, response)
 	}
 	if action == "discard" {
 		if !hasWorktree {
@@ -140,6 +144,59 @@ func (a *Agent) reviewDelegatedTask(ctx context.Context, sessionID string, args 
 	response["merged"] = true
 	response["changed"] = true
 	return marshalReviewResponse(response)
+}
+
+func (a *Agent) reviewRework(item delegateWorktree, hasWorktree bool, action string, args map[string]any, response map[string]any) (string, error) {
+	if !hasWorktree || strings.TrimSpace(item.Path) == "" {
+		response["rework"] = false
+		response["reason"] = "no retained worktree"
+		return marshalReviewResponse(response)
+	}
+	progress := strings.ToLower(strings.TrimSpace(delegateStringArg(args, "progress")))
+	if action == "rework" && (progress == "none" || progress == "no") {
+		a.delegatePaused.Store(item.TaskID, true)
+		response["rework"] = false
+		response["paused"] = true
+		response["reason"] = "no progress; paused until an explicit resume"
+		return marshalReviewResponse(response)
+	}
+	if _, paused := a.delegatePaused.Load(item.TaskID); paused && action != "resume" {
+		response["rework"] = false
+		response["paused"] = true
+		response["reason"] = "paused after no progress"
+		return marshalReviewResponse(response)
+	}
+	if action == "resume" {
+		a.delegatePaused.Delete(item.TaskID)
+		if err := incorporateParentIntoWorktree(item); err != nil {
+			response["rework"] = false
+			response["conflict"] = true
+			response["reason"] = err.Error()
+			return marshalReviewResponse(response)
+		}
+		response["incorporated_parent"] = true
+	}
+	response["rework"] = true
+	response["paused"] = false
+	response["kept_worktree"] = item.Path
+	return marshalReviewResponse(response)
+}
+
+func incorporateParentIntoWorktree(item delegateWorktree) error {
+	if strings.TrimSpace(item.ParentRoot) == "" || strings.TrimSpace(item.Path) == "" {
+		return fmt.Errorf("retained worktree is incomplete")
+	}
+	patch, err := gitOutputBytes(context.Background(), item.ParentRoot, "diff", "--binary", item.BaseCommit)
+	if err != nil {
+		return err
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	if err := runGitInput(context.Background(), item.Path, patch, "apply", "--3way", "--binary"); err != nil {
+		return fmt.Errorf("parent changes conflict with the retained worktree: %s", err.Error())
+	}
+	return nil
 }
 
 func marshalReviewResponse(value map[string]any) (string, error) {

@@ -349,7 +349,18 @@ func createDelegateWorktree(parent, taskID string) (delegateWorktree, error) {
 // untracked files into the child checkout without touching the parent's index
 // or working tree. The snapshot is taken once at dispatch time.
 func seedDelegateWorktree(parent, child string) error {
-	patch, err := gitOutputBytes(context.Background(), parent, "diff", "--binary", "HEAD")
+	// git diff HEAD omits changes that exist only in the index when those
+	// changes match the worktree. Include the index explicitly, then the
+	// unstaged worktree, so a staged-only edit is part of the dispatch snapshot.
+	patch, err := gitOutputBytes(context.Background(), parent, "diff", "--cached", "--binary", "HEAD")
+	if err != nil {
+		return err
+	}
+	unstaged, err := gitOutputBytes(context.Background(), parent, "diff", "--binary")
+	if err != nil {
+		return err
+	}
+	patch = append(patch, unstaged...)
 	if err != nil {
 		return err
 	}
@@ -367,6 +378,9 @@ func seedDelegateWorktree(parent, child string) error {
 		if rel == "" || filepath.IsAbs(rel) || rel == "." || strings.HasPrefix(filepath.Clean(rel), ".."+string(os.PathSeparator)) {
 			continue
 		}
+		if delegateSnapshotSkips(rel) {
+			continue
+		}
 		src := filepath.Join(parent, filepath.FromSlash(rel))
 		dst := filepath.Join(child, filepath.FromSlash(rel))
 		if err := copyDelegateSnapshotPath(src, dst); err != nil {
@@ -374,6 +388,20 @@ func seedDelegateWorktree(parent, child string) error {
 		}
 	}
 	return nil
+}
+
+// delegateSnapshotSkips drops credential-shaped paths even when they are not
+// covered by gitignore. The snapshot is copied into another checkout.
+func delegateSnapshotSkips(rel string) bool {
+	base := strings.ToLower(filepath.Base(filepath.FromSlash(rel)))
+	switch base {
+	case ".env", ".env.local", ".netrc", "credentials", "credentials.json", "id_rsa", "id_ed25519":
+		return true
+	}
+	if strings.HasPrefix(base, ".env.") || strings.Contains(base, "secret") || strings.HasSuffix(base, ".pem") || strings.HasSuffix(base, ".key") {
+		return true
+	}
+	return false
 }
 
 func copyDelegateSnapshotPath(src, dst string) error {
@@ -493,11 +521,15 @@ func removeDelegateWorktree(parent, path string) error {
 		return nil
 	}
 	if _, err := gitOutput(context.Background(), parent, "worktree", "remove", "--force", path); err != nil {
-		_ = os.RemoveAll(path)
-		_, pruneErr := gitOutput(context.Background(), parent, "worktree", "prune")
-		if pruneErr != nil {
+		if removeErr := os.RemoveAll(path); removeErr != nil {
+			return fmt.Errorf("remove delegate worktree: %w", removeErr)
+		}
+		if _, pruneErr := gitOutput(context.Background(), parent, "worktree", "prune"); pruneErr != nil {
 			return fmt.Errorf("%s", trimGitError(err))
 		}
+	}
+	if info, statErr := os.Stat(path); statErr == nil && info.IsDir() {
+		return fmt.Errorf("delegate worktree still exists: %s", path)
 	}
 	return nil
 }

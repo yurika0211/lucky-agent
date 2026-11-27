@@ -229,6 +229,90 @@ func TestDefaultDelegateWorktreeSnapshotsParentChanges(t *testing.T) {
 	}
 }
 
+func TestDelegateSnapshotIncludesStagedIndexAndSkipsSecrets(t *testing.T) {
+	repo := initTempGitRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("staged-only\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(t, repo, "add", "tracked.txt")
+	if err := os.WriteFile(filepath.Join(repo, ".env"), []byte("TOKEN=secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, ".gitignore"), []byte(".env\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A secret file that gitignore does not cover must still stay out.
+	if err := os.WriteFile(filepath.Join(repo, "credentials.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var childRoot string
+	agent := newWorktreeTestAgent(t, func(ctx context.Context, sess *session.Session) error {
+		childRoot = sess.GetCwd()
+		body, err := os.ReadFile(filepath.Join(childRoot, "tracked.txt"))
+		if err != nil || string(body) != "staged-only\n" {
+			return fmt.Errorf("staged snapshot missing: %q %v", body, err)
+		}
+		return nil
+	})
+	started := delegateInRepo(t, agent, repo, map[string]any{"description": "update code files", "timeout": 30})
+	status := waitDelegate(t, agent, started.TaskID)
+	if status.Status != "completed" {
+		t.Fatalf("status=%s error=%s result=%s", status.Status, status.Error, status.Result)
+	}
+	if _, err := os.Stat(filepath.Join(childRoot, "credentials.json")); !os.IsNotExist(err) {
+		t.Fatalf("secret copied into child: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(childRoot, ".env")); !os.IsNotExist(err) {
+		t.Fatalf(".env copied into child: %v", err)
+	}
+	parent, err := os.ReadFile(filepath.Join(repo, "tracked.txt"))
+	if err != nil || string(parent) != "staged-only\n" {
+		t.Fatalf("parent index file changed: %q %v", parent, err)
+	}
+}
+
+func TestDelegateSnapshotFailureDoesNotEditParent(t *testing.T) {
+	repo := initTempGitRepo(t)
+	if err := os.MkdirAll(filepath.Join(repo, "blocked"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "blocked", "note.txt"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agent := newWorktreeTestAgent(t, func(ctx context.Context, sess *session.Session) error {
+		return os.WriteFile(filepath.Join(sess.GetCwd(), "should-not.txt"), []byte("x"), 0o644)
+	})
+	// Snapshot itself fails. The child executor must not then write the parent.
+	blocked := t.TempDir()
+	if err := os.Chmod(blocked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o755) })
+	if err := os.WriteFile(filepath.Join(repo, "notes.txt"), []byte("untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedDelegateWorktree(repo, filepath.Join(blocked, "child")); err == nil {
+		t.Fatal("snapshot into an unwritable child succeeded")
+	}
+	if _, statErr := os.Stat(filepath.Join(repo, "should-not.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("failed snapshot wrote the parent: %v", statErr)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "should-not.txt"), []byte("x"), 0o644); err == nil {
+		_ = os.Remove(filepath.Join(repo, "should-not.txt"))
+	}
+	sub, _ := agent.tools.Get("subagent")
+	ctx := sandbox.WithSnapshot(context.Background(), &sandbox.Snapshot{Mode: sandbox.ModeDev, Root: filepath.Join(repo, "does-not-exist")})
+	_, err := sub.ContextDetailedHandler(tool.ExecutionContext{Context: ctx, SessionID: "parent"}, map[string]any{
+		"action": "delegate", "description": "update code files", "isolation": "worktree", "timeout": 5,
+	})
+	if err == nil {
+		t.Fatal("isolation failure was reported as a started task")
+	}
+	if _, statErr := os.Stat(filepath.Join(repo, "should-not.txt")); !os.IsNotExist(statErr) {
+		t.Fatalf("parent was edited after snapshot failure: %v", statErr)
+	}
+}
+
 func TestWorktreeHasChangesKeepsDirtyTree(t *testing.T) {
 	repo := initTempGitRepo(t)
 	item, err := createDelegateWorktree(repo, "task-dirty")
